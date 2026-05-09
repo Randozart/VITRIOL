@@ -1,0 +1,13 @@
+# VITRIOL Python Dependencies
+# Phase 1: Core (required)
+flask>=3.0.0
+requests>=2.31.0
+
+# Phase 2: Vector Search (optional, recommended)
+# Install with: pip3 install -r requirements.txt --break-system-packages
+faiss-cpu>=1.7.4
+sentence-transformers>=2.2.0
+
+# Development (optional)
+# pytest>=7.4.0
+# black>=23.0.0

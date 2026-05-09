@@ -16,26 +16,38 @@ frgn read_reg @ 0x40001000 () -> Result<UInt, Err>;
 
 // --- State: The Vessels ---
 let gpu_dev: UInt = 0;
-let gpu_bar_addr: UInt = 0;
+let gpu_bar_addr: UInt = 0;      // BAR 1: Data Plane (VRAM Window)
+let gpu_ctrl_addr: UInt = 0;     // BAR 0: Control Plane (Registers)
 let gpu_mapped: Bool = false;
 let dma_active: Bool = false;
 let current_layer: UInt = 0;
 const MAX_LAYERS: UInt = 1000;
 
 // GPU Device ID: NVIDIA GTX 1070 Ti = 10de:1b82
-// Hardware Analysis v2.0: BAR 1 is the 256MB VRAM window (not BAR 0)
+// Hardware Analysis v2.0: Separate Control Plane (BAR 0) from Data Plane (BAR 1)
 const GPU_VENDOR: UInt = 0x10de;
 const GPU_DEVICE: UInt = 0x1b82;
-const BAR_VRAM: UInt = 1;  // BAR 1: 256MB prefetchable VRAM (per lspci)
-const APERTURE_SIZE: UInt = 0x10000000;  // 256MB
+
+// BAR 0: Control Plane (16MB) - MMIO registers, DMA commands, interrupts
+// DANGER: Do NOT write data here - this is the "cockpit" not the "cargo bay"
+const BAR_CONTROL: UInt = 0;
+const BAR_CONTROL_SIZE: UInt = 0x1000000;  // 16MB
+
+// BAR 1: Data Plane (256MB) - Linear VRAM aperture for weight streaming
+// SAFE: This is the "cargo bay" - we can safely stream data here
+const BAR_DATA: UInt = 1;
+const BAR_DATA_SIZE: UInt = 0x10000000;  // 256MB (aperture window)
 
 // --- Init: V.I.T. (Visita Interiora Terrae) ---
-// Hardware Analysis v2.0: Maps BAR 1 (256MB VRAM window) instead of BAR 0
+// Hardware Analysis v2.0: Map both Control Plane (BAR 0) and Data Plane (BAR 1)
+// BAR 0: Read-only for monitoring GPU state (DO NOT WRITE without register docs)
+// BAR 1: Read/write for streaming model weights (safe "cargo bay")
 #[c, section(".init.text")]
 rct txn init [gpu_mapped == false]
   [gpu_mapped == true]
 {
     printk("VITRIOL: Visita Interiora Terrae...\n");
+    printk("VITRIOL: Separating Control Plane (BAR 0) from Data Plane (BAR 1)\n");
 
     // Find GPU device (10de:1b82)
     let result = pci_get_device(GPU_VENDOR, GPU_DEVICE, 0);
@@ -44,32 +56,81 @@ rct txn init [gpu_mapped == false]
         printk("VITRIOL: GPU device found (10de:1b82)\n");
     };
 
-    // Map BAR 1 (VRAM) - 256MB aperture per hardware analysis
+    // Map BAR 0 (Control Plane) - READ ONLY for monitoring
+    // This lets us watch GPU state, DMA engine status, interrupts
     [gpu_dev > 0] {
-        let bar_result = pci_iomap(gpu_dev, BAR_VRAM, APERTURE_SIZE);
-        [bar_result > 0] {
-            &gpu_bar_addr = bar_result;
+        let ctrl_result = pci_iomap(gpu_dev, BAR_CONTROL, BAR_CONTROL_SIZE);
+        [ctrl_result > 0] {
+            &gpu_ctrl_addr = ctrl_result;
+            printk("VITRIOL: Control Plane (BAR 0) mapped at 16MB - READ ONLY\n");
+        };
+    };
+
+    // Map BAR 1 (Data Plane) - SAFE for streaming weights
+    // This is the 256MB "cargo bay" window into 8GB VRAM
+    [gpu_dev > 0] {
+        let data_result = pci_iomap(gpu_dev, BAR_DATA, BAR_DATA_SIZE);
+        [data_result > 0] {
+            &gpu_bar_addr = data_result;
             &gpu_mapped = true;
-            printk("VITRIOL: Mercurial Bridge established via BAR 1 (256MB)\n");
+            printk("VITRIOL: Data Plane (BAR 1) mapped at 256MB - SAFE for streaming\n");
+            printk("VITRIOL: Mercurial Bridge established - Ready to stream weights\n");
         };
     };
 
     term;
 };
 
-// --- Compute: The Fire ---
-rct async txn calc_layer [!dma_active && current_layer < MAX_LAYERS]
-  [current_layer == @current_layer + 1]
-{
-    &current_layer = current_layer + 1;
+    // Map BAR 0 (Control Plane) - READ ONLY for monitoring
+    // This lets us watch GPU state, DMA engine status, interrupts
+    [gpu_dev > 0] {
+        let ctrl_result = pci_iomap(gpu_dev, BAR_CONTROL, BAR_CONTROL_SIZE);
+        [ctrl_result > 0] {
+            &gpu_ctrl_addr = ctrl_result;
+            printk("VITRIOL: Control Plane (BAR 0) mapped at 16MB - READ ONLY\n");
+        };
+    };
+
+    // Map BAR 1 (Data Plane) - SAFE for streaming weights
+    // This is the 256MB "cargo bay" window into 8GB VRAM
+    [gpu_dev > 0] {
+        let data_result = pci_iomap(gpu_dev, BAR_DATA, BAR_DATA_SIZE);
+        [data_result > 0] {
+            &gpu_bar_addr = data_result;
+            &gpu_mapped = true;
+            printk("VITRIOL: Data Plane (BAR 1) mapped at 256MB - SAFE for streaming\n");
+            printk("VITRIOL: Mercurial Bridge established - Ready to stream weights\n");
+        };
+    };
+
     term;
 };
 
-// --- Stream: The Mercurial Bridge ---
+// --- Monitor: Reading the Control Plane (Safe, Read-Only) ---
+// Use this to watch GPU state without touching anything
+// Returns value from BAR 0 offset (e.g., 0x1000 for engine status)
+rct txn monitor_gpu [gpu_ctrl_addr > 0 && offset < BAR_CONTROL_SIZE]
+  [gpu_status == @value]
+{
+    // Read from control register (SAFE - read-only)
+    // Example offsets:
+    //   0x1000: Engine status
+    //   0x1100: DMA status  
+    //   0x1200: Interrupt status
+    let value = read_reg_at(gpu_ctrl_addr + offset);
+    &gpu_status = value;
+    printk("VITRIOL: GPU register 0x%x = 0x%x\n", offset, value);
+    term;
+};
+
+// --- Stream: The Mercurial Bridge (Data Plane Only) ---
+// Streams weights through BAR 1 (the "cargo bay")
+// NEVER stream through BAR 0 (the "cockpit")
 rct async txn stream_layer [!dma_active && current_layer < MAX_LAYERS]
   [dma_active == true]
 {
     &dma_active = true;
+    printk("VITRIOL: Streaming layer %d through Data Plane (BAR 1)\n", current_layer);
     term;
 };
 

@@ -21,6 +21,14 @@ from typing import List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
 
+# Try to import FAISS for vector search
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+    logger.info("FAISS not available, will use keyword-based search")
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - VITRIOL - %(levelname)s - %(message)s'
@@ -95,6 +103,7 @@ def archive_context_to_ssd(messages: List[Dict[str, Any]], archive_path: str = "
     Returns archive file path for potential retrieval
     """
     try:
+        # Save to JSON
         with open(archive_path, 'w') as f:
             json.dump({
                 'timestamp': datetime.now().isoformat(),
@@ -102,6 +111,18 @@ def archive_context_to_ssd(messages: List[Dict[str, Any]], archive_path: str = "
                 'token_count': sum(estimate_tokens(m.get('content', '')) for m in messages)
             }, f, indent=2)
         logger.info(f"Context archived to {archive_path} ({len(messages)} messages)")
+        
+        # Also add to vector store if available
+        if FAISS_AVAILABLE:
+            try:
+                from .vector_store import get_vector_store
+                chunks = chunk_messages_for_streaming(messages, chunk_size=5)
+                vector_store = get_vector_store()
+                vector_store.add_chunks(chunks)
+                logger.info(f"Added {len(chunks)} chunks to vector store")
+            except Exception as e:
+                logger.warning(f"Vector store update failed: {e}")
+        
         return archive_path
     except Exception as e:
         logger.error(f"Context archival failed: {e}")
@@ -168,10 +189,46 @@ def stream_relevant_context(
     """
     Context Streaming Strategy: Retrieve and inject relevant context from SSD
     
+    Uses vector search (FAISS) for semantic similarity matching.
+    Falls back to keyword-based search if FAISS unavailable.
+    
     1. Load archived chunks
-    2. Score each chunk by relevance to current query
+    2. Score each chunk by relevance to current query (vector similarity)
     3. Return top-K most relevant chunks
     4. Inject into conversation as "system context"
+    """
+    try:
+        # Try vector-based search first
+        if FAISS_AVAILABLE:
+            from .vector_store import get_vector_store
+            
+            vector_store = get_vector_store()
+            results = vector_store.search(current_query, top_k=top_k, threshold=threshold)
+            
+            if results:
+                logger.info(f"Vector search found {len(results)} relevant chunks (scores: {[r['score'] for r in results]})")
+                streamed_messages = []
+                for result in results:
+                    streamed_messages.extend(result.get('messages', []))
+                return streamed_messages
+        
+        # Fallback to keyword-based search
+        logger.info("Falling back to keyword-based context retrieval")
+        return stream_relevant_context_keyword(current_query, archive_path, top_k, threshold)
+        
+    except Exception as e:
+        logger.error(f"Context streaming failed: {e}")
+        return []
+
+
+def stream_relevant_context_keyword(
+    current_query: str,
+    archive_path: str = "/tmp/vitriol_context_archive.json",
+    top_k: int = CONTEXT_STREAM_TOP_K,
+    threshold: float = CONTEXT_STREAM_RELEVANCE_THRESHOLD
+) -> List[Dict[str, Any]]:
+    """
+    Keyword-based context streaming (fallback when FAISS unavailable)
     """
     try:
         # Load archived context
@@ -205,7 +262,7 @@ def stream_relevant_context(
         return streamed_messages
         
     except Exception as e:
-        logger.error(f"Context streaming failed: {e}")
+        logger.error(f"Keyword context streaming failed: {e}")
         return []
 
 

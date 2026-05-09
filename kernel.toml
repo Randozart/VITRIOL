@@ -25,3 +25,21 @@ sig = "dma_alloc_coherent(dev: UInt, size: UInt, dma_handle: UInt, flag: UInt) -
 
 [dma_free_coherent]
 sig = "dma_free_coherent(dev: UInt, size: UInt, cpu_addr: UInt, dma_handle: UInt)"
+
+# Control Plane register access (read-only for monitoring)
+[read_reg_at]
+sig = "read_reg_at(addr: UInt) -> UInt"
+note = "Read from MMIO address (BAR 0, safe read-only)"
+
+[write_reg_at]
+sig = "write_reg_at(addr: UInt, val: UInt)"
+note = "Write to MMIO address (BAR 0, DANGER - control plane)"
+
+# Control Plane register access (read-only for monitoring)
+[read_reg_at]
+sig = "read_reg_at(addr: UInt) -> UInt"
+note = "Read from MMIO address (BAR 0, safe read-only)"
+
+[write_reg_at]
+sig = "write_reg_at(addr: UInt, val: UInt)"
+note = "Write to MMIO address (BAR 0, DANGER - control plane)"

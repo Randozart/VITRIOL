@@ -1,45 +1,27 @@
-# Kernel FFI Bindings for VITRIOL
-
+# Kernel FFI Implementations
 [printk]
-sig = "printk(fmt: String) -> Int"
-note = "Kernel printk (variadic - use wrapper in practice)"
+impl = "brief_printk"
 
 [pci_get_device]
-sig = "pci_get_device(vendor: UInt, device: UInt, from: UInt) -> UInt"
-note = "Find PCI device by vendor:device ID"
+impl = "brief_pci_get_device"
 
 [pci_iomap]
-sig = "pci_iomap(dev: UInt, bar: UInt, len: UInt) -> UInt"
-note = "Map BAR into kernel virtual address"
+impl = "brief_pci_iomap"
 
 [pci_iounmap]
-sig = "pci_iounmap(dev: UInt, addr: UInt)"
-note = "Unmap BAR"
+impl = "brief_pci_iounmap"
 
 [pci_dev_put]
-sig = "pci_dev_put(dev: UInt)"
-note = "Release PCI device reference"
+impl = "brief_pci_dev_put"
 
-[dma_alloc_coherent]
-sig = "dma_alloc_coherent(dev: UInt, size: UInt, dma_handle: UInt, flag: UInt) -> UInt"
-
-[dma_free_coherent]
-sig = "dma_free_coherent(dev: UInt, size: UInt, cpu_addr: UInt, dma_handle: UInt)"
-
-# Control Plane register access (read-only for monitoring)
 [read_reg_at]
-sig = "read_reg_at(addr: UInt) -> UInt"
-note = "Read from MMIO address (BAR 0, safe read-only)"
+impl = "brief_read_reg_at"
 
-[write_reg_at]
-sig = "write_reg_at(addr: UInt, val: UInt)"
-note = "Write to MMIO address (BAR 0, DANGER - control plane)"
+[mb]
+impl = "brief_mb"
 
-# Control Plane register access (read-only for monitoring)
-[read_reg_at]
-sig = "read_reg_at(addr: UInt) -> UInt"
-note = "Read from MMIO address (BAR 0, safe read-only)"
+[rmb]
+impl = "brief_rmb"
 
-[write_reg_at]
-sig = "write_reg_at(addr: UInt, val: UInt)"
-note = "Write to MMIO address (BAR 0, DANGER - control plane)"
+[wmb]
+impl = "brief_wmb"

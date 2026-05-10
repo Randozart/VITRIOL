@@ -1,10 +1,15 @@
 #!/bin/bash
-# launch_vitriol.sh - VITRIOL stack with context offloading
-# Context Strategy: Hybrid (VRAM for model, SSD for old context)
+# VITRIOL Stack Launch Script
+# Uses /mnt/data/ai for all large files (79GB Linux partition)
 
 set -e
 
+# Set TMPDIR to /mnt/data/ai/tmp for PyInstaller
+export TMPDIR=/mnt/data/ai/tmp
+mkdir -p $TMPDIR
+
 echo "=== VITRIOL Stack Launch ==="
+echo "Using /mnt/data/ai for models, swap, and temp files"
 echo ""
 
 # Kill any existing instances
@@ -14,7 +19,7 @@ sleep 2
 
 # Start KoboldCPP with context offloading optimizations
 echo "1. Starting KoboldCPP on port 5001..."
-cd ~/Downloads/koboldCPP
+cd /mnt/data/ai/koboldcpp
 nohup ./koboldcpp \
     --model Qwen_Qwen3.5-9B-Q4_K_M.gguf \
     --usecuda \
@@ -69,6 +74,12 @@ echo ""
 echo "Services:"
 echo "  KoboldCPP: http://localhost:5001 (PID: $KOBOLD_PID)"
 echo "  VITRIOL:   http://localhost:5010 (PID: $SHIM_PID)"
+echo ""
+echo "Storage:"
+echo "  Models:    /mnt/data/ai/koboldcpp/"
+echo "  Swap:      /mnt/data/ai/swap/ (16GB)"
+echo "  Temp:      $TMPDIR"
+echo "  Archives:  /mnt/data/ai/vitriol/"
 echo ""
 echo "Context Offloading Strategy:"
 echo "  - Model: Loaded in VRAM (5.5GB)"

@@ -1,0 +1,23 @@
+// VITRIOL Kernel Module Constants
+// Hardware constants for GTX 1070 Ti (GP104)
+
+// GPU Device IDs
+const GPU_VENDOR: UInt = 0x10de;      // NVIDIA
+const GPU_DEVICE: UInt = 0x1b82;      // GTX 1070 Ti
+
+// BAR Sizes (from hardware discovery)
+const BAR_CONTROL_SIZE: UInt = 0x1000000;   // 16MB (BAR 0)
+const BAR_DATA_SIZE: UInt = 0x10000000;     // 256MB (BAR 1)
+
+// Layer limits
+const MAX_LAYERS: UInt = 1000;
+
+// DMA Directions
+const DMA_TO_DEVICE: UInt = 1;
+const DMA_FROM_DEVICE: UInt = 2;
+const DMA_BIDIRECTIONAL: UInt = 3;
+
+// Safety Levels
+const SAFETY_READ_ONLY: UInt = 1;
+const SAFETY_DMA_WRITE: UInt = 2;
+const SAFETY_RAW_PCI: UInt = 3;

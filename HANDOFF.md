@@ -124,14 +124,14 @@ CUDA_VISIBLE_DEVICES=0 /mnt/data/ai/llama.cpp/bin/llama-server \
     -m /mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf \
     -ngl 20 \
     -ot ".*exps.*=CPU" \
-    --port 5002 \
+    --port 8279 \
     --no-mmap &
 
 # Wait ~90s for 12GB model to fully load and warm up
 sleep 90
 
 # Test inference
-curl http://localhost:5002/v1/chat/completions \
+curl http://localhost:8279/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":30}'
 ```
@@ -149,7 +149,7 @@ curl http://localhost:5002/v1/chat/completions \
 CUDA_VISIBLE_DEVICES=0 /mnt/data/ai/llama.cpp/bin/llama-server \
     -m /mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf \
     -ngl 25 \
-    --port 5002 \
+    --port 8279 \
     --no-mmap
 ```
 
@@ -272,7 +272,7 @@ The Qwen3.6-35B-A3B model loaded successfully at 775MB VRAM, but curl hit a 503 
 ```bash
 # Wait for warmup to finish, then test
 sleep 30
-curl http://localhost:5002/v1/chat/completions \
+curl http://localhost:8279/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":30}'
 ```

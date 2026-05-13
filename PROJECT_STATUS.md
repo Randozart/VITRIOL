@@ -45,7 +45,7 @@
 
 ```bash
 cd /mnt/data/ai/llama.cpp
-./bin/llama-server -m /mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf -c 8192 -ngl 25 --port 5002
+./bin/llama-server -m /mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf -c 8192 -ngl 25 --port 8279
 ```
 
 ### 2. NVIDIA GDS Source Analyzed ✅
@@ -141,7 +141,7 @@ sudo ./vitriol-util bar1
 
 # Run llama-server
 cd /mnt/data/ai/llama.cpp
-./bin/llama-server -m /mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf -ngl 25 --port 5002
+./bin/llama-server -m /mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf -ngl 25 --port 8279
 ```
 
 ---

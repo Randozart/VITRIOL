@@ -7,7 +7,7 @@ export CUDA_VISIBLE_DEVICES=0
 
 MODEL_PATH="/mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"
 LLAMA_SERVER="/mnt/data/ai/llama.cpp/bin/llama-server"
-PORT=5002
+PORT=8279
 
 echo "=== Simple Baseline Test ==="
 

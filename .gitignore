@@ -76,6 +76,13 @@ coverage/
 *.pth
 models/
 
+# Alka compiler build artifacts (generated from .alka recipes)
+*.alkas
+*.azoth
+
+# Benchmark results
+alka/results/
+
 # OS files
 Thumbs.db
 .DS_Store

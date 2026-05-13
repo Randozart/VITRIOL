@@ -478,7 +478,7 @@ test_expert_cache.sh                # Test script
 ./llama-server -m Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf \
     -ngl 20 \
     -ot ".*exps.*=CPU" \
-    --port 5002
+    --port 8279
 ```
 
 This uses the existing llama.cpp `-ot` (override tensor) feature to keep expert tensors on CPU while offloading other layers to GPU.

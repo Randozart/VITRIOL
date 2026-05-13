@@ -19,7 +19,7 @@ import requests
 from collections import deque
 
 class VitriolLayerManager:
-    def __init__(self, model_path, llama_port=5002, max_gpu_layers=25):
+    def __init__(self, model_path, llama_port=8279, max_gpu_layers=25):
         self.model_path = model_path
         self.llama_port = llama_port
         self.max_gpu_layers = max_gpu_layers

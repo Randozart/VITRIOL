@@ -1,0 +1,53 @@
+// Alka Recipe: Speculative Decoding with Dual GPUs
+// Purpose: Use GTX 960 as draft model, GTX 1070 Ti as verifier
+//
+// Architecture:
+//   GTX 960 (2GB)  — runs Qwen 0.5B ternary draft model at 100+ tok/s
+//   GTX 1070 Ti (8GB) — runs Qwen3.6-35B-A3B at ~10.6 tok/s
+//
+// The 960 generates 8 candidate tokens, the 1070 Ti verifies all 8
+// in one parallel pass via P2P DMA. Expected speedup: 10.6 -> ~30 tok/s.
+
+REQUIRE vitriol_rig.alkavl;
+
+// Claim both GPUs
+CLAIM GPU_1070TI;
+CLAIM GPU_960;
+CLAIM NVME_SSD;
+
+// Thermal guards
+LIMIT GPU_1070TI THERMAL MAX 85000;
+LIMIT GPU_960 THERMAL MAX 98000;
+
+// Load draft model on GTX 960 (0.5B fits in 2GB)
+SHIFT GPU_960.DATA_PLANE @ 0;
+FLOW NVME_SSD[DRAFT_MODEL] -> GPU_960.VRAM 500MB;
+FENCE GPU_960.METAPAGE == 1;
+
+// Load base model on GTX 1070 Ti (775MB for embeddings + attention)
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+FLOW NVME_SSD[MODEL_WEIGHTS] -> GPU_1070TI.VRAM 775MB;
+FENCE GPU_1070TI.METAPAGE == 1;
+
+// Establish P2P pipe between cards
+// Draft tokens flow from 960 to 1070 Ti via PCIe P2P DMA
+// No CPU involvement — 8 experts guessed in ~2 microseconds
+PIPE GPU_960.OUTPUT => GPU_1070TI.INPUT_BUFFER 1MB 0x1;
+
+// Speculative decoding loop
+// Draft generates 8 candidate tokens
+// TODO: SPECULATE instruction not yet implemented in tool system
+// For now, use FLOW for P2P transfer + FENCE for verification
+FLOW GPU_960.OUTPUT_RING -> GPU_1070TI.INPUT_BUFFER 1MB;
+
+// Target verifies all 8 in one parallel pass
+FENCE GPU_1070TI.VALIDATION == COMPLETE;
+
+// If draft was wrong, revert and correct
+REVERT GPU_960.KV_CACHE TO GPU_1070TI.CORRECT_STATE;
+
+// Memory barrier
+SYNC L3;
+
+// Signal completion
+SIGNAL 99;

@@ -1,0 +1,76 @@
+// Alka Recipe: Moore Stream — Expert Streaming for Qwen3.6-35B-A3B
+// Purpose: Stream MoE experts from NVMe to GPU VRAM via DMA
+//
+// This is the target architecture: instead of keeping all 256 experts
+// on CPU (current -ot approach), stream only the 8 active experts
+// per token directly from NVMe to GPU via PCIe DMA.
+//
+// The 256MB BAR1 aperture is the hard constraint. Expert tensors
+// can be 150-400MB each, requiring chunked streaming.
+// Alka's implicit safety injection auto-expands large FLOWs into
+// SHIFT/FLOW/FENCE triplets.
+
+REQUIRE vitriol_rig.alkavl;
+
+// Claim hardware
+CLAIM GPU_1070TI;
+CLAIM NVME_SSD;
+
+// Thermal guard
+LIMIT GPU_1070TI THERMAL MAX 85000;
+
+// Setup expert ring buffer in VRAM
+// Reserve 256MB for expert streaming (double-buffered)
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+
+// Prime first expert buffer
+FLOW NVME_SSD[EXPERT_0] -> GPU_1070TI.DATA_PLANE 128MB;
+FENCE GPU_1070TI.METAPAGE == 1;
+
+// Setup continuous pipe for expert streaming
+// Once initiated, hardware runs autonomously — CPU exits the loop
+PIPE NVME_SSD.EXPERT_STREAM => GPU_1070TI.EXPERT_RING 256MB 0x1;
+
+// Main inference loop
+// For each token:
+//   1. MoE router determines which 8 of 256 experts are active
+//   2. FLOW loads those experts from NVMe to VRAM
+//   3. FENCE waits for DMA completion
+//   4. GPU computes
+//   5. Repeat
+
+// Layer 0: Gate experts
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+FLOW NVME_SSD[BLK_0_GATE_EXPS] -> GPU_1070TI.DATA_PLANE 128MB;
+FENCE GPU_1070TI.METAPAGE == 10;
+
+// Layer 0: Up experts
+SHIFT GPU_1070TI.DATA_PLANE @ 128MB;
+FLOW NVME_SSD[BLK_0_UP_EXPS] -> GPU_1070TI.DATA_PLANE 128MB;
+FENCE GPU_1070TI.METAPAGE == 11;
+
+// Layer 0: Down experts
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+FLOW NVME_SSD[BLK_0_DOWN_EXPS] -> GPU_1070TI.DATA_PLANE 128MB;
+FENCE GPU_1070TI.METAPAGE == 12;
+
+// Barrier before compute
+SYNC L3;
+
+// Signal compute start
+SIGNAL 100;
+
+// Wait for compute completion
+FENCE GPU_1070TI.METAPAGE == 200;
+
+// Thermal check between layers
+SENSE GPU_1070TI.THERMAL AS layer_temp;
+
+// Continue to next layer...
+// (Repeat for all 40 layers)
+
+// Final barrier
+SYNC L3;
+
+// Signal inference complete
+SIGNAL 999;

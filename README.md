@@ -83,9 +83,9 @@ CUDA_VISIBLE_DEVICES=0 /mnt/data/ai/llama.cpp/bin/llama-server \
     -m /mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf \
     -ngl 20 \
     -ot ".*exps.*=CPU" \
-    --port 5002
+    --port 8279
 
-curl http://localhost:5002/v1/chat/completions \
+  curl http://localhost:8279/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":30}'
 ```

@@ -10,7 +10,7 @@ mkdir -p $TMPDIR
 
 MODEL_PATH="/mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
 LLAMA_SERVER="/mnt/data/ai/llama.cpp/bin/llama-server"
-LLAMA_PORT=5002
+LLAMA_PORT=8279
 VITRIOL_PORT=5010
 
 echo "=== VITRIOL Stack Launch (Optimized) ==="

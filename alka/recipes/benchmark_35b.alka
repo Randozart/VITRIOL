@@ -1,0 +1,69 @@
+// Alka Recipe: Benchmark Qwen3.6-35B-A3B on VITRIOL Rig
+// Purpose: Instrument baseline inference, measure tok/s, profile bottlenecks
+//
+// This Recipe describes the benchmark workflow. When the kernel module
+// (Athanor) is ready, this compiles to Metrod packets that execute
+// directly on hardware. Until then, it runs via the mock executor.
+
+REQUIRE vitriol_rig.alkavl;
+
+// Claim the compute device
+CLAIM GPU_1070TI;
+CLAIM NVME_SSD;
+
+// Set thermal guard — hard abort at 85C
+LIMIT GPU_1070TI THERMAL MAX 85000;
+
+// Prime the expert ring buffer
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+
+// Load base model (embeddings + attention layers = 775MB)
+// This is what -ngl 20 puts on GPU
+FLOW NVME_SSD[MODEL_WEIGHTS] -> GPU_1070TI.VRAM 775MB;
+FENCE GPU_1070TI.METAPAGE == 1;
+
+// Memory barrier before inference
+SYNC L3;
+
+// Start benchmark — WATCH monitors throughput every 1000ms
+WATCH GPU_1070TI.THROUGHPUT 1000ms;
+
+// Main inference loop (unrolled for clarity)
+// In practice, the expert streaming happens per-token:
+//   1. Router selects 8 of 256 experts
+//   2. Load experts via FLOW
+//   3. Compute
+//   4. Repeat
+
+// Token 1: Load expert set A
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+FLOW NVME_SSD[EXPERT_SET_A] -> GPU_1070TI.EXPERT_RING 128MB;
+FENCE GPU_1070TI.METAPAGE == 2;
+SIGNAL 1;
+
+// Token 2: Load expert set B while computing A
+SHIFT GPU_1070TI.DATA_PLANE @ 128MB;
+FLOW NVME_SSD[EXPERT_SET_B] -> GPU_1070TI.EXPERT_RING 128MB;
+FENCE GPU_1070TI.METAPAGE == 3;
+SIGNAL 2;
+
+// Token 3: Load expert set C
+SHIFT GPU_1070TI.DATA_PLANE @ 0;
+FLOW NVME_SSD[EXPERT_SET_C] -> GPU_1070TI.EXPERT_RING 128MB;
+FENCE GPU_1070TI.METAPAGE == 4;
+SIGNAL 3;
+
+// Stop benchmark
+WATCH GPU_1070TI.THROUGHPUT 0;
+
+// Dump performance profile
+TRACE GPU_1070TI.PERF_COUNTERS;
+
+// Thermal check
+SENSE GPU_1070TI.THERMAL AS peak_temp;
+
+// Signal completion
+SIGNAL 99;
+
+// Memory barrier
+SYNC L3;

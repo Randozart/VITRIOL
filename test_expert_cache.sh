@@ -19,7 +19,7 @@ CUDA_VISIBLE_DEVICES=0 /mnt/data/ai/llama.cpp/bin/llama-server \
     -m /mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf \
     -ngl 20 \
     -ot ".*exps.*=CPU" \
-    --port 5002 \
+    --port 8279 \
     --no-mmap \
     2>&1 | head -50 &
 
@@ -27,11 +27,9 @@ CUDA_VISIBLE_DEVICES=0 /mnt/data/ai/llama.cpp/bin/llama-server \
 sleep 60
 
 # Check if server started
-if curl -s http://localhost:5002/health > /dev/null 2>&1; then
-    echo "Server started! Testing inference..."
-    
-    # Run inference test
-    RESULT=$(curl -s http://localhost:5002/v1/chat/completions \
+if curl -s http://localhost:8279/health > /dev/null 2>&1; then
+
+    RESULT=$(curl -s http://localhost:8279/v1/chat/completions \
         -H "Content-Type: application/json" \
         -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":30}')
     

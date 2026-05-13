@@ -43,7 +43,7 @@
 ## Current Architecture
 
 ```
-OpenCode → llama-server (port 5002)
+OpenCode → llama-server (port 8279)
                  ↓
           ggml-cuda.cu (line 682)
                  ↓
@@ -112,7 +112,7 @@ chmod +x launch_vitriol_v2.sh
 ./launch_vitriol_v2.sh
 
 # Test inference
-curl http://localhost:5002/v1/chat/completions \
+curl http://localhost:8279/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":20}'
 ```

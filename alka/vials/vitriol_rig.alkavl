@@ -1,0 +1,89 @@
+// The Vial: VITRIOL Hardware Rig
+// GTX 1070 Ti (8GB) + GTX 960 (2GB) + NVMe SSD
+// Physical constraints that Alka must obey
+
+Vessel GPU_1070TI {
+    PCI_ID: 10de:1b82;
+    NAME: "GTX 1070 Ti";
+    BDF: 0000:01:00.0;
+
+    Aperture DATA_PLANE {
+        BAR: 1;
+        MAX_WINDOW: 256MB;
+        TYPE: Prefetchable;
+    }
+
+    Aperture CTRL_PLANE {
+        BAR: 0;
+        SIZE: 16MB;
+        TYPE: NonPrefetchable;
+    }
+
+    Thermal SENSOR_0 {
+        HALT_AT: 85C;
+        THROTTLE_AT: 80C;
+        POLL: nvidia-smi;
+    }
+
+    Memory VRAM {
+        TOTAL: 8GB;
+        RESERVED: 775MB;
+    }
+
+    AFFORDANCE: DMA_MASTER;
+    AFFORDANCE: P2P_TUNNEL;
+}
+
+Vessel GPU_960 {
+    PCI_ID: 10de:1401;
+    NAME: "GTX 960";
+    BDF: 0000:02:00.0;
+
+    Aperture DATA_PLANE {
+        BAR: 1;
+        MAX_WINDOW: 256MB;
+        TYPE: Prefetchable;
+    }
+
+    Aperture CTRL_PLANE {
+        BAR: 0;
+        SIZE: 16MB;
+        TYPE: NonPrefetchable;
+    }
+
+    Thermal SENSOR_0 {
+        HALT_AT: 98C;
+        THROTTLE_AT: 90C;
+    }
+
+    Memory VRAM {
+        TOTAL: 2GB;
+        RESERVED: 256MB;
+    }
+
+    AFFORDANCE: SPECULATIVE_DRAFT;
+}
+
+Vessel NVME_SSD {
+    PCI_ID: 126f:2263;
+    NAME: "NVMe SSD";
+    BLOCK_DEVICE: /dev/nvme0n1;
+    MOUNT_POINT: /mnt/data/ai;
+    DMA_CAPABLE: true;
+    DMA_MAX_BURST: 4096;
+
+    BLOCK_DEVICE MODEL_WEIGHTS {
+        PATH: /mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf;
+        SIZE: 12.3GB;
+        EXPERT_OFFSET: 0x100000000;
+    }
+}
+
+Vessel SYSTEM {
+    PCIe_GEN: 3;
+    PCIe_LANES: 16;
+    IOMMU: enabled;
+    MAX_DMA_SIZE: 4GB;
+    CPU: "i7-3770";
+    RAM: 16GB;
+}

@@ -1,9 +1,17 @@
 #!/bin/bash
-# Simple baseline test - no VITRIOL environment variables
+# Simple baseline inference test for VITRIOL
 
 set -e
 
-export CUDA_VISIBLE_DEVICES=0
+# --- Configuration (overridable via environment) ---
+: "${VITRIOL_MODEL_DIR:=/mnt/data/ai/koboldcpp}"
+: "${VITRIOL_LLAMA_DIR:=/mnt/data/ai/llama.cpp}"
+
+MODEL_PATH="${VITRIOL_MODEL_DIR}/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"
+LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/bin/llama-server"
+PORT="${VITRIOL_PORT:-8279}"
+
+export CUDA_VISIBLE_DEVICES="${VITRIOL_GPU:-0}"
 
 MODEL_PATH="/mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"
 LLAMA_SERVER="/mnt/data/ai/llama.cpp/bin/llama-server"

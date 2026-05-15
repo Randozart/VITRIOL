@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# benchmark_alka.sh — VITRIOL Alka Benchmark Pipeline
+# benchmark_alka.sh — VITRIOL Alka DMA Benchmark
 #
-# Benchmarks 4 configurations:
+# Benchmarks 3 configurations to answer: does Alka-informed DMA work?
 #   1. Alka base load + llama.cpp CPU experts
 #   2. Alka full load + llama.cpp all GPU
-#   3. Native llama.cpp (no Alka) + CPU experts
-#   4. Native llama.cpp (no Alka) + 9B dense model
+#   3. Native llama.cpp (no Alka) + CPU experts (control)
 #
 # Records: load times, tok/s, GPU util, VRAM, power, temp
 #
@@ -21,9 +20,16 @@ VITRIOL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 : "${VITRIOL_LLAMA_DIR:=/mnt/data/ai/llama.cpp}"
 : "${VITRIOL_ALKA_BIN:=$VITRIOL_ROOT/../alka-lang/zig-out/bin/alka}"
 
+# Find llama-server (could be in build/bin or bin)
+if [ -f "${VITRIOL_LLAMA_DIR}/build/bin/llama-server" ]; then
+    LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/build/bin/llama-server"
+elif [ -f "${VITRIOL_LLAMA_DIR}/bin/llama-server" ]; then
+    LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/bin/llama-server"
+else
+    LLAMA_SERVER=""
+fi
+
 MODEL_35B="${VITRIOL_MODEL_DIR}/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"
-MODEL_9B="${VITRIOL_MODEL_DIR}/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
-LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/build/bin/llama-server"
 GENERATOR="$VITRIOL_ROOT/scripts/generate-alka-recipe.sh"
 EXECUTOR="$VITRIOL_ROOT/alka-executor/alka-executor"
 MODULE="$VITRIOL_ROOT/vitriol-daemon/vitriol.ko"
@@ -123,7 +129,6 @@ log "========================================"
 log "VITRIOL Alka Benchmark Suite"
 log "========================================"
 log "35B Model: $MODEL_35B"
-log "9B Model:  $MODEL_9B"
 log "Results:   $RESULTS_DIR"
 log ""
 
@@ -155,7 +160,10 @@ if [ "$SKIP_MODULE" -eq 0 ]; then
     fi
 
     log "Loading module: $MODULE"
-    sudo insmod "$MODULE" 2>&1 | tee "$RESULTS_DIR/module_load.log"
+    if ! sudo insmod "$MODULE" 2>&1 | tee "$RESULTS_DIR/module_load.log"; then
+        log "ERROR: Failed to load module. Run manually: sudo insmod $MODULE"
+        exit 1
+    fi
     sleep 1
 
     if [ ! -e /dev/vitriol ]; then
@@ -351,55 +359,6 @@ fi
 pkill -f "llama-server.*$PORT" 2>/dev/null || true
 sleep 3
 log ""
-
-# ── Run 4: Native llama.cpp + 9B dense ───────────────────────────
-
-log "=== Run 4: Native llama.cpp + 9B dense (baseline) ==="
-
-if [ ! -f "$MODEL_9B" ]; then
-    log "WARNING: 9B model not found, skipping run 4"
-else
-    gpu_snapshot "pre_run4"
-
-    LLAMA_START=$(date +%s%N)
-    CUDA_VISIBLE_DEVICES=0 "$LLAMA_SERVER" \
-        -m "$MODEL_9B" \
-        -ngl 25 \
-        --port $PORT \
-        --no-mmap \
-        -c 4096 \
-        > "$RESULTS_DIR/run4_llama.log" 2>&1 &
-    LLAMA_PID=$!
-
-    if wait_for_server $PORT 120; then
-        LLAMA_END=$(date +%s%N)
-        LLAMA_LOAD_S=$(echo "scale=3; ($LLAMA_END - $LLAMA_START) / 1000000000" | bc)
-        log "llama.cpp load time: ${LLAMA_LOAD_S}s"
-    else
-        log "ERROR: Server did not start within 120s"
-        LLAMA_LOAD_S="timeout"
-        kill $LLAMA_PID 2>/dev/null || true
-        sleep 2
-    fi
-
-    if [ "$LLAMA_LOAD_S" != "timeout" ]; then
-        gpu_snapshot "during_run4"
-        GPU4=$(gpu_json "during_run4")
-
-        TPS=$(run_inference_benchmark $PORT "Explain quantum computing in 3 sentences" 50 "$RESULTS_DIR/run4_inference.json")
-        log "Inference: ${TPS} tok/s"
-
-        INF_DATA=$(cat "$RESULTS_DIR/run4_inference.json")
-        INF_S=$(echo "$INF_DATA" | grep -o '"elapsed_s":[0-9.]*' | cut -d: -f2)
-        TOKENS=$(echo "$INF_DATA" | grep -o '"completion_tokens":[0-9]*' | cut -d: -f2)
-
-        echo "4,native+9b_dense,0,$LLAMA_LOAD_S,$INF_S,$TOKENS,$TPS,$(echo "$GPU4" | grep -o '"gpu_util_pct":[0-9.]*' | cut -d: -f2),$(echo "$GPU4" | grep -o '"vram_used_mb":[0-9.]*' | cut -d: -f2),$(echo "$GPU4" | grep -o '"power_w":[0-9.]*' | cut -d: -f2),$(echo "$GPU4" | grep -o '"temp_c":[0-9.]*' | cut -d: -f2)" >> "$RESULTS_CSV"
-    fi
-
-    pkill -f "llama-server.*$PORT" 2>/dev/null || true
-    sleep 3
-    log ""
-fi
 
 # ── Summary ───────────────────────────────────────────────────────
 

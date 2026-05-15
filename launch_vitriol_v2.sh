@@ -4,13 +4,17 @@
 
 set -e
 
-# Configuration
-export TMPDIR=/mnt/data/ai/tmp
-mkdir -p $TMPDIR
+# --- Configuration (overridable via environment) ---
+: "${VITRIOL_LLAMA_DIR:=/mnt/data/ai/llama.cpp}"
+: "${VITRIOL_MODEL_DIR:=/mnt/data/ai/koboldcpp}"
+: "${VITRIOL_TMP_DIR:=/mnt/data/ai/tmp}"
 
-MODEL_PATH="/mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
-LLAMA_SERVER="/mnt/data/ai/llama.cpp/bin/llama-server"
-LLAMA_PORT=8279
+export TMPDIR="$VITRIOL_TMP_DIR"
+mkdir -p "$TMPDIR"
+
+MODEL_PATH="${VITRIOL_MODEL_DIR}/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/bin/llama-server"
+LLAMA_PORT="${VITRIOL_PORT:-8279}"
 VITRIOL_PORT=5010
 
 echo "=== VITRIOL Stack Launch (Optimized) ==="

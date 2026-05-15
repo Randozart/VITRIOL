@@ -156,6 +156,29 @@ struct vitriol_bar1_read {
 #define VITRIOL_IOC_BIND_DEVICE _IOW(VITRIOL_IOC_MAGIC, 7, struct vitriol_bind_req)
 #define VITRIOL_IOC_READ_BAR1  _IOR(VITRIOL_IOC_MAGIC, 8, struct vitriol_bar1_read)
 
+/* ── BAR1 Physical Info (for userspace mmap) ──────────────────── */
+
+struct vitriol_bar1_info {
+    uint64_t phys_addr;      /* BAR1 physical address               */
+    uint64_t size;           /* BAR1 size in bytes                  */
+} __attribute__((packed));
+
+#define VITRIOL_IOC_GET_BAR1_PHYS _IOR(VITRIOL_IOC_MAGIC, 9, struct vitriol_bar1_info)
+
+/* ── FLOW Buffer Readback ──────────────────────────────────────── */
+
+struct vitriol_flow_buf {
+    uint64_t buf;            /* Userspace destination buffer         */
+    uint64_t size;           /* Max bytes to read                   */
+} __attribute__((packed));
+
+#define VITRIOL_IOC_GET_FLOW_BUF _IOR(VITRIOL_IOC_MAGIC, 10, struct vitriol_flow_buf)
+
+/* ── Legacy IOCTL (for MAP_BAR after unbind) ─────────────────── */
+
+#define VITRIOL_IOC_MAGIC_LEGACY 'V'
+#define VITRIOL_IOC_MAP_BAR      _IO(VITRIOL_IOC_MAGIC_LEGACY, 0)
+
 /* ── CRC32 Utility (Alka ROL-XOR algorithm) ────────────────────── */
 
 static inline uint32_t compute_drop_crc(const struct vitriol_drop *drop)

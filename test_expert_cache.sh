@@ -3,6 +3,16 @@
 
 set -e
 
+# --- Configuration (overridable via environment) ---
+: "${VITRIOL_MODEL_DIR:=/mnt/data/ai/koboldcpp}"
+: "${VITRIOL_LLAMA_DIR:=/mnt/data/ai/llama.cpp}"
+
+MODEL_PATH="${VITRIOL_MODEL_DIR}/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"
+LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/bin/llama-server"
+PORT="${VITRIOL_PORT:-8279}"
+
+export CUDA_VISIBLE_DEVICES="${VITRIOL_GPU:-0}"
+
 echo "=== VITRIOL Expert Cache Test ==="
 
 # Kill any existing server

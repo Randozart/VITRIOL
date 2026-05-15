@@ -4,12 +4,16 @@
 
 set -e
 
-MODEL_PATH="/mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
-LLAMA_SERVER="/mnt/data/ai/llama.cpp/bin/llama-server"
+# --- Configuration (overridable via environment) ---
+: "${VITRIOL_MODEL_DIR:=/mnt/data/ai/koboldcpp}"
+: "${VITRIOL_LLAMA_DIR:=/mnt/data/ai/llama.cpp}"
+
+MODEL_PATH="${VITRIOL_MODEL_DIR}/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/bin/llama-server"
 PORT_BASE=5000
 
-# Only use GTX 1070 Ti (device 0), ignore GTX 960
-export CUDA_VISIBLE_DEVICES=0
+# Only use primary GPU (override with VITRIOL_GPU)
+export CUDA_VISIBLE_DEVICES="${VITRIOL_GPU:-0}"
 
 echo "=== VITRIOL Benchmark Suite ==="
 echo "Model: $MODEL_PATH"

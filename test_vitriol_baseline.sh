@@ -4,12 +4,15 @@
 
 set -e
 
-MODEL_PATH="/mnt/data/ai/koboldcpp/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
-LLAMA_SERVER="/mnt/data/ai/llama.cpp/bin/llama-server"
-PORT=5003
+# --- Configuration (overridable via environment) ---
+: "${VITRIOL_MODEL_DIR:=/mnt/data/ai/koboldcpp}"
+: "${VITRIOL_LLAMA_DIR:=/mnt/data/ai/llama.cpp}"
 
-echo "=== VITRIOL Baseline Test ==="
-echo "Model: $MODEL_PATH"
+MODEL_PATH="${VITRIOL_MODEL_DIR}/Qwen_Qwen3.5-9B-Q4_K_M.gguf"
+LLAMA_SERVER="${VITRIOL_LLAMA_DIR}/bin/llama-server"
+PORT="${VITRIOL_PORT:-8279}"
+
+export CUDA_VISIBLE_DEVICES="${VITRIOL_GPU:-0}"
 
 # Kill any existing processes
 pkill -f "llama-server.*$PORT" 2>/dev/null || true

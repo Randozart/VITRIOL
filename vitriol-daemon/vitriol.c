@@ -66,6 +66,13 @@ struct nvidia_p2p_page_table {
 #define BAR_1_SIZE 0x10000000  /* 256MB - Data Plane (VRAM Window) */
 
 /* Vessel tracking */
+static char *vitriol_devnode(const struct device *dev, umode_t *mode)
+{
+    if (mode)
+        *mode = 0666;
+    return NULL;
+}
+
 #define MAX_VESSELS 8
 #define MAX_EXEC_HISTORY 64
 
@@ -84,7 +91,6 @@ static struct {
     struct pci_dev *pci_dev;
     void __iomem *bar0;       /* Control plane (read-only) */
     void __iomem *bar1;       /* Data plane (DMA target) */
-    dma_addr_t dma_handle;
     void *dma_buffer;
     size_t dma_size;
     bool mapped;
@@ -116,6 +122,13 @@ static struct {
     struct file *source_file;
     bool source_set;
 
+    /* FLOW buffer tracking (for userspace BAR1 write) */
+    __u32 last_flow_size;
+
+    /* BAR1 physical address (for userspace mmap) */
+    phys_addr_t bar1_phys;
+    size_t bar1_size;
+
     /* Fallback buffer when PCI probe doesn't run (nvidia owns GPU) */
     void *fallback_buffer;
 
@@ -140,6 +153,8 @@ static long vitriol_ioctl(struct file *filp, unsigned int cmd, unsigned long arg
 static int handle_set_source(struct vitriol_source __user *arg);
 static ssize_t read_source_file(loff_t offset, void *buf, size_t count);
 
+static int vitriol_mmap(struct file *filp, struct vm_area_struct *vma);
+
 static const struct file_operations vitriol_fops = {
     .owner          = THIS_MODULE,
     .open           = vitriol_open,
@@ -147,6 +162,7 @@ static const struct file_operations vitriol_fops = {
     .read           = vitriol_read,
     .write          = vitriol_write,
     .unlocked_ioctl = vitriol_ioctl,
+    .mmap           = vitriol_mmap,
 };
 
 /* Legacy DMA Transfer Request Structure */
@@ -326,6 +342,7 @@ static int handle_flow(const struct vitriol_drop *drop)
             size = vitriol_state.dma_size;
         memset(vitriol_state.dma_buffer, 0, size);
         memcpy_toio(vitriol_state.bar1 + dst, vitriol_state.dma_buffer, size);
+        wmb();
         return 0;
     }
 
@@ -359,11 +376,21 @@ static int handle_flow(const struct vitriol_drop *drop)
         if (vitriol_state.bar1) {
             memcpy_toio(vitriol_state.bar1 + dst + total_transferred,
                         read_buf, nread);
+            wmb();
         }
         total_transferred += nread;
     }
 
-    pr_info("VITRIOL: FLOW transferred %u/%u bytes\n", total_transferred, size);
+    vitriol_state.last_flow_size = total_transferred;
+    pr_info("VITRIOL: FLOW transferred %u/%u bytes (buffer ready for userspace)\n", total_transferred, size);
+
+    if (vitriol_state.bar1 && total_transferred > 0) {
+        __u32 verify_buf[4];
+        memcpy_fromio(verify_buf, vitriol_state.bar1 + dst, min(16u, total_transferred));
+        pr_info("VITRIOL: FLOW readback [0]=0x%08x [1]=0x%08x [2]=0x%08x [3]=0x%08x\n",
+                verify_buf[0], verify_buf[1], verify_buf[2], verify_buf[3]);
+    }
+
     return 0;
 }
 
@@ -543,129 +570,93 @@ static void execute_rollback(void)
     }
 }
 
-/* ── PCI Probe / Remove ────────────────────────────────────────── */
+/* ── GPU Acquisition (side-load alongside nvidia) ─────────────── */
 
-static int vitriol_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int vitriol_acquire_gpu(void)
 {
-    int ret;
+    struct pci_dev *pdev;
 
-    pr_info("VITRIOL: Probing GPU device %04x:%04x\n",
-            id->vendor, id->device);
-
-    ret = pci_enable_device(dev);
-    if (ret < 0) {
-        pr_err("VITRIOL: Failed to enable PCI device\n");
-        return ret;
-    }
-
-    ret = pci_request_region(dev, 0, "vitriol_bar0");
-    if (ret < 0) {
-        pr_err("VITRIOL: Failed to request BAR 0\n");
-        goto err_disable;
-    }
-
-    ret = pci_request_region(dev, 1, "vitriol_bar1");
-    if (ret < 0) {
-        pr_err("VITRIOL: Failed to request BAR 1\n");
-        goto err_bar0;
-    }
-
-    vitriol_state.bar0 = pci_iomap(dev, 0, BAR_0_SIZE);
-    if (!vitriol_state.bar0) {
-        pr_err("VITRIOL: Failed to map BAR 0\n");
-        goto err_bar1;
-    }
-    pr_info("VITRIOL: BAR 0 (Control) mapped at %px\n", vitriol_state.bar0);
-
-    vitriol_state.bar1 = pci_iomap_wc(dev, 1, BAR_1_SIZE);
-    if (!vitriol_state.bar1) {
-        pr_err("VITRIOL: Failed to map BAR 1\n");
-        goto err_bar0_unmap;
-    }
-    pr_info("VITRIOL: BAR 1 (Data) mapped at %px (256MB VRAM window) [WC]\n",
-            vitriol_state.bar1);
-
-    ret = dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(64));
-    if (ret < 0) {
-        pr_warn("VITRIOL: 64-bit DMA not available, trying 32-bit\n");
-        ret = dma_set_mask_and_coherent(&dev->dev, DMA_BIT_MASK(32));
-        if (ret < 0) {
-            pr_err("VITRIOL: DMA not available\n");
-            goto err_bar1_unmap;
+    pdev = pci_get_device(NVIDIA_VENDOR, GPU_DEVICE_960, NULL);
+    if (!pdev) {
+        pdev = pci_get_device(NVIDIA_VENDOR, GPU_DEVICE_1070TI, NULL);
+        if (!pdev) {
+            pr_err("VITRIOL: No supported GPU found\n");
+            return -ENODEV;
         }
     }
 
-    vitriol_state.dma_size = 1024 * 1024;
-    vitriol_state.dma_buffer = dma_alloc_coherent(&dev->dev,
-                                                   vitriol_state.dma_size,
-                                                   &vitriol_state.dma_handle,
-                                                   GFP_KERNEL);
-    if (!vitriol_state.dma_buffer) {
-        pr_err("VITRIOL: Failed to allocate DMA buffer\n");
-        ret = -ENOMEM;
-        goto err_bar1_unmap;
-    }
-    pr_info("VITRIOL: DMA buffer allocated at %pad (size: %zu)\n",
-            &vitriol_state.dma_handle, vitriol_state.dma_size);
+    pr_info("VITRIOL: Found GPU %04x:%04x\n",
+            pdev->vendor, pdev->device);
 
-    vitriol_state.pci_dev = dev;
+    vitriol_state.bar0 = pci_iomap(pdev, 0, BAR_0_SIZE);
+    if (!vitriol_state.bar0) {
+        pr_err("VITRIOL: Failed to map BAR 0\n");
+        pci_dev_put(pdev);
+        return -ENOMEM;
+    }
+    pr_info("VITRIOL: BAR 0 (Control) mapped at %px\n", vitriol_state.bar0);
+
+    /* Store BAR1 physical address for userspace mmap (kernel ioremap conflicts with nvidia) */
+    vitriol_state.bar1_phys = pci_resource_start(pdev, 1);
+    vitriol_state.bar1_size = BAR_1_SIZE;
+    vitriol_state.bar1 = NULL;
+    pr_info("VITRIOL: BAR 1 (Data) phys=0x%llx size=%zu (userspace mmap)\n",
+            (unsigned long long)vitriol_state.bar1_phys, vitriol_state.bar1_size);
+
+    vitriol_state.pci_dev = pdev;
     vitriol_state.mapped = true;
 
-    /* Auto-claim GPU_MAIN vessel */
     claim_vessel(0x0001, "GPU_MAIN");
 
-    pr_info("VITRIOL: GPU configured successfully\n");
+    pr_info("VITRIOL: GPU acquired successfully (side-load)\n");
     return 0;
-
-err_bar1_unmap:
-    pci_iounmap(dev, vitriol_state.bar1);
-err_bar0_unmap:
-    pci_iounmap(dev, vitriol_state.bar0);
-err_bar1:
-    pci_release_region(dev, 1);
-err_bar0:
-    pci_release_region(dev, 0);
-err_disable:
-    pci_disable_device(dev);
-    return ret;
 }
 
-static void vitriol_pci_remove(struct pci_dev *dev)
+static int vitriol_map_bar1(void)
 {
+    struct pci_dev *pdev = vitriol_state.pci_dev;
+    if (!pdev)
+        return -ENODEV;
+    if (vitriol_state.bar1)
+        return 0;
+
+    vitriol_state.bar1 = pci_iomap_wc(pdev, 1, BAR_1_SIZE);
+    if (!vitriol_state.bar1) {
+        pr_warn("VITRIOL: BAR1 WC failed, trying UC\n");
+        vitriol_state.bar1 = pci_iomap(pdev, 1, BAR_1_SIZE);
+    }
+    if (!vitriol_state.bar1) {
+        pr_err("VITRIOL: Failed to map BAR1 (nvidia still owns device?)\n");
+        return -EBUSY;
+    }
+    pr_info("VITRIOL: BAR1 mapped at %px\n", vitriol_state.bar1);
+    return 0;
+}
+
+static void vitriol_release_gpu(void)
+{
+    if (!vitriol_state.mapped || !vitriol_state.pci_dev)
+        return;
+
     if (vitriol_state.source_file) {
         filp_close(vitriol_state.source_file, NULL);
         vitriol_state.source_file = NULL;
         vitriol_state.source_set = false;
     }
-    if (vitriol_state.mapped) {
-        if (vitriol_state.dma_buffer)
-            dma_free_coherent(&dev->dev, vitriol_state.dma_size,
-                             vitriol_state.dma_buffer, vitriol_state.dma_handle);
-        if (vitriol_state.bar1)
-            pci_iounmap(dev, vitriol_state.bar1);
-        if (vitriol_state.bar0)
-            pci_iounmap(dev, vitriol_state.bar0);
-        pci_release_region(dev, 1);
-        pci_release_region(dev, 0);
-        pci_disable_device(dev);
-        vitriol_state.mapped = false;
-    }
-    pr_info("VITRIOL: GPU device removed\n");
+
+    if (vitriol_state.bar1)
+        pci_iounmap(vitriol_state.pci_dev, vitriol_state.bar1);
+    if (vitriol_state.bar0)
+        pci_iounmap(vitriol_state.pci_dev, vitriol_state.bar0);
+
+    pci_dev_put(vitriol_state.pci_dev);
+    vitriol_state.pci_dev = NULL;
+    vitriol_state.bar0 = NULL;
+    vitriol_state.bar1 = NULL;
+    vitriol_state.mapped = false;
+
+    pr_info("VITRIOL: GPU released\n");
 }
-
-static const struct pci_device_id vitriol_pci_table[] = {
-    { 0x10de, 0x1b82, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
-    { 0x10de, 0x1401, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
-    { 0, }
-};
-MODULE_DEVICE_TABLE(pci, vitriol_pci_table);
-
-static struct pci_driver vitriol_pci_driver = {
-    .name     = "vitriol",
-    .id_table = vitriol_pci_table,
-    .probe    = vitriol_pci_probe,
-    .remove   = vitriol_pci_remove,
-};
 
 /* ── File Operations ───────────────────────────────────────────── */
 
@@ -690,6 +681,33 @@ static ssize_t vitriol_read(struct file *filp, char __user *buf,
                             size_t count, loff_t *ppos)
 {
     pr_info("VITRIOL: Read request (count=%zu)\n", count);
+    return 0;
+}
+
+static int vitriol_mmap(struct file *filp, struct vm_area_struct *vma)
+{
+    unsigned long size = vma->vm_end - vma->vm_start;
+    unsigned long pfn = vitriol_state.bar1_phys >> PAGE_SHIFT;
+    int ret;
+
+    if (size > vitriol_state.bar1_size)
+        return -EINVAL;
+
+    /* Try write-combining first, fall back to uncached */
+    vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
+    ret = io_remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+    if (ret) {
+        pr_warn("VITRIOL: mmap WC failed (%d), trying UC\n", ret);
+        vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+        ret = io_remap_pfn_range(vma, vma->vm_start, pfn, size, vma->vm_page_prot);
+    }
+    if (ret) {
+        pr_err("VITRIOL: mmap BAR1 failed: %d\n", ret);
+        return ret;
+    }
+
+    pr_info("VITRIOL: mmap BAR1 at phys=0x%llx size=%lu\n",
+            (unsigned long long)vitriol_state.bar1_phys, size);
     return 0;
 }
 
@@ -896,13 +914,52 @@ stream_done:
             break;
         }
 
+        case VITRIOL_IOC_GET_BAR1_PHYS: {
+            struct vitriol_bar1_info info;
+            info.phys_addr = vitriol_state.bar1_phys;
+            info.size = vitriol_state.bar1_size;
+            if (copy_to_user((void __user *)arg, &info, sizeof(info))) {
+                ret = -EFAULT;
+                break;
+            }
+            pr_info("VITRIOL: GET_BAR1_PHYS phys=0x%llx size=%llu\n",
+                    (unsigned long long)info.phys_addr,
+                    (unsigned long long)info.size);
+            ret = 0;
+            break;
+        }
+
+        case VITRIOL_IOC_GET_FLOW_BUF: {
+            struct vitriol_flow_buf req;
+            if (copy_from_user(&req, (void __user *)arg, sizeof(req))) {
+                ret = -EFAULT;
+                break;
+            }
+            void *read_buf = vitriol_state.dma_buffer ?: vitriol_state.fallback_buffer;
+            if (!read_buf || vitriol_state.last_flow_size == 0) {
+                pr_err("VITRIOL: GET_FLOW_BUF no data available\n");
+                ret = -ENODATA;
+                break;
+            }
+            __u32 chunk = vitriol_state.last_flow_size;
+            if (chunk > req.size)
+                chunk = req.size;
+            if (copy_to_user((void __user *)(unsigned long)req.buf, read_buf, chunk)) {
+                ret = -EFAULT;
+                break;
+            }
+            pr_info("VITRIOL: GET_FLOW_BUF returned %u bytes\n", chunk);
+            ret = 0;
+            break;
+        }
+
         default:
             ret = -ENOTTY;
         }
         return ret;
     }
 
-    /* Legacy 'V' magic IOCTLs */
+    /* ── Legacy IOCTL Commands ── */
     switch (cmd) {
     case VITRIOL_IOC_GET_BAR_ADDR:
         if (copy_to_user((__u64 __user *)arg,
@@ -916,12 +973,14 @@ stream_done:
         break;
 
     case VITRIOL_IOC_MAP_BAR:
-        if (vitriol_state.mapped) {
-            pr_warn("VITRIOL: BARs already mapped\n");
-            ret = -EBUSY;
+        if (!vitriol_state.mapped) {
+            pr_warn("VITRIOL: No GPU acquired\n");
+            ret = -ENODEV;
+        } else if (vitriol_state.bar1) {
+            pr_info("VITRIOL: BAR1 already mapped\n");
+            ret = 0;
         } else {
-            pr_info("VITRIOL: MAP_BAR requested (use PCI probe instead)\n");
-            ret = -ENOSYS;
+            ret = vitriol_map_bar1();
         }
         break;
 
@@ -1118,6 +1177,7 @@ static int __init vitriol_init(void)
         ret = PTR_ERR(vitriol_state.class);
         goto err_class;
     }
+    vitriol_state.class->devnode = vitriol_devnode;
 
     vitriol_state.device = device_create(vitriol_state.class, NULL,
                                           vitriol_state.dev_num, NULL,
@@ -1128,9 +1188,9 @@ static int __init vitriol_init(void)
         goto err_device;
     }
 
-    ret = pci_register_driver(&vitriol_pci_driver);
+    ret = vitriol_acquire_gpu();
     if (ret < 0) {
-        pr_err("VITRIOL: Failed to register PCI driver\n");
+        pr_err("VITRIOL: Failed to acquire GPU\n");
         goto err_pci;
     }
 
@@ -1165,7 +1225,7 @@ static void __exit vitriol_exit(void)
         vitriol_state.fallback_buffer = NULL;
     }
 
-    pci_unregister_driver(&vitriol_pci_driver);
+    vitriol_release_gpu();
     device_destroy(vitriol_state.class, vitriol_state.dev_num);
     class_destroy(vitriol_state.class);
     cdev_del(&vitriol_state.vitriol_cdev);

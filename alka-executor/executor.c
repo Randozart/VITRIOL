@@ -28,12 +28,103 @@
 #include <getopt.h>
 #include <signal.h>
 #include <sys/types.h>
+#include <sys/mman.h>
 
 #include "vitriol_alka_user.h"
 
 #define DEVICE_PATH "/dev/vitriol"
 #define MAX_VESSELS 16
 #define MAX_LINES 256
+
+/* ── BAR1 mmap (userspace BAR1 write path) ────────────────────── */
+
+static void *bar1_map = NULL;
+static uint64_t bar1_map_size = 0;
+
+static int setup_bar1_mmap(int fd)
+{
+    struct vitriol_bar1_info info;
+    if (ioctl(fd, VITRIOL_IOC_GET_BAR1_PHYS, &info) != 0) {
+        fprintf(stderr, "Warning: BAR1 mmap unavailable (GET_BAR1_PHYS failed)\n");
+        return -1;
+    }
+    if (info.phys_addr == 0 || info.size == 0) {
+        fprintf(stderr, "Warning: BAR1 not available (phys=0, size=0)\n");
+        return -1;
+    }
+    /* mmap /dev/mem directly (bypasses vitriol module mmap handler) */
+    int mem_fd = open("/dev/mem", O_RDWR | O_SYNC);
+    if (mem_fd < 0) {
+        fprintf(stderr, "Warning: Cannot open /dev/mem: %s\n", strerror(errno));
+        return -1;
+    }
+    bar1_map_size = info.size;
+    bar1_map = mmap(NULL, bar1_map_size, PROT_READ | PROT_WRITE,
+                    MAP_SHARED, mem_fd, (off_t)info.phys_addr);
+    close(mem_fd);
+    if (bar1_map == MAP_FAILED) {
+        fprintf(stderr, "Warning: BAR1 /dev/mem mmap failed: %s\n", strerror(errno));
+        bar1_map = NULL;
+        return -1;
+    }
+    printf("BAR1 mmap: phys=0x%llx size=%llu at %p\n",
+           (unsigned long long)info.phys_addr,
+           (unsigned long long)info.size, bar1_map);
+    return 0;
+}
+
+static void teardown_bar1_mmap(void)
+{
+    if (bar1_map) {
+        munmap(bar1_map, bar1_map_size);
+        bar1_map = NULL;
+    }
+}
+
+static int write_flow_to_bar1(int fd, const struct vitriol_drop *drop)
+{
+    if (!bar1_map)
+        return 0;
+
+    uint32_t size = drop->size;
+    if (size == 0 || size > 64 * 1024 * 1024)
+        return 0;
+
+    /* Allocate user buffer and read FLOW data from kernel */
+    uint8_t *buf = malloc(size);
+    if (!buf) {
+        fprintf(stderr, "Error: OOM for FLOW buffer (%u bytes)\n", size);
+        return -1;
+    }
+
+    struct vitriol_flow_buf req;
+    req.buf = (uint64_t)(unsigned long)buf;
+    req.size = size;
+    if (ioctl(fd, VITRIOL_IOC_GET_FLOW_BUF, &req) != 0) {
+        fprintf(stderr, "  FLOW buffer readback failed: %s\n", strerror(errno));
+        free(buf);
+        return -1;
+    }
+
+    /* Write to mmap'd BAR1 at drop's destination offset */
+    uint64_t bar1_off = drop->dst_addr;
+    if (bar1_off + size > bar1_map_size) {
+        fprintf(stderr, "  FLOW offset %llu + %u exceeds BAR1 size %llu\n",
+                (unsigned long long)bar1_off, size,
+                (unsigned long long)bar1_map_size);
+        free(buf);
+        return -1;
+    }
+
+    memcpy((uint8_t *)bar1_map + bar1_off, buf, size);
+    __sync_synchronize();
+
+    printf("  [FLOW] %u bytes written to BAR1 offset 0x%llx\n",
+           size, (unsigned long long)bar1_off);
+
+    free(buf);
+    return 0;
+}
 
 /* ── Vial Parser ───────────────────────────────────────────────── */
 
@@ -485,6 +576,10 @@ static int execute_stream(int fd, struct vitriol_drop *drops, uint32_t count,
             return -1;
         }
 
+        /* After FLOW: copy kernel buffer to mmap'd BAR1 */
+        if (drop->op_code == OP_FLOW)
+            write_flow_to_bar1(fd, drop);
+
         printf("OK\n");
         total_bytes += drop->size;
     }
@@ -851,6 +946,7 @@ int main(int argc, char *argv[])
     const char *device_path = DEVICE_PATH;
     int dry_run = 0;
     int cooperative = 0;
+    int map_bar = 0;
     int verbose = 0;
 
     static struct option long_options[] = {
@@ -864,12 +960,13 @@ int main(int argc, char *argv[])
         {"va-space-token", required_argument, 0, 'S'},
         {"device",         required_argument, 0, 'D'},
         {"verbose",        no_argument,       0, 'v'},
+        {"map-bar",        no_argument,       0, 'm'},
         {"help",           no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "dr:s:b:cg:T:S:D:vh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "dr:s:b:cg:T:S:D:vmh", long_options, NULL)) != -1) {
         switch (opt) {
         case 'd': dry_run = 1; break;
         case 'r': azoth_path = optarg; break;
@@ -881,6 +978,7 @@ int main(int argc, char *argv[])
         case 'S': va_space_token_str = optarg; break;
         case 'D': device_path = optarg; break;
         case 'v': verbose = 1; break;
+        case 'm': map_bar = 1; break;
         case 'h': usage(argv[0]); return 0;
         default: usage(argv[0]); return 1;
         }
@@ -992,6 +1090,18 @@ int main(int argc, char *argv[])
                         bind_bdf);
             }
         }
+
+        /* Map BAR1 into kernel (after unbind, no PAT conflict) */
+        if (map_bar) {
+            if (ioctl(fd, VITRIOL_IOC_MAP_BAR) != 0) {
+                fprintf(stderr, "Warning: MAP_BAR failed (nvidia still owns device?)\n");
+            } else {
+                printf("BAR1 mapped in kernel\n");
+            }
+        }
+
+        /* Map BAR1 into userspace for FLOW data writes */
+        setup_bar1_mmap(fd);
     }
 
     /* Execute */
@@ -1003,6 +1113,7 @@ int main(int argc, char *argv[])
     }
 
     /* Cleanup */
+    teardown_bar1_mmap();
     if (fd >= 0) close(fd);
     free(drops);
     if (azoth) free(azoth);

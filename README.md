@@ -3,67 +3,113 @@
 <img src="assets/vitriol_logo.svg" alt="VITRIOL" width="200"/>
 
 *"Visita Interiora Terrae Rectificando Invenies Occultum Lapidem"*
-
-(Visit the Interior of the Earth, by Rectifying you will find the Hidden Stone)
-
-## What It Is
-
-VITRIOL runs large MoE language models on **VRAM-constrained consumer GPUs** by keeping expert weights in **page-locked host system RAM** instead of VRAM. The GPU reads them over PCIe DMA during MUL_MAT_ID — no kernel modules, no PCI unbinding, no display crashes.
-
-**RAM Shot:** mmap → mlock → cudaHostRegister → is_host=true. Expert weights live in system RAM, GPU reads transparently over PCIe.
-
-**LRU Cache:** A small VRAM pool (~512 MB) caches hot experts via async cuMemcpyHtoDAsync. Cache hit = native VRAM speed. Cache miss = PCIe DMA from host.
-
-| Metric | Value |
-|--------|-------|
-| Model | Qwen3.6-35B-A3B (34.66B, 256 MoE experts) |
-| GPU | GTX 1070 Ti (Pascal, 8 GB VRAM) |
-| Generation (fast path) | **6.9 tok/s** |
-| Generation (slow path) | **7.0 tok/s** |
-| VRAM saved | ~10 GB (experts stay in host RAM) |
-| System RAM used | 10 GB (page-locked, never swapped) |
-
-**Status:** ✅ Working — `vitriol run` with default config.
+*(Visit the Interior of the Earth, by Rectifying you will find the Hidden Stone)*
 
 ---
 
 ## Quick Start
 
-### Prerequisites
-
 ```bash
-# llama.cpp is a git submodule — clone with:
+# 1. Clone with submodule (llama.cpp is pinned)
 git clone --recursive https://github.com/your/vitriol.git
-# Or if already cloned:
-git submodule update --init --recursive
+# Or if already cloned: git submodule update --init --recursive
 
-# Build
-cd llama.cpp && cmake -B build -DGGML_CUDA=ON -DGGML_NATIVE=ON && cmake --build build -j$(nproc)
+# 2. Build
+cd vitriol/llama.cpp && cmake -B build -DGGML_CUDA=ON -DGGML_NATIVE=ON \
+  && cmake --build build -j$(nproc)
 
-# One-time: grant capability for mlock + cudaHostRegister
-vitriol setup
+# 3. One-time capability grant
+./vitriol setup
+
+# 4. Configure
+./vitriol config
+
+# 5. Run
+./vitriol run
 ```
 
-### Run
+---
 
-```bash
-# Interactive config (set model path, GPU, etc.)
-vitriol config
+## What Is It
 
-# Launch
-vitriol run
+VITRIOL is a **VRAM extension layer** for [llama.cpp](https://github.com/ggml-org/llama.cpp) that lets **old consumer GPUs** run modern MoE language models they have no business running.
 
-# Or one-shot with custom settings
-vitriol run -m /path/to/model.gguf -c 4096 -lru 1024 --verbose
+The problem: the best open-weight models are MoE architectures (Mixture of Experts) with 200+ expert weight matrices. A Qwen3.6-35B-A3B needs ~12 GB VRAM for weights alone. A GTX 1070 Ti has 8 GB. An RTX 3060 has 12. A GTX 960 has 2. These GPUs are in millions of machines — perfectly capable of fast matrix math, but VRAM-starved.
+
+VITRIOL's insight: MoE models only activate ~2-8 out of 256 experts per token. The expert weights don't need to live in VRAM. Keep them in **page-locked system RAM** instead — the GPU reads them over PCIe DMA on demand. The base model, attention weights, KV cache, and compute buffers stay in VRAM. Only the experts are offloaded.
+
+**Result:** 6.9 tok/s on a GTX 1070 Ti (8 GB) with a 34.66B-parameter 256-expert model. The model doesn't fit at all without VITRIOL.
+
+| Metric | Value |
+|--------|-------|
+| Model | Qwen3.6-35B-A3B (34.66B, 256 MoE experts) |
+| GPU | GTX 1070 Ti (Pascal, 8 GB VRAM) |
+| Generation | **6.9 tok/s** |
+| VRAM saved | ~10 GB (experts stay in host RAM) |
+| System RAM used | 10 GB (page-locked, never swapped) |
+| VRAM used | ~1.3 GiB (base model + KV cache + compute) |
+
+---
+
+## How It Works
+
+### The Trick: Making CUDA Think Host Memory Is Fine
+
+CUDA kernels can read from **page-locked host memory** over PCIe DMA transparently — the GPU's memory controller handles the cross-PCIe access as if it were VRAM, just slower (~12 GB/s PCIe 3.0 vs ~256 GB/s GDDR5). llama.cpp normally avoids this because it's bandwidth-inefficient. But for MoE experts — where each matmul uses only 2-8 of 256 experts per layer — the effective bandwidth needed is low enough that PCIe latency is acceptable.
+
+VITRIOL implements this through a custom **ggml backend buffer type**:
+
+```
+VITRIOL buffer type
+  │
+  ├─ 1. Allocation
+  │     mmap(10 GB anonymous)         ← reserve address space
+  │     madvise(MADV_HUGEPAGE)        ← hint for 2 MB pages (lower GPU TLB pressure)
+  │     mlock                         ← pin to RAM, prevent swapping
+  │     cudaHostRegister              ← register with CUDA for DMA access
+  │
+  ├─ 2. Model load
+  │     memcpy from GGUF file → VITRIOL buffer (one-time 10 GB copy, ~64 s)
+  │
+  └─ 3. Inference
+        Set is_host=true on the buffer type → llama.cpp scheduler routes
+        MUL_MAT_ID to CUDA backend → GPU reads expert weights over PCIe DMA
 ```
 
-### Test
+The key flag is **`is_host=true`**. When the graph scheduler sees this on a buffer type it supports (via `supports_buft`), it treats the tensor as host-resident and keeps it in system memory. The CUDA backend accesses `src0->data` directly — the GPU's DMA engine fetches the bytes over PCIe when the kernel reads from that address.
 
-```bash
-curl -X POST http://127.0.0.1:8279/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Hello"}],"max_tokens":50}'
-```
+### LRU VRAM Cache
+
+On top of the RAM Shot baseline, a small VRAM pool (~512 MB) caches frequently-used experts:
+
+- **Cache hit:** Expert weights in VRAM → native GDDR5 bandwidth matmul
+- **Cache miss:** Async `cuMemcpyHtoDAsync` from page-locked host to VRAM pool on a dedicated CUDA stream, synced via `cuStreamWaitEvent` before matmul starts
+- **Eviction:** LRU order via `std::list` + `unordered_map`. Composite key `(tensor_base_address, expert_idx)` prevents cross-layer collisions
+- **Slot sizing:** Fixed at first allocation; larger experts bypass cache and read from host
+
+### Fast Path vs Slow Path
+
+llama.cpp's `ggml_cuda_mul_mat_id` has three paths for MoE matmuls:
+
+| Path | Trigger | Expert Data Access | LRU Cache? |
+|------|---------|-------------------|------------|
+| **MMVQ** | Batch ≤ 8, quantized weights | Reads `src0->data` directly with expert bounds | No (reads host directly) |
+| **MMQ** | Large batch, quantized | Reads `src0->data` directly with expert bounds | No (reads host directly) |
+| **cuBLAS (slow path)** | Everything else | Creates per-expert tensor slices, calls `ggml_cuda_mul_mat` per slice | **Yes** — replaces `src0_slice.data` with VRAM pool pointer on cache hit |
+
+The fast paths (MMVQ/MMQ) access the entire expert weight tensor through `src0->data` using expert bounds computed on GPU. Since the tensor is in page-locked host memory, the GPU reads it over PCIe DMA per-access. The LRU cache doesn't apply here — the data is interleaved in a single buffer.
+
+The slow path (cuBLAS) slices the tensor into per-expert views. Each slice's `data` pointer is checked against the LRU cache. On hit, the pointer points to VRAM. On miss, the pointer points to host RAM and a copy is queued for next time.
+
+### Why Not Just Load Everything Into VRAM?
+
+Because it doesn't fit. Qwen3.6-35B-A3B at UD-Q2_K_XL is 11.44 GiB. The GTX 1070 Ti has 8 GiB total. Without VITRIOL, llama.cpp crashes with `cudaMalloc failed: out of memory` at `-ngl 99`.
+
+With VITRIOL:
+- Base model weights (non-expert): ~1.3 GiB in VRAM
+- Expert weights: 0 GiB in VRAM (host RAM only)
+- KV cache + compute: ~225 MiB in VRAM
+- **Total VRAM: ~1.5 GiB** — leaving 6.5 GiB free for larger context or other workloads
 
 ---
 
@@ -91,7 +137,7 @@ Run options:
   --dry-run      print config without launching
 ```
 
-Config is persisted in `~/.vitriol/config`. Precedence: CLI flag > Config > Env var > Default.
+Config persisted in `~/.vitriol/config`. Precedence: CLI flag > Config > Env var > Default.
 
 ---
 
@@ -99,38 +145,36 @@ Config is persisted in `~/.vitriol/config`. Precedence: CLI flag > Config > Env 
 
 | Mode | What it does |
 |------|-------------|
-| **stream** | **(Default)** RAM Shot + LRU VRAM cache. Expert weights in page-locked host RAM, GPU reads over PCIe DMA. Hot experts cached in a 512 MB VRAM pool for native-speed matmul on cache hit. Best perf/VRAM tradeoff. |
-| **sync** | Preloads expert data synchronously before each matmul. No LRU cache. Every expert read goes over PCIe DMA. |
-| **async** | Double-buffer prefetch on a separate CUDA stream. Hides DMA latency behind computation. |
-| **off** | VITRIOL completely inactive. Falls through to normal llama.cpp allocation (likely OOM on 8 GB GPU for a 35B model). |
-
-### LRU Cache
-
-When `mode = stream`, the LRU cache keeps hot expert weights in a small VRAM pool:
-
-- **Cache hit:** Expert accessed from VRAM → native matmul speed
-- **Cache miss:** Async `cuMemcpyHtoDAsync` from page-locked host to VRAM pool on a dedicated CUDA stream, synced via `cuStreamWaitEvent` before matmul
-- **Eviction:** LRU order (std::list + unordered_map), composite key `(tensor_base_address, expert_idx)` prevents cross-layer collisions
-- **Slot sizing:** Fixed on first allocation; larger experts bypass cache and read from host
+| **stream** | **(Default)** RAM Shot + LRU VRAM cache. Experts in page-locked host RAM. Hot experts in 512 MB VRAM pool. Best perf/VRAM tradeoff. |
+| **sync** | Preloads expert data synchronously before each matmul. No LRU cache. Every expert read over PCIe DMA. |
+| **async** | Double-buffer prefetch on separate CUDA stream. Hides DMA latency behind compute. |
+| **off** | VITRIOL inactive. Falls through to normal llama.cpp (OOM on 8 GB GPU). |
 
 ---
 
-## How It Works
+## Performance
 
-```
-VITRIOL buffer type (custom ggml_backend_buffer_type)
-  │
-  ├─ Allocation: mmap(10GB) → madvise(MADV_HUGEPAGE)
-  │              → mlock → cudaHostRegister
-  │
-  ├─ Model load: memcpy from GGUF → VITRIOL buffer (one-time copy)
-  │
-  └─ Inference:  GPU reads weights over PCIe DMA
-                 → Fast path: MMVQ/MMQ (6.9 tok/s)
-                 → Slow path: cuBLAS with LRU cache (7.0 tok/s)
-```
+| Metric | RAM Shot only | + LRU Cache |
+|--------|---------------|-------------|
+| Prompt eval (fast path) | 33.86 tok/s | 22.4 tok/s |
+| Prompt eval (slow path) | — | 14.3 tok/s |
+| Generation | **6.31 tok/s** | **6.9 tok/s** |
+| VRAM used | **1.3 GiB** | **~1.8 GiB** |
+| System RAM | +10 GiB | +10 GiB |
+| Model load | ~64 s | ~64 s |
 
-The VITRIOL buffer type (`vitriol-buffer.cpp`) allocates system RAM, page-locks it for GPU access, and reports `is_host=true` to llama.cpp's graph scheduler. The scheduler routes MUL_MAT_ID to the CUDA backend, which reads the weights transparently from host memory. No VRAM is used for expert weight storage.
+The model (11.44 GiB) does **not fit** in 8 GB VRAM without VITRIOL.
+
+---
+
+## Hardware Targets
+
+| GPU | VRAM | Status | Notes |
+|-----|------|--------|-------|
+| GTX 1070 Ti | 8 GB | ✅ Verified | PCIe 3.0 x16, 6.9 tok/s |
+| GTX 960 | 2 GB | ⚠️ Limited | CC 5.2 lacks kernel images for some ops |
+| RTX 3060 | 12 GB | ✅ Supported | More VRAM for larger KV cache |
+| RTX 4090 | 24 GB | ✅ Supported | PCIe 4.0 x16 → higher bandwidth |
 
 ---
 
@@ -142,8 +186,7 @@ The VITRIOL buffer type (`vitriol-buffer.cpp`) allocates system RAM, page-locks 
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │  Base model (1.3 GiB)  │  KV Cache  │  Compute buffers │  │
 │  │  Embeddings, Attention,│  (512 ctx) │  (sched: ~215 MB)│  │
-│  │  RMS Norm, Output      │  (10 MB)   │                  │  │
-│  │                         │            │  LRU pool (opt)  │  │
+│  │  RMS Norm, Output      │  (10 MB)   │  LRU pool (opt)  │  │
 │  │                         │            │  (512 MB)        │  │
 │  └────────────────────────────────────────────────────────┘  │
 │                    ▲ PCIe DMA (~12 GB/s)                      │
@@ -173,12 +216,12 @@ The VITRIOL buffer type (`vitriol-buffer.cpp`) allocates system RAM, page-locks 
 ├── assets/
 │   ├── vitriol-header.txt   ← ASCII art banner
 │   └── vitriol_logo.svg     ← SVG logo
-├── llama.cpp/               ← Git submodule (pinned)
-│   └── ggml/src/ggml-cuda/
-│       ├── vitriol-buffer.{cpp,h}         ← RAM Shot buffer type
-│       ├── vitriol-cuda-integration.{cpp,h} ← LRU cache + init + config
-│       ├── vitriol_copy_engine.{cpp,h}    ← CE DMA implementation (standalone)
-│       └── ggml-cuda.cu                   ← supports_buft + LRU hooks
+├── llama.cpp/               ← Git submodule (pinned commit)
+├── llama.cpp/ggml/src/ggml-cuda/
+│   ├── vitriol-buffer.{cpp,h}              ← RAM Shot buffer type
+│   ├── vitriol-cuda-integration.{cpp,h}    ← LRU cache + init + config
+│   ├── vitriol_copy_engine.{cpp,h}         ← CE DMA (standalone)
+│   └── ggml-cuda.cu                        ← supports_buft + LRU hooks
 ├── llama.cpp-patches/       ← Tracked diffs for all VITRIOL changes
 ├── docs/                    ← Architecture docs
 ├── EXPERIMENT_LOG.md        ← Complete test history (9 experiments)
@@ -186,32 +229,6 @@ The VITRIOL buffer type (`vitriol-buffer.cpp`) allocates system RAM, page-locks 
 ├── MILESTONE_1.md           ← Failed approaches archive (7 approaches)
 └── MILESTONE_2.md           ← RAM Shot: success report
 ```
-
----
-
-## Performance
-
-| Metric | RAM Shot only | + LRU Cache |
-|--------|---------------|-------------|
-| Prompt eval (fast path) | 33.86 tok/s | 22.4 tok/s |
-| Prompt eval (slow path) | — | 14.3 tok/s |
-| Generation | **6.31 tok/s** | **6.9 tok/s** |
-| VRAM used | **1.3 GiB** | **~1.8 GiB** |
-| System RAM | +10 GiB | +10 GiB |
-| Model load | ~64 s | ~64 s |
-
-The model (11.44 GiB) does **not fit** in 8 GB VRAM without VITRIOL.
-
----
-
-## Hardware Targets
-
-| GPU | VRAM | Status | Notes |
-|-----|------|--------|-------|
-| GTX 1070 Ti | 8 GB | ✅ Verified | PCIe 3.0 x16, 6.9 tok/s |
-| GTX 960 | 2 GB | ⚠️ Limited | CC 5.2 lacks kernel images for some ops |
-| RTX 3060 | 12 GB | ✅ Supported | More VRAM for larger KV cache |
-| RTX 4090 | 24 GB | ✅ Supported | PCIe 4.0 x16 → higher bandwidth |
 
 ---
 

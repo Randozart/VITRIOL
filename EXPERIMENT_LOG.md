@@ -196,16 +196,35 @@ VRAM first 64 bytes: 47 47 55 46 03 00 00 00 ...
 
 ---
 
-## Experiment 9: CE DMA LRU Cache (Planned) 🚧
+## Experiment 9: CE DMA LRU Cache (Implemented) 🚧
 
 | Field | Value |
 |-------|-------|
-| **Date** | 2026-05-16 (planned) |
-| **Status** | 💡 Design phase — not yet implemented |
+| **Date** | 2026-05-16 |
+| **Status** | ✅ Implemented — not yet tested |
+| **Commit** | `683122e49-dirty` |
 
-**Approach**: On top of RAM Shot, add a small VRAM pool (~500 MB) for frequently-used expert weights. CE DMA copies from page-locked host RAM to VRAM pool on cache miss. MUL_MAT_ID uses VRAM pointer on hit → native VRAM speed.
+**Approach**: On top of RAM Shot, add a small VRAM pool (~512 MB) for frequently-used expert weights. `cuMemcpyHtoDAsync` copies from page-locked host RAM to VRAM pool on cache miss. Dedicated LRU stream + `cuStreamWaitEvent` before matmul. Composite key `(tensor_base, expert_idx)` prevents cross-layer collisions.
 
-**Expected improvement**: 10-50% over RAM Shot, depending on expert locality.
+| Metric | Expected |
+|--------|----------|
+| VRAM pool | 512 MB (configurable via `VITRIOL_LRU_MB`) |
+| Eviction policy | LRU (list + hash map) |
+| DMA path | cuMemcpyHtoDAsync on dedicated stream |
+| Synchronization | cuEventRecord + cuStreamWaitEvent |
+| Fallback | Host RAM read on cache miss |
+| Slot sizing | Dynamic — reallocates if expert size changes |
+| Layer safety | Composite key `(tensor_base, expert_idx)` |
+| Fast-path prefetch | 💡 Skipped for now — fast paths use small batches |
+
+**Expected improvement over RAM Shot**: 10-50% on repeated expert access patterns.
+
+**Configuration**:
+```
+VITRIOL_MODE=stream           # Enable RAM Shot + LRU cache
+VITRIOL_LRU_MB=512            # VRAM pool size (default: 512)
+VITRIOL_VERBOSE=1             # Log cache hits/misses/evictions
+```
 
 ---
 
@@ -222,7 +241,7 @@ VRAM first 64 bytes: 47 47 55 46 03 00 00 00 ...
 | 6 | CE DMA alone | May 15 | ✅ Verified | — | — | Low |
 | 7 | CE DMA + buft | May 15 | ❌ Illegal access | — | 10 GB | Medium |
 | 8 | **RAM Shot** | **May 16** | **✅ Working** | **6.31** | **10 GB** | **Low** |
-| 9 | LRU Cache | Planned | 💡 Design | TBD | 10 GB | Medium |
+| 9 | **LRU Cache** | **May 16** | **✅ Implemented** | **TBD** | **10 GB** | **Medium** |
 
 *\* Baseline established with partial model that fit in VRAM.*
 
@@ -241,14 +260,17 @@ VRAM first 64 bytes: 47 47 55 46 03 00 00 00 ...
 | `mmap`+`mlock`+`cudaHostRegister` | Three-step page-locking: map, pin, register for GPU access |
 | `madvise(MADV_HUGEPAGE)` | Hint for 2 MB pages → lower GPU TLB pressure |
 | No VRAM pool | RAM Shot needs zero VRAM for weights — all freed for compute |
-| CE DMA kept as stub | Available for LRU cache optimization |
+| LRU CE DMA kept as async | Dedicated stream + cuStreamWaitEvent, no blocking |
+| Composite cache key | (tensor_base addr, expert_idx) prevents cross-layer collisions |
+| Variable slot sizing | Pool reallocates if expert size changes between layers |
 | `CUDA_VISIBLE_DEVICES=0` | GTX 960 (CC 5.2) lacks kernel images for some ops |
 
 ## Configuration Matrix
 
 ```
-VITRIOL_MODE=stream → RAM Shot active
-  VITRIOL_VERBOSE=1    → detailed CE DMA logging
+VITRIOL_MODE=stream → RAM Shot + LRU VRAM cache active
+  VITRIOL_LRU_MB=512  → VRAM pool size (default: 512 MB)
+  VITRIOL_VERBOSE=1   → detailed cache hit/miss/eviction logging
   CUDA_VISIBLE_DEVICES=0 → single GPU (1070 Ti only)
 
 Model requirements:
@@ -259,4 +281,4 @@ Model requirements:
 
 ---
 
-*Last updated: 2026-05-16 15:30 CEST*
+*Last updated: 2026-05-16 16:00 CEST*

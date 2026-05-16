@@ -4,12 +4,13 @@
 
 ---
 
-## Phase 3: CE DMA LRU Cache 🚧 (Current)
+## Phase 3: CE DMA LRU Cache ✅ (Done)
 
 **Goal**: Keep hot experts in a small VRAM pool → native VRAM speed on cache hit.
+**Status**: ✅ Implemented — builds clean, not yet tested.
 **Estimated gain**: +10–50% over RAM Shot (6.31 → ~7–9 tok/s)
 
-### Design
+### Architecture
 
 ```
 Token → ids[] → {expert_7, expert_42}
@@ -17,27 +18,66 @@ Token → ids[] → {expert_7, expert_42}
                     ▼
          ┌──────────────────────┐
          │  LRU Cache Check     │
-         │  (VRAM pool, 500 MB) │
+         │  (composite key:     │
+         │   tensor_base + idx) │
          └──────┬───────────────┘
                 │
         ┌───────┴───────┐
         ▼               ▼
     Cache HIT       Cache MISS
         │               │
-        │        ┌──────┴──────────┐
-        │        │ CE DMA from     │
-        │        │ page-locked RAM │
-        │        │ → VRAM pool     │
-        │        │ Update LRU      │
-        │        └──────┬──────────┘
+        │        ┌──────┴────────────┐
+        │        │ cuMemcpyHtoDAsync │
+        │        │ on dedicated LRU  │
+        │        │ stream            │
+        │        │ cuEventRecord     │
+        │        │ cuStreamWaitEvent │
+        │        │ Update LRU order  │
+        │        └──────┬────────────┘
         │               │
         └───────┬───────┘
                 ▼
         ┌──────────────────┐
         │ Use VRAM pointer │
         │ for MUL_MAT_ID   │
+        │ (no sync needed) │
         └──────────────────┘
 ```
+
+### Implementation
+
+| Component | Description |
+|-----------|-------------|
+| VRAM pool | 512 MB `cuMemAlloc` (configurable via `VITRIOL_LRU_MB`) |
+| Cache key | `(tensor_base_address, expert_idx)` — prevents cross-layer collisions |
+| DMA path | `cuMemcpyHtoDAsync` on dedicated `CUstream` |
+| Sync | `cuEventRecord` on LRU stream → `cuStreamWaitEvent` on compute stream |
+| Eviction | LRU list (std::list + std::unordered_map) |
+| Slot resizing | Pool freed + reallocated if a tensor has larger experts |
+| Fallback | Returns `0` → caller reads from host RAM |
+
+### Hook (ggml-cuda.cu)
+
+```cpp
+if (vitriol_is_stream_enabled()) {
+    CUdeviceptr vram_ptr = vitriol_lru_ensure(
+        src0->data,              // tensor_base
+        (int)i02,                // expert_idx
+        (const void *)((char *) src0->data + i02*nb02),
+        (size_t)nb02,
+        stream                   // compute stream
+    );
+    if (vram_ptr != 0) {
+        src0_slice.data = reinterpret_cast<char *>(vram_ptr);
+    }
+}
+```
+
+### Fast-path note
+
+The fast paths (MMVQ/MMQ/MMF with `ids`) access `src0->data` directly rather than through per-expert slices. Replacing the data pointer there would require a reorganized VRAM buffer. Since fast paths handle small batches (≤8 tokens for MMVQ), PCIe DMA overhead is negligible. Skipped for now.
+
+---
 
 ### Implementation Plan
 
@@ -111,60 +151,16 @@ Investigate why `is_host=true` causes 17 splits. Options:
 
 ## Milestone Timeline
 
-| Phase | Description | Est. Duration | Priority |
-|-------|-------------|---------------|----------|
-| **3** | CE DMA LRU Cache | 1–2 sessions | 🔴 High |
-| 4 | Graph Split Optimization | 1 session | 🟡 Medium |
+| Phase | Description | Est. Duration | Status |
+|-------|-------------|---------------|--------|
+| **3** | CE DMA LRU Cache | 1–2 sessions | ✅ Done |
+| 4 | Graph Split Optimization | 1 session | 🟡 Next |
 | 5 | io_uring + O_DIRECT | 2–3 sessions | 🟢 Low |
 | 6 | Dual-GPU Spec Decode | 3–5 sessions | 🟢 Low |
 | 7 | Alka Orchestration | 5+ sessions | 🟢 Low |
 
-## Current Session: Phase 3 — CE DMA LRU Cache
+## Current Session: Phase 4 — Graph Split Optimization 🟡 Next
 
-### Code change plan
-
-**vitriol-cuda-integration.h additions:**
-```cpp
-#define VITRIOL_LRU_POOL_MB 512
-#define VITRIOL_EXPERT_SLOTS 64  // ~8 MB per slot for ~512 MB
-
-void vitriol_lru_init(void);
-CUdeviceptr vitriol_lru_ensure(int expert_idx, size_t expert_size, const void *host_data);
-```
-
-**vitriol-cuda-integration.cpp additions:**
-```cpp
-static CUdeviceptr g_lru_pool = 0;
-static size_t g_lru_pool_size = 512 * 1024 * 1024;
-static int g_lru_slots = 64;
-static size_t g_lru_slot_size = 0; // set on first call
-
-// LRU tracking
-static std::unordered_map<int, int> g_lru_map;  // expert_idx → slot_idx
-static std::list<int> g_lru_order;               // most-recently-used front
-static std::mutex g_lru_mtx;
-
-CUdeviceptr vitriol_lru_ensure(int expert_idx, size_t expert_size, const void *host_data) {
-    // 1. Calculate slot size from first call
-    // 2. Check cache map → hit? return pool + slot * slot_size
-    // 3. Miss? Find slot (evict LRU if needed)
-    // 4. CE DMA from host_data → pool + slot * slot_size
-    // 5. Update LRU order
-    // 6. Return VRAM pointer
-}
-```
-
-**ggml-cuda.cu modification in ggml_cuda_mul_mat_id:**
-```cpp
-// After src0_slice setup, before ggml_cuda_mul_mat:
-if (vitriol_is_stream_enabled()) {
-    CUdeviceptr vram_ptr = vitriol_lru_ensure(i02, src0_slice.nb[2], src0_slice.data);
-    if (vram_ptr) {
-        src0_slice.data = (void*)vram_ptr;  // Use VRAM pointer instead of host
-    }
-}
-```
-
----
+**Goal**: Reduce from 17 splits to ~2–5.**
 
 *Last updated: 2026-05-16 16:00 CEST*

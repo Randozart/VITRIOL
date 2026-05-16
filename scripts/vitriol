@@ -1,62 +1,410 @@
 #!/bin/bash
-# vitriol run — one command to launch VITRIOL inference
+# VITRIOL — MoE Expert Offloading via PCIe DMA
 #
 # Usage:
-#   vitriol run                          # defaults: Qwen3.6-35B-A3B, port 8279
-#   vitriol run -m /path/to/model.gguf  # custom model
-#   vitriol run -c 4096                  # 4K context
-#   vitriol run -lru 1024                # 1 GB LRU cache
-#   vitriol run --verbose                # enable debug logging
-#   vitriol run --dry-run                # print config without launching
-#
-# Prerequisites:
-#   sudo setcap cap_ipc_lock=+ep <binary>  (one-time, handled by --setup)
+#   vitriol run              launch inference
+#   vitriol config           interactive config TUI
+#   vitriol setup            set CAP_IPC_LOCK capability
+#   vitriol help             this message
 
 set -euo pipefail
 
+# ── paths ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LLAMA_DIR="${PROJECT_DIR}/llama.cpp"
 BINARY="${LLAMA_DIR}/build/bin/llama-cli"
+HEADER_FILE="${PROJECT_DIR}/assets/vitriol-header.txt"
+CONFIG_DIR="${HOME}/.vitriol"
+CONFIG_FILE="${CONFIG_DIR}/config"
 
 # ── defaults ─────────────────────────────────────────────────────
-MODEL="${VITRIOL_MODEL:-/mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf}"
-CTX=512
-N_TOKENS=128
-THREADS=4
-NGL=99
-PORT=8279
-MODE=stream
-LRU_MB=512
-VERBOSE=""
-DRY_RUN=false
+DEFAULT_MODEL="/mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"
+DEFAULT_CTX=4096
+DEFAULT_THREADS=4
+DEFAULT_NGL=99
+DEFAULT_PORT=8279
+DEFAULT_MODE="stream"
+DEFAULT_LRU_MB=512
+DEFAULT_DEVICE=0
+DEFAULT_EXCLUDE_SECONDARY=true
+DEFAULT_VERBOSE=false
 
-usage() {
-    cat <<'HEREDOC'
-╔══════════════════════════════════════════════════════╗
-║                ██╗   ██╗██╗████████╗██████╗ ██╗ ██████╗ ██╗      ║
-║                ██║   ██║██║╚══██╔══╝██╔══██╗██║██╔═══██╗██║      ║
-║                ██║   ██║██║   ██║   ██████╔╝██║██║   ██║██║      ║
-║                ╚██╗ ██╔╝██║   ██║   ██╔══██╗██║██║   ██║██║      ║
-║                 ╚████╔╝ ██║   ██║   ██║  ██║██║╚██████╔╝███████╗ ║
-║                  ╚═══╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚══════╝ ║
-║                                                                ║
-║     MoE Expert Offloading via PCIe DMA — no VRAM required      ║
-╚════════════════════════════════════════════════════════════════╝
+# ── config vars (set by parse_config) ────────────────────────────
+CFG_DEVICE="$DEFAULT_DEVICE"
+CFG_EXCLUDE_SECONDARY="$DEFAULT_EXCLUDE_SECONDARY"
+CFG_MODEL="$DEFAULT_MODEL"
+CFG_CTX="$DEFAULT_CTX"
+CFG_THREADS="$DEFAULT_THREADS"
+CFG_NGL="$DEFAULT_NGL"
+CFG_MODE="$DEFAULT_MODE"
+CFG_LRU_MB="$DEFAULT_LRU_MB"
+CFG_VERBOSE="$DEFAULT_VERBOSE"
+CFG_PORT="$DEFAULT_PORT"
 
-  vitriol run              launch with defaults
-  vitriol run -m MODEL     custom model path
-  vitriol run -c 4096      4K context
-  vitriol run -lru 1024    1 GB LRU cache
-  vitriol run --verbose    debug logging
-  vitriol run --dry-run    print config only
-  vitriol run --setup      set CAP_IPC_LOCK capability
+# ═════════════════════════════════════════════════════════════════
+# CONFIG PARSING
+# ═════════════════════════════════════════════════════════════════
 
-  vitriol setup            show prerequisites + setcap
-  vitriol stats            show LRU hit/miss stats (must be enabled in code)
-  vitriol help             this message
-HEREDOC
+parse_config() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        return 0
+    fi
+    local section=""
+    while IFS= read -r line; do
+        line="${line%%#*}"        # strip comments
+        line="${line##*( )}"      # strip leading space (shopt extglob may not be on)
+        line="${line%%*( )}"      # strip trailing space
+        [[ -z "$line" ]] && continue
+        if [[ "$line" =~ ^\[([^\]]+)\]$ ]]; then
+            section="${BASH_REMATCH[1]}"
+            continue
+        fi
+        if [[ "$line" =~ ^([a-zA-Z_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            local key="${BASH_REMATCH[1]}"
+            local val="${BASH_REMATCH[2]}"
+            # strip quotes
+            val="${val#\"}"; val="${val%\"}"
+            val="${val#\'}"; val="${val%\'}"
+            case "${section}.${key}" in
+                gpu.device)            CFG_DEVICE="$val" ;;
+                gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
+                model.path)            CFG_MODEL="$val" ;;
+                model.context)         CFG_CTX="$val" ;;
+                model.threads)         CFG_THREADS="$val" ;;
+                model.ngl)             CFG_NGL="$val" ;;
+                vitriol.mode)          CFG_MODE="$val" ;;
+                vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
+                vitriol.verbose)       CFG_VERBOSE="$val" ;;
+                server.port)           CFG_PORT="$val" ;;
+            esac
+        fi
+    done < "$CONFIG_FILE"
 }
+
+write_config() {
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_FILE" <<CFGEOF
+# VITRIOL Configuration
+# Generated by vitriol config
+# Uncomment and edit, or use: vitriol config
+
+[gpu]
+# CUDA device index to use
+device = $CFG_DEVICE
+# Exclude secondary GPU (GTX 960, CC 5.2 lacks kernel images)
+exclude_secondary = $CFG_EXCLUDE_SECONDARY
+
+[model]
+# Path to GGUF model file
+path = $CFG_MODEL
+# Context window size
+context = $CFG_CTX
+# CPU threads for prompt processing
+threads = $CFG_THREADS
+# GPU layers to offload
+ngl = $CFG_NGL
+
+[vitriol]
+# Operation mode: stream | sync | async | off
+mode = $CFG_MODE
+# LRU VRAM cache in MB (0 to disable)
+lru_mb = $CFG_LRU_MB
+# Verbose logging
+verbose = $CFG_VERBOSE
+
+[server]
+# API port
+port = $CFG_PORT
+CFGEOF
+}
+
+config_init() {
+    write_config
+    echo "✓ Config written to $CONFIG_FILE"
+}
+
+config_show() {
+    local box_w=44
+    local inner=$((box_w - 4))
+    local line
+    print_row() {
+        local label="$1" val="$2"
+        local display="${val}"
+        if [[ ${#display} -gt $inner ]]; then
+            display="${display:0:$((inner-3))}..."
+        fi
+        printf "║  %-*s ║\n" "$inner" "${label}${display}"
+    }
+
+    echo "╔$(printf '═%.0s' $(seq 1 $box_w))╗"
+    printf "║  %-*s ║\n" "$inner" "VITRIOL Configuration"
+    echo "╠$(printf '═%.0s' $(seq 1 $box_w))╣"
+    print_row "GPU Device:            " "${CFG_DEVICE}"
+    print_row "Exclude Secondary:     " "${CFG_EXCLUDE_SECONDARY}"
+    echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
+    print_row "Model:                 " "$(basename "${CFG_MODEL}" 2>/dev/null || echo "?")"
+    print_row "Path:                  " "${CFG_MODEL}"
+    print_row "Context:               " "${CFG_CTX}"
+    print_row "Threads:               " "${CFG_THREADS}"
+    print_row "GPU Layers (ngl):      " "${CFG_NGL}"
+    echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
+    print_row "VITRIOL Mode:          " "${CFG_MODE}"
+    print_row "LRU Cache (MB):        " "${CFG_LRU_MB}"
+    print_row "Verbose:               " "${CFG_VERBOSE}"
+    echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
+    print_row "Server Port:           " "${CFG_PORT}"
+    echo "╚$(printf '═%.0s' $(seq 1 $box_w))╝"
+}
+
+config_reset() {
+    CFG_DEVICE="$DEFAULT_DEVICE"
+    CFG_EXCLUDE_SECONDARY="$DEFAULT_EXCLUDE_SECONDARY"
+    CFG_MODEL="$DEFAULT_MODEL"
+    CFG_CTX="$DEFAULT_CTX"
+    CFG_THREADS="$DEFAULT_THREADS"
+    CFG_NGL="$DEFAULT_NGL"
+    CFG_MODE="$DEFAULT_MODE"
+    CFG_LRU_MB="$DEFAULT_LRU_MB"
+    CFG_VERBOSE="$DEFAULT_VERBOSE"
+    CFG_PORT="$DEFAULT_PORT"
+    write_config
+    echo "✓ Config reset to defaults"
+}
+
+config_set() {
+    local key="$1" val="$2"
+    case "$key" in
+        gpu.device)            CFG_DEVICE="$val" ;;
+        gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
+        model.path)            CFG_MODEL="$val" ;;
+        model.context)         CFG_CTX="$val" ;;
+        model.threads)         CFG_THREADS="$val" ;;
+        model.ngl)             CFG_NGL="$val" ;;
+        vitriol.mode)          CFG_MODE="$val" ;;
+        vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
+        vitriol.verbose)       CFG_VERBOSE="$val" ;;
+        server.port)           CFG_PORT="$val" ;;
+        *) echo "Unknown key: $key"; return 1 ;;
+    esac
+    write_config
+    echo "✓ $key = $val"
+}
+
+# ═════════════════════════════════════════════════════════════════
+# HEADER
+# ═════════════════════════════════════════════════════════════════
+
+print_header() {
+    if [[ -f "$HEADER_FILE" ]]; then
+        cat "$HEADER_FILE"
+    else
+        echo "VITRIOL — MoE Expert Offloading"
+    fi
+    echo ""
+}
+
+# ═════════════════════════════════════════════════════════════════
+# TUI MENU
+# ═════════════════════════════════════════════════════════════════
+
+tui_main_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║           Configuration Menu             ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) GPU Settings"
+        printf "║  %-37s ║\n" "2) Model Settings"
+        printf "║  %-37s ║\n" "3) VITRIOL Mode"
+        printf "║  %-37s ║\n" "4) Server Settings"
+        printf "║  %-37s ║\n" "5) Show Current Config"
+        printf "║  %-37s ║\n" "6) Reset to Defaults"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1-6/q]: " choice
+        case "$choice" in
+            1) tui_gpu_menu ;;
+            2) tui_model_menu ;;
+            3) tui_vitriol_menu ;;
+            4) tui_server_menu ;;
+            5) clear; print_header; config_show; echo ""; read -r -p "Press Enter to continue..." ;;
+            6) config_reset; echo ""; read -r -p "Press Enter to continue..." ;;
+            q|Q) clear; exit 0 ;;
+            *) ;;
+        esac
+    done
+}
+
+tui_gpu_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║            GPU Settings                  ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) Device Index     [${CFG_DEVICE}]"
+        printf "║  %-37s ║\n" "2) Exclude Secondary [${CFG_EXCLUDE_SECONDARY}]"
+        printf "║  %-37s ║\n" "b) Back to Main Menu"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1-2/b/q]: " choice
+        case "$choice" in
+            1)
+                read -r -p "Enter device index (0-7): " val
+                if [[ "$val" =~ ^[0-7]$ ]]; then
+                    config_set gpu.device "$val"
+                else
+                    echo "Invalid (must be 0-7)"; sleep 1
+                fi
+                ;;
+            2)
+                if [[ "$CFG_EXCLUDE_SECONDARY" == "true" ]]; then
+                    config_set gpu.exclude_secondary "false"
+                else
+                    config_set gpu.exclude_secondary "true"
+                fi
+                ;;
+            b|B) return ;;
+            q|Q) clear; exit 0 ;;
+        esac
+    done
+}
+
+tui_model_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║          Model Settings                  ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) Model Path       [$(basename "${CFG_MODEL}" 2>/dev/null || echo "?" )]"
+        printf "║  %-37s ║\n" "2) Context Window   [${CFG_CTX}]"
+        printf "║  %-37s ║\n" "3) Threads          [${CFG_THREADS}]"
+        printf "║  %-37s ║\n" "4) GPU Layers (ngl) [${CFG_NGL}]"
+        printf "║  %-37s ║\n" "b) Back to Main Menu"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1-4/b/q]: " choice
+        case "$choice" in
+            1)
+                echo "Enter new model path (Tab completion available):"
+                read -r -e -p "> " val
+                val="${val/#\~/$HOME}"
+                if [[ -n "$val" ]]; then
+                    config_set model.path "$val"
+                fi
+                ;;
+            2)
+                read -r -p "Enter context window (512-32768): " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 512 && val <= 32768)); then
+                    config_set model.context "$val"
+                else
+                    echo "Invalid (must be 512-32768)"; sleep 1
+                fi
+                ;;
+            3)
+                read -r -p "Enter threads (1-32): " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 1 && val <= 32)); then
+                    config_set model.threads "$val"
+                else
+                    echo "Invalid (must be 1-32)"; sleep 1
+                fi
+                ;;
+            4)
+                read -r -p "Enter GPU layers/ngl (1-99): " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 1 && val <= 99)); then
+                    config_set model.ngl "$val"
+                else
+                    echo "Invalid (must be 1-99)"; sleep 1
+                fi
+                ;;
+            b|B) return ;;
+            q|Q) clear; exit 0 ;;
+        esac
+    done
+}
+
+tui_vitriol_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║          VITRIOL Mode Settings           ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) Operation Mode   [${CFG_MODE}]"
+        printf "║  %-37s ║\n" "2) LRU Cache (MB)   [${CFG_LRU_MB}]"
+        printf "║  %-37s ║\n" "3) Verbose Logging  [${CFG_VERBOSE}]"
+        printf "║  %-37s ║\n" "b) Back to Main Menu"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1-3/b/q]: " choice
+        case "$choice" in
+            1)
+                echo "Modes: stream (RAM Shot + LRU) | sync | async | off"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    stream|sync|async|off) config_set vitriol.mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            2)
+                read -r -p "Enter LRU cache MB (0-4096, 0=off): " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 0 && val <= 4096)); then
+                    config_set vitriol.lru_mb "$val"
+                else
+                    echo "Invalid (must be 0-4096)"; sleep 1
+                fi
+                ;;
+            3)
+                if [[ "$CFG_VERBOSE" == "true" ]]; then
+                    config_set vitriol.verbose "false"
+                else
+                    config_set vitriol.verbose "true"
+                fi
+                ;;
+            b|B) return ;;
+            q|Q) clear; exit 0 ;;
+        esac
+    done
+}
+
+tui_server_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║          Server Settings                 ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) Port Number      [${CFG_PORT}]"
+        printf "║  %-37s ║\n" "b) Back to Main Menu"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1/b/q]: " choice
+        case "$choice" in
+            1)
+                read -r -p "Enter port (1024-65535): " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 1024 && val <= 65535)); then
+                    config_set server.port "$val"
+                else
+                    echo "Invalid (must be 1024-65535)"; sleep 1
+                fi
+                ;;
+            b|B) return ;;
+            q|Q) clear; exit 0 ;;
+        esac
+    done
+}
+
+# ═════════════════════════════════════════════════════════════════
+# RUN
+# ═════════════════════════════════════════════════════════════════
 
 setup_caps() {
     echo "→ Setting CAP_IPC_LOCK on $BINARY"
@@ -72,103 +420,174 @@ setup_caps() {
     echo "                             $(free -g | awk '/^Mem:/{print int($2*0.8)}') GiB available without swap pressure"
 }
 
-# ── parse args ────────────────────────────────────────────────────
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        run)
-            shift; break
-            ;;
-        setup|--setup)
-            setup_caps
-            exit 0
-            ;;
-        stats|--stats)
-            echo "VITRIOL stats available at /tmp/vitriol_stats.txt after --verbose run"
-            exit 0
-            ;;
-        help|--help|-h)
-            usage
-            exit 0
-            ;;
-        *)
-            usage
+usage() {
+    print_header
+    cat <<'HEREDOC'
+  vitriol run [options]    launch inference
+  vitriol config           interactive configuration TUI
+  vitriol config show      print current configuration
+  vitriol config init      create config file with defaults
+  vitriol config reset     restore defaults
+  vitriol config edit      open config in $EDITOR
+  vitriol config set <key> <val>  set a config value
+  vitriol setup            set CAP_IPC_LOCK capability
+  vitriol help             this message
+
+Run options:
+  -m PATH        model file path
+  -c N           context window (tokens)
+  -t N           CPU threads
+  -ngl N         GPU layers to offload
+  -lru MB        LRU VRAM cache size
+  -port N        server port
+  --verbose      enable debug logging
+  --dry-run      print config without launching
+
+All options can be persisted via: vitriol config
+
+HEREDOC
+}
+
+# ═════════════════════════════════════════════════════════════════
+# MAIN
+# ═════════════════════════════════════════════════════════════════
+
+# Parse config before command dispatch so env vars override
+parse_config
+
+CMD="${1:-help}"
+case "$CMD" in
+    run)
+        shift
+        # CLI flags override config
+        CLI_MODEL=""
+        CLI_CTX=""
+        CLI_THREADS=""
+        CLI_NGL=""
+        CLI_PORT=""
+        CLI_LRU_MB=""
+        CLI_VERBOSE=""
+        DRY_RUN=false
+
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -m) CLI_MODEL="$2"; shift 2 ;;
+                -c) CLI_CTX="$2"; shift 2 ;;
+                -t) CLI_THREADS="$2"; shift 2 ;;
+                -ngl) CLI_NGL="$2"; shift 2 ;;
+                -lru) CLI_LRU_MB="$2"; shift 2 ;;
+                -port) CLI_PORT="$2"; shift 2 ;;
+                --verbose) CLI_VERBOSE="true"; shift ;;
+                --dry-run) DRY_RUN=true; shift ;;
+                -h|--help) usage; exit 0 ;;
+                *) echo "Unknown: $1"; usage; exit 1 ;;
+            esac
+        done
+
+        # Precedence: CLI > Config > Env > Default
+        MODEL="${VITRIOL_MODEL:-${CLI_MODEL:-${CFG_MODEL}}}"
+        CTX="${CLI_CTX:-${CFG_CTX}}"
+        THREADS="${CLI_THREADS:-${CFG_THREADS}}"
+        NGL="${CLI_NGL:-${CFG_NGL}}"
+        PORT="${CLI_PORT:-${CFG_PORT}}"
+        LRU_MB="${CLI_LRU_MB:-${CFG_LRU_MB}}"
+        MODE="${VITRIOL_MODE:-${CFG_MODE}}"
+        VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
+        DEVICE="${CFG_DEVICE}"
+
+        # GPU visibility
+        if [[ "$CFG_EXCLUDE_SECONDARY" == "true" ]]; then
+            CUDA_DEVICES="${DEVICE}"
+        else
+            CUDA_DEVICES="0,1"
+        fi
+
+        # Pre-flight
+        if [[ ! -f "$MODEL" ]]; then
+            echo "ERROR: model not found: $MODEL"
+            echo "  Set with: vitriol config (option 2)"
+            echo "  Or:       vitriol run -m /path/to/model.gguf"
             exit 1
-            ;;
-    esac
-done
+        fi
+        if [[ ! -x "$BINARY" ]]; then
+            echo "ERROR: binary not found: $BINARY"
+            echo "  Build with: cd llama.cpp && cmake -B build -DGGML_CUDA=ON ... && cmake --build build -j\$(nproc)"
+            exit 1
+        fi
 
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        -m) MODEL="$2"; shift 2 ;;
-        -c) CTX="$2"; shift 2 ;;
-        -n) N_TOKENS="$2"; shift 2 ;;
-        -t) THREADS="$2"; shift 2 ;;
-        -ngl) NGL="$2"; shift 2 ;;
-        -lru) LRU_MB="$2"; shift 2 ;;
-        -port) PORT="$2"; shift 2 ;;
-        --verbose) VERBOSE="VITRIOL_VERBOSE=1"; shift ;;
-        --dry-run) DRY_RUN=true; shift ;;
-        -h|--help) usage; exit 0 ;;
-        *) echo "Unknown: $1"; usage; exit 1 ;;
-    esac
-done
+        CAPS=$(getcap "$BINARY" 2>/dev/null || true)
+        if [[ "$CAPS" != *"cap_ipc_lock"* ]]; then
+            echo "WARNING: CAP_IPC_LOCK not set on binary"
+            echo "  Run: vitriol setup"
+            echo "  Without this, cudaHostRegister will fail"
+            echo ""
+        fi
 
-# ── pre-flight checks ─────────────────────────────────────────────
-if [[ ! -f "$MODEL" ]]; then
-    echo "ERROR: model not found: $MODEL"
-    echo "  Set with: vitriol run -m /path/to/model.gguf"
-    echo "  Or:       VITRIOL_MODEL=/path/to/model.gguf vitriol run"
-    exit 1
-fi
+        MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")
 
-if [[ ! -x "$BINARY" ]]; then
-    echo "ERROR: binary not found: $BINARY"
-    echo "  Build with: cd llama.cpp && cmake -B build -DGGML_CUDA=ON ... && cmake --build build -j\$(nproc)"
-    exit 1
-fi
+        # Print launch banner
+        clear
+        [[ -f "$HEADER_FILE" ]] && cat "$HEADER_FILE"
+        echo ""
+        echo "═══ Launch Configuration ═══"
+        echo "  Model:   $(basename "$MODEL") ($MODEL_SIZE)"
+        echo "  Context: $CTX tokens"
+        echo "  Mode:    $MODE (RAM Shot + LRU cache)"
+        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:     $LRU_MB MB VRAM cache"
+        echo "  GPU:     Device $DEVICE (GTX 1070 Ti)"
+        echo "  Binary:  $BINARY"
+        echo "  Port:    $PORT"
+        [[ "$VERBOSE" == "true" ]] && echo "  Logging: verbose"
+        echo "═══════════════════════════════"
+        echo ""
 
-CAPS=$(getcap "$BINARY" 2>/dev/null || true)
-if [[ "$CAPS" != *"cap_ipc_lock"* ]]; then
-    echo "WARNING: CAP_IPC_LOCK not set on binary"
-    echo "  Run: vitriol setup"
-    echo "  Without this, cudaHostRegister will fail → RAM Shot disabled"
-    echo ""
-fi
+        if $DRY_RUN; then
+            exit 0
+        fi
 
-MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")
+        echo "Launching VITRIOL..."
+        echo "  Model loading takes ~60s for 12 GB model"
+        echo ""
 
-# ── print config ─────────────────────────────────────────────────
-echo ""
-echo "═══ VITRIOL Configuration ═══"
-echo "  Model:   $(basename "$MODEL") ($MODEL_SIZE)"
-echo "  Context: $CTX tokens"
-echo "  Mode:    $MODE (RAM Shot + LRU cache)"
-echo "  LRU:     $LRU_MB MB VRAM cache"
-echo "  GPU:     GTX 1070 Ti (PCIe 3.0 x16, 12 GB/s)"
-echo "  Binary:  $BINARY"
-echo "  Port:    $PORT"
-[[ -n "$VERBOSE" ]] && echo "  Logging: verbose"
-echo "═══════════════════════════════"
-echo ""
+        ENV_VERBOSE=""
+        [[ "$VERBOSE" == "true" ]] && ENV_VERBOSE="VITRIOL_VERBOSE=1"
 
-if $DRY_RUN; then
-    exit 0
-fi
+        exec env \
+            CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+            VITRIOL_MODE="$MODE" \
+            VITRIOL_LRU_MB="$LRU_MB" \
+            $ENV_VERBOSE \
+            "$BINARY" \
+            -m "$MODEL" \
+            -ngl "$NGL" \
+            -c "$CTX" \
+            -n 128 \
+            -t "$THREADS" \
+            "$@"
+        ;;
 
-# ── launch ────────────────────────────────────────────────────────
-echo "Launching VITRIOL..."
-echo "  Model loading takes ~60s for 12 GB model"
-echo ""
+    config)
+        shift
+        case "${1:-}" in
+            show)  config_show ;;
+            init)  config_init ;;
+            reset) config_reset ;;
+            edit)  ${EDITOR:-vim} "$CONFIG_FILE" ;;
+            set)   shift; config_set "$1" "$2" ;;
+            *)     tui_main_menu ;;
+        esac
+        ;;
 
-exec env \
-    CUDA_VISIBLE_DEVICES=0 \
-    VITRIOL_MODE="$MODE" \
-    VITRIOL_LRU_MB="$LRU_MB" \
-    $VERBOSE \
-    "$BINARY" \
-    -m "$MODEL" \
-    -ngl "$NGL" \
-    -c "$CTX" \
-    -n "$N_TOKENS" \
-    -t "$THREADS" \
-    "$@"
+    setup)
+        setup_caps
+        ;;
+
+    help|--help|-h)
+        usage
+        ;;
+
+    *)
+        usage
+        exit 1
+        ;;
+esac

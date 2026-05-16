@@ -222,7 +222,9 @@ CUDA_VISIBLE_DEVICES=0 VITRIOL_MODE=stream VITRIOL_LRU_MB=512 VITRIOL_VERBOSE=1 
 
 **Fast-path note**: Generation uses MMVQ (batch ≤ 8) which reads experts directly from page-locked host RAM via PCIe DMA. LRU cache is only activated on the slow path (cuBLAS per-expert slices). The fast-path kernel accesses `src0->data` directly, not through per-expert slices, so the LRU pointer swap doesn't apply.
 
-**LRU cache testing**: Slow path not exercised with single-token generation. Would activate with larger batches or non-quantized types.
+**LRU cache testing**: Slow path tested with `-DGGML_CUDA_FORCE_CUBLAS=ON`. LRU pool allocated once per expert tensor dimension — 3 reallocations during warmup (303K → 401K → 557K byte slots across different layer groups), then stable during inference. Prompt eval: 14.3 t/s (slow path), generation: 7.0 t/s (MMVQ fast path).
+
+**Pool thrashing bug**: Fixed. Pool now allocates once with first expert's slot size; larger experts bypass cache and fall through to host RAM PCIe DMA.
 
 **Configuration**:
 ```

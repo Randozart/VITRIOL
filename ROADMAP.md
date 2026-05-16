@@ -97,17 +97,28 @@ The fast paths (MMVQ/MMQ/MMF with `ids`) access `src0->data` directly rather tha
 
 ---
 
-## Phase 4: Graph Split Optimization (Next)
+## Phase 4: Graph Split Optimization 🟡 Next
 
-**Goal**: Reduce from 17 splits to ~2–5 by making VITRIOL buffer appear more like a CUDA device buffer to the scheduler.
-**Estimated gain**: -3–10% latency (reduced copy overhead).
+**Goal**: Reduce from 17 splits to ~2–5 by making VITRIOL buffer appear as CUDA-host to the scheduler.
+**Status**: Investigated — requires `ggml-backend.cpp` scheduler refactoring.
 
-### Approach
+### Root cause
 
-Investigate why `is_host=true` causes 17 splits. Options:
-- Override additional buffer type hooks to simulate device buffer behavior
-- Check if `supports_buft` needs additional device identity
-- Examine scheduler split logic in `ggml-backend.cpp`
+When `is_host=true`, `ggml_backend_sched_backend_from_buffer` (ggml-backend.cpp:851) iterates backends by priority. VITRIOL's buffer type passes `supports_buft` for CUDA, but the scheduler's MoE offload path at line 1576 triggers on `is_host=true` and creates copy tensors for partial expert copies. The `need_new_split` condition at line 1282 fires on each backend mismatch, producing 17 splits.
+
+### Proposed fix
+
+Make VITRIOL buffer type use `ggml_backend_cuda_host_buffer_type_name` as its `get_name`, so `ggml_backend_buft_is_cuda_host()` returns true. Then modify `supports_buft` (ggml-cuda.cu:5271) to accept `cuda_host` buffers without the `integrated` GPU check. This would make the scheduler treat VITRIOL as a native CUDA buffer, eliminating the CPU→GPU backend mismatch.
+
+### Files to modify
+
+| File | Change |
+|------|--------|
+| `vitriol-buffer.cpp` | Match `get_name` to CUDA host buffer type name |
+| `ggml-cuda.cu` | Remove `integrated` guard for `cuda_host` in `supports_buft` |
+| (no ggml-backend.cpp changes) | Scheduler already handles `cuda_host` natively |
+
+**Estimated gain**: -3–10% latency (eliminated copy overhead).
 
 ---
 

@@ -1,0 +1,174 @@
+#!/bin/bash
+# vitriol run — one command to launch VITRIOL inference
+#
+# Usage:
+#   vitriol run                          # defaults: Qwen3.6-35B-A3B, port 8279
+#   vitriol run -m /path/to/model.gguf  # custom model
+#   vitriol run -c 4096                  # 4K context
+#   vitriol run -lru 1024                # 1 GB LRU cache
+#   vitriol run --verbose                # enable debug logging
+#   vitriol run --dry-run                # print config without launching
+#
+# Prerequisites:
+#   sudo setcap cap_ipc_lock=+ep <binary>  (one-time, handled by --setup)
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+LLAMA_DIR="${PROJECT_DIR}/llama.cpp"
+BINARY="${LLAMA_DIR}/build/bin/llama-cli"
+
+# ── defaults ─────────────────────────────────────────────────────
+MODEL="${VITRIOL_MODEL:-/mnt/data/ai/koboldcpp/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf}"
+CTX=512
+N_TOKENS=128
+THREADS=4
+NGL=99
+PORT=8279
+MODE=stream
+LRU_MB=512
+VERBOSE=""
+DRY_RUN=false
+
+usage() {
+    cat <<'HEREDOC'
+╔══════════════════════════════════════════════════════╗
+║                ██╗   ██╗██╗████████╗██████╗ ██╗ ██████╗ ██╗      ║
+║                ██║   ██║██║╚══██╔══╝██╔══██╗██║██╔═══██╗██║      ║
+║                ██║   ██║██║   ██║   ██████╔╝██║██║   ██║██║      ║
+║                ╚██╗ ██╔╝██║   ██║   ██╔══██╗██║██║   ██║██║      ║
+║                 ╚████╔╝ ██║   ██║   ██║  ██║██║╚██████╔╝███████╗ ║
+║                  ╚═══╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝ ╚═════╝ ╚══════╝ ║
+║                                                                ║
+║     MoE Expert Offloading via PCIe DMA — no VRAM required      ║
+╚════════════════════════════════════════════════════════════════╝
+
+  vitriol run              launch with defaults
+  vitriol run -m MODEL     custom model path
+  vitriol run -c 4096      4K context
+  vitriol run -lru 1024    1 GB LRU cache
+  vitriol run --verbose    debug logging
+  vitriol run --dry-run    print config only
+  vitriol run --setup      set CAP_IPC_LOCK capability
+
+  vitriol setup            show prerequisites + setcap
+  vitriol stats            show LRU hit/miss stats (must be enabled in code)
+  vitriol help             this message
+HEREDOC
+}
+
+setup_caps() {
+    echo "→ Setting CAP_IPC_LOCK on $BINARY"
+    if ! command -v sudo &>/dev/null; then
+        echo "  ERROR: sudo not found"
+        exit 1
+    fi
+    sudo setcap cap_ipc_lock=+ep "$BINARY"
+    echo "  ✓ Done"
+    getcap "$BINARY"
+    echo ""
+    echo "System RAM for page-locking: $(free -g | awk '/^Mem:/{print $2}') GiB total"
+    echo "                             $(free -g | awk '/^Mem:/{print int($2*0.8)}') GiB available without swap pressure"
+}
+
+# ── parse args ────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        run)
+            shift; break
+            ;;
+        setup|--setup)
+            setup_caps
+            exit 0
+            ;;
+        stats|--stats)
+            echo "VITRIOL stats available at /tmp/vitriol_stats.txt after --verbose run"
+            exit 0
+            ;;
+        help|--help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            usage
+            exit 1
+            ;;
+    esac
+done
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -m) MODEL="$2"; shift 2 ;;
+        -c) CTX="$2"; shift 2 ;;
+        -n) N_TOKENS="$2"; shift 2 ;;
+        -t) THREADS="$2"; shift 2 ;;
+        -ngl) NGL="$2"; shift 2 ;;
+        -lru) LRU_MB="$2"; shift 2 ;;
+        -port) PORT="$2"; shift 2 ;;
+        --verbose) VERBOSE="VITRIOL_VERBOSE=1"; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown: $1"; usage; exit 1 ;;
+    esac
+done
+
+# ── pre-flight checks ─────────────────────────────────────────────
+if [[ ! -f "$MODEL" ]]; then
+    echo "ERROR: model not found: $MODEL"
+    echo "  Set with: vitriol run -m /path/to/model.gguf"
+    echo "  Or:       VITRIOL_MODEL=/path/to/model.gguf vitriol run"
+    exit 1
+fi
+
+if [[ ! -x "$BINARY" ]]; then
+    echo "ERROR: binary not found: $BINARY"
+    echo "  Build with: cd llama.cpp && cmake -B build -DGGML_CUDA=ON ... && cmake --build build -j\$(nproc)"
+    exit 1
+fi
+
+CAPS=$(getcap "$BINARY" 2>/dev/null || true)
+if [[ "$CAPS" != *"cap_ipc_lock"* ]]; then
+    echo "WARNING: CAP_IPC_LOCK not set on binary"
+    echo "  Run: vitriol setup"
+    echo "  Without this, cudaHostRegister will fail → RAM Shot disabled"
+    echo ""
+fi
+
+MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")
+
+# ── print config ─────────────────────────────────────────────────
+echo ""
+echo "═══ VITRIOL Configuration ═══"
+echo "  Model:   $(basename "$MODEL") ($MODEL_SIZE)"
+echo "  Context: $CTX tokens"
+echo "  Mode:    $MODE (RAM Shot + LRU cache)"
+echo "  LRU:     $LRU_MB MB VRAM cache"
+echo "  GPU:     GTX 1070 Ti (PCIe 3.0 x16, 12 GB/s)"
+echo "  Binary:  $BINARY"
+echo "  Port:    $PORT"
+[[ -n "$VERBOSE" ]] && echo "  Logging: verbose"
+echo "═══════════════════════════════"
+echo ""
+
+if $DRY_RUN; then
+    exit 0
+fi
+
+# ── launch ────────────────────────────────────────────────────────
+echo "Launching VITRIOL..."
+echo "  Model loading takes ~60s for 12 GB model"
+echo ""
+
+exec env \
+    CUDA_VISIBLE_DEVICES=0 \
+    VITRIOL_MODE="$MODE" \
+    VITRIOL_LRU_MB="$LRU_MB" \
+    $VERBOSE \
+    "$BINARY" \
+    -m "$MODEL" \
+    -ngl "$NGL" \
+    -c "$CTX" \
+    -n "$N_TOKENS" \
+    -t "$THREADS" \
+    "$@"

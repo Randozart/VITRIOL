@@ -172,6 +172,27 @@ The model (11.44 GiB) does **not fit** in 8 GB VRAM without VITRIOL.
 
 ---
 
+## Compatibility
+
+### Tested
+- **GPU:** NVIDIA GeForce GTX 1070 Ti (CC 6.1, 8 GB VRAM)
+- **OS:** Linux — Ubuntu 24.04, kernel 6.17, NVIDIA driver 535.288.01, CUDA 12.2
+- **Model:** Qwen3.6-35B-A3B-UD-Q2_K_XL (256 experts, 34.66B params)
+- **llama.cpp:** Pinned submodule commit `4f7e33b5b`
+
+### Likely works
+- **NVIDIA GPUs with CC ≥ 5.0:** All Pascal, Turing, Ampere, Ada, Blackwell cards. The `cudaHostRegister` + PCIe DMA path is architecture-agnostic. Higher VRAM GPUs benefit from larger LRU cache or keeping more layers in VRAM.
+- **NVIDIA GPUs with CC 5.x (Maxwell):** Some GPU kernel ops may be missing — set `CUDA_VISIBLE_DEVICES` to exclude them or use `vitriol config` to set `exclude_secondary = true`.
+- **ROCm/HIP (AMD):** Would need a mechanical port of the CUDA driver API calls to HIP equivalents (`cudaHostRegister` → `hipHostRegister`, `cuMemAlloc` → `hipMalloc`, etc.). llama.cpp already has `GGML_USE_HIP` guards. Estimated ~400 lines changed across 3 files.
+- **Windows (NVIDIA):** NVCC + `cudaHostRegister` works identically. Untested but no fundamental blocker. The `vitriol` CLI launcher currently uses bash — would need a PowerShell/batch wrapper.
+
+### Likely won't work
+- **Intel GPUs (SYCL/oneAPI):** SYCL doesn't expose page-locked host DMA in the same way. The unified memory model on integrated GPUs also makes VITRIOL's trick unnecessary — there's no discrete PCIe bus to cross.
+- **Apple Silicon (Metal):** Unified memory architecture. CPU and GPU share the same physical RAM pool. VITRIOL provides no benefit — the entire model fits in unified memory if it fits at all.
+- **Nouveau (open-source NVIDIA driver):** Lacks `cudaHostRegister` equivalent. The GMMU page tables populated by the proprietary NVIDIA RM driver are required for PCIe DMA from system memory.
+
+---
+
 ## Architecture
 
 ```

@@ -1,0 +1,47 @@
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 4e65a45a5..32a10fa89 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -12,6 +12,7 @@
+ #include <cstring>
+ #include <future>
+ #include <regex>
++#include <dlfcn.h>
+ 
+ static const size_t kiB = 1024;
+ static const size_t MiB = 1024*kiB;
+@@ -1180,6 +1181,34 @@ struct ggml_tensor * llama_model_loader::create_tensor(
+             }
+         }
+ 
++        // VITRIOL: use custom buffer type for expert tensors when VITRIOL engine is active.
++        // The buffer type allocates system RAM but reports as device memory, causing the
++        // scheduler to route MUL_MAT_ID to the CUDA backend. Expert data is CE DMA'd into
++        // a VRAM pool on demand during inference.
++        if (!buft) {
++            std::string tensor_name = tn.str();
++            if (tensor_name.find("exps") != std::string::npos) {
++                // Use dlsym to find the VITRIOL expert buffer type at runtime
++                // (avoids link-time dependency on libggml-cuda)
++                typedef ggml_backend_buffer_type_t (*buft_getter_t)(void);
++                static buft_getter_t vitriol_getter = nullptr;
++                static bool looked_up = false;
++                if (!looked_up) {
++                    looked_up = true;
++                    void * sym = dlsym(RTLD_DEFAULT, "vitriol_get_expert_buffer_type");
++                    if (sym) {
++                        vitriol_getter = (buft_getter_t)sym;
++                    }
++                }
++                if (vitriol_getter) {
++                    buft = vitriol_getter();
++                    LLAMA_LOG_DEBUG("tensor %s (%zu MiB %s) buffer type overridden to VITRIOL\n",
++                            tensor_name.c_str(),
++                            ggml_nbytes(t_meta) / 1024 / 1024, ggml_type_name(t_meta->type));
++                }
++            }
++        }
++
+         if (!buft) {
+             buft = select_weight_buft(hparams, t_meta, op, buft_list);
+             if (!buft) {

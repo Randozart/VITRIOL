@@ -19,6 +19,9 @@ MEMORY_DIR = os.environ.get('VITRIOL_MEMORY_DIR', os.path.expanduser('~/.vitriol
 # Thread-local DB connections
 _local = threading.local()
 
+# Global write mutex — serializes all writes to prevent "database is locked"
+_write_lock = threading.Lock()
+
 
 def _get_db_path(project_id: str) -> str:
     """Get the path to a project's memory database."""
@@ -182,31 +185,33 @@ def get_embedding_for_text(content: str) -> Optional[list]:
 
 def get_or_create_session(project_id: str, session_id: str) -> dict:
     """Get or create a session row. Returns session dict."""
-    conn = _get_conn(project_id)
-    cursor = conn.execute(
-        "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
-    )
-    row = cursor.fetchone()
-    if row:
+    with _write_lock:
+        conn = _get_conn(project_id)
+        cursor = conn.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+        )
+        row = cursor.fetchone()
+        if row:
+            conn.execute(
+                "UPDATE sessions SET updated_at = datetime('now') WHERE session_id = ?",
+                (session_id,)
+            )
+            conn.commit()
+            return dict(row)
+
         conn.execute(
-            "UPDATE sessions SET updated_at = datetime('now') WHERE session_id = ?",
-            (session_id,)
+            "INSERT INTO sessions (session_id) VALUES (?)", (session_id,)
         )
         conn.commit()
-        return dict(row)
-
-    conn.execute(
-        "INSERT INTO sessions (session_id) VALUES (?)", (session_id,)
-    )
-    conn.commit()
-    return {'session_id': session_id, 'turn_count': 0}
+        return {'session_id': session_id, 'turn_count': 0}
 
 
 def store_episode(project_id: str, session_id: str, role: str,
                   content: str, token_count: int = 0,
                   turn_index: Optional[int] = None) -> int:
     """Store a conversation turn. Returns the episode ID."""
-    conn = _get_conn(project_id)
+    with _write_lock:
+        conn = _get_conn(project_id)
 
     if turn_index is None:
         cursor = conn.execute(
@@ -336,12 +341,13 @@ def _ensure_edge(conn, from_type, from_id, to_type, to_id, relation, weight=1.0)
 
 def update_edge_weight(project_id: str, edge_id: int, new_weight: float):
     """Update an edge's weight and timestamp."""
-    conn = _get_conn(project_id)
-    conn.execute(
-        "UPDATE edges SET weight = ?, updated_at = datetime('now') WHERE id = ?",
-        (new_weight, edge_id)
-    )
-    conn.commit()
+    with _write_lock:
+        conn = _get_conn(project_id)
+        conn.execute(
+            "UPDATE edges SET weight = ?, updated_at = datetime('now') WHERE id = ?",
+            (new_weight, edge_id)
+        )
+        conn.commit()
 
 
 def get_config(project_id: str, key: str, default: str = '') -> str:
@@ -356,9 +362,10 @@ def get_config(project_id: str, key: str, default: str = '') -> str:
 
 def set_config(project_id: str, key: str, value: str):
     """Set a config value."""
-    conn = _get_conn(project_id)
-    conn.execute(
-        "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
-        (key, value)
-    )
-    conn.commit()
+    with _write_lock:
+        conn = _get_conn(project_id)
+        conn.execute(
+            "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+        conn.commit()

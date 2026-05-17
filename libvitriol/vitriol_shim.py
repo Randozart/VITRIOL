@@ -19,7 +19,7 @@ import time
 import subprocess
 import requests
 import logging
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context, Response, stream_with_context
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
@@ -489,18 +489,13 @@ def backend_status() -> Dict[str, Any]:
 def proxy_chat_completions():
     """
     OpenAI-compatible endpoint that rectifies context before forwarding to llama-server.
-    
-    Guardrails:
-    1. Thermal polling (halts if GPU >= 85°C)
-    2. Context truncation (max 7k tokens)
-    3. Metadata stripping (reasoning/tools)
-    4. Context streaming (injects relevant archived context)
+    Supports streaming: when the client sends stream=true, SSE chunks are proxied through.
     """
     try:
         data = request.json
         if not data:
             return jsonify({"error": "No JSON body"}), 400
-        
+
         # === GUARDRAIL 4: Thermal Sentinel ===
         temp = get_gpu_temp()
         logger.info(f"GPU Temperature: {temp}°C")
@@ -510,10 +505,10 @@ def proxy_chat_completions():
                 "error": f"Alchemical Overheat: {temp}°C. Cooling required.",
                 "thermal_limit": MAX_TEMP
             }), 503
-        
+
         messages = data.get('messages', [])
         logger.info(f"Received request with {len(messages)} messages")
-        
+
         # Extract current query for context streaming
         current_query = ""
         if messages and messages[-1].get('role') == 'user':
@@ -526,32 +521,21 @@ def proxy_chat_completions():
                 current_query = ' '.join(texts)[:500]
             elif isinstance(raw, str):
                 current_query = raw[:500]
-        
+
         # ── Emulated Memory Intercept ──
-        memory_candidates = []  # for post-response Hebbian update
+        memory_candidates = []
         if MEMORY_MODE:
             project_id = request.headers.get('X-Project-Id', 'default')
             session_id = request.headers.get('X-Session-Id', 'default')
-
-            # Get or create session
             emem.db.get_or_create_session(project_id, session_id)
-
-            # Retrieve relevant context from memory DB
             memory_candidates = emem.retrieve(project_id, current_query)
             recent = emem.db.get_recent_episodes(project_id, session_id, limit=2)
-
-            # Build compacted memory context
             memory_lines = emem.compact_context(
-                candidates=memory_candidates,
-                project_id=project_id,
-                session_id=session_id,
-                query=current_query,
-                recent_episodes=recent,
+                candidates=memory_candidates, project_id=project_id,
+                session_id=session_id, query=current_query, recent_episodes=recent,
             )
             memory_text = "\n".join(memory_lines)
-
             if memory_text.strip():
-                # Prepend as system message
                 if messages and messages[0].get('role') == 'system':
                     content = messages[0]['content']
                     if isinstance(content, str):
@@ -569,14 +553,10 @@ def proxy_chat_completions():
                     f"MEMORY: Injected {emem.estimate_tokens(memory_text)} tokens "
                     f"from memory DB ({project_id}/{session_id})"
                 )
-
-            # Mark consolidation thread active (reset idle timer)
             if emem.consolidate._consolidation_thread:
                 emem.consolidate._consolidation_thread.mark_active()
 
         # ── Frozen Prompt Caching ──
-        # Protect system prompt and tool messages from modification so llama.cpp
-        # can reuse cached KV entries for the stable prefix.
         frozen_count = 0
         if FROZEN_PROMPT:
             for i, m in enumerate(messages):
@@ -585,93 +565,122 @@ def proxy_chat_completions():
                 else:
                     break
             if frozen_count > 0:
-                # Take a hash of the frozen prefix to detect changes
+                import hashlib
                 frozen_text = '|'.join(
                     str(m.get('content', '')) + str(m.get('role', ''))
                     for m in messages[:frozen_count]
                 )
-                import hashlib
-                frozen_hash = hashlib.md5(frozen_text.encode()).digest()
-                logger.info(
-                    f"FROZEN: {frozen_count} messages preserved as stable prefix"
-                )
+                hashlib.md5(frozen_text.encode()).digest()  # hash, not used yet
+                logger.info(f"FROZEN: {frozen_count} messages preserved as stable prefix")
 
         # === GUARDRAIL 1 & 2: Context Rectification with Streaming ===
         rectified_messages, stats = rectify_context(messages, current_query, frozen_count)
-        
-        # Log rectification stats
         logger.info(
             f"RECTIFICATION: {stats.original_tokens} -> {stats.rectified_tokens} tokens "
             f"({stats.reduction_percent:.1f}% reduction, dropped {stats.messages_dropped} messages)"
         )
-        
         if stats.metadata_stripped:
             logger.info("Metadata stripped from context")
-        
-        # Update request with rectified context
-        data['messages'] = rectified_messages
-        
-        # === GUARDRAIL 3: Coagulation (Generation Cap) ===
-        data['max_tokens'] = min(data.get('max_tokens', 1024), 1024)
 
-        # Strip streaming — the shim doesn't proxy SSE yet.
-        # TODO: proxy SSE chunks through for lower first-token latency.
-        # For now, buffer the full response and return JSON.
-        data.pop('stream', None)
-        
-        # Check backend status
+        data['messages'] = rectified_messages
+        data['max_tokens'] = min(data.get('max_tokens', 1024), 1024)
+        is_stream = data.get('stream', False)
+
         bstatus = backend_status()
         if bstatus['status'] != 'ok':
             logger.warning(f"Backend issue: {bstatus['message']}")
 
-        # Forward to llama-server
         logger.info(f"Forwarding to llama-server at {LLAMA_API_URL}")
-        response = requests.post(LLAMA_API_URL, json=data, timeout=120)
-        response_data = response.json()
+        backend_resp = requests.post(
+            LLAMA_API_URL, json=data,
+            timeout=120, stream=is_stream,
+        )
 
-        # ── Emulated Memory: Store conversation turn ──
-        if MEMORY_MODE and response.status_code == 200:
-            project_id = request.headers.get('X-Project-Id', 'default')
-            session_id = request.headers.get('X-Session-Id', 'default')
-            for _attempt in range(3):
-                try:
-                    emem.db.store_episode(
-                        project_id, session_id, 'user',
-                        current_query if current_query else '(empty)',
-                        token_count=emem.estimate_tokens(current_query)
-                    )
-                    assistant_text = ''
-                    if 'choices' in response_data and response_data['choices']:
-                        choice = response_data['choices'][0]
-                        if 'message' in choice and 'content' in choice['message']:
-                            assistant_text = choice['message']['content']
-                        elif 'text' in choice:
-                            assistant_text = choice['text']
-                    if assistant_text:
-                        emem.db.store_episode(
-                            project_id, session_id, 'assistant',
-                            assistant_text,
-                            token_count=emem.estimate_tokens(assistant_text)
-                        )
-                    if memory_candidates:
-                        emem.update_weights(project_id, assistant_text, memory_candidates)
-                    break
-                except Exception as e:
-                    if _attempt < 2:
-                        logger.warning(f"MEMORY: retry store ({_attempt+1}/3): {e}")
-                        import time; time.sleep(1)
-                    else:
-                        logger.warning(f"MEMORY: Failed to store turn after 3 attempts: {e}")
+        if is_stream:
+            return _proxy_stream(backend_resp, request, memory_candidates, current_query)
+        else:
+            return _proxy_buffered(backend_resp, request, memory_candidates, current_query)
 
-        # Return backend's response
-        return jsonify(response_data), response.status_code
-        
     except requests.exceptions.Timeout:
         logger.error("Backend request timed out")
         return jsonify({"error": "Inference timeout"}), 504
     except Exception as e:
         logger.error(f"Proxy error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+def _proxy_stream(backend_resp, req, memory_candidates, current_query):
+    """Proxy SSE stream from llama-server back to client, then store the turn."""
+
+    def generate():
+        collected = ""
+        try:
+            for chunk in backend_resp.iter_content(chunk_size=None):
+                if chunk:
+                    decoded = chunk.decode('utf-8', errors='replace')
+                    collected += decoded
+                    # Log progress from llama-server SSE events
+                    for line in decoded.split('\n'):
+                        if '"progress"' in line or '"tokens_per_second"' in line:
+                            logger.info(f"llama-server: {line.strip()}")
+                    yield decoded
+        finally:
+            # After the stream ends, store the conversation turn
+            if MEMORY_MODE:
+                _store_turn(backend_resp.status_code, collected, req, memory_candidates, current_query)
+
+    return Response(stream_with_context(generate()),
+                    mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+def _proxy_buffered(backend_resp, req, memory_candidates, current_query):
+    """Buffer full response from llama-server, return JSON, then store turn."""
+    response_data = backend_resp.json()
+    if MEMORY_MODE and backend_resp.status_code == 200:
+        _store_turn(200, json.dumps(response_data), req, memory_candidates, current_query)
+    return jsonify(response_data), backend_resp.status_code
+
+
+def _store_turn(status_code, raw_response, req, memory_candidates, current_query):
+    """Store the conversation turn in the memory DB (with retries on lock)."""
+    if status_code != 200 or not MEMORY_MODE:
+        return
+    project_id = req.headers.get('X-Project-Id', 'default')
+    session_id = req.headers.get('X-Session-Id', 'default')
+    try:
+        response_data = json.loads(raw_response)
+    except Exception:
+        response_data = {}
+    for _attempt in range(3):
+        try:
+            emem.db.store_episode(
+                project_id, session_id, 'user',
+                current_query if current_query else '(empty)',
+                token_count=emem.estimate_tokens(current_query)
+            )
+            assistant_text = ''
+            if 'choices' in response_data and response_data['choices']:
+                choice = response_data['choices'][0]
+                if 'message' in choice and 'content' in choice['message']:
+                    assistant_text = choice['message']['content']
+                elif 'text' in choice:
+                    assistant_text = choice['text']
+            if assistant_text:
+                emem.db.store_episode(
+                    project_id, session_id, 'assistant',
+                    assistant_text,
+                    token_count=emem.estimate_tokens(assistant_text)
+                )
+            if memory_candidates:
+                emem.update_weights(project_id, assistant_text, memory_candidates)
+            break
+        except Exception as e:
+            if _attempt < 2:
+                logger.warning(f"MEMORY: retry store ({_attempt+1}/3): {e}")
+                time.sleep(1)
+            else:
+                logger.warning(f"MEMORY: Failed to store turn after 3 attempts: {e}")
 
 
 @app.route('/v1/models', methods=['GET'])

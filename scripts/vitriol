@@ -36,6 +36,9 @@ DEFAULT_MEMORY_MODE="off"
 DEFAULT_KV_MODE="standard"
 DEFAULT_FROZEN_PROMPT="off"
 DEFAULT_SEMANTIC_MODE="off"
+DEFAULT_KV_QUANT="f16"
+DEFAULT_LOOKUP=0
+DEFAULT_ENGINE_MODE="vitriol-dma"
 
 # ── config vars (set by parse_config) ────────────────────────────
 CFG_DEVICE="$DEFAULT_DEVICE"
@@ -54,6 +57,9 @@ CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
 CFG_SEMANTIC_MODE="$DEFAULT_SEMANTIC_MODE"
+CFG_KV_QUANT="$DEFAULT_KV_QUANT"
+CFG_LOOKUP="$DEFAULT_LOOKUP"
+CFG_ENGINE_MODE="$DEFAULT_ENGINE_MODE"
 
 # ═════════════════════════════════════════════════════════════════
 # CONFIG PARSING
@@ -96,6 +102,9 @@ parse_config() {
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
                 kv.mode)               CFG_KV_MODE="$val" ;;
                 frozen_prompt)         CFG_FROZEN_PROMPT="$val" ;;
+                kv.quant_mode)         CFG_KV_QUANT="$val" ;;
+                lookup_tokens)           CFG_LOOKUP="$val" ;;
+                engine.mode)             CFG_ENGINE_MODE="$val" ;;
             esac
         fi
     done < "$CONFIG_FILE"
@@ -152,6 +161,14 @@ mode = $CFG_KV_MODE
 
 # Frozen prompt: on | off (keep system prompt static to avoid re-prefix)
 frozen_prompt = $CFG_FROZEN_PROMPT
+
+[engine]
+# Execution mode: vitriol-dma | native
+mode = $CFG_ENGINE_MODE
+
+[lookup]
+# Prompt lookup decoding tokens (0 = disabled)
+tokens = $CFG_LOOKUP
 CFGEOF
 }
 
@@ -193,6 +210,10 @@ config_show() {
     print_row "  Semantic Search:     " "${CFG_SEMANTIC_MODE}"
     print_row "KV Mode:               " "${CFG_KV_MODE}"
     print_row "Frozen Prompt:         " "${CFG_FROZEN_PROMPT}"
+    print_row "KV Quant:              " "${CFG_KV_QUANT}"
+    print_row "Prompt Lookup:         " "${CFG_LOOKUP}"
+    echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
+    print_row "Engine Mode:           " "${CFG_ENGINE_MODE}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "Server Host:           " "${CFG_HOST}"
     print_row "Server Port:           " "${CFG_PORT}"
@@ -235,6 +256,9 @@ config_set() {
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
         memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
         kv.mode)               CFG_KV_MODE="$val" ;;
+        kv.quant_mode)         CFG_KV_QUANT="$val" ;;
+        lookup_tokens)          CFG_LOOKUP="$val" ;;
+        engine.mode)           CFG_ENGINE_MODE="$val" ;;
         frozen_prompt)         CFG_FROZEN_PROMPT="$val" ;;
         *) echo "Unknown key: $key"; return 1 ;;
     esac
@@ -270,19 +294,21 @@ tui_main_menu() {
         printf "║  %-37s ║\n" "2) Model Settings"
         printf "║  %-37s ║\n" "3) VITRIOL Mode"
         printf "║  %-37s ║\n" "4) Memory Settings"
-        printf "║  %-37s ║\n" "5) Server Settings"
+        printf "║  %-37s ║\n" "5) Engine Settings"
+        printf "║  %-37s ║\n" "6) Server Settings"
         printf "║  %-37s ║\n" "6) Show Current Config"
         printf "║  %-37s ║\n" "7) Reset to Defaults"
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1-7/q]: " choice
+        read -r -p "Select [1-8/q]: " choice
         case "$choice" in
             1) tui_gpu_menu ;;
             2) tui_model_menu ;;
             3) tui_vitriol_menu ;;
             4) tui_memory_menu ;;
-            5) tui_server_menu ;;
+            5) tui_engine_menu ;;
+            6) tui_server_menu ;;
             6) clear; print_header; config_show; echo ""; read -r -p "Press Enter to continue..." ;;
             7) config_reset; echo ""; read -r -p "Press Enter to continue..." ;;
             q|Q) clear; exit 0 ;;
@@ -321,6 +347,23 @@ tui_gpu_menu() {
                     config_set gpu.exclude_secondary "true"
                 fi
                 ;;
+            5)
+                echo "Options: f16 (FP16, default) | q8_0 (8-bit) | q4_0 (4-bit, max compression)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    f16|q8_0|q4_0) config_set kv.quant_mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            6)
+                echo "Number of tokens to look ahead (0=disabled, 8-32 recommended)"
+                read -r -p "Enter tokens: " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 0 && val <= 128)); then
+                    config_set lookup_tokens "$val"
+                else
+                    echo "Invalid (must be 0-128)"; sleep 1
+                fi
+                ;;
             b|B) return ;;
             q|Q) clear; exit 0 ;;
         esac
@@ -342,7 +385,7 @@ tui_model_menu() {
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1-4/b/q]: " choice
+        read -r -p "Select [1-6/b/q]: " choice
         case "$choice" in
             1)
                 echo "Enter new model path (Tab completion available):"
@@ -376,6 +419,23 @@ tui_model_menu() {
                     echo "Invalid (must be 1-99)"; sleep 1
                 fi
                 ;;
+            5)
+                echo "Options: f16 (FP16, default) | q8_0 (8-bit) | q4_0 (4-bit, max compression)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    f16|q8_0|q4_0) config_set kv.quant_mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            6)
+                echo "Number of tokens to look ahead (0=disabled, 8-32 recommended)"
+                read -r -p "Enter tokens: " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 0 && val <= 128)); then
+                    config_set lookup_tokens "$val"
+                else
+                    echo "Invalid (must be 0-128)"; sleep 1
+                fi
+                ;;
             b|B) return ;;
             q|Q) clear; exit 0 ;;
         esac
@@ -396,7 +456,7 @@ tui_vitriol_menu() {
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1-4/b/q]: " choice
+        read -r -p "Select [1-6/b/q]: " choice
         case "$choice" in
             1)
                 echo "Modes: stream (RAM Shot + LRU) | sync | async | off"
@@ -421,6 +481,23 @@ tui_vitriol_menu() {
                     config_set vitriol.verbose "true"
                 fi
                 ;;
+            5)
+                echo "Options: f16 (FP16, default) | q8_0 (8-bit) | q4_0 (4-bit, max compression)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    f16|q8_0|q4_0) config_set kv.quant_mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            6)
+                echo "Number of tokens to look ahead (0=disabled, 8-32 recommended)"
+                read -r -p "Enter tokens: " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 0 && val <= 128)); then
+                    config_set lookup_tokens "$val"
+                else
+                    echo "Invalid (must be 0-128)"; sleep 1
+                fi
+                ;;
             b|B) return ;;
             q|Q) clear; exit 0 ;;
         esac
@@ -438,11 +515,13 @@ tui_memory_menu() {
         printf "║  %-37s ║\n" "2) KV Mode           [${CFG_KV_MODE}]"
         printf "║  %-37s ║\n" "3) Frozen Prompt     [${CFG_FROZEN_PROMPT}]"
         printf "║  %-37s ║\n" "4) Semantic Search   [${CFG_SEMANTIC_MODE}]"
+        printf "║  %-37s ║\n" "5) KV Quant          [${CFG_KV_QUANT}]"
+        printf "║  %-37s ║\n" "6) Prompt Lookup     [${CFG_LOOKUP}]"
         printf "║  %-37s ║\n" "b) Back to Main Menu"
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1-4/b/q]: " choice
+        read -r -p "Select [1-6/b/q]: " choice
         case "$choice" in
             1)
                 echo "Modes: on (emulated memory) | off (direct)"
@@ -476,11 +555,57 @@ tui_memory_menu() {
                     *) echo "Invalid mode"; sleep 1 ;;
                 esac
                 ;;
+            5)
+                echo "Options: f16 (FP16, default) | q8_0 (8-bit) | q4_0 (4-bit, max compression)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    f16|q8_0|q4_0) config_set kv.quant_mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            6)
+                echo "Number of tokens to look ahead (0=disabled, 8-32 recommended)"
+                read -r -p "Enter tokens: " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 0 && val <= 128)); then
+                    config_set lookup_tokens "$val"
+                else
+                    echo "Invalid (must be 0-128)"; sleep 1
+                fi
+                ;;
             b|B) return ;;
             q|Q) clear; exit 0 ;;
         esac
     done
 }
+
+tui_engine_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║          Engine Settings                  ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) Engine Mode      [${CFG_ENGINE_MODE}]"
+        printf "║  %-37s ║\n" "b) Back to Main Menu"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1/b/q]: " choice
+        case "$choice" in
+            1)
+                echo "Modes: vitriol-dma (RAM Shot + LRU, default) | native (standard llama.cpp)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    vitriol-dma|native) config_set engine.mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            b|B) return ;;
+            q|Q) clear; exit 0 ;;
+        esac
+    done
+}
+
 
 tui_server_menu() {
     while true; do
@@ -496,7 +621,7 @@ tui_server_menu() {
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1-4/b/q]: " choice
+        read -r -p "Select [1-6/b/q]: " choice
         case "$choice" in
             1)
                 read -r -p "Enter host address: " val
@@ -518,6 +643,23 @@ tui_server_menu() {
                     config_set server.parallel "$val"
                 else
                     echo "Invalid (must be 1-8)"; sleep 1
+                fi
+                ;;
+            5)
+                echo "Options: f16 (FP16, default) | q8_0 (8-bit) | q4_0 (4-bit, max compression)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    f16|q8_0|q4_0) config_set kv.quant_mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            6)
+                echo "Number of tokens to look ahead (0=disabled, 8-32 recommended)"
+                read -r -p "Enter tokens: " val
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 0 && val <= 128)); then
+                    config_set lookup_tokens "$val"
+                else
+                    echo "Invalid (must be 0-128)"; sleep 1
                 fi
                 ;;
             b|B) return ;;
@@ -618,6 +760,9 @@ case "$CMD" in
         CLI_KV_MODE=""
         CLI_FROZEN_PROMPT=""
         CLI_SEMANTIC_MODE=""
+        CLI_KV_QUANT=""
+        CLI_LOOKUP=""
+        CLI_ENGINE_MODE=""
         DRY_RUN=false
 
         while [[ $# -gt 0 ]]; do
@@ -632,6 +777,9 @@ case "$CMD" in
                 --kv-mode) CLI_KV_MODE="$2"; shift 2 ;;
                 --frozen-prompt) CLI_FROZEN_PROMPT="$2"; shift 2 ;;
                 --semantic-mode) CLI_SEMANTIC_MODE="$2"; shift 2 ;;
+                --kv-quant) CLI_KV_QUANT="$2"; shift 2 ;;
+                --lookup) CLI_LOOKUP="$2"; shift 2 ;;
+                --engine-mode) CLI_ENGINE_MODE="$2"; shift 2 ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift ;;
                 -h|--help) usage; exit 0 ;;
@@ -651,6 +799,9 @@ case "$CMD" in
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
+        KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
+        LOOKUP="${CLI_LOOKUP:-${CFG_LOOKUP}}"
+        ENGINE_MODE="${CLI_ENGINE_MODE:-${CLI_ENGINE_MODE:-${CFG_ENGINE_MODE}}}"
         VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
         DEVICE="${CFG_DEVICE}"
 
@@ -701,6 +852,9 @@ case "$CMD" in
         echo "  KV Mode:     $KV_MODE"
         echo "  Frozen:      $FROZEN_PROMPT"
         echo "  Semantic:    $SEMANTIC_MODE"
+        echo "  KV Quant:    $KV_QUANT"
+        echo "  Lookup:      $LOOKUP"
+        echo "  Engine:      $ENGINE_MODE"
         echo "  Binary:      $BINARY"
         echo "  Port:        $PORT"
         [[ "$VERBOSE" == "true" ]] && echo "  Logging:     verbose"
@@ -726,6 +880,9 @@ case "$CMD" in
             VITRIOL_KV_MODE="$KV_MODE" \
             VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
             VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+            VITRIOL_KV_QUANT="$KV_QUANT" \
+            VITRIOL_LOOKUP="$LOOKUP" \
+            VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
             $ENV_VERBOSE \
             "$BINARY" \
             -m "$MODEL" \
@@ -751,6 +908,9 @@ case "$CMD" in
         CLI_KV_MODE=""
         CLI_FROZEN_PROMPT=""
         CLI_SEMANTIC_MODE=""
+        CLI_KV_QUANT=""
+        CLI_LOOKUP=""
+        CLI_ENGINE_MODE=""
         DETACH=false
         DRY_RUN=false
 
@@ -768,6 +928,9 @@ case "$CMD" in
                 --kv-mode) CLI_KV_MODE="$2"; shift 2 ;;
                 --frozen-prompt) CLI_FROZEN_PROMPT="$2"; shift 2 ;;
                 --semantic-mode) CLI_SEMANTIC_MODE="$2"; shift 2 ;;
+                --kv-quant) CLI_KV_QUANT="$2"; shift 2 ;;
+                --lookup) CLI_LOOKUP="$2"; shift 2 ;;
+                --engine-mode) CLI_ENGINE_MODE="$2"; shift 2 ;;
                 --detach) DETACH=true; shift ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift ;;
@@ -789,6 +952,9 @@ case "$CMD" in
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
+        KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
+        LOOKUP="${CLI_LOOKUP:-${CFG_LOOKUP}}"
+        ENGINE_MODE="${CLI_ENGINE_MODE:-${CLI_ENGINE_MODE:-${CFG_ENGINE_MODE}}}"
         VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
         DEVICE="${CFG_DEVICE}"
 
@@ -833,6 +999,9 @@ case "$CMD" in
         echo "  KV Mode:     $KV_MODE"
         echo "  Frozen:      $FROZEN_PROMPT"
         echo "  Semantic:    $SEMANTIC_MODE"
+        echo "  KV Quant:    $KV_QUANT"
+        echo "  Lookup:      $LOOKUP"
+        echo "  Engine:      $ENGINE_MODE"
         if [[ "$MEMORY_MODE" == "on" ]]; then
             LLAMA_PORT=$((PORT - 1))
             echo "  Server:      http://${HOST}:${LLAMA_PORT} (llama-server, internal)"
@@ -867,6 +1036,9 @@ case "$CMD" in
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+                    VITRIOL_KV_QUANT="$KV_QUANT" \
+                    VITRIOL_LOOKUP="$LOOKUP" \
+                    VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     $ENV_VERBOSE \
                     nohup "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -887,6 +1059,9 @@ case "$CMD" in
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+                    VITRIOL_KV_QUANT="$KV_QUANT" \
+                    VITRIOL_LOOKUP="$LOOKUP" \
+                    VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     LLAMA_API_URL="http://${HOST}:${LLAMA_PORT}/v1/chat/completions" \
                     LLAMA_STATUS_URL="http://${HOST}:${LLAMA_PORT}/health" \
                     SHIM_PORT="$PORT" \
@@ -903,6 +1078,9 @@ case "$CMD" in
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+                    VITRIOL_KV_QUANT="$KV_QUANT" \
+                    VITRIOL_LOOKUP="$LOOKUP" \
+                    VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     $ENV_VERBOSE \
                     nohup "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -941,6 +1119,9 @@ case "$CMD" in
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+                    VITRIOL_KV_QUANT="$KV_QUANT" \
+                    VITRIOL_LOOKUP="$LOOKUP" \
+                    VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     $ENV_VERBOSE \
                     "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -964,6 +1145,9 @@ case "$CMD" in
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+                    VITRIOL_KV_QUANT="$KV_QUANT" \
+                    VITRIOL_LOOKUP="$LOOKUP" \
+                    VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     LLAMA_API_URL="http://${HOST}:${LLAMA_PORT}/v1/chat/completions" \
                     LLAMA_STATUS_URL="http://${HOST}:${LLAMA_PORT}/health" \
                     SHIM_PORT="$PORT" \
@@ -976,6 +1160,9 @@ case "$CMD" in
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
+                    VITRIOL_KV_QUANT="$KV_QUANT" \
+                    VITRIOL_LOOKUP="$LOOKUP" \
+                    VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     $ENV_VERBOSE \
                     "$SERVER_BINARY" \
                     -m "$MODEL" \

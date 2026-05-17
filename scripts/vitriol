@@ -33,6 +33,8 @@ DEFAULT_DEVICE=0
 DEFAULT_EXCLUDE_SECONDARY=true
 DEFAULT_VERBOSE=false
 DEFAULT_MEMORY_MODE="off"
+DEFAULT_KV_MODE="standard"
+DEFAULT_FROZEN_PROMPT="off"
 
 # ── config vars (set by parse_config) ────────────────────────────
 CFG_DEVICE="$DEFAULT_DEVICE"
@@ -48,6 +50,8 @@ CFG_PORT="$DEFAULT_PORT"
 CFG_HOST="$DEFAULT_HOST"
 CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
+CFG_KV_MODE="$DEFAULT_KV_MODE"
+CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
 
 # ═════════════════════════════════════════════════════════════════
 # CONFIG PARSING
@@ -87,6 +91,8 @@ parse_config() {
                 server.parallel)       CFG_PARALLEL="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
+                kv.mode)               CFG_KV_MODE="$val" ;;
+                frozen_prompt)         CFG_FROZEN_PROMPT="$val" ;;
             esac
         fi
     done < "$CONFIG_FILE"
@@ -134,6 +140,13 @@ parallel = $CFG_PARALLEL
 [memory]
 # Emulated memory mode: on | off
 mode = $CFG_MEMORY_MODE
+
+[kv]
+# KV cache mode: standard | offload | sparse
+mode = $CFG_KV_MODE
+
+# Frozen prompt: on | off (keep system prompt static to avoid re-prefix)
+frozen_prompt = $CFG_FROZEN_PROMPT
 CFGEOF
 }
 
@@ -172,6 +185,8 @@ config_show() {
     print_row "Verbose:               " "${CFG_VERBOSE}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "Memory Mode:           " "${CFG_MEMORY_MODE}"
+    print_row "KV Mode:               " "${CFG_KV_MODE}"
+    print_row "Frozen Prompt:         " "${CFG_FROZEN_PROMPT}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "Server Host:           " "${CFG_HOST}"
     print_row "Server Port:           " "${CFG_PORT}"
@@ -212,6 +227,8 @@ config_set() {
         server.parallel)       CFG_PARALLEL="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
+        kv.mode)               CFG_KV_MODE="$val" ;;
+        frozen_prompt)         CFG_FROZEN_PROMPT="$val" ;;
         *) echo "Unknown key: $key"; return 1 ;;
     esac
     write_config
@@ -408,20 +425,38 @@ tui_memory_menu() {
         clear
         print_header
         echo "╔══════════════════════════════════════════╗"
-        echo "║          Memory Mode Settings            ║"
+        echo "║          Context & Memory Settings       ║"
         echo "╠══════════════════════════════════════════╣"
         printf "║  %-37s ║\n" "1) Memory Mode      [${CFG_MEMORY_MODE}]"
+        printf "║  %-37s ║\n" "2) KV Mode           [${CFG_KV_MODE}]"
+        printf "║  %-37s ║\n" "3) Frozen Prompt     [${CFG_FROZEN_PROMPT}]"
         printf "║  %-37s ║\n" "b) Back to Main Menu"
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1/b/q]: " choice
+        read -r -p "Select [1-3/b/q]: " choice
         case "$choice" in
             1)
                 echo "Modes: on (emulated memory) | off (direct)"
                 read -r -p "Enter mode: " val
                 case "$val" in
                     on|off) config_set memory.mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            2)
+                echo "Modes: standard (default) | offload (system RAM) | sparse (attention eviction)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    standard|offload|sparse) config_set kv.mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            3)
+                echo "Options: on (keep system prompt frozen) | off (default)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    on|off) config_set frozen_prompt "$val" ;;
                     *) echo "Invalid mode"; sleep 1 ;;
                 esac
                 ;;
@@ -510,28 +545,32 @@ usage() {
   vitriol help               this message
 
 Run options:
-  -m PATH        model file path
-  -c N           context window (tokens)
-  -t N           CPU threads
-  -ngl N         GPU layers to offload
-  -lru MB        LRU VRAM cache size
-  --memory-mode MODE  emulated memory: on | off (default: off)
-  --verbose      enable debug logging
-  --dry-run      print config without launching
+  -m PATH            model file path
+  -c N               context window (tokens)
+  -t N               CPU threads
+  -ngl N             GPU layers to offload
+  -lru MB            LRU VRAM cache size
+  --memory-mode MODE emulated memory: on | off
+  --kv-mode MODE     KV cache: standard | offload | sparse
+  --frozen-prompt M  frozen prompt caching: on | off
+  --verbose          enable debug logging
+  --dry-run          print config without launching
 
 Serve options:
-  -m PATH        model file path
-  -c N           context window (tokens)
-  -t N           CPU threads
-  -ngl N         GPU layers to offload
-  -lru MB        LRU VRAM cache size
-  --host ADDR    server bind address (default: $DEFAULT_HOST)
-  -port N        server port (default: $DEFAULT_PORT)
-  -p N           parallel slots (default: $DEFAULT_PARALLEL)
-  --memory-mode MODE  emulated memory: on | off (default: off)
-  --detach       run server in background
-  --verbose      enable debug logging
-  --dry-run      print config without launching
+  -m PATH            model file path
+  -c N               context window (tokens)
+  -t N               CPU threads
+  -ngl N             GPU layers to offload
+  -lru MB            LRU VRAM cache size
+  --host ADDR        bind address (default: $DEFAULT_HOST)
+  -port N            server port (default: $DEFAULT_PORT)
+  -p N               parallel slots (default: $DEFAULT_PARALLEL)
+  --memory-mode MODE emulated memory: on | off
+  --kv-mode MODE     KV cache: standard | offload | sparse
+  --frozen-prompt M  frozen prompt caching: on | off
+  --detach           run server in background
+  --verbose          enable debug logging
+  --dry-run          print config without launching
 
 All options can be persisted via: vitriol config
 
@@ -557,6 +596,9 @@ case "$CMD" in
         CLI_PORT=""
         CLI_LRU_MB=""
         CLI_VERBOSE=""
+        CLI_MEMORY_MODE=""
+        CLI_KV_MODE=""
+        CLI_FROZEN_PROMPT=""
         DRY_RUN=false
 
         while [[ $# -gt 0 ]]; do
@@ -568,6 +610,8 @@ case "$CMD" in
                 -lru) CLI_LRU_MB="$2"; shift 2 ;;
                 -port) CLI_PORT="$2"; shift 2 ;;
                 --memory-mode) CLI_MEMORY_MODE="$2"; shift 2 ;;
+                --kv-mode) CLI_KV_MODE="$2"; shift 2 ;;
+                --frozen-prompt) CLI_FROZEN_PROMPT="$2"; shift 2 ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift ;;
                 -h|--help) usage; exit 0 ;;
@@ -584,6 +628,8 @@ case "$CMD" in
         LRU_MB="${CLI_LRU_MB:-${CFG_LRU_MB}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
+        KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
+        FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
         DEVICE="${CFG_DEVICE}"
 
@@ -630,6 +676,8 @@ case "$CMD" in
         [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
         echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
         echo "  Memory Mode: $MEMORY_MODE"
+        echo "  KV Mode:     $KV_MODE"
+        echo "  Frozen:      $FROZEN_PROMPT"
         echo "  Binary:      $BINARY"
         echo "  Port:        $PORT"
         [[ "$VERBOSE" == "true" ]] && echo "  Logging:     verbose"
@@ -652,6 +700,8 @@ case "$CMD" in
             VITRIOL_MODE="$MODE" \
             VITRIOL_LRU_MB="$LRU_MB" \
             VITRIOL_MEMORY_MODE="$MEMORY_MODE" \
+            VITRIOL_KV_MODE="$KV_MODE" \
+            VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
             $ENV_VERBOSE \
             "$BINARY" \
             -m "$MODEL" \
@@ -674,6 +724,8 @@ case "$CMD" in
         CLI_PARALLEL=""
         CLI_VERBOSE=""
         CLI_MEMORY_MODE=""
+        CLI_KV_MODE=""
+        CLI_FROZEN_PROMPT=""
         DETACH=false
         DRY_RUN=false
 
@@ -688,6 +740,8 @@ case "$CMD" in
                 -port) CLI_PORT="$2"; shift 2 ;;
                 -p) CLI_PARALLEL="$2"; shift 2 ;;
                 --memory-mode) CLI_MEMORY_MODE="$2"; shift 2 ;;
+                --kv-mode) CLI_KV_MODE="$2"; shift 2 ;;
+                --frozen-prompt) CLI_FROZEN_PROMPT="$2"; shift 2 ;;
                 --detach) DETACH=true; shift ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift ;;
@@ -706,6 +760,8 @@ case "$CMD" in
         PARALLEL="${CLI_PARALLEL:-${CFG_PARALLEL}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
+        KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
+        FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
         DEVICE="${CFG_DEVICE}"
 
@@ -741,18 +797,20 @@ case "$CMD" in
         [[ -f "$HEADER_FILE" ]] && cat "$HEADER_FILE"
         echo ""
         echo "═══ VITRIOL Server ═══"
-        echo "  Model:     $(basename "$MODEL") ($MODEL_SIZE)"
-        echo "  Context:   $CTX tokens"
-        echo "  Mode:      $MODE (RAM Shot + LRU cache)"
-        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:       $LRU_MB MB VRAM cache"
-        echo "  GPU:       Device $DEVICE (GTX 1070 Ti)"
-        echo "  Memory:    $MEMORY_MODE"
+        echo "  Model:       $(basename "$MODEL") ($MODEL_SIZE)"
+        echo "  Context:     $CTX tokens"
+        echo "  Mode:        $MODE (RAM Shot + LRU cache)"
+        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
+        echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
+        echo "  Memory:      $MEMORY_MODE"
+        echo "  KV Mode:     $KV_MODE"
+        echo "  Frozen:      $FROZEN_PROMPT"
         if [[ "$MEMORY_MODE" == "on" ]]; then
             LLAMA_PORT=$((PORT - 1))
-            echo "  Server:    http://${HOST}:${LLAMA_PORT} (llama-server, internal)"
-            echo "  Proxy:     http://${HOST}:${PORT} (VITRIOL shim, memory intercept)"
+            echo "  Server:      http://${HOST}:${LLAMA_PORT} (llama-server, internal)"
+            echo "  Proxy:       http://${HOST}:${PORT} (VITRIOL shim, memory intercept)"
         else
-            echo "  Server:    http://${HOST}:${PORT}"
+            echo "  Server:      http://${HOST}:${PORT}"
         fi
         echo "  Slots:     $PARALLEL parallel"
         [[ "$VERBOSE" == "true" ]] && echo "  Logging:   verbose"
@@ -778,6 +836,8 @@ case "$CMD" in
                     CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
+                    VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     $ENV_VERBOSE \
                     nohup "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -795,6 +855,8 @@ case "$CMD" in
                 # Start Python shim on external port
                 env \
                     VITRIOL_MEMORY_MODE=on \
+                    VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     LLAMA_API_URL="http://${HOST}:${LLAMA_PORT}/v1/chat/completions" \
                     LLAMA_STATUS_URL="http://${HOST}:${LLAMA_PORT}/health" \
                     SHIM_PORT="$PORT" \
@@ -808,6 +870,8 @@ case "$CMD" in
                     CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
+                    VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     $ENV_VERBOSE \
                     nohup "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -843,6 +907,8 @@ case "$CMD" in
                     CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
+                    VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     $ENV_VERBOSE \
                     "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -863,6 +929,8 @@ case "$CMD" in
                 echo "  Starting VITRIOL memory shim on port $PORT..."
                 env \
                     VITRIOL_MEMORY_MODE=on \
+                    VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     LLAMA_API_URL="http://${HOST}:${LLAMA_PORT}/v1/chat/completions" \
                     LLAMA_STATUS_URL="http://${HOST}:${LLAMA_PORT}/health" \
                     SHIM_PORT="$PORT" \
@@ -872,6 +940,8 @@ case "$CMD" in
                     CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
+                    VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     $ENV_VERBOSE \
                     "$SERVER_BINARY" \
                     -m "$MODEL" \

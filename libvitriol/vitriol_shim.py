@@ -66,6 +66,11 @@ CONTEXT_STRATEGY = os.environ.get('CONTEXT_STRATEGY', 'stream')
 CONTEXT_STREAM_TOP_K = int(os.environ.get('CONTEXT_STREAM_TOP_K', '3'))
 CONTEXT_STREAM_RELEVANCE_THRESHOLD = float(os.environ.get('CONTEXT_STREAM_RELEVANCE_THRESHOLD', '0.3'))
 
+# Frozen prompt caching
+FROZEN_PROMPT = os.environ.get('VITRIOL_FROZEN_PROMPT', 'off').lower() == 'on'
+# Track the last frozen prefix hash to detect changes
+_last_frozen_hash: Optional[int] = None
+
 
 @dataclass
 class RectificationStats:
@@ -290,7 +295,7 @@ def sublimate_content(content: str) -> str:
     return content.strip()
 
 
-def rectify_context(messages: List[Dict[str, Any]], current_query: str = "") -> tuple[List[Dict[str, Any]], RectificationStats]:
+def rectify_context(messages: List[Dict[str, Any]], current_query: str = "", frozen_count: int = 0) -> tuple[List[Dict[str, Any]], RectificationStats]:
     """
     Perform alchemical rectification on message context.
     
@@ -315,9 +320,16 @@ def rectify_context(messages: List[Dict[str, Any]], current_query: str = "") -> 
         for m in messages
     )
     
-    # Context Offloading: Archive old messages to SSD
-    if CONTEXT_STRATEGY in ['ssd', 'hybrid', 'stream'] and len(messages) > MAX_MESSAGES_TO_KEEP:
-        messages_to_archive = messages[:-MAX_MESSAGES_TO_KEEP]
+    # Separate frozen prefix from active messages
+    active_messages = messages
+    frozen_prefix = []
+    if frozen_count > 0 and frozen_count <= len(messages):
+        frozen_prefix = messages[:frozen_count]
+        active_messages = messages[frozen_count:]
+    
+    # Context Offloading: Archive old messages to SSD (active messages only)
+    if CONTEXT_STRATEGY in ['ssd', 'hybrid', 'stream'] and len(active_messages) > MAX_MESSAGES_TO_KEEP:
+        messages_to_archive = active_messages[:-MAX_MESSAGES_TO_KEEP]
         archive_path = archive_context_to_ssd(messages_to_archive)
         if archive_path:
             logger.info(f"Archived {len(messages_to_archive)} messages to SSD")
@@ -329,22 +341,22 @@ def rectify_context(messages: List[Dict[str, Any]], current_query: str = "") -> 
         if streamed_messages:
             logger.info(f"Streaming {len(streamed_messages)} relevant context messages from SSD")
     
-    # 1. Calcination: Truncate middle messages
+    # 1. Calcination: Truncate middle messages (active messages only)
     messages_dropped = 0
-    if len(messages) > MAX_MESSAGES_TO_KEEP:
+    if len(active_messages) > MAX_MESSAGES_TO_KEEP:
         # Always keep system prompt (first message if role=system)
         system_msg = None
-        if messages[0].get('role') == 'system':
-            system_msg = messages[0]
-            messages = messages[1:]
+        if active_messages[0].get('role') == 'system':
+            system_msg = active_messages[0]
+            active_messages = active_messages[1:]
         
         # Keep only the last N messages
-        messages_dropped = len(messages) - MAX_MESSAGES_TO_KEEP
-        messages = messages[-MAX_MESSAGES_TO_KEEP:]
+        messages_dropped = len(active_messages) - MAX_MESSAGES_TO_KEEP
+        active_messages = active_messages[-MAX_MESSAGES_TO_KEEP:]
         
         # Restore system message
         if system_msg:
-            messages = [system_msg] + messages
+            active_messages = [system_msg] + active_messages
     
     # Inject streamed context as system message
     if streamed_messages:
@@ -354,14 +366,14 @@ def rectify_context(messages: List[Dict[str, Any]], current_query: str = "") -> 
         streamed_text += "[End Context]\n\n"
         
         # Add as system message or append to existing system message
-        if messages and messages[0].get('role') == 'system':
-            messages[0]['content'] += streamed_text
+        if active_messages and active_messages[0].get('role') == 'system':
+            active_messages[0]['content'] += streamed_text
         else:
-            messages.insert(0, {'role': 'system', 'content': streamed_text})
+            active_messages.insert(0, {'role': 'system', 'content': streamed_text})
     
-    # 2. Sublimation: Strip metadata from each message
+    # 2. Sublimation: Strip metadata from each message (active only)
     metadata_stripped = False
-    for msg in messages:
+    for msg in active_messages:
         if 'content' in msg:
             original_len = len(msg['content'])
             msg['content'] = sublimate_content(msg['content'])
@@ -377,6 +389,9 @@ def rectify_context(messages: List[Dict[str, Any]], current_query: str = "") -> 
         if 'tool_calls' in msg:
             msg['tool_calls'] = [{'id': tc.get('id', '')} for tc in msg['tool_calls']]
             metadata_stripped = True
+    
+    # Reassemble: frozen prefix + rectified active messages
+    messages = frozen_prefix + active_messages
     
     # Calculate final token count
     rectified_tokens = sum(
@@ -482,8 +497,30 @@ def proxy_chat_completions():
             if emem.consolidate._consolidation_thread:
                 emem.consolidate._consolidation_thread.mark_active()
 
+        # ── Frozen Prompt Caching ──
+        # Protect system prompt and tool messages from modification so llama.cpp
+        # can reuse cached KV entries for the stable prefix.
+        frozen_count = 0
+        if FROZEN_PROMPT:
+            for i, m in enumerate(messages):
+                if m.get('role') == 'system' or m.get('role') == 'tool':
+                    frozen_count = i + 1
+                else:
+                    break
+            if frozen_count > 0:
+                # Take a hash of the frozen prefix to detect changes
+                frozen_text = '|'.join(
+                    str(m.get('content', '')) + str(m.get('role', ''))
+                    for m in messages[:frozen_count]
+                )
+                import hashlib
+                frozen_hash = hashlib.md5(frozen_text.encode()).digest()
+                logger.info(
+                    f"FROZEN: {frozen_count} messages preserved as stable prefix"
+                )
+
         # === GUARDRAIL 1 & 2: Context Rectification with Streaming ===
-        rectified_messages, stats = rectify_context(messages, current_query)
+        rectified_messages, stats = rectify_context(messages, current_query, frozen_count)
         
         # Log rectification stats
         logger.info(

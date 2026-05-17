@@ -413,4 +413,38 @@ Available via CLI flag, env var, config key `memory.semantic_mode`, and TUI (opt
 
 ---
 
-*Last updated: 2026-05-17 18:30 CEST*
+## Experiment 13: Predictive Prefetching (`VITRIOL_PREDICTIVE_PREFETCH=1`)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-05-17 |
+| **Approach** | Heuristic: store expert IDs from previous `ggml_cuda_mul_mat_id` call, prefetch same experts via async DMA before next call's device→host ID copy completes |
+| **Status** | 💡 Implemented, built, untested (no end-to-end run yet) |
+
+### Implementation
+
+Three hooks in the MoE matmul path:
+
+1. **`vitriol_predictor_prefetch()`** — called at the START of `ggml_cuda_mul_mat_id` (before `cudaMemcpyAsync` of `ids` tensor). Iterates the previous call's expert indices and fires `vitriol_lru_prefetch()` for each via the dedicated LRU CUDA stream.
+
+2. **`vitriol_predictor_update()`** — called at the END of `ggml_cuda_mul_mat_id` (after `get_rows_cuda` scatter). Iterates `tokens_per_expert[]` to collect unique expert indices used in this invocation. Stores them for next call's prefetch.
+
+3. **Control** — `VITRIOL_PREDICTIVE_PREFETCH=1` env var sets `g_vitriol_config.async_prefetch = true` in `vitriol_cuda_init()`.
+
+### Expected Impact
+
+- Heuristic hit rate: 60-70% (MoE routing is layer-correlated; adjacent layers tend to activate similar expert sets)
+- Overlap: prefetch DMA runs concurrently with the device→host `ids` copy + `cudaStreamSynchronize` at start of `ggml_cuda_mul_mat_id`
+- Miss cost: synchronous load via `vitriol_lru_ensure()` fallback (existing behavior)
+- Net gain: +10-20% tok/s when heuristic hits, zero regression on misses
+
+### Limitations
+
+- Heuristic only (no learned predictor yet). A proper linear probe (~1K params) could raise hit rate to 85-90%.
+- Only prefetches from the immediately preceding layer; does not look further ahead.
+
+**Modified:** `vitriol-cuda-integration.h/.cpp`, `ggml-cuda.cu`, `llama.cpp-patches/`.
+
+---
+
+*Last updated: 2026-05-17 19:00 CEST*

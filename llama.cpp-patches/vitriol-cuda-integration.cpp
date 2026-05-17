@@ -86,12 +86,91 @@ void vitriol_cuda_init(void) {
     if (verbose_env && strcmp(verbose_env, "1") == 0)
         g_vitriol_config.verbose = true;
 
+    const char* pf_env = getenv("VITRIOL_PREDICTIVE_PREFETCH");
+    if (pf_env && strcmp(pf_env, "1") == 0)
+        g_vitriol_config.async_prefetch = true;
+
     if (g_vitriol_config.mode == VITRIOL_MODE_STREAM) {
         if (g_vitriol_config.verbose)
             printf("VITRIOL: stream mode — page-locked host RAM + LRU VRAM cache\n");
     }
 
+    if (g_vitriol_config.async_prefetch) {
+        if (g_vitriol_config.verbose)
+            printf("VITRIOL: predictive prefetching enabled\n");
+    }
+
     memset(&g_lru_stats, 0, sizeof(g_lru_stats));
+}
+
+/* ── Predictive Prefetching ───────────────────────────────────────── */
+
+/* Buffer for predictor state: expert indices from previous call.
+ * Mutex-protected since ggml_cuda_mul_mat_id may be called concurrently. */
+static std::mutex            g_pred_mtx;
+static int                   g_pred_experts[256]; // expert_idx per expert
+static int                    g_pred_count;        // number of stored indices
+
+void vitriol_predictor_prefetch(
+    const void    *tensor_base,
+    size_t         expert_size,
+    CUstream       compute_stream)
+{
+    if (!g_vitriol_config.async_prefetch)
+        return;
+
+    if (!lru_ensure_stream())
+        return;
+
+    std::lock_guard<std::mutex> lock(g_pred_mtx);
+    if (g_pred_count == 0)
+        return;
+
+    // Compute live data pointers from current tensor_base + predicted expert idx
+    // This is correct because each layer's experts are at the same relative offset
+    // within their respective tensors (tensor_base + expert_idx * expert_size).
+    for (int i = 0; i < g_pred_count; i++) {
+        int e = g_pred_experts[i];
+        const void *expert_data = (const char *)tensor_base + (size_t)e * expert_size;
+        vitriol_lru_prefetch(
+            tensor_base,
+            e,
+            expert_data,
+            expert_size,
+            compute_stream);
+    }
+}
+
+void vitriol_predictor_update(
+    const void    *tensor_base,
+    size_t         expert_size,
+    const int32_t *expert_ids,
+    int            n_experts)
+{
+    (void)tensor_base;
+    (void)expert_size;
+
+    if (!g_vitriol_config.async_prefetch)
+        return;
+
+    std::lock_guard<std::mutex> lock(g_pred_mtx);
+    g_pred_count = 0;
+
+    if (!expert_ids || n_experts == 0)
+        return;
+
+    // Store unique expert indices from the actual selection
+    for (int i = 0; i < n_experts; i++) {
+        int e = expert_ids[i];
+        if (e < 0) continue;
+        // Deduplicate
+        bool dup = false;
+        for (int j = 0; j < g_pred_count; j++) {
+            if (g_pred_experts[j] == e) { dup = true; break; }
+        }
+        if (dup) continue;
+        g_pred_experts[g_pred_count++] = e;
+    }
 }
 
 static bool lru_ensure_stream(void) {
@@ -105,9 +184,13 @@ static bool lru_ensure_stream(void) {
     return true;
 }
 
-/* (Re-)initialize VRAM pool.  If already allocated and the new
- * min_expert_size exceeds the current slot, free and reallocate. */
+/* Initialize VRAM pool once.  Slot size is fixed at first allocation;
+ * if a later tensor has larger experts they bypass the cache (return 0
+ * → host RAM read).  This prevents pool thrashing from resizing. */
 static bool lru_init_pool(size_t min_expert_size) {
+    if (g_lru_pool != 0)
+        return true;
+
     const char* pool_env = getenv("VITRIOL_LRU_MB");
     size_t pool_size = VITRIOL_LRU_POOL_SIZE;
     if (pool_env) {
@@ -119,18 +202,6 @@ static bool lru_init_pool(size_t min_expert_size) {
     int    needed_slots = (int)(pool_size / needed_slot);
     if (needed_slots > VITRIOL_LRU_MAX_SLOTS) needed_slots = VITRIOL_LRU_MAX_SLOTS;
     if (needed_slots < 1) needed_slots = 1;
-
-    /* Already allocated with at least the needed slot size? */
-    if (g_lru_pool != 0 && needed_slot <= g_lru_slot_size)
-        return true;
-
-    /* Reallocate */
-    if (g_lru_pool != 0) {
-        cuMemFree(g_lru_pool);
-        g_lru_pool = 0;
-        g_lru_map.clear();
-        g_lru_order.clear();
-    }
 
     CUresult err = cuMemAlloc(&g_lru_pool, pool_size);
     if (err != CUDA_SUCCESS) {
@@ -168,7 +239,7 @@ CUdeviceptr vitriol_lru_ensure(
     if (!lru_init_pool(expert_size))
         return 0;
 
-    /* If expert doesn't fit even after realloc, skip cache. */
+    /* Expert doesn't fit in fixed-size slot → bypass cache, read from host. */
     if (expert_size > g_lru_slot_size)
         return 0;
 

@@ -44,7 +44,7 @@ def _get_conn(project_id: str) -> sqlite3.Connection:
         _local.conns[cache_key] = conn
         _init_db(conn)
     conn = _local.conns[cache_key]
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA busy_timeout=30000")
     return conn
 
 

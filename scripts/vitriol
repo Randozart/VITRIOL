@@ -32,6 +32,7 @@ DEFAULT_LRU_MB=512
 DEFAULT_DEVICE=0
 DEFAULT_EXCLUDE_SECONDARY=true
 DEFAULT_VERBOSE=false
+DEFAULT_MEMORY_MODE="off"
 
 # ── config vars (set by parse_config) ────────────────────────────
 CFG_DEVICE="$DEFAULT_DEVICE"
@@ -46,6 +47,7 @@ CFG_VERBOSE="$DEFAULT_VERBOSE"
 CFG_PORT="$DEFAULT_PORT"
 CFG_HOST="$DEFAULT_HOST"
 CFG_PARALLEL="$DEFAULT_PARALLEL"
+CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 
 # ═════════════════════════════════════════════════════════════════
 # CONFIG PARSING
@@ -84,6 +86,7 @@ parse_config() {
                 server.host)           CFG_HOST="$val" ;;
                 server.parallel)       CFG_PARALLEL="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
+                memory.mode)           CFG_MEMORY_MODE="$val" ;;
             esac
         fi
     done < "$CONFIG_FILE"
@@ -127,6 +130,10 @@ host = $CFG_HOST
 port = $CFG_PORT
 # Parallel slots for concurrent requests
 parallel = $CFG_PARALLEL
+
+[memory]
+# Emulated memory mode: on | off
+mode = $CFG_MEMORY_MODE
 CFGEOF
 }
 
@@ -163,6 +170,8 @@ config_show() {
     print_row "VITRIOL Mode:          " "${CFG_MODE}"
     print_row "LRU Cache (MB):        " "${CFG_LRU_MB}"
     print_row "Verbose:               " "${CFG_VERBOSE}"
+    echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
+    print_row "Memory Mode:           " "${CFG_MEMORY_MODE}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "Server Host:           " "${CFG_HOST}"
     print_row "Server Port:           " "${CFG_PORT}"
@@ -202,6 +211,7 @@ config_set() {
         server.host)           CFG_HOST="$val" ;;
         server.parallel)       CFG_PARALLEL="$val" ;;
         server.port)           CFG_PORT="$val" ;;
+        memory.mode)           CFG_MEMORY_MODE="$val" ;;
         *) echo "Unknown key: $key"; return 1 ;;
     esac
     write_config
@@ -235,20 +245,22 @@ tui_main_menu() {
         printf "║  %-37s ║\n" "1) GPU Settings"
         printf "║  %-37s ║\n" "2) Model Settings"
         printf "║  %-37s ║\n" "3) VITRIOL Mode"
-        printf "║  %-37s ║\n" "4) Server Settings"
-        printf "║  %-37s ║\n" "5) Show Current Config"
-        printf "║  %-37s ║\n" "6) Reset to Defaults"
+        printf "║  %-37s ║\n" "4) Memory Settings"
+        printf "║  %-37s ║\n" "5) Server Settings"
+        printf "║  %-37s ║\n" "6) Show Current Config"
+        printf "║  %-37s ║\n" "7) Reset to Defaults"
         printf "║  %-37s ║\n" "q) Quit"
         echo "╚══════════════════════════════════════════╝"
         echo ""
-        read -r -p "Select [1-6/q]: " choice
+        read -r -p "Select [1-7/q]: " choice
         case "$choice" in
             1) tui_gpu_menu ;;
             2) tui_model_menu ;;
             3) tui_vitriol_menu ;;
-            4) tui_server_menu ;;
-            5) clear; print_header; config_show; echo ""; read -r -p "Press Enter to continue..." ;;
-            6) config_reset; echo ""; read -r -p "Press Enter to continue..." ;;
+            4) tui_memory_menu ;;
+            5) tui_server_menu ;;
+            6) clear; print_header; config_show; echo ""; read -r -p "Press Enter to continue..." ;;
+            7) config_reset; echo ""; read -r -p "Press Enter to continue..." ;;
             q|Q) clear; exit 0 ;;
             *) ;;
         esac
@@ -391,6 +403,34 @@ tui_vitriol_menu() {
     done
 }
 
+tui_memory_menu() {
+    while true; do
+        clear
+        print_header
+        echo "╔══════════════════════════════════════════╗"
+        echo "║          Memory Mode Settings            ║"
+        echo "╠══════════════════════════════════════════╣"
+        printf "║  %-37s ║\n" "1) Memory Mode      [${CFG_MEMORY_MODE}]"
+        printf "║  %-37s ║\n" "b) Back to Main Menu"
+        printf "║  %-37s ║\n" "q) Quit"
+        echo "╚══════════════════════════════════════════╝"
+        echo ""
+        read -r -p "Select [1/b/q]: " choice
+        case "$choice" in
+            1)
+                echo "Modes: on (emulated memory) | off (direct)"
+                read -r -p "Enter mode: " val
+                case "$val" in
+                    on|off) config_set memory.mode "$val" ;;
+                    *) echo "Invalid mode"; sleep 1 ;;
+                esac
+                ;;
+            b|B) return ;;
+            q|Q) clear; exit 0 ;;
+        esac
+    done
+}
+
 tui_server_menu() {
     while true; do
         clear
@@ -475,6 +515,7 @@ Run options:
   -t N           CPU threads
   -ngl N         GPU layers to offload
   -lru MB        LRU VRAM cache size
+  --memory-mode MODE  emulated memory: on | off (default: off)
   --verbose      enable debug logging
   --dry-run      print config without launching
 
@@ -487,6 +528,7 @@ Serve options:
   --host ADDR    server bind address (default: $DEFAULT_HOST)
   -port N        server port (default: $DEFAULT_PORT)
   -p N           parallel slots (default: $DEFAULT_PARALLEL)
+  --memory-mode MODE  emulated memory: on | off (default: off)
   --detach       run server in background
   --verbose      enable debug logging
   --dry-run      print config without launching
@@ -525,6 +567,7 @@ case "$CMD" in
                 -ngl) CLI_NGL="$2"; shift 2 ;;
                 -lru) CLI_LRU_MB="$2"; shift 2 ;;
                 -port) CLI_PORT="$2"; shift 2 ;;
+                --memory-mode) CLI_MEMORY_MODE="$2"; shift 2 ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift ;;
                 -h|--help) usage; exit 0 ;;
@@ -540,6 +583,7 @@ case "$CMD" in
         PORT="${CLI_PORT:-${CFG_PORT}}"
         LRU_MB="${CLI_LRU_MB:-${CFG_LRU_MB}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
+        MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
         DEVICE="${CFG_DEVICE}"
 
@@ -573,19 +617,22 @@ case "$CMD" in
 
         MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")
 
+        MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CFG_MEMORY_MODE}}"
+
         # Print launch banner
         clear
         [[ -f "$HEADER_FILE" ]] && cat "$HEADER_FILE"
         echo ""
         echo "═══ Launch Configuration ═══"
-        echo "  Model:   $(basename "$MODEL") ($MODEL_SIZE)"
-        echo "  Context: $CTX tokens"
-        echo "  Mode:    $MODE (RAM Shot + LRU cache)"
-        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:     $LRU_MB MB VRAM cache"
-        echo "  GPU:     Device $DEVICE (GTX 1070 Ti)"
-        echo "  Binary:  $BINARY"
-        echo "  Port:    $PORT"
-        [[ "$VERBOSE" == "true" ]] && echo "  Logging: verbose"
+        echo "  Model:       $(basename "$MODEL") ($MODEL_SIZE)"
+        echo "  Context:     $CTX tokens"
+        echo "  Mode:        $MODE (RAM Shot + LRU cache)"
+        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
+        echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
+        echo "  Memory Mode: $MEMORY_MODE"
+        echo "  Binary:      $BINARY"
+        echo "  Port:        $PORT"
+        [[ "$VERBOSE" == "true" ]] && echo "  Logging:     verbose"
         echo "═══════════════════════════════"
         echo ""
 
@@ -604,6 +651,7 @@ case "$CMD" in
             CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
             VITRIOL_MODE="$MODE" \
             VITRIOL_LRU_MB="$LRU_MB" \
+            VITRIOL_MEMORY_MODE="$MEMORY_MODE" \
             $ENV_VERBOSE \
             "$BINARY" \
             -m "$MODEL" \
@@ -625,6 +673,7 @@ case "$CMD" in
         CLI_HOST=""
         CLI_PARALLEL=""
         CLI_VERBOSE=""
+        CLI_MEMORY_MODE=""
         DETACH=false
         DRY_RUN=false
 
@@ -638,6 +687,7 @@ case "$CMD" in
                 --host) CLI_HOST="$2"; shift 2 ;;
                 -port) CLI_PORT="$2"; shift 2 ;;
                 -p) CLI_PARALLEL="$2"; shift 2 ;;
+                --memory-mode) CLI_MEMORY_MODE="$2"; shift 2 ;;
                 --detach) DETACH=true; shift ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift ;;
@@ -655,6 +705,7 @@ case "$CMD" in
         HOST="${CLI_HOST:-${CFG_HOST}}"
         PARALLEL="${CLI_PARALLEL:-${CFG_PARALLEL}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
+        MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         VERBOSE="${CLI_VERBOSE:-${CFG_VERBOSE}}"
         DEVICE="${CFG_DEVICE}"
 
@@ -690,14 +741,21 @@ case "$CMD" in
         [[ -f "$HEADER_FILE" ]] && cat "$HEADER_FILE"
         echo ""
         echo "═══ VITRIOL Server ═══"
-        echo "  Model:   $(basename "$MODEL") ($MODEL_SIZE)"
-        echo "  Context: $CTX tokens"
-        echo "  Mode:    $MODE (RAM Shot + LRU cache)"
-        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:     $LRU_MB MB VRAM cache"
-        echo "  GPU:     Device $DEVICE (GTX 1070 Ti)"
-        echo "  Server:  http://${HOST}:${PORT}"
-        echo "  Slots:   $PARALLEL parallel"
-        [[ "$VERBOSE" == "true" ]] && echo "  Logging: verbose"
+        echo "  Model:     $(basename "$MODEL") ($MODEL_SIZE)"
+        echo "  Context:   $CTX tokens"
+        echo "  Mode:      $MODE (RAM Shot + LRU cache)"
+        [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:       $LRU_MB MB VRAM cache"
+        echo "  GPU:       Device $DEVICE (GTX 1070 Ti)"
+        echo "  Memory:    $MEMORY_MODE"
+        if [[ "$MEMORY_MODE" == "on" ]]; then
+            LLAMA_PORT=$((PORT - 1))
+            echo "  Server:    http://${HOST}:${LLAMA_PORT} (llama-server, internal)"
+            echo "  Proxy:     http://${HOST}:${PORT} (VITRIOL shim, memory intercept)"
+        else
+            echo "  Server:    http://${HOST}:${PORT}"
+        fi
+        echo "  Slots:     $PARALLEL parallel"
+        [[ "$VERBOSE" == "true" ]] && echo "  Logging:   verbose"
         echo "═══════════════════════════"
         echo ""
 
@@ -711,12 +769,111 @@ case "$CMD" in
         if $DETACH; then
             echo "Starting server in background..."
             mkdir -p "$CONFIG_DIR"
-            env \
-                CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
-                VITRIOL_MODE="$MODE" \
-                VITRIOL_LRU_MB="$LRU_MB" \
-                $ENV_VERBOSE \
-                nohup "$SERVER_BINARY" \
+            SHIM_DIR="$(dirname "$SCRIPT_DIR")/libvitriol"
+
+            if [[ "$MEMORY_MODE" == "on" ]]; then
+                LLAMA_PORT=$((PORT - 1))
+                # Start llama-server on internal port
+                env \
+                    CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+                    VITRIOL_MODE="$MODE" \
+                    VITRIOL_LRU_MB="$LRU_MB" \
+                    $ENV_VERBOSE \
+                    nohup "$SERVER_BINARY" \
+                        -m "$MODEL" \
+                        -ngl "$NGL" \
+                        -c "$CTX" \
+                        --host "$HOST" \
+                        --port "$LLAMA_PORT" \
+                        --parallel "$PARALLEL" \
+                        --no-mmap \
+                        -t "$THREADS" \
+                        "$@" &>"${CONFIG_DIR}/llama-server.log" &
+                echo $! > "${CONFIG_DIR}/llama-server.pid"
+                echo "  llama-server PID: $! (internal port $LLAMA_PORT)"
+
+                # Start Python shim on external port
+                env \
+                    VITRIOL_MEMORY_MODE=on \
+                    LLAMA_API_URL="http://${HOST}:${LLAMA_PORT}/v1/chat/completions" \
+                    LLAMA_STATUS_URL="http://${HOST}:${LLAMA_PORT}/health" \
+                    SHIM_PORT="$PORT" \
+                    nohup python3 "$SHIM_DIR/vitriol_shim.py" \
+                        &>"${CONFIG_DIR}/shim.log" &
+                echo $! > "${CONFIG_DIR}/shim.pid"
+                echo "  VITRIOL shim PID: $! (memory on port $PORT)"
+            else
+                # Start llama-server on external port directly
+                env \
+                    CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+                    VITRIOL_MODE="$MODE" \
+                    VITRIOL_LRU_MB="$LRU_MB" \
+                    $ENV_VERBOSE \
+                    nohup "$SERVER_BINARY" \
+                        -m "$MODEL" \
+                        -ngl "$NGL" \
+                        -c "$CTX" \
+                        --host "$HOST" \
+                        --port "$PORT" \
+                        --parallel "$PARALLEL" \
+                        --no-mmap \
+                        -t "$THREADS" \
+                        "$@" &>"${CONFIG_DIR}/server.log" &
+                echo $! > "${CONFIG_DIR}/server.pid"
+                echo "  Server PID: $!"
+            fi
+
+            echo "  Log dir:   ${CONFIG_DIR}"
+            echo ""
+            echo "  curl http://${HOST}:${PORT}/v1/chat/completions \\"
+            echo "    -H \"Content-Type: application/json\" \\"
+            echo "    -H \"X-Project-Id: my_project\" \\"
+            echo "    -H \"X-Session-Id: my_session\" \\"
+            echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
+        else
+            echo "Starting server (Ctrl+C to stop)..."
+            echo ""
+
+            if [[ "$MEMORY_MODE" == "on" ]]; then
+                LLAMA_PORT=$((PORT - 1))
+                SHIM_DIR="$(dirname "$SCRIPT_DIR")/libvitriol"
+
+                # Start llama-server in background on internal port
+                env \
+                    CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+                    VITRIOL_MODE="$MODE" \
+                    VITRIOL_LRU_MB="$LRU_MB" \
+                    $ENV_VERBOSE \
+                    "$SERVER_BINARY" \
+                        -m "$MODEL" \
+                        -ngl "$NGL" \
+                        -c "$CTX" \
+                        --host "$HOST" \
+                        --port "$LLAMA_PORT" \
+                        --parallel "$PARALLEL" \
+                        --no-mmap \
+                        -t "$THREADS" &
+                LLAMA_PID=$!
+                echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
+
+                # Trap Ctrl+C to clean up llama-server
+                trap "echo 'Shutting down...'; kill $LLAMA_PID 2>/dev/null; exit 0" INT TERM
+
+                # Start shim in foreground on external port
+                echo "  Starting VITRIOL memory shim on port $PORT..."
+                env \
+                    VITRIOL_MEMORY_MODE=on \
+                    LLAMA_API_URL="http://${HOST}:${LLAMA_PORT}/v1/chat/completions" \
+                    LLAMA_STATUS_URL="http://${HOST}:${LLAMA_PORT}/health" \
+                    SHIM_PORT="$PORT" \
+                    python3 "$SHIM_DIR/vitriol_shim.py"
+            else
+                exec env \
+                    CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+                    VITRIOL_MODE="$MODE" \
+                    VITRIOL_LRU_MB="$LRU_MB" \
+                    $ENV_VERBOSE \
+                    "$SERVER_BINARY" \
                     -m "$MODEL" \
                     -ngl "$NGL" \
                     -c "$CTX" \
@@ -725,45 +882,48 @@ case "$CMD" in
                     --parallel "$PARALLEL" \
                     --no-mmap \
                     -t "$THREADS" \
-                    "$@" &>"${CONFIG_DIR}/server.log" &
-            echo $! > "${CONFIG_DIR}/server.pid"
-            echo "  Server PID: $!"
-            echo "  Log:       ${CONFIG_DIR}/server.log"
-            echo ""
-            echo "  curl http://${HOST}:${PORT}/v1/chat/completions \\"
-            echo "    -H \"Content-Type: application/json\" \\"
-            echo "    -d '{\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"max_tokens\":50}'"
-        else
-            echo "Starting server (Ctrl+C to stop)..."
-            echo ""
-            exec env \
-                CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
-                VITRIOL_MODE="$MODE" \
-                VITRIOL_LRU_MB="$LRU_MB" \
-                $ENV_VERBOSE \
-                "$SERVER_BINARY" \
-                -m "$MODEL" \
-                -ngl "$NGL" \
-                -c "$CTX" \
-                --host "$HOST" \
-                --port "$PORT" \
-                --parallel "$PARALLEL" \
-                --no-mmap \
-                -t "$THREADS" \
-                "$@"
+                    "$@"
+            fi
         fi
         ;;
 
     stop)
+        STOPPED=false
+
+        # Stop shim (memory mode)
+        SHIM_PID_FILE="${CONFIG_DIR}/shim.pid"
+        if [[ -f "$SHIM_PID_FILE" ]]; then
+            PID=$(cat "$SHIM_PID_FILE")
+            echo "→ Stopping VITRIOL shim (PID $PID)..."
+            kill "$PID" 2>/dev/null && echo "  ✓ Shim stopped" || echo "  (shim not running)"
+            rm -f "$SHIM_PID_FILE"
+            STOPPED=true
+        fi
+
+        # Stop llama-server (internal port in memory mode, or standard)
+        LLAMA_PID_FILE="${CONFIG_DIR}/llama-server.pid"
+        if [[ -f "$LLAMA_PID_FILE" ]]; then
+            PID=$(cat "$LLAMA_PID_FILE")
+            echo "→ Stopping llama-server (PID $PID)..."
+            kill "$PID" 2>/dev/null && echo "  ✓ llama-server stopped" || echo "  (llama-server not running)"
+            rm -f "$LLAMA_PID_FILE"
+            STOPPED=true
+        fi
+
+        # Stop standard server
         PID_FILE="${CONFIG_DIR}/server.pid"
         if [[ -f "$PID_FILE" ]]; then
             PID=$(cat "$PID_FILE")
             echo "→ Stopping server (PID $PID)..."
             kill "$PID" 2>/dev/null && echo "  ✓ Stopped" || echo "  (not running)"
             rm -f "$PID_FILE"
-        else
-            echo "→ No PID file found. Searching for running servers..."
-            pkill -f "llama-server.*Qwen3" 2>/dev/null && echo "  ✓ Stopped" || echo "  (none found)"
+            STOPPED=true
+        fi
+
+        if ! $STOPPED; then
+            echo "→ No PID files found. Searching for running processes..."
+            pkill -f "llama-server.*Qwen3" 2>/dev/null && echo "  ✓ llama-server stopped" || true
+            pkill -f "vitriol_shim" 2>/dev/null && echo "  ✓ VITRIOL shim stopped" || true
         fi
         ;;
 

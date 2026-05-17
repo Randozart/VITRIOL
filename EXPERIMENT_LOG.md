@@ -288,4 +288,50 @@ Model requirements:
 
 ---
 
-*Last updated: 2026-05-16 17:00 CEST*
+## Experiment 10: Emulated Memory Architecture (Design + Config)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-05-17 |
+| **Approach** | Intercept-retrieve-inject pattern via Python Flask shim. SQLite-backed episodic + semantic memory with cascading retrieval. Port-swap: memory ON → llama-server on PORT-1, shim on PORT. |
+| **Status** | ✅ Design docs complete. Memory package written (7 modules, 1,400+ LoC). Shim updated with memory toggle. `vitriol` CLI edited (956 LoC) with full TUI menu + port swap logic. |
+
+### Deliverables
+
+| Artifact | Lines | Status |
+|----------|-------|--------|
+| `docs/OPTIMIZATION_PLAN.md` (V2) | 590 | ✅ Full roadmap, 7 citations |
+| `docs/EMULATED_MEMORY_ARCHITECTURE.md` | 592 | ✅ DB schema, scoring, cascading retrieval, Hebbian, compaction, sleep, deployment |
+| `libvitriol/memory/` (7 modules) | ~1,400 | ✅ db, scorer, retrieval, compact, hebbian, consolidate, __init__ |
+| `libvitriol/vitriol_shim.py` (memory toggle) | 763 | ✅ `VITRIOL_MEMORY_MODE=on` intercept loop, `/memory/stats`, `/memory/clear` |
+| `scripts/vitriol` (TUI + port swap) | 956 | ✅ Memory Settings menu, `--memory-mode` flag, detach/foreground port swap |
+| `~/.config/opencode/opencode.jsonc` | — | ✅ X-Project-Id, X-Session-Id custom headers |
+
+### Memory Mode Config
+
+```
+VITRIOL_MEMORY_MODE=on   → llama-server on 8278, shim on 8279 (port swap)
+VITRIOL_MEMORY_MODE=off  → llama-server on 8279 directly (existing behavior)
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Python Flask shim (not Rust) | Fastest path to working prototype; Rust daemon is Phase 2 |
+| Port swap (Option A) | OpenCode config never changes — always points to 8279 |
+| Episodic + semantic split | Episodic for raw context, semantic for cross-session patterns |
+| Hebbian weight updates | Post-response per-connection weight increase based on co-occurrence |
+| Compaction during `POST` intercept | Avoids blocking token generation; happens on next request |
+| Consolidation background thread | Periodic summarization + pruning for memory wellness |
+
+### Next Phases
+
+1. **Phase 0 (now)** — Config, TUI, port swap ✓
+2. **Phase 1** — Zero-copy KV cache offload, sparse KV caching, frozen prompt caching
+3. **Phase 2** — Rust daemon (`vitriol-router`), tokio + rusqlite + tree-sitter
+4. **Phase 3** — Agentic memory (GPT-Researcher-style iterative search, tool-based memory editing)
+
+---
+
+*Last updated: 2026-05-17 17:00 CEST*

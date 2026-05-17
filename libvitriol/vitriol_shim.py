@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
 """
-VITRIOL Context Rectifier - KoboldCPP Proxy Shim
+VITRIOL Context Router & Memory Proxy
 
-This shim sits between OpenCode (or any agent) and KoboldCPP,
-performing "alchemical rectification" on context to prevent OOM crashes
-on legacy hardware (i7-3770, GTX 1070 Ti, 8GB VRAM).
+This shim sits between OpenCode (or any agent) and llama-server
+(custom llama.cpp with VITRIOL), performing context rectification
+and emulated memory retrieval to prevent OOM crashes and PCIe
+prefill bottlenecks on legacy hardware.
 
-OpenCode -> VITRIOL Shim (port 5005) -> KoboldCPP (port 5001)
+OpenCode -> VITRIOL Shim (port 5010) -> llama-server (port 8279)
 
-Implementation Plan v2.0 - Phase 1
+Implementation Plan v2.0 - Phase 2
 """
 
 import json
 import re
+import os
 import subprocess
 import requests
 import logging
 from flask import Flask, request, jsonify
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - VITRIOL - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Try to import FAISS for vector search
 try:
@@ -29,45 +37,34 @@ except ImportError:
     FAISS_AVAILABLE = False
     logger.info("FAISS not available, will use keyword-based search")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - VITRIOL - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# ── Emulated Memory Subsystem (config toggle) ──
+MEMORY_MODE = os.environ.get('VITRIOL_MEMORY_MODE', 'off').lower() == 'on'
+if MEMORY_MODE:
+    try:
+        from . import memory as emem
+        logger.info("Emulated memory subsystem loaded (VITRIOL_MEMORY_MODE=on)")
+    except ImportError as e:
+        MEMORY_MODE = False
+        logger.warning(f"Emulated memory import failed ({e}), falling back to standard mode")
+else:
+    logger.info("Emulated memory disabled (VITRIOL_MEMORY_MODE=off)")
 
 app = Flask(__name__)
 
 # Configuration - Implementation Plan v2.0
-KOBOLD_URL = "http://localhost:5001/v1/chat/completions"
-KOBOLD_STATUS_URL = "http://localhost:5001/api/v1/info"
-MAX_CONTEXT_TOKENS = 7000
-MAX_MESSAGES_TO_KEEP = 4
-SHIM_PORT = 5010
+LLAMA_API_URL = os.environ.get('LLAMA_API_URL', "http://localhost:8279/v1/chat/completions")
+LLAMA_STATUS_URL = os.environ.get('LLAMA_STATUS_URL', "http://localhost:8279/health")
+MAX_CONTEXT_TOKENS = int(os.environ.get('MAX_CONTEXT_TOKENS', '7000'))
+MAX_MESSAGES_TO_KEEP = int(os.environ.get('MAX_MESSAGES_TO_KEEP', '4'))
+SHIM_PORT = int(os.environ.get('SHIM_PORT', '5010'))
 MAX_TEMP = 85  # GPU thermal limit (°C)
 
 # Context offloading strategy
-# Options:
-#   'vram' - Keep recent context in VRAM (fastest, limited by VRAM size)
-#   'ssd' - Stream context from SSD (slower, "infinite" context)
-#   'hybrid' - Active context in VRAM, archive to SSD (balanced)
-#   'stream' - Intelligent context streaming from SSD (RAG-style)
-CONTEXT_STRATEGY = 'stream'
+CONTEXT_STRATEGY = os.environ.get('CONTEXT_STRATEGY', 'stream')
 
 # Context streaming configuration
-CONTEXT_STREAM_TOP_K = 3  # Number of relevant context chunks to stream
-CONTEXT_STREAM_RELEVANCE_THRESHOLD = 0.3  # Minimum similarity score
-
-# Context offloading strategy
-# Options:
-#   'vram' - Keep recent context in VRAM (fastest, limited by VRAM size)
-#   'ssd' - Stream context from SSD (slower, "infinite" context)
-#   'hybrid' - Active context in VRAM, archive to SSD (balanced)
-#   'stream' - Intelligent context streaming from SSD (RAG-style)
-CONTEXT_STRATEGY = 'stream'
-
-# Context streaming configuration
-CONTEXT_STREAM_TOP_K = 3  # Number of relevant context chunks to stream
-CONTEXT_STREAM_RELEVANCE_THRESHOLD = 0.3  # Minimum similarity score
+CONTEXT_STREAM_TOP_K = int(os.environ.get('CONTEXT_STREAM_TOP_K', '3'))
+CONTEXT_STREAM_RELEVANCE_THRESHOLD = float(os.environ.get('CONTEXT_STREAM_RELEVANCE_THRESHOLD', '0.3'))
 
 
 @dataclass
@@ -400,15 +397,15 @@ def rectify_context(messages: List[Dict[str, Any]], current_query: str = "") -> 
     return messages, stats
 
 
-def kobold_status() -> Dict[str, Any]:
-    """Check if KoboldCPP is running and healthy"""
+def backend_status() -> Dict[str, Any]:
+    """Check if llama-server is running and healthy"""
     try:
-        resp = requests.get(KOBOLD_STATUS_URL, timeout=5)
+        resp = requests.get(LLAMA_STATUS_URL, timeout=5)
         if resp.status_code == 200:
-            return {"status": "ok", "kobold": resp.json()}
-        return {"status": "error", "message": f"Kobold returned {resp.status_code}"}
+            return {"status": "ok", "backend": resp.json()}
+        return {"status": "error", "message": f"Backend returned {resp.status_code}"}
     except requests.exceptions.ConnectionError:
-        return {"status": "error", "message": "KoboldCPP not running on port 5001"}
+        return {"status": "error", "message": "llama-server not running"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -416,7 +413,7 @@ def kobold_status() -> Dict[str, Any]:
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy_chat_completions():
     """
-    OpenAI-compatible endpoint that rectifies context before forwarding to KoboldCPP.
+    OpenAI-compatible endpoint that rectifies context before forwarding to llama-server.
     
     Guardrails:
     1. Thermal polling (halts if GPU >= 85°C)
@@ -447,6 +444,44 @@ def proxy_chat_completions():
         if messages and messages[-1].get('role') == 'user':
             current_query = messages[-1].get('content', '')[:500]  # First 500 chars as query
         
+        # ── Emulated Memory Intercept ──
+        memory_candidates = []  # for post-response Hebbian update
+        if MEMORY_MODE:
+            project_id = request.headers.get('X-Project-Id', 'default')
+            session_id = request.headers.get('X-Session-Id', 'default')
+
+            # Get or create session
+            emem.db.get_or_create_session(project_id, session_id)
+
+            # Retrieve relevant context from memory DB
+            memory_candidates = emem.retrieve(project_id, current_query)
+            recent = emem.db.get_recent_episodes(project_id, session_id, limit=2)
+
+            # Build compacted memory context
+            memory_lines = emem.compact_context(
+                candidates=memory_candidates,
+                project_id=project_id,
+                session_id=session_id,
+                query=current_query,
+                recent_episodes=recent,
+            )
+            memory_text = "\n".join(memory_lines)
+
+            if memory_text.strip():
+                # Prepend as system message
+                if messages and messages[0].get('role') == 'system':
+                    messages[0]['content'] += "\n\n" + memory_text
+                else:
+                    messages.insert(0, {'role': 'system', 'content': memory_text})
+                logger.info(
+                    f"MEMORY: Injected {emem.estimate_tokens(memory_text)} tokens "
+                    f"from memory DB ({project_id}/{session_id})"
+                )
+
+            # Mark consolidation thread active (reset idle timer)
+            if emem.consolidate._consolidation_thread:
+                emem.consolidate._consolidation_thread.mark_active()
+
         # === GUARDRAIL 1 & 2: Context Rectification with Streaming ===
         rectified_messages, stats = rectify_context(messages, current_query)
         
@@ -465,20 +500,53 @@ def proxy_chat_completions():
         # === GUARDRAIL 3: Coagulation (Generation Cap) ===
         data['max_tokens'] = min(data.get('max_tokens', 1024), 1024)
         
-        # Check Kobold status
-        kobold = kobold_status()
-        if kobold['status'] != 'ok':
-            logger.warning(f"KoboldCPP issue: {kobold['message']}")
-        
-        # Forward to KoboldCPP
-        logger.info(f"Forwarding to KoboldCPP at {KOBOLD_URL}")
-        response = requests.post(KOBOLD_URL, json=data, timeout=120)
-        
-        # Return Kobold's response
-        return jsonify(response.json()), response.status_code
+        # Check backend status
+        bstatus = backend_status()
+        if bstatus['status'] != 'ok':
+            logger.warning(f"Backend issue: {bstatus['message']}")
+
+        # Forward to llama-server
+        logger.info(f"Forwarding to llama-server at {LLAMA_API_URL}")
+        response = requests.post(LLAMA_API_URL, json=data, timeout=120)
+        response_data = response.json()
+
+        # ── Emulated Memory: Store conversation turn ──
+        if MEMORY_MODE and response.status_code == 200:
+            project_id = request.headers.get('X-Project-Id', 'default')
+            session_id = request.headers.get('X-Session-Id', 'default')
+            try:
+                # Store user message
+                emem.db.store_episode(
+                    project_id, session_id, 'user',
+                    current_query if current_query else '(empty)',
+                    token_count=emem.estimate_tokens(current_query)
+                )
+                # Store assistant response
+                assistant_text = ''
+                if 'choices' in response_data and response_data['choices']:
+                    choice = response_data['choices'][0]
+                    if 'message' in choice and 'content' in choice['message']:
+                        assistant_text = choice['message']['content']
+                    elif 'text' in choice:
+                        assistant_text = choice['text']
+                if assistant_text:
+                    emem.db.store_episode(
+                        project_id, session_id, 'assistant',
+                        assistant_text,
+                        token_count=emem.estimate_tokens(assistant_text)
+                    )
+
+                # Update Hebbian weights
+                if memory_candidates:
+                    emem.update_weights(project_id, assistant_text, memory_candidates)
+            except Exception as e:
+                logger.warning(f"MEMORY: Failed to store turn: {e}")
+
+        # Return backend's response
+        return jsonify(response_data), response.status_code
         
     except requests.exceptions.Timeout:
-        logger.error("KoboldCPP request timed out")
+        logger.error("Backend request timed out")
         return jsonify({"error": "Inference timeout"}), 504
     except Exception as e:
         logger.error(f"Proxy error: {e}")
@@ -498,15 +566,18 @@ def proxy_models():
 @app.route('/health', methods=['GET'])
 def health():
     """VITRIOL shim health check"""
-    kobold = kobold_status()
+    bstatus = backend_status()
     return jsonify({
         "status": "ok",
         "shim": "running",
-        "koboldcpp": kobold,
+        "memory_mode": MEMORY_MODE,
+        "backend": bstatus,
         "config": {
             "max_context_tokens": MAX_CONTEXT_TOKENS,
             "max_messages": MAX_MESSAGES_TO_KEEP,
-            "kobold_url": KOBOLD_URL
+            "llama_api_url": LLAMA_API_URL,
+            "context_strategy": CONTEXT_STRATEGY,
+            "memory_mode": "on" if MEMORY_MODE else "off",
         }
     })
 
@@ -624,10 +695,65 @@ def retrieve_context_endpoint():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/memory/stats', methods=['GET'])
+def memory_stats():
+    """Emulated memory statistics endpoint."""
+    if not MEMORY_MODE:
+        return jsonify({"error": "Memory mode not enabled"}), 400
+
+    try:
+        project_id = request.headers.get('X-Project-Id', 'default')
+        session_id = request.headers.get('X-Session-Id', 'default')
+
+        conn = emem.db._get_conn(project_id)
+        episodes = conn.execute("SELECT COUNT(*) as c FROM episodes").fetchone()
+        nodes = conn.execute("SELECT COUNT(*) as c FROM knowledge_nodes").fetchone()
+        edges = conn.execute("SELECT COUNT(*) as c FROM edges").fetchone()
+        session = conn.execute(
+            "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+
+        return jsonify({
+            "project_id": project_id,
+            "session_id": session_id,
+            "episode_count": episodes['c'] if episodes else 0,
+            "node_count": nodes['c'] if nodes else 0,
+            "edge_count": edges['c'] if edges else 0,
+            "session_turns": session['turn_count'] if session else 0,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/memory/clear', methods=['POST'])
+def memory_clear():
+    """Clear memory database for a project."""
+    if not MEMORY_MODE:
+        return jsonify({"error": "Memory mode not enabled"}), 400
+
+    try:
+        project_id = request.headers.get('X-Project-Id', 'default')
+        confirm = request.json.get('confirm', False) if request.json else False
+        if not confirm:
+            return jsonify({"error": "Must set confirm=true to clear memory"}), 400
+
+        import shutil
+        memory_dir = os.environ.get('VITRIOL_MEMORY_DIR',
+                                     os.path.expanduser('~/.vitriol'))
+        project_dir = os.path.join(memory_dir, project_id)
+        if os.path.isdir(project_dir):
+            shutil.rmtree(project_dir)
+            logger.info(f"MEMORY: Cleared database for project '{project_id}'")
+            return jsonify({"status": "ok", "message": f"Memory cleared for '{project_id}'"})
+        return jsonify({"status": "ok", "message": "No memory to clear"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 def main():
     """Run the VITRIOL shim"""
     logger.info(f"VITRIOL Context Rectifier starting on port {SHIM_PORT}")
-    logger.info(f"Forwarding to KoboldCPP at {KOBOLD_URL}")
+    logger.info(f"Forwarding to llama-server at {LLAMA_API_URL}")
     logger.info(f"Max context: {MAX_CONTEXT_TOKENS} tokens, Max messages: {MAX_MESSAGES_TO_KEEP}")
     
     app.run(host='0.0.0.0', port=SHIM_PORT, debug=False, threaded=True)

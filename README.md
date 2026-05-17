@@ -113,15 +113,17 @@ With VITRIOL:
 ## CLI Reference
 
 ```
-vitriol run [options]    launch inference
-vitriol config           interactive configuration TUI
-vitriol config show      print current configuration
-vitriol config init      create config file with defaults
-vitriol config reset     restore defaults
-vitriol config edit      open config in $EDITOR
+vitriol run [options]      interactive inference session
+vitriol serve [options]    persistent HTTP API server
+vitriol stop               stop running server
+vitriol config             interactive configuration TUI
+vitriol config show        print current configuration
+vitriol config init        create config file with defaults
+vitriol config reset       restore defaults
+vitriol config edit        open config in $EDITOR
 vitriol config set <key> <val>  set a config value
-vitriol setup            set CAP_IPC_LOCK capability
-vitriol help             this message
+vitriol setup              set CAP_IPC_LOCK capability
+vitriol help               this message
 
 Run options:
   -m PATH        model file path
@@ -129,12 +131,28 @@ Run options:
   -t N           CPU threads
   -ngl N         GPU layers to offload
   -lru MB        LRU VRAM cache size
-  -port N        server port
+  --memory-mode MODE  emulated memory: on | off (default: off)
+  --verbose      enable debug logging
+  --dry-run      print config without launching
+
+Serve options:
+  -m PATH        model file path
+  -c N           context window (tokens)
+  -t N           CPU threads
+  -ngl N         GPU layers to offload
+  -lru MB        LRU VRAM cache size
+  --host ADDR    bind address (default: 127.0.0.1)
+  -port N        server port (default: 8279)
+  -p N           parallel slots (default: 1)
+  --memory-mode MODE  emulated memory: on | off (default: off)
+  --detach       run server in background
   --verbose      enable debug logging
   --dry-run      print config without launching
 ```
 
 Config persisted in `~/.vitriol/config`. Precedence: CLI flag > Config > Env var > Default.
+
+Use `vitriol serve --detach` for background API mode, `vitriol stop` to shut down.
 
 ## VITRIOL Modes
 
@@ -144,6 +162,26 @@ Config persisted in `~/.vitriol/config`. Precedence: CLI flag > Config > Env var
 | **sync** | Preloads expert data synchronously before each matmul. No LRU cache. Every expert read over PCIe DMA. |
 | **async** | Double-buffer prefetch on separate CUDA stream. Hides DMA latency behind compute. |
 | **off** | VITRIOL inactive. Falls through to normal llama.cpp (OOM on 8 GB GPU). |
+
+### Memory Mode (Experimental)
+
+When enabled (`--memory-mode on` or `VITRIOL_MEMORY_MODE=on`), a Python Flask shim intercepts all requests before they reach llama-server. On each request:
+
+1. **Extract** user intent from the last message
+2. **Retrieve** relevant context from a project-local SQLite memory database (episodic + semantic scoring with cascading multi-hop retrieval)
+3. **Inject** retrieved context as a system message, staying within a token budget
+4. **Forward** the compact prompt to llama-server
+5. **Store** the response back into the memory database
+6. **Update** Hebbian edge weights (post-response connection strengthening)
+
+Ports swap automatically: llama-server moves to `PORT-1` (8278), the shim listens on `PORT` (8279). OpenCode's baseURL never changes.
+
+```
+Memory OFF:  llama-server → port 8279
+Memory ON:   llama-server → port 8278, shim → port 8279
+```
+
+Configure via `vitriol config` (TUI option 4) or `vitriol serve --memory-mode on`.
 
 ## Performance
 
@@ -214,12 +252,56 @@ The model (11.44 GiB) does **not fit** in 8 GB VRAM without VITRIOL.
 └──────────────────────────────────────────────────────────────┘
 ```
 
+## Emulated Memory Architecture (Experimental)
+
+When **memory mode** is enabled (`--memory-mode on`), a Flask proxy shim sits between the client and llama-server. Every request is intercepted, memory is queried for relevant context, and the prompt is compacted *before* reaching the inference engine — eliminating OpenCode's expensive context compaction loop.
+
+```
+OpenCode ──POST /v1/chat/completions──► vitriol_shim.py (port 8279)
+                                              │
+                                        1. Parse X-Project-Id header
+                                        2. Extract user intent from last message
+                                        3. Query .vitriol/<project>/memory.db
+                                           ├─ Scorer: keyword overlap + recency
+                                           ├─ Hebbian weight → edge strength
+                                           └─ Cascading multi-hop retrieval
+                                        4. Inject retrieved context as system msg
+                                        5. Forward to llama-server (port 8278)
+                                              │
+                                              ▼
+                                        llama-server (port 8278)
+                                        (8192-token context, never compacts)
+                                              │
+                                        Post-response:
+                                        6. Store response as new episode
+                                        7. Hebbian weight update on co-occurring edges
+```
+
+Ports swap transparently — OpenCode always talks to port 8279:
+
+```
+Memory OFF:  llama-server → port 8279
+Memory ON:   llama-server → port 8278, shim → port 8279
+```
+
+See `docs/EMULATED_MEMORY_ARCHITECTURE.md` for the full design (DB schema, scoring function, spreading activation, token-budgeted compaction, Hebbian updates, consolidation/sleep).
+
 ## Project Structure
 
 ```
 ├── vitriol                  ← CLI entry point (symlink to scripts/vitriol)
 ├── scripts/
-│   └── vitriol              ← Main CLI: config TUI + run + setup
+│   └── vitriol              ← Main CLI: config TUI + run + serve + stop + setup
+├── libvitriol/
+│   ├── vitriol_shim.py      ← Flask proxy with memory mode toggle
+│   └── memory/              ← Emulated memory subsystem (7 modules)
+│       ├── __init__.py
+│       ├── db.py            ← SQLite schema + CRUD
+│       ├── scorer.py        ← Composite relevance scoring
+│       ├── retrieval.py     ← Intent classification + cascading retrieval
+│       ├── compact.py       ← Token-budgeted compaction
+│       ├── hebbian.py       ← Post-response edge weight updates
+│       └── consolidate.py   ← Background summarization + pruning
 ├── assets/
 │   ├── vitriol-header.txt   ← ASCII art banner
 │   └── vitriol_logo.svg     ← SVG logo
@@ -230,8 +312,12 @@ The model (11.44 GiB) does **not fit** in 8 GB VRAM without VITRIOL.
 │   ├── vitriol_copy_engine.{cpp,h}         ← CE DMA (standalone)
 │   └── ggml-cuda.cu                        ← supports_buft + LRU hooks
 ├── llama.cpp-patches/       ← Tracked diffs for all VITRIOL changes
-├── docs/                    ← Architecture docs
-├── EXPERIMENT_LOG.md        ← Complete test history (9 experiments)
+├── docs/
+│   ├── OPTIMIZATION_PLAN.md (V2)           ← 4-layer roadmap with citations
+│   ├── OPTIMIZATION_PLAN_V1.md             ← Preserved original
+│   └── EMULATED_MEMORY_ARCHITECTURE.md     ← Memory design doc
+├── EXPERIMENT_LOG.md        ← Complete test history (10 experiments)
+├── SESSION_LOG_2026-05-17.md ← This session's progress report
 ├── ROADMAP.md               ← Phased development plan
 ├── MILESTONE_1.md           ← Failed approaches archive (7 approaches)
 └── MILESTONE_2.md           ← RAM Shot: success report
@@ -268,9 +354,22 @@ VITRIOL stands on the shoulders of giants. Every core insight — DMA over PCIe,
 
 ### Extreme Quantization & Compute
 
-| Project | What We Learned |
-|---------|-----------------|
+| Paper / Project | What We Learned |
+|-----------------|-----------------|
 | **[3LTERN](https://github.com/ELX987/3LTERN)** (ELX987) | W1.58A8 (1.58-bit ternary) CUDA kernel for Pascal. 16 weights packed per uint32, branchless decode via `bit0 - bit1`, `__dp4a` instruction on sm_61. Future optimization path for compute-bound layers. |
 | **[Unsloth](https://huggingface.co/unsloth)** (Daniel & Michael) | Dynamic quantization formats (UD-Q2_K_XL) that are structurally superior to raw 1.58-bit. Ungated model distribution — their Qwen 3.6 releases don't require HF authentication. The model we target was quantized and distributed by them. |
+| **[MoQE](https://arxiv.org/abs/2310.14713)** — Kim, Fahim, Awadalla (Microsoft, 2023) | MoE experts are robust to extreme low-bit quantization (2-bit) without losing base model coherence. Supports our asymmetric quantization approach. |
+| **[BitNet b1.58](https://arxiv.org/abs/2402.17764)** — Ma, Wang et al. (Microsoft Research, 2024) | Ternary weights {-1, 0, 1} match FP16 perplexity, eliminating floating-point multiply. Future TQ1_0 format support. |
 
-See `ARCHITECTURE_HISTORY.md` for the complete evolution.
+### Emulated Memory & Context Retrieval
+
+| Paper / Project | What We Learned |
+|-----------------|-----------------|
+| **[LLM in a Flash](https://arxiv.org/abs/2312.11514)** — Alizadeh, Mirzadeh et al. (Apple, 2023) | Proved that windowing + zero-copy streaming from flash/host memory enables LLM inference on severely memory-limited hardware. Foundation of the RAM Shot base. |
+| **[Fiddler](https://arxiv.org/abs/2402.14103)** — Kamahori, Gu, Zhu, Kasikci (2024) | Demonstrated that moving *activations* to CPU for MoE expert computation can be faster than pulling weights to GPU via PCIe DMA. Informs our `fiddler-cpu` mode. |
+| **[SnapKV](https://arxiv.org/abs/2404.14469)** — Li et al. (2024) | Attention heads focus on clustered features; safe eviction of filler tokens reduces KV cache 8.2x without accuracy loss. Informs `--kv-mode sparse`. |
+| **[H2O](https://arxiv.org/abs/2306.14048)** — Zhang, Sheng et al. (2023) | Pioneered dropping tokens from KV cache by identifying "Heavy Hitter" tokens that contribute most to attention scores. Informs `--kv-mode sparse`. |
+| **[GraphRAG](https://arxiv.org/abs/2404.16130)** — Edge, Trinh et al. (Microsoft, 2024) | Replaced flat vector DBs with LLM-derived knowledge graphs for multi-hop retrieval (spreading activation). Informs our cascading memory retrieval. |
+| **[Aider](https://github.com/paul-gauthier/aider)** — Paul Gauthier (2023) | Gold standard for tree-sitter AST-based repo mapping. Informs future AST code graphing for context injection. |
+
+See `docs/OPTIMIZATION_PLAN.md` for the full V2 roadmap with implementation phases.

@@ -29,6 +29,26 @@ cd vitriol/llama.cpp && cmake -B build -DGGML_CUDA=ON -DGGML_NATIVE=ON \
 ```
 
 
+## Configuration
+
+VITRIOL has several feature flags that control memory, context efficiency, and retrieval. Each has measurable trade-offs between throughput, context size, and recall quality.
+
+| Flag | Effect | tok/s impact | Use Case |
+|------|--------|-------------|----------|
+| `--memory-mode on` | Cross-session persistent memory via SQLite | 5.03 (vs 6.21 baseline) | Multi-session projects |
+| `--kv-mode offload` | KV cache in host RAM (20,000+ token context) | 5.80 | Long context coding |
+| `--kv-mode sparse` | Attention-score eviction (4-8x compression) | ~6.0 | Extreme context length |
+| `--frozen-prompt on` | Cache KV prefix across requests | ~6.2 (prefill saved) | Repeated requests, same system prompt |
+| `--semantic-mode on` | Cosine similarity retrieval | ~5.0 | Large memory databases |
+| `VITRIOL_PREDICTIVE_PREFETCH=1` | Expert prefetch via async DMA | +10-20% | Max throughput |
+
+All flags can be set via CLI flag, env var, or the TUI (`vitriol config`).
+
+**Full reference:** [`docs/CONFIG_REFERENCE.md`](docs/CONFIG_REFERENCE.md) — every flag explained with trade-offs, use cases, and recommended combinations.
+
+**Test results:** [`docs/TEST_REPORT_2026-05-17.md`](docs/TEST_REPORT_2026-05-17.md) — measured tok/s, VRAM savings, and bug fixes.
+
+
 ## What Is It
 
 VITRIOL is a **VRAM extension layer** for [llama.cpp](https://github.com/ggml-org/llama.cpp) that lets **old consumer GPUs** run modern MoE language models they have no business running.

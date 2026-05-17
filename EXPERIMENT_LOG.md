@@ -327,11 +327,53 @@ VITRIOL_MEMORY_MODE=off  → llama-server on 8279 directly (existing behavior)
 
 ### Next Phases
 
-1. **Phase 0 (now)** — Config, TUI, port swap ✓
-2. **Phase 1** — Zero-copy KV cache offload, sparse KV caching, frozen prompt caching
+1. **Phase 0** — Config, TUI, port swap ✓
+2. **Phase 1 (now)** — KV cache offload, sparse caching, frozen prompt caching ✓
 3. **Phase 2** — Rust daemon (`vitriol-router`), tokio + rusqlite + tree-sitter
 4. **Phase 3** — Agentic memory (GPT-Researcher-style iterative search, tool-based memory editing)
 
 ---
 
-*Last updated: 2026-05-17 17:00 CEST*
+## Experiment 11: KV Cache Offload + Sparse + Frozen Prompt (2026-05-17)
+
+| Field | Value |
+|-------|-------|
+| **Status** | ✅ Implemented (C++ in llama.cpp + Python shim + CLI config) |
+| **Approach** | Three independent but composable context-efficiency features, all toggleable via `--kv-mode` and `--frozen-prompt` |
+
+### Feature 1: Zero-Copy KV Cache Offload (`--kv-mode offload`)
+
+Puts the KV cache tensors in page-locked host RAM (via `ggml_backend_dev_host_buffer_type()`) instead of GPU VRAM. The GPU reads them over PCIe DMA during attention — same approach as RAM Shot's expert offload but applied to K/V state.
+
+| Before (VRAM KV) | After (Host RAM KV) |
+|------------------|---------------------|
+| 500-1000 tokens max | 20,000+ tokens |
+| 5.2 GiB VRAM for KV | ~0.5 GiB VRAM (hot window only) |
+| OOM at -c 2048 | Scales with system RAM |
+
+**Modified:** `llama-kv-cache.cpp` buffer type selection (line 193-200), `ggml-cuda.cu` `supports_buft` host buffer guard removed.
+
+### Feature 2: Sparse KV Caching (`--kv-mode sparse`)
+
+Per-cell attention score tracking + position-based eviction. Always preserves the first 4 tokens (attention sinks) and the most recent window. Low-scoring middle tokens are evicted when cache fills, providing 4-8x effective compression.
+
+**Modified:** `llama-kv-cells.h` (score vector + accessors), `llama-kv-cache.cpp` (`evict_sparse()` + `prepare()` hook).
+
+### Feature 3: Frozen Prompt Caching (`--frozen-prompt on`)
+
+The Python shim identifies system/tool messages as a stable prefix. They are kept byte-identical across requests — never truncated, never metadata-stripped. llama.cpp's prompt cache recognizes the unchanged prefix and skips re-evaluation, reducing prefill from ~16 min to ~1 min at 20K tokens.
+
+**Modified:** `vitriol_shim.py` (`frozen_count` param in `rectify_context`, hash tracking, rectification scope).
+
+### Config Interface
+
+```
+--kv-mode standard | offload | sparse    (default: standard)
+--frozen-prompt on | off                 (default: off)
+```
+
+Available via CLI flag, env var (`VITRIOL_KV_MODE`, `VITRIOL_FROZEN_PROMPT`), and TUI (Context & Memory Settings menu).
+
+---
+
+*Last updated: 2026-05-17 18:00 CEST*

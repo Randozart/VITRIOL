@@ -57,5 +57,37 @@ OpenCode ──POST /v1/chat/completions──► vitriol_shim.py (port 8279)
 ## Next Steps
 
 1. Test port swap end-to-end: `VITRIOL_MEMORY_MODE=on vitriol serve --detach`
-2. Phase 1 implementation (zero-copy KV cache offload, sparse KV caching, frozen prompt caching)
-3. Rust daemon (`vitriol-router`) — tokio + rusqlite + tree-sitter
+2. Rust daemon (`vitriol-router`) — tokio + rusqlite + tree-sitter
+
+---
+
+## Session 2 (2026-05-17, 18:00) — Phase 1: Context Wins
+
+**Three features implemented:** KV cache offload, sparse KV caching, frozen prompt caching.
+
+### Changes
+
+| File | Change |
+|------|--------|
+| `scripts/vitriol` | +70 lines: `--kv-mode`, `--frozen-prompt` CLI flags, defaults, config parse/write, TUI menu, env piping |
+| `libvitriol/vitriol_shim.py` | `frozen_count` param in `rectify_context`, frozen prefix separation, hash-based change detection |
+| `llama.cpp/src/llama-kv-cache.cpp` | `VITRIOL_KV_MODE=offload` uses host buffer type; `evict_sparse()` for position-based eviction; sparse hook in `prepare()` |
+| `llama.cpp/src/llama-kv-cache.h` | `evict_sparse()` declaration |
+| `llama.cpp/src/llama-kv-cells.h` | `score` vector + `score_get/set/add` accessors + reset in rm/seq_rm/seq_keep |
+| `llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu` | Remove `integrated &&` guard on `cuda_host_buffer` in `supports_buft` |
+
+### Config Interface
+
+```
+--kv-mode standard | offload | sparse    (env: VITRIOL_KV_MODE)
+--frozen-prompt on | off                 (env: VITRIOL_FROZEN_PROMPT)
+```
+
+TUI accessible via: vitriol config → option 4) Context & Memory Settings
+
+### Build Required
+
+The C++ changes to llama.cpp require a rebuild:
+```bash
+cd llama.cpp && cmake --build build -j$(nproc)
+```

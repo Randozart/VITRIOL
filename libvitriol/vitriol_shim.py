@@ -15,6 +15,7 @@ Implementation Plan v2.0 - Phase 2
 import json
 import re
 import os
+import time
 import subprocess
 import requests
 import logging
@@ -632,33 +633,35 @@ def proxy_chat_completions():
         if MEMORY_MODE and response.status_code == 200:
             project_id = request.headers.get('X-Project-Id', 'default')
             session_id = request.headers.get('X-Session-Id', 'default')
-            try:
-                # Store user message
-                emem.db.store_episode(
-                    project_id, session_id, 'user',
-                    current_query if current_query else '(empty)',
-                    token_count=emem.estimate_tokens(current_query)
-                )
-                # Store assistant response
-                assistant_text = ''
-                if 'choices' in response_data and response_data['choices']:
-                    choice = response_data['choices'][0]
-                    if 'message' in choice and 'content' in choice['message']:
-                        assistant_text = choice['message']['content']
-                    elif 'text' in choice:
-                        assistant_text = choice['text']
-                if assistant_text:
+            for _attempt in range(3):
+                try:
                     emem.db.store_episode(
-                        project_id, session_id, 'assistant',
-                        assistant_text,
-                        token_count=emem.estimate_tokens(assistant_text)
+                        project_id, session_id, 'user',
+                        current_query if current_query else '(empty)',
+                        token_count=emem.estimate_tokens(current_query)
                     )
-
-                # Update Hebbian weights
-                if memory_candidates:
-                    emem.update_weights(project_id, assistant_text, memory_candidates)
-            except Exception as e:
-                logger.warning(f"MEMORY: Failed to store turn: {e}")
+                    assistant_text = ''
+                    if 'choices' in response_data and response_data['choices']:
+                        choice = response_data['choices'][0]
+                        if 'message' in choice and 'content' in choice['message']:
+                            assistant_text = choice['message']['content']
+                        elif 'text' in choice:
+                            assistant_text = choice['text']
+                    if assistant_text:
+                        emem.db.store_episode(
+                            project_id, session_id, 'assistant',
+                            assistant_text,
+                            token_count=emem.estimate_tokens(assistant_text)
+                        )
+                    if memory_candidates:
+                        emem.update_weights(project_id, assistant_text, memory_candidates)
+                    break
+                except Exception as e:
+                    if _attempt < 2:
+                        logger.warning(f"MEMORY: retry store ({_attempt+1}/3): {e}")
+                        import time; time.sleep(1)
+                    else:
+                        logger.warning(f"MEMORY: Failed to store turn after 3 attempts: {e}")
 
         # Return backend's response
         return jsonify(response_data), response.status_code

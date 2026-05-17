@@ -38,10 +38,20 @@ def _get_conn(project_id: str) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=5000")
         _local.conns[cache_key] = conn
         _init_db(conn)
-    return _local.conns[cache_key]
+    conn = _local.conns[cache_key]
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
+def _wal_checkpoint(project_id: str):
+    """Trigger a WAL checkpoint to keep the WAL file small."""
+    try:
+        conn = _get_conn(project_id)
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+    except Exception:
+        pass
 
 
 def _init_db(conn: sqlite3.Connection):

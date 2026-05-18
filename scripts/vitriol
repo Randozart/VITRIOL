@@ -1022,17 +1022,17 @@ case "$CMD" in
         ENV_VERBOSE=""
         [[ "$VERBOSE" == "true" ]] && ENV_VERBOSE="VITRIOL_VERBOSE=1"
 
+        # KV cache quant args (pass to llama-server as --cache-type-k/v)
+        KV_CACHE_ARGS=""
+        [[ "$KV_QUANT" != "f16" ]] && KV_CACHE_ARGS="--cache-type-k $KV_QUANT --cache-type-v $KV_QUANT"
+        # Flash Attention is required for V cache quantization and generally faster
+        FA_ARGS="-fa on"
+
         if $DETACH; then
             echo "Starting server in background..."
             mkdir -p "$CONFIG_DIR"
             SHIM_DIR="$(dirname "$SCRIPT_DIR")/libvitriol"
             export LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-            # KV cache quant args (pass to llama-server as --cache-type-k/v)
-            KV_CACHE_ARGS=""
-            [[ "$KV_QUANT" != "f16" ]] && KV_CACHE_ARGS="--cache-type-k $KV_QUANT --cache-type-v $KV_QUANT"
-            # Flash Attention is required for V cache quantization and generally faster
-            FA_ARGS="-fa on"
 
             if [[ "$MEMORY_MODE" == "on" ]]; then
                 LLAMA_PORT=$((PORT - 1))

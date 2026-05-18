@@ -50,7 +50,7 @@
 | 50     | 5.70       | 45.13       | 377         |
 | 100    | 5.62       | 45.12       | 377         |
 
-### Frozen Prompt Enabled (500k ctx, LRU=2048 MB) — BEST CONFIG
+### Frozen Prompt Enabled (500k ctx) — BEST CONFIG
 | Config | Length | Gen (tok/s) | Eval (tok/s) | Prefill (ms) |
 |--------|--------|------------|-------------|-------------|
 | Frozen, LRU=1024, t=4 | 50 | **5.79** | **64.84** | 416 |
@@ -59,6 +59,8 @@
 | Frozen, LRU=2048, t=4 | 100 | **5.87** | **66.29** | 407 |
 | Frozen, LRU=4096, t=4 | 50 | 5.78 | 61.69 | 438 |
 | Frozen, LRU=4096, t=4 | 100 | 5.71 | 65.21 | 414 |
+
+> **Note:** LRU cache has zero effect on quantized models — see `docs/LRU_DIAGNOSTIC_FINDING.md`.
 
 ### Thread Tuning
 | Config | Gen (tok/s) | Notes |
@@ -76,7 +78,7 @@
 
 ## Conclusions
 1. **Frozen prompt provides the biggest gain** — eval speed +50% (43→65 tok/s), gen +3% (5.63→5.79)
-2. LRU 2048 slightly better than 1024 with frozen prompt (5.87 vs 5.72)
+2. **LRU cache is unreachable** for quantized MoE models — all LRU settings gave identical VRAM and speed (see `docs/LRU_DIAGNOSTIC_FINDING.md`)
 3. More threads (t=8) makes things **worse** — contention overhead
 4. Q4_0 KV cache enables massive context (500k+ fits in ~4 GB VRAM)
 5. VITRIOL stream mode is required for 35B MoE on 8 GB VRAM

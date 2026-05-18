@@ -28,7 +28,7 @@ DEFAULT_PORT=8279
 DEFAULT_HOST="0.0.0.0"
 DEFAULT_PARALLEL=4
 DEFAULT_MODE="stream"
-DEFAULT_LRU_MB=512
+DEFAULT_LRU_MB=0
 DEFAULT_DEVICE=0
 DEFAULT_EXCLUDE_SECONDARY=true
 DEFAULT_VERBOSE=false
@@ -136,7 +136,7 @@ ngl = $CFG_NGL
 [vitriol]
 # Operation mode: stream | sync | async | off
 mode = $CFG_MODE
-# LRU VRAM cache in MB (0 to disable)
+# LRU VRAM cache in MB (0 to disable; only effective with FP16/FP32 experts)
 lru_mb = $CFG_LRU_MB
 # Verbose logging
 verbose = $CFG_VERBOSE
@@ -203,7 +203,7 @@ config_show() {
     print_row "GPU Layers (ngl):      " "${CFG_NGL}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "VITRIOL Mode:          " "${CFG_MODE}"
-    print_row "LRU Cache (MB):        " "${CFG_LRU_MB}"
+    print_row "LRU Cache (MB):        " "${CFG_LRU_MB} (inactive for Q2_K; FP16 only)"
     print_row "Verbose:               " "${CFG_VERBOSE}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "Memory Mode:           " "${CFG_MEMORY_MODE}"
@@ -450,7 +450,7 @@ tui_vitriol_menu() {
         echo "║          VITRIOL Mode Settings           ║"
         echo "╠══════════════════════════════════════════╣"
         printf "║  %-37s ║\n" "1) Operation Mode   [${CFG_MODE}]"
-        printf "║  %-37s ║\n" "2) LRU Cache (MB)   [${CFG_LRU_MB}]"
+        printf "║  %-37s ║\n" "2) LRU Cache (MB)   [${CFG_LRU_MB}] (FP16 only)"
         printf "║  %-37s ║\n" "3) Verbose Logging  [${CFG_VERBOSE}]"
         printf "║  %-37s ║\n" "b) Back to Main Menu"
         printf "║  %-37s ║\n" "q) Quit"

@@ -119,34 +119,35 @@ GTX 1070 Ti (8,112 MiB):
 
 ---
 
-## 4. LRU Cache — `2048 MB`
+## 4. LRU Cache — `0` (disabled)
 
-**Default:** `lru_mb = 2048`
+**Default:** `lru_mb = 0`
 
-### Why It Works
+> **Diagnostic finding (2026-05-18):** The LRU VRAM cache is **unreachable** for quantized MoE models. See [`docs/LRU_DIAGNOSTIC_FINDING.md`](LRU_DIAGNOSTIC_FINDING.md) for full analysis.
 
-The LRU cache holds recently-used expert weights in VRAM, avoiding PCIe transfers on cache hits. Each expert is ~40 MB, so 2048 MB holds ~50 experts simultaneously.
+### Why Disabled by Default
 
-**Measured impact of LRU size:**
+The LRU cache (`vitriol_lru_ensure`) is never called during inference with Q2_K_XL or any quantized MoE model. The `ggml_cuda_mul_mat_id` function has three early-return fast paths (MMQ/MMF/MMVQ) that bypass the LRU code entirely. For quantized models, the MMQ fast path always matches, and the function returns before reaching the LRU logic.
 
-| LRU Size | Gen Speed | Difference from 1024 |
-|----------|-----------|---------------------|
-| 1024 MB | 5.72 tok/s | Baseline |
-| 2048 MB | 5.87 tok/s | **+2.6%** |
-| 4096 MB | 5.71 tok/s | -0.2% (noise) |
+Expert weights are read directly from the page-locked VITRIOL buffer via GPU PCIe DMA — no VRAM caching occurs. The `lru_mb` setting has **zero effect** on performance or VRAM usage regardless of its value.
 
-Increasing beyond 2048 MB shows diminishing returns because:
-1. GPU compute (not expert transfer) is the bottleneck
-2. The expert routing is highly input-dependent — yesterday's hot experts aren't today's
-3. More LRU means less VRAM for KV cache context
+**Measured proof:**
+| LRU Setting | VRAM Used (254k ctx) | Gen Speed |
+|-------------|---------------------|-----------|
+| 0 MB | 3,921 MiB | 5.87 tok/s |
+| 1024 MB | 3,921 MiB | 5.72 tok/s |
+| 2048 MB | 3,921 MiB | 5.87 tok/s |
+| 4096 MB | 3,921 MiB | 5.71 tok/s |
 
-### When to Diverge
+Identical VRAM and performance across all values — confirming the LRU pool is never allocated.
+
+### When to Enable
 
 | Scenario | Recommended LRU | Reason |
 |----------|----------------|--------|
-| Short context (< 32K) | 4096 MB | More VRAM available, more expert caching |
-| Max context (> 500K) | 1024 MB | Free VRAM for KV cache |
-| Different GPU (more VRAM) | 4096-6144 MB | Proportional to VRAM budget |
+| Q2_K_XL or any quantized MoE | **0** | LRU is unreachable; no effect |
+| FP16/FP32 expert weights | 512-2048 | Slow path used; LRU caches hot experts |
+| Unknown model type | 0 | Safe default |
 
 ---
 
@@ -231,7 +232,7 @@ Disk offload replaces the anonymous 10 GB VITRIOL buffer with a file-backed mmap
 
 ### Recommended Command
 ```bash
-vitriol serve --detach -lru 2048 -c 500000 --kv-quant q4_0
+vitriol serve --detach -c 500000 --kv-quant q4_0
 ```
 
 ### Config File (`~/.vitriol/config`)
@@ -243,7 +244,7 @@ ngl = 99
 
 [vitriol]
 mode = stream
-lru_mb = 2048
+# lru_mb = 2048  # only for FP16/FP32 expert weights; no effect on quantized models
 
 [kv]
 mode = offload
@@ -253,7 +254,7 @@ frozen_prompt = on
 
 ### For Max Context (1M tokens)
 ```bash
-vitriol serve --detach -lru 1024 -c 1000000 --kv-quant q4_0
+vitriol serve --detach -c 1000000 --kv-quant q4_0
 ```
 VRAM at 1M context: ~8.0 GB (tight but fits on 8 GB card).
 

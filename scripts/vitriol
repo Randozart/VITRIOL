@@ -1025,6 +1025,7 @@ case "$CMD" in
             echo "Starting server in background..."
             mkdir -p "$CONFIG_DIR"
             SHIM_DIR="$(dirname "$SCRIPT_DIR")/libvitriol"
+            export LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             # KV cache quant args (pass to llama-server as --cache-type-k/v)
             KV_CACHE_ARGS=""
@@ -1114,6 +1115,7 @@ case "$CMD" in
         else
             echo "Starting server (Ctrl+C to stop)..."
             echo ""
+            export LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
             if [[ "$MEMORY_MODE" == "on" ]]; then
                 LLAMA_PORT=$((PORT - 1))

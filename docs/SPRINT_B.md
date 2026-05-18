@@ -45,10 +45,10 @@ If available, benchmark 254K+ context.
 
 | Step | Status | Result |
 |------|--------|--------|
-| 1 | ⏳ | |
-| 2 | ⏳ | |
-| 3 | ⏳ | |
-| 4 | ⏳ | |
-| 5 | ⏳ | |
-| 6 | ⏳ | |
-| 7 | ⏳ | |
+| 1 | ✅ | `vitriol` branch now points to `vitriol-tq` (`284a4be40`) |
+| 2 | ✅ | Binary rebuilt (14:52), submodule committed |
+| 3 | ⏳ | **Needs user action:** `vitriol setup` |
+| 4 | ⏳ | Ready to test |
+| 5 | ⏳ | Ready to test |
+| 6 | ⏳ | Ready to test |
+| 7 | ✅ | context=200000, output=32768, compaction=auto |

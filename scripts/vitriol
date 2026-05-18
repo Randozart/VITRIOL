@@ -397,10 +397,10 @@ tui_model_menu() {
                 ;;
             2)
                 read -r -p "Enter context window (512-32768): " val
-                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 512 && val <= 32768)); then
+                if [[ "$val" =~ ^[0-9]+$ ]] && ((val >= 512 && val <= 262144)); then
                     config_set model.context "$val"
                 else
-                    echo "Invalid (must be 512-32768)"; sleep 1
+                    echo "Invalid (must be 512-262144)"; sleep 1
                 fi
                 ;;
             3)
@@ -883,6 +883,7 @@ case "$CMD" in
             VITRIOL_KV_QUANT="$KV_QUANT" \
             VITRIOL_LOOKUP="$LOOKUP" \
             VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
+            LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
             $ENV_VERBOSE \
             "$BINARY" \
             -m "$MODEL" \
@@ -1046,6 +1047,7 @@ case "$CMD" in
                     VITRIOL_KV_QUANT="$KV_QUANT" \
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
                     $ENV_VERBOSE \
                     nohup "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -1089,6 +1091,7 @@ case "$CMD" in
                     VITRIOL_KV_QUANT="$KV_QUANT" \
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
                     $ENV_VERBOSE \
                     nohup "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -1132,6 +1135,7 @@ case "$CMD" in
                     VITRIOL_KV_QUANT="$KV_QUANT" \
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
                     $ENV_VERBOSE \
                     "$SERVER_BINARY" \
                         -m "$MODEL" \
@@ -1173,6 +1177,7 @@ case "$CMD" in
                     VITRIOL_KV_QUANT="$KV_QUANT" \
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
                     $ENV_VERBOSE \
                     "$SERVER_BINARY" \
                     -m "$MODEL" \

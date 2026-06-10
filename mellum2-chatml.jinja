@@ -1,0 +1,29 @@
+{% for message in messages %}
+{% if message['role'] == 'system' %}
+<|im_start|>system
+{{ message['content'] }}
+<|im_end|>
+{% elif message['role'] == 'user' %}
+<|im_start|>user
+{{ message['content'] }}
+<|im_end|>
+{% elif message['role'] == 'assistant' and message['tool_calls'] is defined %}
+<|im_start|>assistant
+{% for tc in message['tool_calls'] %}
+<tool_call>
+{{ tc['function'] | tojson }}
+</tool_call>
+{% endfor %}
+<|im_end|>
+{% elif message['role'] == 'assistant' %}
+<|im_start|>assistant
+{{ message['content'] }}
+<|im_end|>
+{% elif message['role'] == 'tool' %}
+<|im_start|>system
+Tool result: {{ message['content'] }}
+<|im_end|>
+{% endif %}
+{% endfor %}
+{% if add_generation_prompt %}<|im_start|>assistant
+{% endif %}

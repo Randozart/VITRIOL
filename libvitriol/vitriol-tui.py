@@ -151,6 +151,39 @@ DRAFT_RE = re.compile(
     r"draft acceptance rate\s*=\s*([\d.]+)"
 )
 
+class SlotsWatcher:
+    """Polls /slots endpoint for live token count during generation."""
+
+    def __init__(self, host: str = "localhost", port: int = 8279):
+        self.host = host
+        self.port = port
+        self.n_decoded = 0
+        self.n_prompt = 0
+        self.n_cache = 0
+        self.n_ctx = 0
+        self.state = "idle"
+
+    def poll(self) -> None:
+        try:
+            import urllib.request, json
+            url = f"http://{self.host}:{self.port}/slots"
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                slots = json.loads(resp.read())
+            if slots and len(slots) > 0:
+                s = slots[0]
+                self.n_ctx = s.get("n_ctx", 0)
+                self.state = "processing" if s.get("is_processing", False) else "idle"
+                # next_token is an array with one element
+                nt_list = s.get("next_token", [])
+                if nt_list and len(nt_list) > 0:
+                    self.n_decoded = nt_list[0].get("n_decoded", 0)
+                else:
+                    self.n_decoded = 0
+                self.n_prompt = 0
+        except Exception:
+            pass
+
+
 class ServerLogWatcher:
     """Watches server log file for new timing lines."""
 
@@ -331,6 +364,7 @@ class DashboardScreen(Screen):
                         yield Static("Gen: --  t/s", id="stat-tps")
                         yield Static("Prompt: -- t/s", id="stat-ptps")
                         yield Static("MTP: --", id="stat-mtp")
+                        yield Static("Output: --", id="stat-tokens")
                         yield Static("VRAM: --", id="stat-vram")
                         yield Static("Server: --", id="stat-server")
                 # Bottleneck chart (placeholder)
@@ -378,6 +412,7 @@ class DashboardScreen(Screen):
 
     def on_mount(self):
         self.watcher = ServerLogWatcher()
+        self.slots = SlotsWatcher()
         self.poll_loop()
 
     @work(thread=True)
@@ -407,6 +442,17 @@ class DashboardScreen(Screen):
 
         # Update log watcher
         self.watcher.poll()
+
+        # Update slots watcher (live token counter)
+        self.slots.poll()
+        if self.slots.state == "processing" and self.slots.n_decoded > 0:
+            used = self.slots.n_prompt + self.slots.n_decoded + self.slots.n_cache
+            pct = int(used / self.slots.n_ctx * 100) if self.slots.n_ctx > 0 else 0
+            tok_w = self.query_one("#stat-tokens")
+            tok_w.update(f"Output: {self.slots.n_decoded} t ({pct}% ctx)")
+        elif self.slots.state == "idle" and self.slots.n_decoded > 0:
+            tok_w = self.query_one("#stat-tokens")
+            tok_w.update(f"Output: {self.slots.n_decoded} t (done)")
 
         # Update stats
         if self.watcher.last_tps > 0:
@@ -655,7 +701,7 @@ class VitriolTUI(App):
     .button-row Button {
         margin: 0 1;
     }
-    #stat-tps, #stat-ptps, #stat-mtp, #stat-vram, #stat-server {
+    #stat-tps, #stat-ptps, #stat-mtp, #stat-tokens, #stat-vram, #stat-server {
         padding: 0 1;
         color: #dddddd;
     }

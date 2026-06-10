@@ -2,7 +2,7 @@
 
 ## Testing Protocol
 
-1. **Always use VITRIOL DMA offloading** for model tests. Never test with `-ngl 0` (CPU-only) unless explicitly requested. VITRIOL is designed to make large models fit on small GPUs — use `VITRIOL_ENGINE_MODE=vitriol-dma` and `-ngl 99`.
+1. **Always use VITRIOL DMA offloading** for model tests. Never test with `-ngl 0` (CPU-only) unless explicitly requested. VITRIOL is designed to make large models fit on small GPUs — use `VITRIOL_MODE=stream` and `-ngl 99`.
 
 2. **After any build** (`cmake --build`), ask the user to run `sudo vitriol setup` before testing. This sets `CAP_IPC_LOCK` on the server binary, required for page-locked DMA buffers.
 

@@ -106,6 +106,33 @@ All tests pass with both VITRIOL_MODE=stream and VITRIOL disabled:
 | DeepSeek-Coder-V2-Lite IQ2_M | 5.9 GB | MoE, IQ2_M | ~2.5B | No (fits VRAM) |
 | Gemma 4 26B Q4_0 | 14 GB | MoE, Q4_0 | 4B | Yes (14 GB > 8 GB) |
 
+## Benchmark Results (2026-06-10)
+
+Testing with "Write a Python function for merge sort." prompt, 64-token generation.
+
+| Model | Config | Avg t/s | Context | Notes |
+|-------|--------|---------|---------|-------|
+| **DeepSeek-Coder-V2-Lite IQ2_M** | -ngl 28, -c 4096 | **~50 t/s** | 4K | 🏆 Fastest. 5× Mellum2. IQ2_M quality OK for code. |
+| **Mellum2 12B MXFP4_MOE** | -ngl 28, -c 32768 | ~10 t/s | 32K | More context, better quantization, but 5× slower. |
+| **Gemma 4 26B Q4_0** | -ngl 28, VITRIOL | ❌ OOM | — | Needs 11 GB CUDA_Host; system has 15 GB RAM, only 2.2 GB free. |
+
+**DeepSeek-Coder-V2-Lite IQ2_M** is the clear winner for programming speed on this
+hardware (GTX 1070 Ti, 8 GB VRAM, 15 GB RAM). Its ~50 t/s makes it usable for
+interactive coding tasks. The tradeoff is limited context (4096 with -c flag).
+Larger context (16384+) causes KV cache OOM on this GPU.
+
+**Gemma 4 26B** cannot run on this system. The VITRIOL CUDA_Host buffer requires
+~11 GB of page-locked RAM, but the system has only 2.2 GB free. Even with
+swap, the OOM killer terminates the process. Would need a system with ≥24 GB
+RAM or a different approach (e.g., disk offload).
+
+### DeepSeek Specific Fix
+
+The VITRIOL tensor pattern `tensor_name.find("exps")` was too broad — it matched
+both `_exps.weight` and `_exps.scale` tensors. The `.scale` tensors are tiny
+per-expert scale arrays that don't need VITRIOL DMA treatment. Fixed pattern to
+`"exps.weight"` in `llama-model-loader.cpp:1255`.
+
 ## Known Issues (pre-existing, not introduced by this fix)
 
 - **Lazy locking path** (`VITRIOL_MAX_LOCKED_MB`): When the page-lock budget

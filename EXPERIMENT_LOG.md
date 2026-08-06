@@ -864,3 +864,16 @@ correctness PASS, VRAM 7783/328 fits.
 - Validation: ingest -> context block (KV-offload episodes, capped) -> compaction
   capture -> retrieval finds original + capture (0.863). Plugin TS valid; live
   session.prompt injection timing needs a real opencode run.
+
+## 2026-08-06 — Diagnostics layer + AT_SECURE RUNPATH bug
+
+- launch_vitriol_full.sh: added status / logs / doctor subcommands + launch hardening
+  (bounded poll, dump log tail on dead-on-arrival) + --verbose / --dry-run.
+- BUG: gen server failed "libllama-common.so.0 cannot open shared object file" despite
+  clean ldd. Root cause: binary has cap_ipc_lock (AT_SECURE) -> loader IGNORES $ORIGIN
+  RUNPATH; a rebuild resets RUNPATH to $ORIGIN and setup wasn't re-run. The launch
+  hardening caught it live. FIX: launch script self-heals RUNPATH (patchelf, no sudo)
+  before setup; doctor checks RUNPATH. patchelf clears caps -> needs `sudo vitriol setup`
+  re-run for page-locking (VRAM-fit models unaffected).
+- Fix: log_err uses fatal-marker patterns only (benign "failed to fit params" no longer
+  false-positives); status() no longer aborts under set -e (log_err returns 0).

@@ -139,6 +139,20 @@ OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts
   stays wired + zero-guarded for later. **Fork BERT-embedding bug -> BACKLOG**: git-bisect
   the fork's attention/graph changes to isolate the regression (own investigation, not on
   Copula's critical path).
+- **P2 — UNBLOCKED + backlog CLOSED (2026-08-06, investigation).** The "fork BERT
+  zero-embedding bug" does **NOT reproduce in the current VITRIOL source/build**. Full
+  investigation: (1) reproduced zeros only in STALE P2-era server processes (still
+  running on 8081; "fast"->0.0, "hello world"->1.0); (2) proved backend-independent
+  (CPU+GPU), pooling-independent (cls/mean/last/default), model-independent (nomic +
+  bge, Q8+F16); (3) proved raw token embeddings were NONZERO (pooling none) so the
+  pooled output was the failure surface; (4) narrowed to BINARY STATE — a clean rebuild
+  of the committed source produces correct embeddings for ALL inputs (16+ tested, both
+  models, CPU+GPU, norm 1.0), with and without patchelf fix_rpath. Conclusion: the P2-era
+  binary was a stale build artifact (older/incremental source state); the current source
+  has no BERT embedding bug. **The GGUF-GPU embedding provider works.** sentence-
+  transformers stays as a CPU fallback (fine either way); the zero-guard in embed.py stays
+  as a defensive check. Note: llama-server was rebuilt (caps need `sudo vitriol setup`
+  re-run for page-locking).
 - **P3 — node versioning + Aider-style repo map. Design (2026-08-06, decisions
   approved):** stale-file-data question resolved as **versioned-supersede, never
   hard-discard**.

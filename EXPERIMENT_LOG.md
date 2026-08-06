@@ -815,3 +815,21 @@ embedder.
 - P5 verified: v1 store -> edit+commit -> v2 re-store: mod.py rev1 superseded_by rev2;
   retrieval current-only returns current rev, include_history returns both; single-file
   refresh superseded 2 old main.py versions, current carries new symbol.
+
+## 2026-08-06 — BERT embedding bug investigation: NOT a current-source bug, P2 unblocked
+
+Investigated the "fork BERT zero-embedding bug" (P2 backlog). Findings:
+1. Reproduced zeros only in STALE P2-era server processes (surviving on :8081: "fast"->0.0,
+   "hello world"->1.0). Fresh rebuilds are all-correct.
+2. Backend-independent (CPU+GPU), pooling-independent (cls/mean/last/default), model-
+   independent (nomic + bge, Q8_0 + F16) — reproduced in the stale binary.
+3. Isolated to the pooled output: pooling none gave NONZERO raw token embeddings.
+4. Clean rebuild of committed source (85d01eda8): ALL inputs norm 1.0 (16+ inputs, both
+   models, CPU+GPU), with and without patchelf fix_rpath. Verified upstream base
+   (277ff5fff) SIGILLs on this i7-3770 (BMI2 in SIMD helpers) — unrelated, fork build
+   avoids it.
+5. Root cause: the P2-era binary was a stale build artifact (older/incremental source
+   state), NOT a current-source bug.
+VERDICT: GGUF-GPU embedding provider WORKS. P2 unblocked. sentence-transformers stays as
+CPU fallback; zero-guard stays defensive. llama-server was rebuilt -> caps need `sudo
+vitriol setup` re-run.

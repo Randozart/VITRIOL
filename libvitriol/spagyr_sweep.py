@@ -112,8 +112,8 @@ def measure_b(n):
     results = []
     lock = threading.Lock()
 
-        # Intent: run one completion and stash the result under the lock.
-        def work():
+    # Intent: run one completion and stash the result under the lock.
+    def work():
         """Run one completion and stash the result under the lock."""
         try:
             r = completion()
@@ -156,11 +156,11 @@ def main():
               "concurrent_tps", "wall_s", "correct"]
     rows = []
 
-        # Intent: launch one spec, measure in the given mode, append the CSV row.
-        def run_cfg(tag, value, spec, mode):
+    # Intent: launch one spec, measure in the given mode, append the CSV row.
+    def run_cfg(tag, value, spec, mode):
         """Launch one spec, measure in the given mode, append the CSV row."""
         log("start %s=%s (t=%s ubatch=%s parallel=%s)" % (tag, value, spec.threads,
-                                                           spec.ubatch, spec.parallel))
+                                                          spec.ubatch, spec.parallel))
         proc, devnull = start_server(spec)
         try:
             if not wait_healthy():

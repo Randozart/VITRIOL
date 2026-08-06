@@ -28,9 +28,10 @@ the statistical coupling function — two systems, one joint distribution.
 ## Running the stack
 
 ```fish
-# 1. Hermetis memory service (localhost :8090)
-VITRIOL_SEMANTIC_MODE=on python3 libvitriol/hermetis_server.py --port 8090
-# 2. (optional) generation server, e.g. Mellum: ngl=24 c=32768 t=4
+# 1. Copula memory stack: Hermetis (:8090) + GPU embed server (:8081)
+./scripts/launch_copula.sh          # start (COPULA_NO_EMBED=1 to skip embed)
+./scripts/launch_copula.sh stop     # stop
+# 2. Generation server (separate), e.g. Mellum: ngl=24 c=32768 t=4
 # 3. OpenCode picks up the Copula Hermetis plugin at ~/.config/opencode/plugins/copula.ts
 #    (copy from VITRIOL/plugins/copula.ts; restart opencode to load it)
 ```

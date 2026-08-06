@@ -877,3 +877,14 @@ correctness PASS, VRAM 7783/328 fits.
   re-run for page-locking (VRAM-fit models unaffected).
 - Fix: log_err uses fatal-marker patterns only (benign "failed to fit params" no longer
   false-positives); status() no longer aborts under set -e (log_err returns 0).
+
+## 2026-08-06 — kimi-k3-in-c adoptions (re-derived; GPL-2.0 clean)
+
+LICENSING: VITRIOL + llama.cpp fork confirmed GPL-2.0. Apache-2.0 is GPL-2.0-INCOMPATIBLE
+-> kimi code is NEVER copied, only studied + re-derived. AGENTS.md now has the GPL-2.0
+incorporation policy; docs/provenance/kimi-k3-in-c.md records what was learned.
+
+ADOPTED #1 — three-state expert cache (INFLIGHT-aware victim selection):
+vitriol-cuda-integration.cpp LRU now picks the LRU victim whose last DMA has COMPLETED
+(cuEventQuery==SUCCESS) instead of blindly evicting the LRU and stalling on its in-flight
+fill. PROVENANCE header inline. Built clean.

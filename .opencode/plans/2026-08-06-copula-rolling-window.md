@@ -32,7 +32,8 @@ from what matters. The user should rarely *feel* compaction and nothing is ever 
   inject via `session.prompt({ noReply: true, parts: [text] })`, labeled
   `[Hermetis context]`.
 - Toggles: `COPULA_AUTO_CONTEXT` (default on), `COPULA_CONTEXT_BUDGET` (3000),
-  `COPULA_CONTEXT_TOP_K` (5).
+  `COPULA_CONTEXT_TOP_K` (5), and the master `COPULA_ENABLED` (default on; `0` makes the
+  plugin a no-op when VITRIOL isn't running).
 - Guards: dedupe injected content hashes; skip re-ingesting synthetic injected parts
   (`TextPart.synthetic`); budget cap.
 

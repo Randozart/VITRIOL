@@ -195,4 +195,15 @@ No performance baseline to preserve; the dashboard is additive.
 ## Results
 
 <!-- living section: fill as phases land -->
-- V1: TBD
+- **V1 — DONE (2026-08-07)**: `vitriol-tui/` crate ships. DASHBOARD tab only:
+  banner + GEN/HERMETIS/EMBED cards + GPU card (btop gauges, VRAM/UTIL/temp/
+  power/processes) + DECODE sparkline. Poller thread (2 s, ureq, per-request
+  3 s timeout) + `nvidia-smi` parsing + gen-log `eval time` decode parser
+  (anchored on `eval time =` so prompt lines never count). Vitriolum theme,
+  alchemical glyphs 🜂🜄🜁🜃 verified rendering in tmux. Decode t/s via log
+  because gen `/health` returns only `{"status":"ok"}` (llama.cpp
+  `server-context.cpp:3700`). Live check: gen correctly down (GPU blocked by
+  avatar), hermetis+embed up, GTX 1070 Ti VRAM/util/temp live.
+  Verification: 8 unit tests, clippy `-D warnings` clean, fmt clean, Praetor
+  validate PASS, release binary 3.6 MB. pty smoke test clean.
+- V2: TBD

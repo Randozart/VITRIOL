@@ -98,7 +98,19 @@ OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
 
 ## 6. Phases
 
-- **P1** — Memory service (store/search) on the existing spine; unit-test retrieval.
+- **P1 — DONE (2026-08-06, VITRIOL 63c3e5a)** — Memory service `libvitriol/memory_server.py`
+  (store/node/search/stats/health, localhost :8090). Reuses the existing spine. Bugs
+  found + fixed while building:
+  - `store_episode` left the edge INSERT (`_ensure_edge`) uncommitted → open write
+    transaction held the SQLite write lock → 3rd sequential store stalled ~5 s under
+    threaded Flask (`busy_timeout`). Fixed: commit after edge link.
+  - Param bundling per AGENTS.md 5.3: `db.EdgeSpec` dataclass; `store_episode` /
+    `store_node` take a `meta` dict; callers updated (hebbian, consolidate, shim).
+  - Pre-commit hook upgraded to **diff-aware** (`scripts/praetor_diff.py`): only NEW
+    diagnostics relative to the staged version gate the commit (pre-existing baseline
+    in touched files no longer blocks).
+  - Verified: 5 sequential stores + node all ~0.003 s; search returns scored formatted
+    snippets.
 - **P2** — GPU embedding provider (llama-server /embedding + small GGUF) + wire into
   the service, with VRAM-contention guard + keyword fallback.
 - **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).

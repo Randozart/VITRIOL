@@ -40,7 +40,24 @@ DO_GEN=1
 VERBOSE=0
 DRY_RUN=0
 
-port_pid() { ss -ltnp 2>/dev/null | grep ":$1 " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2; }
+# Find the pid bound to a port. ss -p often cannot attribute the pid (it showed
+# "-" for our own gen server), so fall back to lsof then fuser. Always returns 0 so
+# set -e never aborts the script on a lookup miss.
+port_pid() {
+    local port="$1" p=""
+    p=$(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    p=$(lsof -ti ":$port" 2>/dev/null | head -1)
+    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    # The socket tools can fail to attribute our own servers' pids; the cmdline
+    # always carries --port, so pgrep is the reliable fallback.
+    p=$(pgrep -f "(llama-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
+    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    p=$(fuser -n tcp "$port" 2>/dev/null | tr -s ' ' | head -1 | xargs echo)
+    echo "$p"
+    return 0
+}
+port_up() { [ "$(health_of "$1")" != "down" ]; }
 health_of() { curl -s -m 3 "http://127.0.0.1:$1/health" 2>/dev/null || echo down; }
 log_tail() { [ -f "$1" ] && tail -n "${2:-3}" "$1" || echo "  (no log at $1)"; }
 # Fatal markers only — the benign "failed to fit params" ngl warning must not trip this.
@@ -59,10 +76,17 @@ fix_rpath_local() {
 }
 
 stop() {
+    local pid=""
     pid=$(port_pid "$GEN_PORT")
     if [ -n "$pid" ]; then
         echo "[vitriol] stopping gen server :$GEN_PORT (pid $pid)"
         kill -9 "$pid" 2>/dev/null || true
+    elif port_up "$GEN_PORT"; then
+        echo "[vitriol] gen server on :$GEN_PORT has no visible pid — killing by socket"
+        fuser -k -9 "$GEN_PORT"/tcp 2>/dev/null || true
+        ss -K "dst 127.0.0.1" 2>/dev/null || true
+    else
+        echo "[vitriol] no gen server on :$GEN_PORT"
     fi
     if [ -x "$COPULA_SCRIPT" ]; then
         "$COPULA_SCRIPT" stop
@@ -180,7 +204,7 @@ if [ "$DO_GEN" = "1" ]; then
         echo "[vitriol] ERROR: $SERVER not found — build first" >&2
         exit 1
     fi
-    if [ -n "$(port_pid "$GEN_PORT")" ]; then
+    if [ -n "$(port_pid "$GEN_PORT")" ] || port_up "$GEN_PORT"; then
         echo "[vitriol] gen server already on :$GEN_PORT — skipping"
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
@@ -191,16 +215,16 @@ if [ "$DO_GEN" = "1" ]; then
         fi
         if [ "$DRY_RUN" = "0" ]; then
             setsid nohup "${CMD[@]}" > "$GEN_LOG" 2>&1 < /dev/null &
-            # Hardening: bounded poll; a dead-on-arrival launch (lib errors die in ~1s)
-            # must not look like "loading".
-            alive=0
+            # Hardening: check PROCESS liveness, not port binding — the port only
+            # binds after the ~50s model load, so a loading server is alive-but-unbound.
+            # A dead-on-arrival launch (lib errors) dies within ~1s.
+            alive=1
             for i in $(seq 1 6); do
-                if [ -n "$(port_pid "$GEN_PORT")" ]; then alive=1; break; fi
-                if ! kill -0 $! 2>/dev/null; then break; fi
+                if ! kill -0 $! 2>/dev/null; then alive=0; break; fi
                 sleep 1
             done
             if [ "$alive" = "1" ]; then
-                echo "[vitriol]   gen process up (pid $(port_pid "$GEN_PORT")); model may still be loading"
+                echo "[vitriol]   gen process up (pid $!); model may still be loading (port binds after load)"
             else
                 echo "[vitriol] ERROR: gen server exited immediately — see log tail:" >&2
                 log_tail "$GEN_LOG" 8

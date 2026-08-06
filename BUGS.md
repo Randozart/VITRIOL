@@ -68,3 +68,20 @@ are historical — reference them, never edit retroactively. Companion to
   NEW diagnostics relative to the staged version gate commits.
 - **fish shell** (`sudo prlimit --pid $$ ...`) — `$$` invalid in fish; use
   `$fish_pid` and `; and`.
+
+### 8. `vitriol stop` failed + launches appeared broken (port phantom + set -e aborts)
+- **Where**: `scripts/launch_vitriol_full.sh` / `launch_copula.sh`.
+- **Symptom**: `vitriol stop` exited 1 without killing the gen server; launches reported
+  "exited immediately" while the model was actually still loading; a stale gen server
+  held :8279 invisibly (ss -p/lsof/fuser showed owner "-", inode unclaimed in /proc).
+- **Root causes**:
+  1. `port_pid` relied on `ss -p`, which cannot attribute pids for our own `setsid`
+     servers; the pipeline returning non-zero on a miss **aborted the script under
+     `set -euo pipefail`**.
+  2. Launch hardening polled for the **port binding**, but the port binds only after the
+     ~50 s model load → a healthy loading server was misread as dead.
+  3. `log_err` matched the benign "failed to fit params" warning as a fatal error.
+- **Fixes**: `port_pid` now falls back ss -> lsof -> **pgrep (cmdline `--port`)** -> fuser
+  and always returns 0; hardening polls **process liveness** (`kill -0`), not binding;
+  `log_err` uses fatal-marker patterns only; launch treats a healthy port as
+  already-running; `stop` kills by pid (or socket as last resort).

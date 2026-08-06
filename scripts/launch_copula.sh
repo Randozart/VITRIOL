@@ -19,7 +19,18 @@ HERMETIS_PORT="${COPULA_HERMETIS_PORT:-8090}"
 EMBED_PORT="${COPULA_EMBED_PORT:-8081}"
 EMBED_NGL="${COPULA_EMBED_NGL:-99}"
 
-port_pid() { ss -ltnp 2>/dev/null | grep ":$1 " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2; }
+port_pid() {
+    local port="$1" p=""
+    p=$(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    p=$(lsof -ti ":$port" 2>/dev/null | head -1)
+    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    p=$(pgrep -f "(llama-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
+    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    p=$(fuser -n tcp "$port" 2>/dev/null | tr -s ' ' | head -1 | xargs echo)
+    echo "$p"
+    return 0
+}
 
 stop() {
     for p in "$HERMETIS_PORT" "$EMBED_PORT"; do

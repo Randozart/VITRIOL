@@ -1,12 +1,25 @@
 // Copula Hermetis — OpenCode plugin connecting OpenCode into VITRIOL's Hermetis memory.
 // Copula = the VITRIOL<->OpenCode bond; Hermetis = the memory system.
-// Ingest: per-message (session.idle transcript) + tool results (tool.execute.after).
+// Rolling window over a database (2026-08-06):
+//   ingest:  per-message + chat.message (full user turns) + tool results
+//   lossless: experimental.session.compacting dumps pre-compaction context
+//   auto-inject: on new user message, retrieve /hermetis/context and inject as
+//                [Hermetis context] via session.prompt({noReply}) — COPULA_AUTO_CONTEXT
 // Retrieve: `memory_search` custom tool -> Hermetis /hermetis/search.
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
 const HERMETIS_URL = process.env.COPULA_HERMETIS_URL ?? "http://127.0.0.1:8090"
 const MAX_CONTENT = 20000
+const AUTO_CONTEXT = process.env.COPULA_AUTO_CONTEXT !== "0"
+const CONTEXT_BUDGET = Number(process.env.COPULA_CONTEXT_BUDGET ?? 3000)
+const CONTEXT_TOP_K = Number(process.env.COPULA_CONTEXT_TOP_K ?? 5)
+
+function hashString(s: string): string {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0
+  return String(h)
+}
 
 export const CopulaHermetis: Plugin = async ({ project, client, directory, worktree }) => {
   const projectRoot = worktree ?? directory
@@ -14,6 +27,8 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
 
   // Dedupe ingested parts so streaming + transcript pulls don't double-store.
   const stored = new Set<string>()
+  // Dedupe auto-injected context blocks (rolling window, B).
+  const injected = new Set<string>()
   // Debounce repo-map node refresh per changed file (P3.4).
   const fileTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -30,13 +45,13 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
     }
   }
 
-  async function store(role: string, content: string, sessionId: string): Promise<void> {
+  async function store(role: string, content: string, sessionId: string, maxChars = MAX_CONTENT): Promise<void> {
     if (!content?.trim()) return
     await post("/hermetis/store", {
       project_id: projectId,
       session_id: sessionId,
       role,
-      content: content.slice(0, MAX_CONTENT),
+      content: content.slice(0, maxChars),
     })
   }
 
@@ -45,10 +60,42 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
     if (stored.has(key)) return
     stored.add(key)
     if (part?.type === "text" && typeof part.text === "string") {
+      // Skip the plugin's own labels (injected context + compaction capture) so they
+      // are never re-ingested as conversation.
+      if (part.text.startsWith("[Hermetis context]") || part.text.startsWith("[compaction capture]")) return
       // synthetic text parts carry tool/tool-output content; plain text is assistant prose.
       const role = part.synthetic ? "tool" : "assistant"
       await store(role, part.text, sessionId)
     }
+  }
+
+  // Rolling window (B): on a new user turn, retrieve relevant memory and inject it as a
+  // labeled noReply context part so the window is reassembled from what matters.
+  async function injectContext(sessionId: string, query: string): Promise<void> {
+    try {
+      const res = await fetch(`${HERMETIS_URL}/hermetis/context`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          recent_text: query.slice(0, 2000),
+          budget_tokens: CONTEXT_BUDGET,
+          top_k: CONTEXT_TOP_K,
+        }),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      const block = data?.context
+      if (!block?.trim()) return
+      const h = hashString(block)
+      if (injected.has(h)) return
+      injected.add(h)
+      const labeled = `[Hermetis context]\n${block}`
+      await client.session.prompt({
+        body: { noReply: true, parts: [{ type: "text", text: labeled }] },
+        path: { id: sessionId },
+      })
+    } catch {}
   }
 
   return {
@@ -100,6 +147,32 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
         const out = typeof output === "string" ? output : JSON.stringify(output ?? "")
         const content = `${(input as any)?.tool}\nARGS: ${args.slice(0, 2000)}\nRESULT: ${out.slice(0, 8000)}`
         await store("tool", content, "default")
+      } catch {}
+    },
+
+    // Rolling window (A + B): full user-turn capture + per-turn auto-injection.
+    "chat.message": async (input, output) => {
+      try {
+        const message = (output as any)?.message
+        const role = message?.role === "assistant" ? "assistant" : "user"
+        const text = typeof message?.content === "string" ? message.content : ""
+        const sessionId = (input as any)?.sessionID ?? "default"
+        if (text?.trim() && role === "user") {
+          await store("user", text, sessionId)
+          if (AUTO_CONTEXT) await injectContext(sessionId, text)
+        }
+      } catch {}
+    },
+
+    // Rolling window (A): lossless compaction capture — dump the pre-compaction
+    // context strings to Hermetis before the window is replaced.
+    "experimental.session.compacting": async (input, output) => {
+      try {
+        const sessionId = (input as any)?.sessionID ?? "default"
+        const context = (output as any)?.context
+        if (Array.isArray(context) && context.length) {
+          await store("tool", `[compaction capture]\n${context.join("\n")}`, sessionId, 500000)
+        }
       } catch {}
     },
 

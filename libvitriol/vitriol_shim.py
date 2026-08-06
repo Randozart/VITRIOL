@@ -697,7 +697,7 @@ def _store_turn(status_code, raw_response, req, memory_candidates, current_query
             emem.db.store_episode(
                 project_id, session_id, 'user',
                 current_query if current_query else '(empty)',
-                token_count=emem.estimate_tokens(current_query)
+                meta={'token_count': emem.estimate_tokens(current_query)}
             )
             assistant_text = ''
             if 'choices' in response_data and response_data['choices']:
@@ -710,7 +710,7 @@ def _store_turn(status_code, raw_response, req, memory_candidates, current_query
                 emem.db.store_episode(
                     project_id, session_id, 'assistant',
                     assistant_text,
-                    token_count=emem.estimate_tokens(assistant_text)
+                    meta={'token_count': emem.estimate_tokens(assistant_text)}
                 )
             if memory_candidates:
                 emem.update_weights(project_id, assistant_text, memory_candidates)

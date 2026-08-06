@@ -127,7 +127,8 @@ def consolidate_project(project_id: str):
 
     # Create edges from node to each source episode
     for ep in batch:
-        db._ensure_edge(conn, 'node', node_id, 'episode', ep['id'], 'consolidated_from')
+        db._ensure_edge(conn, db.EdgeSpec('node', node_id, 'episode', ep['id'],
+                                          'consolidated_from'))
 
     conn.commit()
     logger.info(f"[{project_id}] Consolidated {len(batch)} episodes → node '{label}'")

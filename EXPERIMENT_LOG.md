@@ -759,3 +759,20 @@ MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
   ~5-8 t/s. 200K impossible (model native cap 131072). "Acceptable speed" and ">32K"
   are mutually exclusive on this box.
 - Record: .opencode/plans/2026-08-06-spagyric-layer1a-kv-offload-investigation.md
+
+## 2026-08-06 — P1 VITRIOL memory service (OpenCode RAG)
+
+- libvitriol/memory_server.py: HTTP API (store/node/search/stats/health), localhost :8090.
+  Reuses libvitriol/memory (db, retrieval, compact). Keyword+recency scoring; GPU GGUF
+  embeddings wired in P2.
+- db.py: added store_node() (knowledge-node upsert keyed by label).
+- BUG FOUND + FIXED: store_episode called _ensure_edge() without commit, leaving an open
+  write transaction that held the SQLite write lock -> 3rd sequential store stalled ~5s
+  (busy_timeout) under threaded Flask; direct single-thread calls masked it. Fixed:
+  commit after edge link; also get_or_create_edge now commits under the write lock.
+- VERIFIED: 5 sequential stores + node all ~0.003s; search returns scored formatted
+  snippets; stats correct.
+- Plan: .opencode/plans/2026-08-06-vitriol-memory-opencode-rag.md (P1 done).
+  + (refactor) param bundling per Praetor/AGENTS.md 5.3: db.EdgeSpec dataclass;
+    store_episode/store_node take meta dict; get_or_create_edge/_ensure_edge take
+    EdgeSpec. Callers updated (hebbian, consolidate, shim, memory_server).

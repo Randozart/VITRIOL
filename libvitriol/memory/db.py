@@ -10,6 +10,7 @@ import hashlib
 import sqlite3
 import os
 import threading
+from dataclasses import dataclass
 from typing import Optional
 from datetime import datetime
 
@@ -21,6 +22,18 @@ _local = threading.local()
 
 # Global write mutex — serializes all writes to prevent "database is locked"
 _write_lock = threading.Lock()
+
+
+@dataclass
+class EdgeSpec:
+    """Bundle an edge identity + weight (params >5 smell, AGENTS.md 5.3)."""
+
+    from_type: str
+    from_id: int
+    to_type: str
+    to_id: int
+    relation: str
+    weight: float = 1.0
 
 
 def _get_db_path(project_id: str) -> str:
@@ -207,44 +220,75 @@ def get_or_create_session(project_id: str, session_id: str) -> dict:
 
 
 def store_episode(project_id: str, session_id: str, role: str,
-                  content: str, token_count: int = 0,
-                  turn_index: Optional[int] = None) -> int:
-    """Store a conversation turn. Returns the episode ID."""
+                  content: str, meta: dict = None) -> int:
+    """Store a conversation turn. Returns the episode ID.
+    meta may carry token_count and turn_index."""
+    meta = meta or {}
+    token_count = meta.get('token_count', 0)
+    turn_index = meta.get('turn_index')
+    # 2026-08-06: hold _write_lock across the ENTIRE write. Previously the lock only
+    # guarded the connection fetch, so concurrent writers (Flask threaded requests)
+    # hit sqlite3 "database is locked" / busy_timeout stalls. Serialize all writes.
     with _write_lock:
         conn = _get_conn(project_id)
 
-    if turn_index is None:
+        if turn_index is None:
+            cursor = conn.execute(
+                "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM episodes WHERE session_id = ?",
+                (session_id,)
+            )
+            turn_index = cursor.fetchone()[0]
+
         cursor = conn.execute(
-            "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM episodes WHERE session_id = ?",
+            """INSERT INTO episodes (session_id, turn_index, role, content, token_count)
+               VALUES (?, ?, ?, ?, ?)""",
+            (session_id, turn_index, role, content, token_count)
+        )
+        episode_id = cursor.lastrowid
+
+        conn.execute(
+            "UPDATE sessions SET turn_count = turn_count + 1, updated_at = datetime('now') WHERE session_id = ?",
             (session_id,)
         )
-        turn_index = cursor.fetchone()[0]
+        conn.commit()
 
-    cursor = conn.execute(
-        """INSERT INTO episodes (session_id, turn_index, role, content, token_count)
-           VALUES (?, ?, ?, ?, ?)""",
-        (session_id, turn_index, role, content, token_count)
-    )
-    episode_id = cursor.lastrowid
-
-    conn.execute(
-        "UPDATE sessions SET turn_count = turn_count + 1, updated_at = datetime('now') WHERE session_id = ?",
-        (session_id,)
-    )
-    conn.commit()
-
-    # Link to previous episode in session
-    if turn_index > 0:
-        cursor = conn.execute(
-            "SELECT id FROM episodes WHERE session_id = ? AND turn_index = ?",
-            (session_id, turn_index - 1)
-        )
-        prev = cursor.fetchone()
-        if prev:
-            _ensure_edge(conn, 'episode', prev['id'],
-                         'episode', episode_id, 'follows')
+        # Link to previous episode in session
+        if turn_index > 0:
+            cursor = conn.execute(
+                "SELECT id FROM episodes WHERE session_id = ? AND turn_index = ?",
+                (session_id, turn_index - 1)
+            )
+            prev = cursor.fetchone()
+            if prev:
+                _ensure_edge(conn, EdgeSpec('episode', prev['id'],
+                                            'episode', episode_id, 'follows'))
+                # 2026-08-06: commit the edge INSERT. Previously the edge write was
+                # left uncommitted, leaving an open write transaction that held the
+                # SQLite write lock on this connection and stalled other threads'
+                # writers up to busy_timeout (observed ~5s stalls on the 3rd store).
+                conn.commit()
 
     return episode_id
+
+
+def store_node(project_id: str, label: str, summary: str,
+               meta: dict = None) -> int:
+    """Upsert a knowledge node keyed by label (repo-map / file entries). Returns the node ID.
+    meta may carry strength, source_min, source_max."""
+    meta = meta or {}
+    with _write_lock:
+        conn = _get_conn(project_id)
+        cursor = conn.execute(
+            """INSERT INTO knowledge_nodes (label, summary, strength, source_min, source_max)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(label) DO UPDATE SET
+                   summary=excluded.summary, strength=excluded.strength,
+                   source_min=excluded.source_min, source_max=excluded.source_max""",
+            (label, summary, meta.get('strength', 1.0),
+             meta.get('source_min'), meta.get('source_max'))
+        )
+        conn.commit()
+    return cursor.lastrowid
 
 
 def search_episodes(project_id: str, query: str, limit: int = 10) -> list[dict]:
@@ -316,26 +360,26 @@ def get_edge_targets(project_id: str,
     return [dict(row) for row in cursor.fetchall()]
 
 
-def get_or_create_edge(project_id: str,
-                       from_type: str, from_id: int,
-                       to_type: str, to_id: int,
-                       relation: str, weight: float = 1.0) -> dict:
-    """Get or create an edge between two nodes."""
-    conn = _get_conn(project_id)
-    _ensure_edge(conn, from_type, from_id, to_type, to_id, relation, weight)
+def get_or_create_edge(project_id: str, spec: EdgeSpec) -> dict:
+    """Get or create an edge between two nodes (identity + weight bundled in spec)."""
+    with _write_lock:
+        conn = _get_conn(project_id)
+        _ensure_edge(conn, spec)
+        conn.commit()
     cursor = conn.execute(
         "SELECT * FROM edges WHERE from_type=? AND from_id=? AND to_type=? AND to_id=? AND relation=?",
-        (from_type, from_id, to_type, to_id, relation)
+        (spec.from_type, spec.from_id, spec.to_type, spec.to_id, spec.relation)
     )
     return dict(cursor.fetchone())
 
 
-def _ensure_edge(conn, from_type, from_id, to_type, to_id, relation, weight=1.0):
-    """Internal: upsert an edge."""
+def _ensure_edge(conn, spec: EdgeSpec):
+    """Internal: upsert an edge (identity + weight bundled in spec)."""
     conn.execute(
         """INSERT OR IGNORE INTO edges (from_type, from_id, to_type, to_id, relation, weight)
            VALUES (?, ?, ?, ?, ?, ?)""",
-        (from_type, from_id, to_type, to_id, relation, weight)
+        (spec.from_type, spec.from_id, spec.to_type, spec.to_id,
+         spec.relation, spec.weight)
     )
 
 

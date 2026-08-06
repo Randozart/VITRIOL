@@ -74,10 +74,9 @@ def update_weights(project_id: str, response_text: str,
             if a_used and b_used:
                 edge = db.get_or_create_edge(
                     project_id,
-                    a.get('_type', 'episode'), a.get('id'),
-                    b.get('_type', 'episode'), b.get('id'),
-                    'co_retrieved',
-                    weight=1.0
+                    db.EdgeSpec(a.get('_type', 'episode'), a.get('id'),
+                                b.get('_type', 'episode'), b.get('id'),
+                                'co_retrieved')
                 )
                 new_weight = min(3.0, edge['weight'] + 0.05)
                 db.update_edge_weight(project_id, edge['id'], new_weight)

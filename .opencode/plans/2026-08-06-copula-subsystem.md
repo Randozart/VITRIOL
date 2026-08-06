@@ -1,4 +1,4 @@
-# VITRIOL-Memory for OpenCode — Complementary RAG Architecture
+# Copula Subsystem — VITRIOL-Memory for OpenCode (Complementary RAG)
 
 Date: 2026-08-06.
 
@@ -8,10 +8,14 @@ Give OpenCode broad-context awareness via a complementary VITRIOL layer: the con
 window becomes a working-memory budget (measured: ~32K fast on this box), while
 VITRIOL provides the persistent RAG brain — continuous context ingestion, Aider-style
 whole-repo map, and on-demand retrieval back into the window. No proxy/MITM: a native
-OpenCode plugin (global) talks to a VITRIOL memory service over HTTP.
+OpenCode plugin (global) talks to a VITRIOL memory service over HTTP. This VITRIOL-to-
+OpenCode bond is the **Copula subsystem** (a coupling function, named 2026-08-06): the
+OpenCode Copula plugin + the VITRIOL Copula service + embedding provider + repo map.
 
 ## 2. Decisions (2026-08-06)
 
+- **Name**: the VITRIOL<->OpenCode integration is the **Copula subsystem**. Components:
+  Copula service (VITRIOL side), Copula plugin (OpenCode side).
 - **Route**: native OpenCode plugin, not the legacy shim proxy.
 - **Ingest scope**: conversations AND tool results (file reads, grep, bash) — the real
   "context gathering".
@@ -49,13 +53,13 @@ OpenCode plugin (global) talks to a VITRIOL memory service over HTTP.
 ## 4. Architecture
 
 ```
-OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
+OpenCode — Copula plugin (global ~/.config/opencode/plugins/copula.ts)
   |- ingest:    event.subscribe() -> per-message store (user, assistant, tool results)
-  |- retrieve:  custom tool memory_search(query) -> VITRIOL /memory/search
+  |- retrieve:  custom tool memory_search(query) -> Copula /memory/search
   |- repo map:  auto-inject budget-limited Aider-style map at session start
                               |
                               v
-             VITRIOL Memory Service (libvitriol/memory_server.py)
+             Copula service (libvitriol/copula_server.py)
                POST /memory/store  /memory/search  /memory/embed  /memory/repo_map
                               |
                               v
@@ -65,7 +69,7 @@ OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
 
 ## 5. Components
 
-### 5.1 VITRIOL memory service (`libvitriol/memory_server.py`)
+### 5.1 Copula service (`libvitriol/copula_server.py`)
 - FastAPI/Flask, localhost-bound.
 - `POST /memory/store {project, type: episode|node, content, meta, session}`
 - `POST /memory/search {project, query, top_k}` -> multi-hop retrieval (reuse
@@ -88,7 +92,7 @@ OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
 - Budget-limited map (start 1k tokens, tune in P5 to the 32K fast window).
 - Stored as memory nodes; refreshed on file change (file.watcher / on-demand).
 
-### 5.4 OpenCode plugin (global)
+### 5.4 Copula plugin (global)
 - **Ingest**: `event.subscribe()` -> on `message.part.updated` (assistant), user
   messages, and `tool.execute.after` (tool results) -> POST /memory/store. Keyed by
   project directory + session. Includes child/subagent sessions.
@@ -98,7 +102,7 @@ OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
 
 ## 6. Phases
 
-- **P1 — DONE (2026-08-06, VITRIOL 63c3e5a)** — Memory service `libvitriol/memory_server.py`
+- **P1 — DONE (2026-08-06, VITRIOL 63c3e5a)** — Copula service `libvitriol/copula_server.py`
   (store/node/search/stats/health, localhost :8090). Reuses the existing spine. Bugs
   found + fixed while building:
   - `store_episode` left the edge INSERT (`_ensure_edge`) uncommitted → open write
@@ -114,7 +118,7 @@ OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
 - **P2** — GPU embedding provider (llama-server /embedding + small GGUF) + wire into
   the service, with VRAM-contention guard + keyword fallback.
 - **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).
-- **P4** — OpenCode plugin (ingest hooks + `memory_search` tool + map injection).
+- **P4** — Copula plugin (ingest hooks + `memory_search` tool + map injection).
 - **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure
   window-size impact + prefill (prompt caching); tune repo-map budget.
 
@@ -132,6 +136,6 @@ OpenCode (global plugin ~/.config/opencode/plugins/vitriol-memory.ts)
 
 ## 8. Deliverables
 
-- Memory service + embedding provider + repo map builder (VITRIOL).
-- Global OpenCode plugin (ingest + search + map).
+- Copula service + embedding provider + repo map builder (VITRIOL).
+- Copula plugin (ingest + search + map).
 - Per-project DB via the existing spine; docs + provenance in both repos.

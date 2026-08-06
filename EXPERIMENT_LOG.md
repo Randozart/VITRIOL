@@ -762,7 +762,7 @@ MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
 
 ## 2026-08-06 — P1 VITRIOL memory service (OpenCode RAG)
 
-- libvitriol/memory_server.py: HTTP API (store/node/search/stats/health), localhost :8090.
+- libvitriol/copula_server.py: HTTP API (store/node/search/stats/health), localhost :8090.
   Reuses libvitriol/memory (db, retrieval, compact). Keyword+recency scoring; GPU GGUF
   embeddings wired in P2.
 - db.py: added store_node() (knowledge-node upsert keyed by label).
@@ -775,4 +775,4 @@ MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
 - Plan: .opencode/plans/2026-08-06-vitriol-memory-opencode-rag.md (P1 done).
   + (refactor) param bundling per Praetor/AGENTS.md 5.3: db.EdgeSpec dataclass;
     store_episode/store_node take meta dict; get_or_create_edge/_ensure_edge take
-    EdgeSpec. Callers updated (hebbian, consolidate, shim, memory_server).
+    EdgeSpec. Callers updated (hebbian, consolidate, shim, copula_server).

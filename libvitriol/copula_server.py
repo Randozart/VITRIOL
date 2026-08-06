@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""VITRIOL Memory Service — HTTP API for the OpenCode RAG plugin.
+"""Copula service — VITRIOL memory HTTP API for the OpenCode Copula plugin.
 
-Endpoints (localhost only):
+Part of the Copula subsystem (the VITRIOL-to-OpenCode bond). Endpoints
+(localhost only):
   POST /memory/store     store an episode (role: user|assistant|tool)
   POST /memory/node      upsert a knowledge node (repo-map/file entries, keyed by label)
   POST /memory/search    multi-hop retrieval, returns formatted snippets
@@ -44,7 +45,7 @@ def _project_id(payload):
 @app.route("/health", methods=["GET"])
 def health():
     """Liveness probe for the plugin and operators."""
-    return jsonify({"status": "ok", "service": "vitriol-memory"})
+    return jsonify({"status": "ok", "service": "copula"})
 
 
 @app.route("/memory/store", methods=["POST"])

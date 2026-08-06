@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::control::{self, Action, Event};
 use crate::model::Snapshot;
 use crate::profile::{self, Profile};
+use crate::search::{self, SearchHit};
 
 /// Maximum number of decode-t/s samples kept for the sparkline.
 const SPARKLINE_CAP: usize = 120;
@@ -24,11 +25,19 @@ pub enum Tab {
     Logs,
     /// Stack control: start/stop/restart, doctor, profile load.
     Controls,
+    /// Hermetis memory: stats, recent stores, search.
+    Hermetis,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 4] = [Tab::Dashboard, Tab::Gpu, Tab::Logs, Tab::Controls];
+    pub const ALL: [Tab; 5] = [
+        Tab::Dashboard,
+        Tab::Gpu,
+        Tab::Logs,
+        Tab::Controls,
+        Tab::Hermetis,
+    ];
 
     /// Short label used in the tab bar.
     pub fn label(self) -> &'static str {
@@ -37,6 +46,7 @@ impl Tab {
             Tab::Gpu => "GPU",
             Tab::Logs => "LOGS",
             Tab::Controls => "CONTROLS",
+            Tab::Hermetis => "HERMETIS",
         }
     }
 }
@@ -89,6 +99,12 @@ pub struct App {
     pub control_log: VecDeque<String>,
     /// Shared abort flag for the control executor.
     pub control_abort: Arc<AtomicBool>,
+    /// Search query buffer for the HERMETIS tab.
+    pub search_query: String,
+    /// Last Hermetis search hits.
+    pub search_results: Vec<SearchHit>,
+    /// Whether a search request is in flight.
+    pub search_in_flight: bool,
     /// When the previous tick was consumed, for per-tick hooks.
     last_tick: Instant,
 }
@@ -110,8 +126,47 @@ impl App {
             control_step: String::new(),
             control_log: VecDeque::with_capacity(200),
             control_abort: Arc::new(AtomicBool::new(false)),
+            search_query: String::new(),
+            search_results: Vec::new(),
+            search_in_flight: false,
             last_tick: Instant::now(),
         }
+    }
+
+    /// Append a character to the search query.
+    pub fn type_search_char(&mut self, c: char) {
+        self.search_query.push(c);
+    }
+
+    /// Remove the last character from the search query.
+    pub fn backspace_search(&mut self) {
+        self.search_query.pop();
+    }
+
+    /// Clear the search query.
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+    }
+
+    /// Run the current search query, if non-empty and nothing in flight.
+    pub fn run_search(&mut self, search_tx: &std::sync::mpsc::Sender<Vec<SearchHit>>) {
+        let query = self.search_query.trim().to_string();
+        if query.is_empty() || self.search_in_flight {
+            return;
+        }
+        self.search_in_flight = true;
+        search::spawn(
+            self.cfg.clone(),
+            self.cfg.project_id.clone(),
+            query,
+            search_tx.clone(),
+        );
+    }
+
+    /// Fold a search-result batch into app state.
+    pub fn apply_search_results(&mut self, results: Vec<SearchHit>) {
+        self.search_results = results;
+        self.search_in_flight = false;
     }
 
     /// The CONTROLS action list.

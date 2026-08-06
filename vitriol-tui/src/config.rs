@@ -143,13 +143,16 @@ fn current_dir() -> PathBuf {
     env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Fallback Hermetis project id: the basename of the current directory, which
-/// matches how the Copula plugin derives a project id from the workspace.
+/// Fallback Hermetis project id: the full working-directory path sanitized the
+/// same way `hermetis_server._project_id` sanitizes (`/` -> `_`, 120-char
+/// cap), so the TUI reads the same project the Copula plugin writes.
 fn default_project_id() -> String {
-    env::current_dir()
+    let raw = env::current_dir()
         .ok()
-        .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| String::from("default"))
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|| String::from("default"));
+    let sanitized = raw.replace(['/', '\\', ':'], "_");
+    sanitized.chars().take(120).collect()
 }
 
 #[cfg(test)]
@@ -202,5 +205,21 @@ mod tests {
         assert_eq!(cfg.hermetis_port, 8090);
         assert_eq!(cfg.embed_port, 8081);
         assert_eq!(cfg.log_dir, PathBuf::from("/tmp/opencode"));
+    }
+
+    #[test]
+    fn default_project_id_is_sanitized_full_path() {
+        // Must be deterministic regardless of the actual cwd.
+        let cwd = env::current_dir().unwrap();
+        let expected = cwd
+            .to_string_lossy()
+            .replace(['/', '\\', ':'], "_")
+            .chars()
+            .take(120)
+            .collect::<String>();
+        let _guard = env_lock().lock().unwrap();
+        env::remove_var("VITRIOL_PROJECT_ID");
+        assert_eq!(default_project_id(), expected);
+        assert!(!default_project_id().contains('/'));
     }
 }

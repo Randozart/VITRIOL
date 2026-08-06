@@ -29,6 +29,8 @@ pub enum Action {
     Doctor,
     /// Load a profile (bundled or installed) and relaunch with its knobs.
     LoadProfile(String),
+    /// Run a Spagyric decode-knob sweep for a profile's model.
+    RunSweep(String),
 }
 
 impl Action {
@@ -40,14 +42,16 @@ impl Action {
             Action::Restart => "restart stack".into(),
             Action::Doctor => "run doctor".into(),
             Action::LoadProfile(name) => format!("load profile: {name}"),
+            Action::RunSweep(name) => format!("sweep: {name}"),
         }
     }
 
-    /// The action list: fixed actions first, then one entry per profile.
+    /// The action list: fixed actions first, then load + sweep per profile.
     pub fn all(profiles: &[Profile]) -> Vec<Action> {
         let mut actions = vec![Action::Start, Action::Stop, Action::Restart, Action::Doctor];
         for p in profiles {
             actions.push(Action::LoadProfile(p.name.clone()));
+            actions.push(Action::RunSweep(p.name.clone()));
         }
         actions
     }
@@ -131,6 +135,48 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
             });
             steps
         }
+        Action::RunSweep(name) => {
+            let sweep_script = cfg.repo_root.join("libvitriol/spagyric_sweep.py");
+            let Some(profile) = find_profile(cfg, name) else {
+                return vec![noop(format!("profile {name} not found"))];
+            };
+            let Some(model) = profile.model.clone() else {
+                return vec![noop(format!(
+                    "profile {name} has no model.path — set it, then sweep"
+                ))];
+            };
+            let ngl = profile.ngl.unwrap_or(99);
+            let ctx = profile.ctx.unwrap_or(4096);
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let output = format!("/tmp/opencode/sweep_{name}_{stamp}.csv");
+            vec![Step {
+                label: format!("spagyric sweep: {name}"),
+                program: "python3".into(),
+                args: vec![
+                    sweep_script.to_string_lossy().into_owned(),
+                    "--model".into(),
+                    model,
+                    "--ngl".into(),
+                    ngl.to_string(),
+                    "--ctx".into(),
+                    ctx.to_string(),
+                    "--output".into(),
+                    output,
+                ],
+            }]
+        }
+    }
+}
+
+/// A no-op step that just reports a message and exits cleanly.
+fn noop(message: String) -> Step {
+    Step {
+        label: message.clone(),
+        program: "echo".into(),
+        args: vec![message],
     }
 }
 
@@ -270,8 +316,18 @@ mod tests {
             parallel: None,
         };
         let actions = Action::all(&[p]);
-        assert_eq!(actions.len(), 5);
+        assert_eq!(actions.len(), 6);
         assert_eq!(actions[0], Action::Start);
         assert_eq!(actions[4], Action::LoadProfile("mellum2".into()));
+        assert_eq!(actions[5], Action::RunSweep("mellum2".into()));
+    }
+
+    #[test]
+    fn sweep_without_model_is_a_noop() {
+        let mut cfg = Config::from_env();
+        cfg.repo_root = std::env::temp_dir();
+        let steps = steps_for(&Action::RunSweep("ghost".into()), &cfg);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].program, "echo");
     }
 }

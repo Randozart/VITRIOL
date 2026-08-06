@@ -20,7 +20,9 @@ use serde_json::Value;
 use ureq::{Agent, AgentBuilder};
 
 use crate::config::Config;
-use crate::model::{EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, Snapshot};
+use crate::model::{
+    EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, RecentStore, Snapshot,
+};
 use crate::nvidia;
 
 /// Number of trailing lines kept per service log.
@@ -110,7 +112,8 @@ fn poll_gen(agent: &Agent, cfg: &Config) -> GenSnapshot {
     }
 }
 
-/// Poll the Hermetis server: `/health` and `/hermetis/stats?project_id=`.
+/// Poll the Hermetis server: `/health`, `/hermetis/stats?project_id=`, and
+/// `/hermetis/recent?project_id=` for the most recent stores.
 fn poll_hermetis(agent: &Agent, cfg: &Config) -> HermetisSnapshot {
     let up = get_json(agent, &format!("{}/health", cfg.hermetis_base()))
         .map(|v| v.get("status").is_some())
@@ -128,11 +131,33 @@ fn poll_hermetis(agent: &Agent, cfg: &Config) -> HermetisSnapshot {
         ),
         None => (None, None, None),
     };
+    let recent_url = format!(
+        "{}/hermetis/recent?project_id={}&limit=5",
+        cfg.hermetis_base(),
+        cfg.project_id
+    );
+    let recent = get_json(agent, &recent_url)
+        .and_then(|r| r.get("recent").cloned())
+        .and_then(|r| r.as_array().cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|it| {
+                    Some(RecentStore {
+                        id: it.get("id")?.as_i64()?,
+                        role: it.get("role")?.as_str()?.to_string(),
+                        snippet: it.get("snippet")?.as_str()?.to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     HermetisSnapshot {
         up,
         episodes,
         nodes,
         sessions,
+        recent,
     }
 }
 

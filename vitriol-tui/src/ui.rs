@@ -32,6 +32,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Gpu => render_gpu_tab(frame, rows[1], app),
         Tab::Logs => render_logs_tab(frame, rows[1], app),
         Tab::Controls => render_controls_tab(frame, rows[1], app),
+        Tab::Hermetis => render_hermetis_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -636,6 +637,117 @@ fn action_label(action: &Action, profiles: &[crate::profile::Profile]) -> String
     };
     label.push_str(&format!("  [{src}]"));
     label
+}
+
+/// HERMETIS tab: stats + recent stores on the left, search on the right.
+fn render_hermetis_tab(frame: &mut Frame, area: Rect, app: &App) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
+
+    let rows = Layout::vertical([Constraint::Ratio(1, 3), Constraint::Ratio(2, 3)]).split(cols[0]);
+    render_hermetis_stats(frame, rows[0], app);
+    render_hermetis_recent(frame, rows[1], app);
+    render_hermetis_search(frame, cols[1], app);
+}
+
+/// Stats panel: service status + episode/node/session counts.
+fn render_hermetis_stats(frame: &mut Frame, area: Rect, app: &App) {
+    let h = &app.snapshot.hermetis;
+    let title = format!(" {} STATS ", theme::GLYPH_HERM);
+    let block = panel(&title, h.up);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        status_line(h.up, "memory server"),
+        count_line("episodes", h.episodes),
+        count_line("nodes", h.nodes),
+        count_line("sessions", h.sessions),
+    ];
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Recent stores panel: the latest stored episodes.
+fn render_hermetis_recent(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel_neutral(" RECENT STORES ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let recent = &app.snapshot.hermetis.recent;
+    if recent.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("no episodes yet", theme::muted()))),
+            inner,
+        );
+        return;
+    }
+    let lines: Vec<Line> = recent
+        .iter()
+        .map(|r| {
+            Line::from(vec![
+                Span::styled(format!("#{:<4}", r.id), theme::muted()),
+                Span::styled(format!("[{:<7}] ", r.role), theme::muted()),
+                Span::styled(&r.snippet, theme::text()),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Search panel: query input + result list.
+fn render_hermetis_search(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel_neutral(" SEARCH ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(inner);
+
+    let query_style = if app.search_in_flight {
+        theme::live()
+    } else {
+        theme::text()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("query  ", theme::muted()),
+            Span::styled(
+                format!(
+                    "{}{}",
+                    app.search_query,
+                    if app.search_in_flight { "" } else { "▌" }
+                ),
+                query_style,
+            ),
+        ])),
+        rows[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::new();
+    if app.search_results.is_empty() && !app.search_in_flight {
+        lines.push(Line::from(Span::styled(
+            "type a query, Enter to search",
+            theme::muted(),
+        )));
+    }
+    for hit in &app.search_results {
+        let kind = if hit.kind == "node" {
+            "node"
+        } else {
+            "episode"
+        };
+        lines.push(Line::from(vec![Span::styled(
+            format!("[{:.2}] {kind}", hit.score),
+            theme::live(),
+        )]));
+        if !hit.source.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("  ↳ {}", hit.source),
+                theme::muted(),
+            )));
+        }
+        lines.push(Line::from(Span::styled(hit.content.clone(), theme::text())));
+    }
+    frame.render_widget(Paragraph::new(lines), rows[1]);
 }
 
 /// A status line: colored dot + word + service description.

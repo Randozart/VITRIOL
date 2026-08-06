@@ -228,4 +228,20 @@ No performance baseline to preserve; the dashboard is additive.
   child, nonzero exit marks the action failed. Verified live in tmux: doctor
   streamed (PASS binary/model/ldd/RUNPATH/port/disk, FAIL cap_ipc_lock → exit
   1 → "✗ failed: run doctor"). Gates: 14 tests, clippy clean, Praetor PASS.
-- V4: TBD
+- **V4 — DONE (2026-08-07)**: HERMETIS tab + Spagyric sweep launcher. HERMETIS
+  tab = stats (episodes/nodes/sessions), RECENT STORES (new
+  `GET /hermetis/recent` endpoint in `libvitriol/hermetis_server.py`, polled
+  into the snapshot), and SEARCH (type a query, Enter runs one-shot
+  `/hermetis/search` POST on a background thread; hits show score/kind/source/
+  snippet). Sweep: new `sweep: <profile>` CONTROLS action runs
+  `spagyric_sweep.py --model/--ngl/--ctx/--output /tmp/opencode/sweep_<name>_<ts>.csv`
+  streamed into the CONTROL LOG (no-op echo when a profile lacks `model.path`).
+  Project-id fix: `default_project_id` now sanitizes the FULL cwd path
+  (`/`→`_`, 120 cap) matching hermetis `_project_id` — the TUI reads the real
+  project (VITRIOL: 71 episodes / 42 sessions), not an empty basename project.
+  Search timeout raised 10 s → 30 s after measuring retrieval at ~15 s on the
+  CPU bge server. Verified live: search "gpu" returned `[0.81] episode ↳
+  hop1_direct` with real snippets. NOTE: `/hermetis/recent` activates on the
+  next hermetis restart (running server predates the endpoint; panel degrades
+  to "no episodes yet" meanwhile). Gates: 16 tests, clippy clean, Praetor PASS.
+- V5: TBD

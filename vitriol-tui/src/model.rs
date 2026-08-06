@@ -19,6 +19,17 @@ pub struct GenSnapshot {
     pub decode_t_s: f64,
 }
 
+/// One recent episode row from `/hermetis/recent`.
+#[derive(Debug, Clone, Default)]
+pub struct RecentStore {
+    /// Episode id.
+    pub id: i64,
+    /// Speaker role (user/assistant/tool).
+    pub role: String,
+    /// Truncated content snippet for display.
+    pub snippet: String,
+}
+
 /// Live Hermetis memory-server state.
 #[derive(Debug, Clone, Default)]
 pub struct HermetisSnapshot {
@@ -30,6 +41,8 @@ pub struct HermetisSnapshot {
     pub nodes: Option<u64>,
     /// Session count for the configured project, when reported.
     pub sessions: Option<u64>,
+    /// Most recent episodes for the configured project, newest first.
+    pub recent: Vec<RecentStore>,
 }
 
 /// Live embed-server state.

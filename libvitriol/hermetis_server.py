@@ -197,6 +197,34 @@ def hermetis_context():
                     "context": block})
 
 
+@app.route("/hermetis/recent", methods=["GET"])
+def memory_recent():
+    """Most recent episodes for the project, newest first.
+
+    Supports the vitriol-tui HERMETIS tab. Returns a bounded list so a large
+    project cannot balloon the response; snippets are truncated for display.
+    """
+    pid = _project_id(request.args)
+    if not pid:
+        return jsonify({"error": "project_id required"}), 400
+    try:
+        limit = int(request.args.get("limit", 5))
+    except (TypeError, ValueError):
+        limit = 5
+    limit = max(1, min(limit, 20))
+    conn = db._get_conn(pid)
+    rows = conn.execute(
+        "SELECT id, role, content, created_at FROM episodes ORDER BY id DESC LIMIT ?",
+        (limit,)
+    ).fetchall()
+    return jsonify({"ok": True, "project_id": pid, "recent": [
+        {"id": row["id"], "role": row["role"],
+         "snippet": (row["content"] or "")[:180],
+         "created_at": row["created_at"]}
+        for row in rows
+    ]})
+
+
 @app.route("/hermetis/stats", methods=["GET"])
 def memory_stats():
     """Return per-project episode/node/session counts."""

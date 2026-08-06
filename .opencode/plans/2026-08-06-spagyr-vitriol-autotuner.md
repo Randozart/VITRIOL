@@ -57,11 +57,20 @@ Decode knobs first to demonstrate the loop; VITRIOL knobs in the same pass. Defe
 
 ## Baseline table (fill on execution)
 
+Measured 2026-08-06, GTX 1070 Ti (8 GB), 15 GB RAM, fresh rebuild of llama-server
+(commit 6fd83b2), merge-sort prompt, 64 tokens, temp 0, 3 rounds.
+
 | config | gen t/s | eval t/s | correctness (legible?) |
 | --- | --- | --- | --- |
-| stock defaults | TBD | TBD | TBD |
+| DeepSeek-Coder-V2-Lite IQ2_M (ngl=99, c=4096, t=4) | **58.1-58.3** | 56.7-58.4 | **PASS** (valid merge_sort) |
+| Mellum2-12B Q4_K_M (ngl=24, c=32768, t=4) | **30.9-34.3** | ~49 | **PASS** (valid merge_sort) |
 | spagyr decode tune | TBD | TBD | TBD |
 | spagyr decode + vitriol tune | TBD | TBD | TBD |
+
+Note: the earlier correctness concern (DeepSeek/Mellum "may not produce legible output")
+did NOT reproduce on these runs at temp 0 on the merge-sort prompt. VITRIOL mode = 0
+(RAM Shot native; models fit VRAM — stream-mode page-lock is RAM-capped, see master
+plan §8).
 
 ## Dependencies
 

@@ -206,4 +206,14 @@ No performance baseline to preserve; the dashboard is additive.
   avatar), hermetis+embed up, GTX 1070 Ti VRAM/util/temp live.
   Verification: 8 unit tests, clippy `-D warnings` clean, fmt clean, Praetor
   validate PASS, release binary 3.6 MB. pty smoke test clean.
-- V2: TBD
+- **V2 — DONE (2026-08-07)**: GPU + LOGS tabs. GPU tab = btop gauges (VRAM/
+  UTIL/TEMP/SM CLK/MEM CLK/POWER) + full process table; clocks + power.limit
+  added to the nvidia-smi query. LOGS tab = incremental log tails (byte-offset
+  ring, truncation-reset) for gen/hermetis/embed with [1/2/3] source switch +
+  ANSI stripping. Tab bar (Tab/BackTab cycles, active underlined). Verified in
+  tmux: GPU gauges live (0.70/8.00 GiB 9%, 822 MHz, 35W/180W), LOGS shows the
+  real gen log — live evidence of the current state (n_ctx=32768, flash-attn,
+  then `cudaMalloc 448.00 MiB failed: out of memory` — avatar still holds the
+  GPU). Gates: 10 unit tests (env tests serialized via Mutex — they raced
+  otherwise), clippy clean, fmt clean, Praetor PASS.
+- V3: TBD

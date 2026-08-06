@@ -19,7 +19,7 @@ pub fn query_gpu() -> Option<GpuSnapshot> {
 fn query_gpu_summary() -> Option<GpuSnapshot> {
     let out = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw",
+            "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit,clocks.sm,clocks.mem",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -53,6 +53,18 @@ fn query_gpu_summary() -> Option<GpuSnapshot> {
         .next()
         .and_then(|f| f.parse::<f64>().ok())
         .unwrap_or(0.0);
+    let power_limit_w = fields
+        .next()
+        .and_then(|f| f.parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let sm_clock_mhz = fields
+        .next()
+        .and_then(|f| f.parse::<u16>().ok())
+        .unwrap_or(0);
+    let mem_clock_mhz = fields
+        .next()
+        .and_then(|f| f.parse::<u16>().ok())
+        .unwrap_or(0);
 
     let processes = query_processes();
 
@@ -64,6 +76,9 @@ fn query_gpu_summary() -> Option<GpuSnapshot> {
         util_pct,
         temp_c,
         power_w,
+        power_limit_w,
+        sm_clock_mhz,
+        mem_clock_mhz,
         processes,
     })
 }

@@ -7,6 +7,9 @@
 //! throughput is parsed from the gen server log because the server's `/health`
 //! endpoint only returns `{"status":"ok"}`.
 
+use std::collections::VecDeque;
+use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -17,8 +20,23 @@ use serde_json::Value;
 use ureq::{Agent, AgentBuilder};
 
 use crate::config::Config;
-use crate::model::{EmbedSnapshot, GenSnapshot, HermetisSnapshot, Snapshot};
+use crate::model::{EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, Snapshot};
 use crate::nvidia;
+
+/// Number of trailing lines kept per service log.
+const LOG_TAIL_CAP: usize = 200;
+
+/// Per-poll mutable state: config plus the three incremental log tails.
+struct Poller {
+    /// Endpoint/log config.
+    cfg: Config,
+    /// Tail of the gen log.
+    gen_tail: LogTail,
+    /// Tail of the Hermetis log.
+    hermetis_tail: LogTail,
+    /// Tail of the embed log.
+    embed_tail: LogTail,
+}
 
 /// Spawn the poller thread. `refresh_flag` is raised by the UI to force an
 /// immediate poll (the `r` key).
@@ -27,8 +45,14 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
         .name("vitriol-tui-poller".into())
         .spawn(move || {
             let agent = AgentBuilder::new().timeout(Duration::from_secs(3)).build();
+            let mut poller = Poller {
+                gen_tail: LogTail::new(LOG_TAIL_CAP),
+                hermetis_tail: LogTail::new(LOG_TAIL_CAP),
+                embed_tail: LogTail::new(LOG_TAIL_CAP),
+                cfg,
+            };
             loop {
-                poll_once(&agent, &cfg, &tx);
+                poller.poll_once(&agent, &tx);
                 if refresh_flag.swap(false, Ordering::Relaxed) {
                     continue;
                 }
@@ -38,15 +62,25 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
         .expect("spawn vitriol-tui poller thread");
 }
 
-/// Run one full poll cycle and publish the snapshot.
-fn poll_once(agent: &Agent, cfg: &Config, tx: &Sender<Snapshot>) {
-    let snap = Snapshot {
-        gen: poll_gen(agent, cfg),
-        hermetis: poll_hermetis(agent, cfg),
-        embed: poll_embed(agent, cfg),
-        gpu: nvidia::query_gpu(),
-    };
-    let _ = tx.send(snap);
+impl Poller {
+    /// Run one full poll cycle and publish the snapshot.
+    fn poll_once(&mut self, agent: &Agent, tx: &Sender<Snapshot>) {
+        self.gen_tail.poll(&self.cfg.gen_log());
+        self.hermetis_tail.poll(&self.cfg.hermetis_log());
+        self.embed_tail.poll(&self.cfg.embed_log());
+        let snap = Snapshot {
+            gen: poll_gen(agent, &self.cfg),
+            hermetis: poll_hermetis(agent, &self.cfg),
+            embed: poll_embed(agent, &self.cfg),
+            gpu: nvidia::query_gpu(),
+            logs: LogsSnapshot {
+                gen: self.gen_tail.snapshot(),
+                hermetis: self.hermetis_tail.snapshot(),
+                embed: self.embed_tail.snapshot(),
+            },
+        };
+        let _ = tx.send(snap);
+    }
 }
 
 /// Poll the gen server: `/health`, `/v1/models`, and the log-derived decode t/s.
@@ -161,6 +195,68 @@ fn parse_decode_t_s(log_path: &std::path::Path) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Incremental reader for a service log.
+///
+/// On each poll only the bytes appended since the previous read are pulled and
+/// pushed into a capped ring of trailing lines, so a long-lived log never gets
+/// re-read from the top. A file shrink (truncation/rotation) resets the read
+/// position so the new content is picked up cleanly.
+struct LogTail {
+    /// Byte offset of the next unread byte.
+    pos: u64,
+    /// Trailing lines, oldest first, capped at [`LOG_TAIL_CAP`].
+    tail: VecDeque<String>,
+    /// Maximum number of retained lines.
+    cap: usize,
+}
+
+impl LogTail {
+    /// Create an empty tail with the given line cap.
+    fn new(cap: usize) -> Self {
+        Self {
+            pos: 0,
+            tail: VecDeque::with_capacity(cap),
+            cap,
+        }
+    }
+
+    /// Pull any new bytes from `path` into the trailing-line ring.
+    fn poll(&mut self, path: &std::path::Path) {
+        let Ok(meta) = fs::metadata(path) else {
+            return;
+        };
+        let len = meta.len();
+        if len < self.pos {
+            self.pos = 0;
+        }
+        if len == self.pos {
+            return;
+        }
+        let Ok(mut f) = fs::File::open(path) else {
+            return;
+        };
+        if f.seek(SeekFrom::Start(self.pos)).is_err() {
+            return;
+        }
+        let mut buf = vec![0u8; (len - self.pos) as usize];
+        if f.read_exact(&mut buf).is_err() {
+            return;
+        }
+        self.pos = len;
+        for line in String::from_utf8_lossy(&buf).lines() {
+            if self.tail.len() == self.cap {
+                self.tail.pop_front();
+            }
+            self.tail.push_back(line.to_string());
+        }
+    }
+
+    /// A copy of the retained trailing lines, oldest first.
+    fn snapshot(&self) -> Vec<String> {
+        self.tail.iter().cloned().collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,5 +325,36 @@ mod tests {
         assert_eq!(first_model_size(&in_meta), Some(8192));
         let none = serde_json::json!({"id": "m"});
         assert_eq!(first_model_size(&none), None);
+    }
+
+    #[test]
+    fn log_tail_reads_incrementally_and_caps() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("vitriol-tui-tail-{}.log", std::process::id()));
+        let mut tail = LogTail::new(2);
+        std::fs::write(&path, "a\nb\n").unwrap();
+        tail.poll(&path);
+        assert_eq!(tail.snapshot(), vec!["a", "b"]);
+        // Second poll only pulls the appended bytes, keeping the ring capped.
+        std::fs::write(&path, "a\nb\nc\nd\n").unwrap();
+        tail.poll(&path);
+        assert_eq!(tail.snapshot(), vec!["c", "d"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn log_tail_resets_on_truncation() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("vitriol-tui-trunc-{}.log", std::process::id()));
+        let mut tail = LogTail::new(10);
+        std::fs::write(&path, "old line one\nold line two\n").unwrap();
+        tail.poll(&path);
+        std::fs::write(&path, "fresh line\n").unwrap();
+        tail.poll(&path);
+        assert_eq!(
+            tail.snapshot(),
+            vec!["old line one", "old line two", "fresh line"]
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -67,8 +67,25 @@ pub struct GpuSnapshot {
     pub temp_c: u8,
     /// Power draw in watts (0.0 when not reported).
     pub power_w: f64,
+    /// Power limit in watts (0.0 when not reported).
+    pub power_limit_w: f64,
+    /// SM clock in MHz.
+    pub sm_clock_mhz: u16,
+    /// Memory clock in MHz.
+    pub mem_clock_mhz: u16,
     /// Compute processes using the GPU.
     pub processes: Vec<GpuProcess>,
+}
+
+/// Live tail of a service log, newest last, capped at [`LOG_TAIL_CAP`] lines.
+#[derive(Debug, Clone, Default)]
+pub struct LogsSnapshot {
+    /// Tail of the gen (`vitriol_gen.log`) log.
+    pub gen: Vec<String>,
+    /// Tail of the Hermetis (`copula_hermetis.log`) log.
+    pub hermetis: Vec<String>,
+    /// Tail of the embed (`copula_embed.log`) log.
+    pub embed: Vec<String>,
 }
 
 /// One full poll result. All services are optional; a down service simply
@@ -83,6 +100,8 @@ pub struct Snapshot {
     pub embed: EmbedSnapshot,
     /// GPU state; `None` when `nvidia-smi` is unavailable.
     pub gpu: Option<GpuSnapshot>,
+    /// Live log tails for each service.
+    pub logs: LogsSnapshot,
 }
 
 impl Snapshot {

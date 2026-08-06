@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, LogSource, Tab};
 use crate::model::Snapshot;
 use crate::theme;
 
@@ -25,29 +25,44 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(area);
 
-    render_header(frame, rows[0], &app.cfg.project_id);
-    render_dashboard(frame, rows[1], app);
+    render_header(frame, rows[0], app);
+    match app.tab {
+        Tab::Dashboard => render_dashboard(frame, rows[1], app),
+        Tab::Gpu => render_gpu_tab(frame, rows[1], app),
+        Tab::Logs => render_logs_tab(frame, rows[1], app),
+    }
     render_footer(frame, rows[2], app);
 }
 
-/// Top banner: gold VITRIOL title + the active tab + project id.
-fn render_header(frame: &mut Frame, area: Rect, project_id: &str) {
-    let line = Line::from(vec![
-        Span::styled(" VITRIOL ", theme::banner()),
-        Span::styled(" ▸ DASHBOARD ", theme::title()),
-        Span::styled(format!("   {project_id}"), theme::muted()),
-    ]);
-    let para = Paragraph::new(line);
-    frame.render_widget(para, area);
+/// Top banner: gold VITRIOL title + tab bar + project id.
+fn render_header(frame: &mut Frame, area: Rect, app: &App) {
+    let mut spans = vec![Span::styled(" VITRIOL ", theme::banner())];
+    for tab in Tab::ALL {
+        let style = if tab == app.tab {
+            theme::title().add_modifier(Modifier::UNDERLINED)
+        } else {
+            theme::muted()
+        };
+        spans.push(Span::styled(format!(" {} ", tab.label()), style));
+    }
+    spans.push(Span::styled(
+        format!("   {}", app.cfg.project_id),
+        theme::muted(),
+    ));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Bottom keybinding bar.
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let mut spans = vec![
         Span::styled(" [q] quit ", theme::muted()),
+        Span::styled("[Tab] tab  ", theme::muted()),
         Span::styled("[r] refresh", theme::muted()),
-        Span::styled("  ·  vitriol-tui v0.1.0", theme::muted()),
     ];
+    if app.tab == Tab::Logs {
+        spans.push(Span::styled("  [1/2/3] log", theme::muted()));
+    }
+    spans.push(Span::styled("  ·  vitriol-tui v0.1.0", theme::muted()));
     if app.snapshot.is_empty() {
         spans.push(Span::styled(
             "  ·  stack unreachable — nothing on :8279/:8090/:8081",
@@ -310,6 +325,207 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
             .max(data.iter().copied().max().unwrap_or(1)),
         rows[1],
     );
+}
+
+/// Full btop-style GPU panel: metric gauges on top, process table below.
+fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(gpu) = &app.snapshot.gpu else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "nvidia-smi unavailable",
+                theme::muted(),
+            ))),
+            area,
+        );
+        return;
+    };
+
+    let rows = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
+
+    let g_title = format!(" {} GAUGES ", theme::GLYPH_GPU);
+    let gauge_panel = panel_neutral(&g_title);
+    let g_inner = gauge_panel.inner(rows[0]);
+    frame.render_widget(gauge_panel, rows[0]);
+
+    let g_rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(g_inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(&gpu.name, theme::text()),
+            Span::styled(
+                format!(
+                    "    {:.0}W   {}°C   SM {} MHz   MEM {} MHz",
+                    gpu.power_w, gpu.temp_c, gpu.sm_clock_mhz, gpu.mem_clock_mhz
+                ),
+                theme::muted(),
+            ),
+        ])),
+        g_rows[0],
+    );
+
+    let vram_ratio = ratio(gpu.vram_used_mib as f64, gpu.vram_total_mib as f64);
+    render_metric_row(
+        frame,
+        g_rows[1],
+        "VRAM",
+        vram_ratio,
+        &format!(
+            "{:.2}/{:.2} GiB {:.0}%",
+            gpu.vram_used_mib as f64 / 1024.0,
+            gpu.vram_total_mib as f64 / 1024.0,
+            vram_ratio * 100.0
+        ),
+    );
+    render_metric_row(
+        frame,
+        g_rows[2],
+        "UTIL",
+        gpu.util_pct as f64 / 100.0,
+        &format!("{}%", gpu.util_pct),
+    );
+    render_metric_row(
+        frame,
+        g_rows[3],
+        "TEMP",
+        gpu.temp_c as f64 / 100.0,
+        &format!("{}°C", gpu.temp_c),
+    );
+    render_metric_row(
+        frame,
+        g_rows[4],
+        "SM CLK",
+        gpu.sm_clock_mhz as f64 / 2000.0,
+        &format!("{} MHz", gpu.sm_clock_mhz),
+    );
+    render_metric_row(
+        frame,
+        g_rows[5],
+        "MEM CLK",
+        gpu.mem_clock_mhz as f64 / 8000.0,
+        &format!("{} MHz", gpu.mem_clock_mhz),
+    );
+    let power_ratio = ratio(gpu.power_w, gpu.power_limit_w);
+    render_metric_row(
+        frame,
+        g_rows[6],
+        "POWER",
+        power_ratio,
+        &format!("{:.0}W / {:.0}W", gpu.power_w, gpu.power_limit_w),
+    );
+
+    let proc_panel = panel_neutral(" PROCESSES ");
+    let p_inner = proc_panel.inner(rows[1]);
+    frame.render_widget(proc_panel, rows[1]);
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled("  PID      ", theme::muted()),
+        Span::styled(format!("{:<24}", "NAME"), theme::muted()),
+        Span::styled("VRAM", theme::muted()),
+    ])];
+    lines.extend(gpu.processes.iter().map(|p| {
+        Line::from(vec![
+            Span::styled(format!("  {:<8} ", p.pid), theme::text()),
+            Span::styled(format!("{:<24}", short_name(&p.name)), theme::text()),
+            Span::styled(
+                format!("{:.1} GiB", p.vram_mib as f64 / 1024.0),
+                theme::live(),
+            ),
+        ])
+    }));
+    frame.render_widget(Paragraph::new(lines), p_inner);
+}
+
+/// A GPU metric row: label | gauge | value.
+fn render_metric_row(frame: &mut Frame, area: Rect, label: &str, r: f64, value: &str) {
+    let cols = Layout::horizontal([
+        Constraint::Length(8),
+        Constraint::Min(0),
+        Constraint::Length(18),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(label, theme::muted()))),
+        cols[0],
+    );
+    let fill_style = if r > 0.8 {
+        theme::gauge_fill_warn()
+    } else {
+        theme::gauge_fill()
+    };
+    frame.render_widget(
+        Gauge::default()
+            .ratio(r.clamp(0.0, 1.0))
+            .label("")
+            .gauge_style(fill_style),
+        cols[1],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(value, theme::live()))),
+        cols[2],
+    );
+}
+
+/// Live log tail for the selected service.
+fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
+    let title = format!(" {} LOG ", app.log_source.label());
+    let up = match app.log_source {
+        LogSource::Gen => app.snapshot.gen.up,
+        LogSource::Hermetis => app.snapshot.hermetis.up,
+        LogSource::Embed => app.snapshot.embed.up,
+    };
+    let block = panel(&title, up);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = app.current_log_lines();
+    // Show the newest lines that fit; the tail is newest-last.
+    let start = lines.len().saturating_sub(inner.height as usize);
+    let shown: Vec<Line> = lines[start..]
+        .iter()
+        .map(|l| Line::raw(strip_ansi(l)))
+        .collect();
+    frame.render_widget(Paragraph::new(shown), inner);
+}
+
+/// Strip ANSI escape sequences from a log line for clean display.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            skip_escape(&mut chars);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Consume the remainder of a CSI/OSC escape sequence from the iterator.
+fn skip_escape(chars: &mut std::str::Chars<'_>) {
+    for n in chars {
+        if n == '\u{7}' || n == '~' || n.is_ascii_alphabetic() {
+            break;
+        }
+    }
+}
+
+/// A ratio safe against a zero denominator.
+fn ratio(num: f64, den: f64) -> f64 {
+    if den == 0.0 {
+        0.0
+    } else {
+        num / den
+    }
 }
 
 /// A status line: colored dot + word + service description.

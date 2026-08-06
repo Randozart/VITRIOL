@@ -60,6 +60,16 @@ impl Config {
         self.log_dir.join("vitriol_gen.log")
     }
 
+    /// Absolute path of the Hermetis log.
+    pub fn hermetis_log(&self) -> PathBuf {
+        self.log_dir.join("copula_hermetis.log")
+    }
+
+    /// Absolute path of the embed server log.
+    pub fn embed_log(&self) -> PathBuf {
+        self.log_dir.join("copula_embed.log")
+    }
+
     /// Base URL of the gen server.
     pub fn gen_base(&self) -> String {
         format!("http://127.0.0.1:{}", self.gen_port)
@@ -88,9 +98,18 @@ fn default_project_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Env vars are process-global, so the two env tests must not run in
+    /// parallel or they clobber each other's assignments.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn env_overrides_all_fields() {
+        let _guard = env_lock().lock().unwrap();
         env::set_var("VITRIOL_GEN_PORT", "9000");
         env::set_var("VITRIOL_HERM_PORT", "9100");
         env::set_var("VITRIOL_EMBED_PORT", "9200");
@@ -115,6 +134,7 @@ mod tests {
 
     #[test]
     fn defaults_when_env_unset() {
+        let _guard = env_lock().lock().unwrap();
         env::remove_var("VITRIOL_GEN_PORT");
         env::remove_var("VITRIOL_HERM_PORT");
         env::remove_var("VITRIOL_EMBED_PORT");

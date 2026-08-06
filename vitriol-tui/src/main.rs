@@ -52,6 +52,11 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('r') => {
                         refresh_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
+                    KeyCode::Tab => app.next_tab(),
+                    KeyCode::BackTab => app.prev_tab(),
+                    KeyCode::Char('1') => app.log_source = app::LogSource::Gen,
+                    KeyCode::Char('2') => app.log_source = app::LogSource::Hermetis,
+                    KeyCode::Char('3') => app.log_source = app::LogSource::Embed,
                     _ => {}
                 },
                 Event::Resize(_, _) => {}

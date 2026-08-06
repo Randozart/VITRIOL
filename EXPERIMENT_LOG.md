@@ -678,3 +678,18 @@ args   = --reasoning off --cache-type-k q4_0 -fa on
 Note: `pin_first_n_layers` reduced from 15→8 for IQ2_M due to increased VRAM pressure from MTP head + pin pool.
 
 *Last updated: 2026-05-21 17:30 CEST**
+
+## 2026-08-06 — Spagyr Phase 0: correctness-gated baselines (fresh rebuild)
+
+Binary: llama-server rebuilt (commit 6fd83b2). GTX 1070 Ti, 15 GB RAM.
+Prompt: "Write a Python function for merge sort." 64 tokens, temp 0, 3 rounds.
+VITRIOL_MODE not set → native (mode 0, RAM Shot); models fit VRAM.
+
+| model | config | gen t/s | eval t/s | correctness |
+|---|---|---|---|---|
+| DeepSeek-Coder-V2-Lite-Instruct IQ2_M | ngl=99 c=4096 t=4 | 58.1-58.3 | 56.7-58.4 | PASS (valid merge_sort) |
+| Mellum2-12B-A2.5B Q4_K_M | ngl=24 c=32768 t=4 | 30.9-34.3 | ~49 | PASS (valid merge_sort) |
+
+Both gates passed — the prior "legible output" concern did NOT reproduce at temp 0.
+Matches/beats documented baselines (DeepSeek ~50, Mellum ~27-32). Next: Spagyr decode-knob
+sweep (ubatch/batch/parallel/threads) on these, then VITRIOL knobs.

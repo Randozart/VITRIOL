@@ -50,3 +50,25 @@
 - pin=16 + MTP regresses to 8.58 t/s (VRAM pressure from draft buffers)
 - **Optimal: pin=12, mtp=0 or mtp=2, ubatch=128, ctx=65536** → 9.98 t/s
 - Full report: `.opencode/plans/mtp-sweep-report-2026-05-25.md`
+
+## Licensing and Provenance (GPL-2.0)
+
+VITRIOL and its llama.cpp fork are licensed under the **GNU GPL v2** (see `LICENSE`).
+Before incorporating any third-party code, check GPL-2.0 compatibility:
+
+| source license | may copy into VITRIOL? |
+|---|---|
+| GPL-2.0 | yes (same license) |
+| MIT / BSD / ISC / zlib / Unlicense / CC0 | yes, with attribution retained |
+| **Apache-2.0** | **NO — incompatible with GPL-2.0** |
+| academic / other restrictive | NO — re-derive only |
+
+Apache-2.0 and GPL-2.0 are mutually incompatible (FSF and Apache both document this):
+a derivative of Apache-2.0 code must carry Apache-2.0's terms, which GPL-2.0 forbids adding
+to a GPL-2.0 combined work. So an Apache-2.0 implementation may be **studied and re-derived
+(ideas → independent implementation), never copied**.
+
+Every algorithm-bearing module carries a `PROVENANCE` header:
+`// PROVENANCE: inspiration — <repo> (<license>), what was learned, not copied`.
+`inspiration` entries must name the repo, its license, and what was learned (not what was
+borrowed). See `docs/provenance/`.

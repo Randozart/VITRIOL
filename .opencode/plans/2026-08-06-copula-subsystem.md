@@ -131,9 +131,14 @@ OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts
   sentence-transformers is NOT installed on this box (the CPU fallback is unavailable).
   Mitigation added: **zero-guard** in `hermetis/embed.py` (near-zero vector -> None ->
   keyword fallback) so Hermetis semantic scoring never uses poisoned zero vectors.
-  Paths forward (pick one): (a) debug the fork's BERT embedding graph/kernels; (b)
-  install `sentence-transformers` for a CPU semantic fallback; (c) try a llama-arch
-  embedding GGUF (may dodge the bert-specific bug).
+- **P2 — RESOLVED 2026-08-06 (decision): sentence-transformers CPU** (`pip install
+  sentence-transformers`, all-MiniLM-L6-v2). Rationale (proposal approved): the GGUF-GPU
+  path is gated behind a fork bug; sentence-transformers is the designed fit (scorer.py
+  already targets all-MiniLM-L6-v2 384-dim) and needs no rewiring; CPU is ms-scale for
+  short-text embedding and avoids VRAM contention with the gen server. The GGUF-GPU path
+  stays wired + zero-guarded for later. **Fork BERT-embedding bug -> BACKLOG**: git-bisect
+  the fork's attention/graph changes to isolate the regression (own investigation, not on
+  Copula's critical path).
 - **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).
 - **P4** — Copula Hermetis plugin (ingest hooks + `memory_search` tool + map injection).
 - **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure

@@ -1,15 +1,15 @@
-# Spagyr Profile Schema (`[spagyr]` section)
+# Spagyric Profile Schema (`[spagyric]` section)
 
 Date: 2026-08-06. Schema version 1.
 
 Profiles live at `~/.vitriol/profiles/<name>/config` (TOML-ish INI). Existing sections:
 `[gpu]`, `[model]`, `[vitriol]`, `[server]`, `[engine]`, `[kv]`, `[spec]`, `[memory]`,
-`[lookup]`, `[chimera]`. Spagyr adds `[spagyr]`, written by `llama-server --spagyr-tune`
+`[lookup]`, `[chimera]`. Spagyric adds `[spagyric]`, written by `llama-server --spagyric-tune`
 and read by the launcher.
 
 > Profile portability warning: the current `mellum2` profile was generated on a 64 GB
 > DDR4 box (header says "64GB DDR4"); this repo is developed on a 15 GB box. Profiles
-> are **box-specific** — Spagyr's `fingerprint` field makes cross-box staleness
+> are **box-specific** — Spagyric's `fingerprint` field makes cross-box staleness
 > detectable (launcher warns if fingerprint != current box).
 
 ## `[gpu]`
@@ -55,21 +55,21 @@ reasoning = off
 [server]
 host = 0.0.0.0
 port = 8080
-parallel = 4              # --parallel (decode slot count; a Spagyr knob)
+parallel = 4              # --parallel (decode slot count; a Spagyric knob)
 ```
 
-## `[engine]` (existing; carries the decode knobs Spagyr tunes)
+## `[engine]` (existing; carries the decode knobs Spagyric tunes)
 
 ```toml
 [engine]
 mode = vitriol-dma
-ubatch_size = 128         # --ubatch-size (Spagyr knee knob)
+ubatch_size = 128         # --ubatch-size (Spagyric knee knob)
 ```
 
-## `[spagyr]` (new)
+## `[spagyric]` (new)
 
 ```toml
-[spagyr]
+[spagyric]
 schema = 1
 fingerprint = "~/.vitriol/fingerprint.json"   # resolved by the launcher
 knee_ubatch = 16        # decode ubatch-size at the measured knee
@@ -81,14 +81,14 @@ tuned_at = "2026-08-06T00:00:00Z"
 refuted_transforms = ["r2_fold", "iq_lut_pascal", "activation_delta_e1", "input_prefold"]
 ```
 
-`refuted_transforms` is launch-read-only: only `--spagyr-tune` may rewrite it. The
+`refuted_transforms` is launch-read-only: only `--spagyric-tune` may rewrite it. The
 launcher uses it to skip known-dead representations without re-measuring.
 
 ## Launcher contract
 
 Given a profile, the launcher:
-1. reads `[gpu]`, `[model]`, `[spagyr]` → builds server flags
+1. reads `[gpu]`, `[model]`, `[spagyric]` → builds server flags
    (`--n-gpu-layers`, `--threads`, `--batch-size`, `--ubatch-size`, `--parallel`);
 2. reads `[vitriol]` → exports `VITRIOL_*` env vars;
 3. reads `[server]` → host/port;
-4. logs the active `[spagyr]` config at startup for auditability.
+4. logs the active `[spagyric]` config at startup for auditability.

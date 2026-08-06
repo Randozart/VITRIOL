@@ -1,11 +1,11 @@
-# Spagyr Phase 0 — Correctness-Gated Baselines: Exact Procedure and Results
+# Spagyric Phase 0 — Correctness-Gated Baselines: Exact Procedure and Results
 
 Date: 2026-08-06 (reproducible procedure + raw outputs).
 
 ## 1. Purpose
 
 Establish clean, correctness-gated decode/eval baselines for the two VRAM-fit models
-after reframing Spagyr as VITRIOL's hardware autotuner. Gate: any t/s claim requires
+after reframing Spagyric as VITRIOL's hardware autotuner. Gate: any t/s claim requires
 legible generated output first (Golden Rule 6; VITRIOL known-issue "DeepSeek/Mellum
 may produce illegible output").
 
@@ -176,7 +176,7 @@ stabilizes after warmup.)
   Mellum ~27–32 t/s).
 - The `common_fit_params ... abort` lines are non-fatal warnings (KV/context fitting
   bailed because ngl was user-set; loading and inference proceeded normally).
-- These numbers are the **stock-default baselines** for the Spagyr tuning loop. The
+- These numbers are the **stock-default baselines** for the Spagyric tuning loop. The
   autotuner's decode-knob sweep (ubatch/batch/parallel/threads) and VITRIOL-knob sweep
   (LRU_MB/MAX_LOCKED_MB/prefetch/pin) will be measured against these, same machine,
   same prompt, same rounds.
@@ -190,6 +190,6 @@ stabilizes after warmup.)
 
 ## 11. Commit records
 
-- bitshaper-ai: `1be9a3c` (Spagyr master plan), `ba98f67` (baseline table)
-- VITRIOL: `6fd83b2` (Spagyr docs + schema), `aabc583` (Phase 0 results),
+- bitshaper-ai: `1be9a3c` (Spagyric master plan), `ba98f67` (baseline table)
+- VITRIOL: `6fd83b2` (Spagyric docs + schema), `aabc583` (Phase 0 results),
   `363b977` (EXPERIMENT_LOG)

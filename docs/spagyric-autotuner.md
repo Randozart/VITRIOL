@@ -1,14 +1,14 @@
-# Spagyr — VITRIOL Hardware Autotuner: Design + Measured Boundaries
+# Spagyric — VITRIOL Hardware Autotuner: Design + Measured Boundaries
 
 Date: 2026-08-06.
 
-## 1. What Spagyr is
+## 1. What Spagyric is
 
-A VITRIOL feature (`--spagyr-tune`) that tunes the runtime to the specific hardware:
+A VITRIOL feature (`--spagyric-tune`) that tunes the runtime to the specific hardware:
 probe the box, sweep the real tunable knobs with measured benchmarks, freeze the winner
 into the profile system. It is a *tuner/optimizer harness*, not a new runtime and not a
 new math representation. Rationale: enterprise AOT engines (TRT-LLM) do per-GPU engine
-compilation + tactic autotuning; Spagyr scales that idea down to consumer hardware
+compilation + tactic autotuning; Spagyric scales that idea down to consumer hardware
 (GTX 1070 Ti class) and records which representations are measured-good or
 measured-dead per hardware class.
 
@@ -27,11 +27,11 @@ measured-dead per hardware class.
 | disk free (offload tier) | df |
 
 Fingerprint cached per box (e.g. `~/.vitriol/fingerprint.json`); re-probe only on
-`--spagyr-tune` re-invocation or hardware delta.
+`--spagyric-tune` re-invocation or hardware delta.
 
 ## 3. Measured boundaries (bitshaper-ai, 2026-08-06) — the blacklist seed
 
-Source: `bitshaper-ai/.opencode/plans/2026-08-06-spagyr-shader-test.md` §14 and
+Source: `bitshaper-ai/.opencode/plans/2026-08-06-spagyric-shader-test.md` §14 and
 `.../2026-08-06-amortization-batching.md` §6. These are MEASURED on GTX 1070 Ti
 (sm_61, 2 MB L2, no Tensor Cores, DP4A-capable), not assumed.
 
@@ -51,10 +51,10 @@ batch; instruction/LUT representations never beat packed bytes on small-L2 parts
 ## 4. Profile schema extension (S0)
 
 Existing profile: `~/.vitriol/profiles/<name>/config` (TOML-ish, sections
-`[gpu] [model] [vitriol] [server]`). Add `[spagyr]`:
+`[gpu] [model] [vitriol] [server]`). Add `[spagyric]`:
 
 ```toml
-[spagyr]
+[spagyric]
 schema = 1
 fingerprint = "/path/to/fingerprint.json"
 knee_ubatch = 16
@@ -64,8 +64,8 @@ tuned_at = "2026-08-06T00:00:00Z"
 refuted_transforms = ["r2_fold", "iq_lut_pascal", "activation_delta_e1", "input_prefold"]
 ```
 
-The launcher reads `[spagyr]` + `[vitriol]` and builds server flags + VITRIOL env from
-them. `refuted_transforms` is read-only at launch (only Spagyr rewrites it) so a future
+The launcher reads `[spagyric]` + `[vitriol]` and builds server flags + VITRIOL env from
+them. `refuted_transforms` is read-only at launch (only Spagyric rewrites it) so a future
 hardware fingerprint can skip known-dead representations without re-measuring.
 
 ## 5. Knob map

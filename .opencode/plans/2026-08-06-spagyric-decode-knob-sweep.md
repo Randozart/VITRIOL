@@ -1,12 +1,12 @@
-# Spagyr S2+S3 — Decode-Knob Sweep (ubatch / threads / parallel)
+# Spagyric S2+S3 — Decode-Knob Sweep (ubatch / threads / parallel)
 
 Date: 2026-08-06.
 
 ## 1. Goal
 
 Measure the decode-knob knee on the real VITRIOL runtime (llama-server) to decide what
-`--spagyr-tune` should autotune. Two sweep shapes, both models. Baseline reference:
-Spagyr Phase 0 report (`2026-08-06-spagyr-phase0-baseline-report.md`) — DeepSeek
+`--spagyric-tune` should autotune. Two sweep shapes, both models. Baseline reference:
+Spagyric Phase 0 report (`2026-08-06-spagyric-phase0-baseline-report.md`) — DeepSeek
 58.1-58.3 t/s, Mellum 30.9-34.3 t/s at stock decode knobs (default ubatch 512, t=4,
 parallel 1).
 
@@ -35,9 +35,9 @@ profile). Mellum parallel capped at 4 to avoid KV OOM at c=32768.
 
 ## 4. Harness
 
-`VITRIOL/libvitriol/spagyr_sweep.py` — starts/waits/kills llama-server per config,
+`VITRIOL/libvitriol/spagyric_sweep.py` — starts/waits/kills llama-server per config,
 mode A (3 rounds) or mode B (N concurrent via threads), writes CSV
-(`/tmp/opencode/spagyr_sweep_<model>.csv`). Reuses the sweep_controller methodology
+(`/tmp/opencode/spagyric_sweep_<model>.csv`). Reuses the sweep_controller methodology
 (health poll, warmup, t/s from timings).
 
 ## 5. Results (measured 2026-08-06)
@@ -78,7 +78,7 @@ mode A (3 rounds) or mode B (N concurrent via threads), writes CSV
   p=2/4/8. The slot-shared amortization is real in native llama.cpp: one forward pass
   serves all slots, weight fetch amortized. 8 slots ≈ 2.3× single-slot (~60 t/s).
 
-So `--spagyr-tune`'s decode autotune axis is **`--parallel`**, not ubatch/threads.
+So `--spagyric-tune`'s decode autotune axis is **`--parallel`**, not ubatch/threads.
 Finer parallel sweep (p=6/12/16) + the real VITRIOL stream knobs (LRU/prefetch/pin)
 are the next S4 candidates.
 
@@ -95,7 +95,7 @@ are the next S4 candidates.
   (compute-bound, Q4_K_M): 37.2 → 41.8 at p=2/4 = **1.4×**. The amortization is real
   in native llama.cpp; the win scales with how bandwidth-bound the model is.
 
-Implication for `--spagyr-tune`: autotune `--parallel` (fine-grained: 1/2/4/6/8/12/16)
+Implication for `--spagyric-tune`: autotune `--parallel` (fine-grained: 1/2/4/6/8/12/16)
 as the primary decode knob; fix threads=4; leave ubatch at default. Mellum-scale models
 gain ~1.4×, bandwidth-bound models up to 2.3×+.
 

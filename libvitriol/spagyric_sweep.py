@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Spagyr decode-knob sweep harness.
+"""Spagyric decode-knob sweep harness.
 
 Mode A: single-request decode t/s per config (ubatch, threads), warmup + 3 rounds.
 Mode B: concurrent-request throughput per config (parallel slots), N parallel
@@ -140,7 +140,7 @@ def measure_b(n):
 # Intent: parse args, run the config grid, write the CSV.
 def main():
     """Parse args, run the config grid, write the CSV."""
-    ap = argparse.ArgumentParser(description="Spagyr decode-knob sweep")
+    ap = argparse.ArgumentParser(description="Spagyric decode-knob sweep")
     ap.add_argument("--model", required=True)
     ap.add_argument("--ngl", type=int, required=True)
     ap.add_argument("--ctx", type=int, required=True)

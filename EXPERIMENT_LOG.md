@@ -679,7 +679,7 @@ Note: `pin_first_n_layers` reduced from 15→8 for IQ2_M due to increased VRAM p
 
 *Last updated: 2026-05-21 17:30 CEST**
 
-## 2026-08-06 — Spagyr Phase 0: correctness-gated baselines (fresh rebuild)
+## 2026-08-06 — Spagyric Phase 0: correctness-gated baselines (fresh rebuild)
 
 Binary: llama-server rebuilt (commit 6fd83b2). GTX 1070 Ti, 15 GB RAM.
 Prompt: "Write a Python function for merge sort." 64 tokens, temp 0, 3 rounds.
@@ -691,12 +691,12 @@ VITRIOL_MODE not set → native (mode 0, RAM Shot); models fit VRAM.
 | Mellum2-12B-A2.5B Q4_K_M | ngl=24 c=32768 t=4 | 30.9-34.3 | ~49 | PASS (valid merge_sort) |
 
 Both gates passed — the prior "legible output" concern did NOT reproduce at temp 0.
-Matches/beats documented baselines (DeepSeek ~50, Mellum ~27-32). Next: Spagyr decode-knob
+Matches/beats documented baselines (DeepSeek ~50, Mellum ~27-32). Next: Spagyric decode-knob
 sweep (ubatch/batch/parallel/threads) on these, then VITRIOL knobs.
 
-## 2026-08-06 — Spagyr S2 decode-knob sweep (both models) — parallel is the lever
+## 2026-08-06 — Spagyric S2 decode-knob sweep (both models) — parallel is the lever
 
-Harness: libvitriol/spagyr_sweep.py (mode A single-request decode t/s, mode B
+Harness: libvitriol/spagyric_sweep.py (mode A single-request decode t/s, mode B
 concurrent aggregate). Merge-sort prompt, 64 tok, temp 0, warmup + 3 rounds.
 All configs correctness PASS.
 
@@ -711,6 +711,6 @@ Mellum Q4_K_M (ngl=24 c=32768):
   parallel 2/4 aggregate: 37.2 / 41.8 t/s (1.4x at 4)
 
 Reading: ubatch and threads are not decode levers; --parallel is the decode
-throughput knob (amortized weight fetch in native llama.cpp). Spagyr autotune axis
+throughput knob (amortized weight fetch in native llama.cpp). Spagyric autotune axis
 = --parallel; fix threads=4; ubatch default. Report:
-.opencode/plans/2026-08-06-spagyr-decode-knob-sweep.md
+.opencode/plans/2026-08-06-spagyric-decode-knob-sweep.md

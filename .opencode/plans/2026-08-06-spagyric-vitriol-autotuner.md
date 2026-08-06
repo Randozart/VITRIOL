@@ -1,19 +1,19 @@
-# Spagyr - VITRIOL Hardware Autotuner (--spagyr-tune)
+# Spagyric - VITRIOL Hardware Autotuner (--spagyric-tune)
 
 Date: 2026-08-06.
 
 Mirror of the master record in
-`bitshaper-ai/.opencode/plans/2026-08-06-spagyr-vitriol-autotuner.md` (that file is
+`bitshaper-ai/.opencode/plans/2026-08-06-spagyric-vitriol-autotuner.md` (that file is
 canonical, including all measured facts and the cross-repo migration map). Design and
-measured boundaries: `docs/spagyr-autotuner.md`. Profile schema:
-`docs/spagyr-profile-schema.md`.
+measured boundaries: `docs/spagyric-autotuner.md`. Profile schema:
+`docs/spagyric-profile-schema.md`.
 
 ## Deliverable
 
-`llama-server --spagyr-tune [--spagyr-model MODEL]` probes the specific hardware,
+`llama-server --spagyric-tune [--spagyric-model MODEL]` probes the specific hardware,
 sweeps the real tunable knobs with measured benchmarks, finds the knee, verifies
 end-to-end, and freezes a profile under `~/.vitriol/profiles/<model>/config` with a new
-`[spagyr]` section. Normal launches consume the profile (Spagyr is the first real
+`[spagyric]` section. Normal launches consume the profile (Spagyric is the first real
 profile consumer; none exist today).
 
 ## Flow
@@ -27,7 +27,7 @@ profile consumer; none exist today).
 4. VITRIOL-knob sweep: n-gpu-layers, LRU_MB, MAX_LOCKED_MB, predictive_prefetch,
    pin_first_n_layers, prune_experts.
 5. Full-speedup measurement: tuned vs stock defaults, baseline table, interleaved runs.
-6. Freeze profile: [spagyr] = fingerprint + config + knee + refuted_transforms.
+6. Freeze profile: [spagyric] = fingerprint + config + knee + refuted_transforms.
 
 ## Integration anchors (verified)
 
@@ -64,8 +64,8 @@ Measured 2026-08-06, GTX 1070 Ti (8 GB), 15 GB RAM, fresh rebuild of llama-serve
 | --- | --- | --- | --- |
 | DeepSeek-Coder-V2-Lite IQ2_M (ngl=99, c=4096, t=4) | **58.1-58.3** | 56.7-58.4 | **PASS** (valid merge_sort) |
 | Mellum2-12B Q4_K_M (ngl=24, c=32768, t=4) | **30.9-34.3** | ~49 | **PASS** (valid merge_sort) |
-| spagyr decode tune | TBD | TBD | TBD |
-| spagyr decode + vitriol tune | TBD | TBD | TBD |
+| spagyric decode tune | TBD | TBD | TBD |
+| spagyric decode + vitriol tune | TBD | TBD | TBD |
 
 Note: the earlier correctness concern (DeepSeek/Mellum "may not produce legible output")
 did NOT reproduce on these runs at temp 0 on the merge-sort prompt. VITRIOL mode = 0
@@ -76,4 +76,4 @@ plan §8).
 
 - Runs on VRAM-fit models immediately (DeepSeek-Coder-V2-Lite, Mellum2). Ternary Qwen
   behind the mlock unblock: `sudo prlimit --pid $$ --memlock=unlimited:unlimited`.
-- Spagyr is a tuner, not new math: it optimizes config and records refuted reps.
+- Spagyric is a tuner, not new math: it optimizes config and records refuted reps.

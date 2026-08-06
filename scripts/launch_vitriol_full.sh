@@ -26,12 +26,12 @@ EMBED_LOG="$LOG_DIR/copula_embed.log"
 HERM_PORT=8090
 EMBED_PORT=8081
 
-# Defaults (Mellum2 — GQA KV (31.5KB/token f16) so 32768 fits VRAM at full speed;
-# --reasoning off disables the template's auto-detected thinking, which interfered
-# with agentic tool-calling.)
-GEN_MODEL="${VITRIOL_GEN_MODEL:-/home/randozart/Desktop/Projects/Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf}"
+# Defaults (Mellum2-Claude-Thinking Q2_K — the opencode agent model. A reasoning
+# distill: --reasoning-format deepseek extracts <think> to reasoning_content; -fa on +
+# --jinja are the model's recommended mode. GQA KV keeps 32768 ctx cheap.)
+GEN_MODEL="${VITRIOL_GEN_MODEL:-/home/randozart/Desktop/Projects/mellum2-claude-Q2_K.gguf}"
 GEN_PORT="${VITRIOL_GEN_PORT:-8279}"
-NGL="${VITRIOL_NGL:-24}"
+NGL="${VITRIOL_NGL:-99}"
 CTX="${VITRIOL_CTX:-32768}"
 THREADS="${VITRIOL_THREADS:-4}"
 # Single opencode session = one slot -> --parallel 1 gives the full CTX to that slot
@@ -273,8 +273,8 @@ if [ "$DO_GEN" = "1" ]; then
         echo "[vitriol] gen server already on :$GEN_PORT — skipping"
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
-             --parallel "$PARALLEL" --reasoning off --context-shift \
-             --cache-reuse 256 --port "$GEN_PORT")
+             --parallel "$PARALLEL" --reasoning-format deepseek --flash-attn on --jinja \
+             --context-shift --cache-reuse 256 --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then
             echo "[vitriol]   cmd: ${CMD[*]}"

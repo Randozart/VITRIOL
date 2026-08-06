@@ -54,6 +54,23 @@ page-locked stream mode; VRAM-fit native models run without it.
 - **Setup**: `sudo vitriol setup` sets `cap_ipc_lock` + fixes RUNPATH (order fixed in
   this session).
 
+### Gen model native KV/SWA profile (Mellum2-Claude-Thinking)
+
+The agent model ships its own attention-level windowing tricks (verified from the GGUF
+metadata + load log):
+
+- **GQA**: `head_count_kv = 4` (vs 32 heads) → KV is 8× smaller than MHA.
+- **Native SWA**: `sliding_window = 1024`, per-layer pattern over 28 layers (SWA on ~3/4
+  of them) → those layers keep **only the last 1024 tokens** of KV, bounded regardless of
+  context. Only ~7 full-attention layers carry the true context KV.
+- **yarn scaling** factor 16 (orig 8192 → **131072** native context); `freq_base_swa` =
+  500000 (separate rope base for SWA layers); head dim 128.
+
+So total KV at 32K context is tiny — "context is rarely the limiter." Two layered windows:
+the model's native SWA (bounded KV on most layers) and VITRIOL's server-side
+`--context-shift` (rolls the full window). The shift is cheap because it only moves the
+~7 full-attention layers' KV; the SWA layers self-bound.
+
 ## 4. Spagyric — the hardware autotuner
 
 - **Origin**: the "weights-as-code" thesis (R2-FOLD) was measured **refuted** — bit-exact

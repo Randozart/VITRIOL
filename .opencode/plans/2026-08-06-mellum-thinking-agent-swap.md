@@ -25,6 +25,17 @@ Hermetis (selective injection) → the closed-loop design.
 - `--jinja` (template)
 - NOT `--reasoning off` (that is the Instruct fix; wrong for this model)
 
+## Native KV/SWA profile (verified from GGUF + load log)
+
+- **GQA** `head_count_kv = 4` → 8× smaller KV than MHA.
+- **Native SWA** `sliding_window = 1024` on ~3/4 of the 28 layers (pattern) → those
+  layers keep only the last 1024 tokens of KV, bounded at any context; ~7 full-attention
+  layers carry the true context KV.
+- **yarn 16×** (orig 8192 → **131072** native); `freq_base_swa` = 500000; head dim 128.
+- Consequence: KV at 32K is tiny → our `--ctx 32768 --context-shift` is cheap (the shift
+  only moves the ~7 full-attention layers' KV; SWA layers self-bound). Two layered windows:
+  model-native SWA (attention-level) + server ctx-shift (window-level).
+
 ## Steps (gated on download + GPU free — avatar capture holds it)
 
 1. Download Q2_K (5.0 GB, safest 8 GB fit) or Q4_K_M (8.1 GB — borderline, check VRAM).

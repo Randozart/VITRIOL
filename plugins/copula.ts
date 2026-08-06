@@ -12,8 +12,9 @@ import { tool } from "@opencode-ai/plugin"
 const HERMETIS_URL = process.env.COPULA_HERMETIS_URL ?? "http://127.0.0.1:8090"
 const MAX_CONTENT = 20000
 const AUTO_CONTEXT = process.env.COPULA_AUTO_CONTEXT !== "0"
-const CONTEXT_BUDGET = Number(process.env.COPULA_CONTEXT_BUDGET ?? 3000)
+const CONTEXT_BUDGET = Number(process.env.COPULA_CONTEXT_BUDGET ?? 1500)
 const CONTEXT_TOP_K = Number(process.env.COPULA_CONTEXT_TOP_K ?? 5)
+const CONTEXT_MIN_SCORE = Number(process.env.COPULA_CONTEXT_MIN_SCORE ?? 0.3)
 
 function hashString(s: string): string {
   let h = 5381
@@ -74,8 +75,10 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
     }
   }
 
-  // Rolling window (B): on a new user turn, retrieve relevant memory and inject it as a
-  // labeled noReply context part so the window is reassembled from what matters.
+  // Rolling window (B): on a new user turn, selectively retrieve relevant memory and
+  // inject it as a labeled noReply context part. Selective: skips when nothing is
+  // relevant enough (min_score) or when the turn is a continuation of the current
+  // window (is_new_topic=false) — avoids re-injecting what the window already carries.
   async function injectContext(sessionId: string, query: string): Promise<void> {
     try {
       const res = await fetch(`${HERMETIS_URL}/hermetis/context`, {
@@ -86,12 +89,18 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
           recent_text: query.slice(0, 2000),
           budget_tokens: CONTEXT_BUDGET,
           top_k: CONTEXT_TOP_K,
+          min_score: CONTEXT_MIN_SCORE,
+          session_id: sessionId,
         }),
       })
       if (!res.ok) return
       const data = await res.json()
       const block = data?.context
+      const topScore = Number(data?.top_score ?? 0)
+      const isNewTopic = data?.is_new_topic !== false
       if (!block?.trim()) return
+      if (topScore < CONTEXT_MIN_SCORE) return
+      if (!isNewTopic) return
       const h = hashString(block)
       if (injected.has(h)) return
       injected.add(h)

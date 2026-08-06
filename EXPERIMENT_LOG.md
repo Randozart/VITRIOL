@@ -888,3 +888,18 @@ ADOPTED #1 — three-state expert cache (INFLIGHT-aware victim selection):
 vitriol-cuda-integration.cpp LRU now picks the LRU victim whose last DMA has COMPLETED
 (cuEventQuery==SUCCESS) instead of blindly evicting the LRU and stalling on its in-flight
 fill. PROVENANCE header inline. Built clean.
+
+## 2026-08-06 — VITRIOL owns the window: ctx-shift drain + selective re-inject
+
+- launch: --parallel 1 (full 32768 to the single slot), --context-shift (server drains
+  the front when >32768), --cache-reuse 256, --reasoning off (Mellum). opencode
+  limit.context -> 131072 (never compacts). NOT launched/verified yet — GPU blocked by
+  avatar capture (PID 912348, 2.1GB).
+- Hermetis selective injection: /hermetis/context now returns (block, top_score,
+  is_new_topic); context_block filters below min_score (0.3); _is_new_topic embeds the
+  query + recent session episodes (cosine < 0.55 => new topic). Plugin gates on
+  min_score + is_new_topic + hash dedupe; CONTEXT_BUDGET 1500.
+- Fixed: duplicate context_block (earlier botched append); --ctx-shift -> --context-shift
+  flag name.
+- Verify pending (GPU): /v1/models n_ctx=32768, long session no compaction, injected
+  context survives shifts.

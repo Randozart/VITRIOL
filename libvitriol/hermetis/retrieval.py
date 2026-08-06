@@ -6,6 +6,7 @@ When VITRIOL_SEMANTIC_MODE=on, relevance scoring uses cosine similarity
 via sentence-transformers instead of keyword overlap.
 """
 
+import math
 import os
 import re
 from typing import Optional
@@ -151,13 +152,20 @@ def retrieve(
 
 
 def context_block(project_id: str, recent_text: str,
-                  budget_tokens: int = 3000, top_k: int = 5) -> str:
-    """Build a budget-capped context block (episodes + current nodes) for injection.
+                  budget_tokens: int = 1500, top_k: int = 5,
+                  min_score: float = 0.3, session_id: str = None) -> tuple:
+    """Build a budget-capped context block for selective injection.
 
     C (2026-08-06): feeds the Copula rolling-window auto-injection. Uses current node
-    versions only (retrieve() defaults to superseded=0). Trims to budget_tokens.
+    versions only (retrieve() defaults to superseded=0). Selective: drops candidates
+    below min_score, returns (block, top_score, is_new_topic). is_new_topic is False when
+    the query is semantically close to the recent session (a continuation the window
+    already carries) — the plugin skips injecting then.
     """
     candidates = retrieve(project_id, recent_text, top_k=top_k, cascade_depth=1)
+    candidates = [c for c in candidates if c.get('_score', 0.0) >= min_score]
+    top_score = candidates[0]['_score'] if candidates else 0.0
+    is_new = _is_new_topic(project_id, session_id, recent_text)
     lines = []
     used = 0
     for c in candidates:
@@ -170,27 +178,39 @@ def context_block(project_id: str, recent_text: str,
             break
         used += toks
         lines.append(body)
-    return '\n\n'.join(lines)
+    return '\n\n'.join(lines), top_score, is_new
 
 
-def context_block(project_id: str, recent_text: str,
-                  budget_tokens: int = 3000, top_k: int = 5) -> str:
-    """Build a budget-capped context block (episodes + current nodes) for injection.
+def _is_new_topic(project_id: str, session_id: str, recent_text: str,
+                  recent_n: int = 5, threshold: float = 0.55) -> bool:
+    """True if the query is NOT a continuation of the session's recent turns.
 
-    C (2026-08-06): feeds the Copula rolling-window auto-injection. Uses current node
-    versions only (retrieve() defaults to superseded=0). Trims to budget_tokens.
+    Embeds the query and the last recent_n episodes; low cosine -> new topic.
+    Falls back to True (inject-worthy) when embeddings are unavailable.
     """
-    candidates = retrieve(project_id, recent_text, top_k=top_k, cascade_depth=1)
-    lines = []
-    used = 0
-    for c in candidates:
-        if c.get('_type') == 'node':
-            body = compact.format_node(c)
-        else:
-            body = compact.format_episode(c)
-        toks = estimate_tokens(body) + 1
-        if used + toks > budget_tokens and used > 0:
-            break
-        used += toks
-        lines.append(body)
-    return '\n\n'.join(lines)
+    if not session_id:
+        return True
+    from . import embed
+    if not embed.is_available():
+        return True
+    q = embed.encode(recent_text[:1000])
+    if q is None:
+        return True
+    conn = db._get_conn(project_id)
+    rows = conn.execute(
+        "SELECT content FROM episodes WHERE session_id=? ORDER BY id DESC LIMIT ?",
+        (session_id, recent_n)).fetchall()
+    if not rows:
+        return True
+    embs = [embed.encode(r['content'][:1000]) for r in rows]
+    embs = [e for e in embs if e]
+    if not embs:
+        return True
+    n, d = len(embs), len(embs[0])
+    mean = [sum(embs[i][j] for i in range(n)) / n for j in range(d)]
+    qn = math.sqrt(sum(x * x for x in q))
+    mn = math.sqrt(sum(x * x for x in mean))
+    if qn == 0.0 or mn == 0.0:
+        return True
+    cos = sum(q[i] * mean[i] for i in range(d)) / (qn * mn)
+    return cos < threshold

@@ -34,7 +34,9 @@ GEN_PORT="${VITRIOL_GEN_PORT:-8279}"
 NGL="${VITRIOL_NGL:-24}"
 CTX="${VITRIOL_CTX:-32768}"
 THREADS="${VITRIOL_THREADS:-4}"
-PARALLEL="${VITRIOL_PARALLEL:-2}"
+# Single opencode session = one slot -> --parallel 1 gives the full CTX to that slot
+# (parallel>1 splits it, shrinking effective context). ctx-shift rolls the window.
+PARALLEL="${VITRIOL_PARALLEL:-1}"
 
 DO_SETUP=1
 DO_COPULA=1
@@ -271,7 +273,8 @@ if [ "$DO_GEN" = "1" ]; then
         echo "[vitriol] gen server already on :$GEN_PORT — skipping"
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
-             --parallel "$PARALLEL" --reasoning off --port "$GEN_PORT")
+             --parallel "$PARALLEL" --reasoning off --context-shift \
+             --cache-reuse 256 --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then
             echo "[vitriol]   cmd: ${CMD[*]}"

@@ -176,7 +176,7 @@ def hermetis_repo_map():
 
 @app.route("/hermetis/context", methods=["POST"])
 def hermetis_context():
-    """Build a budget-capped context block for auto-injection (rolling window, C)."""
+    """Build a budget-capped context block for selective auto-injection (rolling window)."""
     payload = request.get_json(force=True, silent=True) or {}
     pid = _project_id(payload)
     if not pid:
@@ -184,11 +184,16 @@ def hermetis_context():
     recent_text = payload.get("recent_text", "")
     if not recent_text:
         return jsonify({"error": "recent_text required"}), 400
-    budget = int(payload.get("budget_tokens", 3000))
+    budget = int(payload.get("budget_tokens", 1500))
     top_k = int(payload.get("top_k", 5))
-    block = retrieval.context_block(pid, recent_text, budget, top_k)
+    min_score = float(payload.get("min_score", 0.3))
+    session_id = payload.get("session_id")
+    block, top_score, is_new = retrieval.context_block(
+        pid, recent_text, budget, top_k, min_score, session_id)
     return jsonify({"ok": True, "project_id": pid,
                     "tokens": retrieval.estimate_tokens(block),
+                    "top_score": round(top_score, 4),
+                    "is_new_topic": is_new,
                     "context": block})
 
 

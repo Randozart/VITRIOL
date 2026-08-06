@@ -17,6 +17,18 @@ _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 _CACHE_MAX = 4096
 
+# bge-small-en-v1.5's native context is 512 tokens (llama-server clamps slots to it,
+# and embeddings beyond the trained window are degraded anyway). Cap inputs at ~1800
+# chars (~450 tokens) so large tool results embed instead of 500ing.
+EMBED_MAX_CHARS = 1800
+
+
+def _truncate(text):
+    """Truncate text to the embedding model's context window."""
+    if len(text) <= EMBED_MAX_CHARS:
+        return text
+    return text[:EMBED_MAX_CHARS]
+
 
 def is_available():
     """True if the GGUF embed server responds and semantic mode is enabled."""
@@ -31,6 +43,7 @@ def is_available():
 
 def encode(text):
     """Embed one text via the GGUF server; returns a list of floats or None."""
+    text = _truncate(text)
     key = hashlib.sha256(text.encode('utf-8', errors='replace')).hexdigest()
     with _CACHE_LOCK:
         cached = _CACHE.get(key)

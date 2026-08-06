@@ -17,7 +17,12 @@ EMBED_MODEL="${COPULA_EMBED_MODEL:-/home/randozart/Desktop/Projects/bge-small-en
 LOG_DIR="${COPULA_LOG_DIR:-/tmp/opencode}"
 HERMETIS_PORT="${COPULA_HERMETIS_PORT:-8090}"
 EMBED_PORT="${COPULA_EMBED_PORT:-8081}"
-EMBED_NGL="${COPULA_EMBED_NGL:-99}"
+# Embed server runs on CPU (ngl=0): the bge model is tiny (33M) so CPU embedding is
+# ~10-30 ms, and it avoids OOM (batch-scaled compute buffers starve the gen server on
+# an 8 GB card). Context stays at the model's native 512 — bge-small-en-v1.5's
+# n_ctx_train is 512 and the server clamps slots to it; Hermetis truncates inputs to
+# fit (embed.py caps ~450 tokens). Set COPULA_EMBED_NGL=99 to force GPU.
+EMBED_NGL="${COPULA_EMBED_NGL:-0}"
 
 port_pid() {
     local port="$1" p=""
@@ -70,8 +75,9 @@ elif [ ! -x "$SERVER" ]; then
 elif [ ! -f "$EMBED_MODEL" ]; then
     echo "[copula] WARN: embed model not found at $EMBED_MODEL — embed server skipped"
 else
-    echo "[copula] starting GPU embed server on :$EMBED_PORT ($(basename "$EMBED_MODEL"), ngl=$EMBED_NGL)"
-    setsid nohup "$SERVER" -m "$EMBED_MODEL" --embedding -ngl "$EMBED_NGL" -c 512 -t 4 \
+    echo "[copula] starting embed server on :$EMBED_PORT ($(basename "$EMBED_MODEL"), ngl=$EMBED_NGL)"
+    setsid nohup "$SERVER" -m "$EMBED_MODEL" --embedding -ngl "$EMBED_NGL" \
+        -c 512 -t 4 \
         --port "$EMBED_PORT" > "$LOG_DIR/copula_embed.log" 2>&1 < /dev/null &
 fi
 

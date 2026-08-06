@@ -17,7 +17,7 @@
 ├───────────────────────────────────────────────────────────────────┤
 │ Copula (the bond)                                                 │
 │   Hermetis server :8090  (/hermetis/store|search|context|repo_map…)│
-│   GPU embed server :8081 (small embedding GGUF)                   │
+│   embed server :8081 (small embedding GGUF, CPU)                 │
 ├───────────────────────────────────────────────────────────────────┤
 │ Hermetis (memory brain) — libvitriol/hermetis/                    │
 │   SQLite per-project · retrieval · scorer · repomap · embed ·     │
@@ -80,7 +80,9 @@ The bond between OpenCode and VITRIOL's memory. Components:
 
 - **Hermetis server** (`libvitriol/hermetis_server.py`, :8090): HTTP facade —
   `/hermetis/store`, `/node`, `/search`, `/context`, `/repo_map`, `/embed`, `/stats`.
-- **GPU embed server** (:8081): llama-server with a small embedding GGUF, `/v1/embeddings`.
+- **Embed server** (:8081): llama-server with a small embedding GGUF (CPU `ngl=0`; the
+  33M bge model is ~10-30 ms on CPU, and batch-scaled VRAM would starve the gen
+  server), `/v1/embeddings`.
 - **Copula Hermetis plugin** (`plugins/copula.ts` → `~/.config/opencode/plugins/`):
   ingest + `memory_search` tool + rolling window + file-change repo-map refresh.
 - **`launch_copula.sh`**: start/stop Hermetis + embed. **`launch_vitriol_full.sh`**:
@@ -107,7 +109,8 @@ The bond between OpenCode and VITRIOL's memory. Components:
   rank, token budget).
 - `compact.py` — formatting for injection. `consolidate.py`, `hebbian.py` — background
   consolidation + edge reinforcement.
-- `embed.py` — GPU-GGUF embedding client (zero-guarded).
+- `embed.py` — embedding client (zero-guarded; **truncates inputs to the model's native
+  512-token window**).
 
 **Versioned-supersede (stale-data policy)**: nodes are never hard-discarded. A file
 change (via `file.edited`/`file.watcher.updated` → plugin → single-file node refresh)
@@ -166,7 +169,7 @@ sudo /home/randozart/Desktop/Projects/VITRIOL/scripts/launch_vitriol_full.sh
 | threads | 4 fixed (t=8 catastrophic) |
 | weights-as-code (R2-FOLD) | refuted, 92.8× |
 | dense batch amortization | 3.6× at R=16 |
-| embedding model | bge-small-en-v1.5 Q8_0, 384-dim, GPU |
+| embedding model | bge-small-en-v1.5 Q8_0, 384-dim, CPU (native 512-token window; inputs truncated) |
 
 ## 11. Repository map (this session's files)
 

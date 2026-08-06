@@ -833,3 +833,12 @@ Investigated the "fork BERT zero-embedding bug" (P2 backlog). Findings:
 VERDICT: GGUF-GPU embedding provider WORKS. P2 unblocked. sentence-transformers stays as
 CPU fallback; zero-guard stays defensive. llama-server was rebuilt -> caps need `sudo
 vitriol setup` re-run.
+
+## 2026-08-06 — Copula flow re-verified with GPU-GGUF embedder + UNION bug fix
+
+- GPU embed server (bge Q8_0, ngl=99, :8081) verified: all inputs norm 1.0.
+- Hermetis /hermetis/embed uses the GPU GGUF: dims=384, norm=1.0.
+- Semantic search via GPU embedder: relevant episode ranks first (0.827 vs 0.767).
+- BUG FIXED: db.get_edge_targets UNION broke after P3.1 migration (episodes e.* UNION
+  knowledge_nodes n.* — column counts diverged after git_rev/superseded/superseded_by
+  added). Fixed with explicit matching columns (_type, id, created_at, content, strength).

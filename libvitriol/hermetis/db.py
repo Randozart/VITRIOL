@@ -420,14 +420,17 @@ def get_outgoing_edges(project_id: str,
 def get_edge_targets(project_id: str,
                      from_type: str, from_id: int) -> list[dict]:
     """Get the target nodes of all outgoing edges from a node."""
+    # 2026-08-06: explicit matching column lists. The old e.* UNION n.* broke when
+    # knowledge_nodes gained version columns (git_rev/superseded/superseded_by) in
+    # P3.1 — the two sides no longer had the same column count.
     conn = _get_conn(project_id)
     cursor = conn.execute(
-        """SELECT e.*, ed.relation, ed.weight as edge_weight
+        """SELECT 'episode' AS _type, e.id, e.created_at, e.content AS content, NULL AS strength
            FROM edges ed
            JOIN episodes e ON ed.to_type = 'episode' AND e.id = ed.to_id
            WHERE ed.from_type = ? AND ed.from_id = ?
            UNION
-           SELECT n.*, ed.relation, ed.weight as edge_weight
+           SELECT 'node' AS _type, n.id, n.created_at, n.summary AS content, n.strength
            FROM edges ed
            JOIN knowledge_nodes n ON ed.to_type = 'node' AND n.id = ed.to_id
            WHERE ed.from_type = ? AND ed.from_id = ?""",

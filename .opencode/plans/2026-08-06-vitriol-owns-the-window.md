@@ -59,6 +59,23 @@ fallback is a context-reporting shim (proxy) or re-verify what opencode reads.
 - Long session: no compaction fires; model sees the rolling window; injected context
   survives shifts; Hermetis captures rolled-away turns (lossless).
 
+### Acceptance criteria (the open verification — blocked on GPU)
+
+- [ ] `/v1/models` reports `n_ctx` = 32768 (parallel=1 gives the full window to the slot).
+- [ ] **Decisive risk resolved**: does opencode honor config `limit.context` (131072) for
+      its compaction threshold, or `/v1/models` `n_ctx`? If it trusts `/v1/models`,
+      fallback = context-reporting shim (proxy).
+- [ ] Long session: no compaction fires.
+- [ ] Injected `[Hermetis context]` survives ctx-shift (injected as a recent message).
+- [ ] Hermetis captures rolled-away turns (lossless).
+
 ## 7. Cross-repo
 
 Plan + code mirrored in bitshaper-ai (canonical) and VITRIOL.
+
+## 8. Status
+
+- Code committed: `62401a9` (launch parallel=1 + context-shift + cache-reuse; Hermetis
+  selective context; plugin gates). `opencode.jsonc` limit.context 131072 (user config).
+- Verification BLOCKED: GPU held by avatar capture (PID 912348, ~2.1 GB); also needed for
+  the reasoning-model swap (`2026-08-06-mellum-thinking-agent-swap.md`).

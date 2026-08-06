@@ -2421,6 +2421,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
     setup)
         BUILD_DIR="${LLAMA_DIR}/build/bin"
 
+        # 2026-08-06: fix RUNPATH FIRST. patchelf rewrites the ELF and clears file
+        # capabilities, so setcap-after-patchelf would be wiped. Order: rpath, then caps.
+        fix_rpath "$BUILD_DIR"
+
         if [[ -x "$BINARY" ]]; then
             setup_caps "$BINARY"
         fi
@@ -2432,10 +2436,6 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         if [[ -x "$BENCH_BINARY" ]]; then
             setup_caps "$BENCH_BINARY"
         fi
-
-        # Fix RUNPATH: $ORIGIN doesn't expand under AT_SECURE (file capabilities)
-        # Replace $ORIGIN with the absolute build path so libraries are found.
-        fix_rpath "$BUILD_DIR"
         ;;
 
     help|--help|-h)

@@ -58,6 +58,13 @@ from what matters. The user should rarely *feel* compaction and nothing is ever 
 Multi-turn session: everything retrievable after compaction; labeled per-turn injection
 present; window stays in the fast zone; compaction transparent.
 
+**DONE (2026-08-06)** — Hermetis side validated end-to-end: ingest (5 episodes) ->
+`/hermetis/context` auto-injection block (budget-capped, KV-offload episodes retrieved)
+-> compaction capture stored -> retrieval after compaction finds both the original
+episode and the capture (score 0.863) — nothing lost. Plugin TS validated (node
+strip-types); the live `session.prompt` injection path requires a real opencode session
+to confirm timing (noted in risks). Commits: C `4c7312d`, A+B `a99052d`.
+
 ## 7. Cross-repo
 
 Plan + code mirrored in bitshaper-ai (canonical) and VITRIOL; commits per logical step.

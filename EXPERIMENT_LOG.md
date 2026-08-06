@@ -854,3 +854,13 @@ lib linked into libllama-common.so without -fPIC). Added
 -DCMAKE_POSITION_INDEPENDENT_CODE=ON.
 Full stack (gen :8080 + embed :8081 + Hermetis :8090) verified: gen 36-38 t/s,
 correctness PASS, VRAM 7783/328 fits.
+
+## 2026-08-06 — Rolling window over a database: A+B+C built + validated
+
+- C: /hermetis/context (budget-capped recency+relevance context block). commit 4c7312d.
+- A: plugin chat.message full capture + experimental.session.compacting lossless dump
+  ([compaction capture]). B: per-turn auto-injection (labeled [Hermetis context],
+  session.prompt noReply, COPULA_AUTO_CONTEXT toggle). commit a99052d.
+- Validation: ingest -> context block (KV-offload episodes, capped) -> compaction
+  capture -> retrieval finds original + capture (0.863). Plugin TS valid; live
+  session.prompt injection timing needs a real opencode run.

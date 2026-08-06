@@ -21,7 +21,7 @@ the statistical coupling function — two systems, one joint distribution.
 | component | side | role |
 | --- | --- | --- |
 | Hermetis server | VITRIOL (`libvitriol/hermetis_server.py`) | HTTP API: `/hermetis/store`, `/hermetis/node`, `/hermetis/search`, `/hermetis/stats`, `/health`. Reuses the `libvitriol/hermetis` spine. |
-| Copula Hermetis plugin | OpenCode (`~/.config/opencode/plugins/copula.ts`; versioned at `plugins/copula.ts`) | ingests per-message context (user/assistant/tool results incl. subagents), exposes a `memory_search` tool, injects the repo map at session start. |
+| Copula Hermetis plugin | OpenCode (`~/.config/opencode/plugins/copula.ts`; versioned at `plugins/copula.ts`) | ingests per-message context (user/assistant/tool results incl. subagents), exposes a `memory_search` tool, **rolling window**: auto-injects relevant memory per turn + lossless compaction capture |
 | Embedding provider | VITRIOL (sentence-transformers CPU; GGUF-GPU path wired but gated on a fork bug) | all-MiniLM-L6-v2 semantic scoring; GGUF-GPU fallback ready once the fork's BERT bug is fixed. |
 | Repo map builder | VITRIOL (P3) | Aider-style: tree-sitter symbols + file-graph rank + token budget. |
 
@@ -35,6 +35,20 @@ the statistical coupling function — two systems, one joint distribution.
 # 3. OpenCode picks up the Copula Hermetis plugin at ~/.config/opencode/plugins/copula.ts
 #    (copy from VITRIOL/plugins/copula.ts; restart opencode to load it)
 ```
+
+## Rolling window over a database
+
+The context window is a *rolling window over Hermetis*: everything streams in,
+compaction is lossless, and each turn the window is reassembled from what matters.
+
+- **Per-turn auto-injection**: on a new user message, the plugin retrieves
+  `/hermetis/context` (budget-capped, recency+relevance-ranked) and injects it labeled
+  `[Hermetis context]` via `session.prompt({ noReply })`. Toggles:
+  `COPULA_AUTO_CONTEXT` (default on), `COPULA_CONTEXT_BUDGET` (3000),
+  `COPULA_CONTEXT_TOP_K` (5).
+- **Lossless compaction**: the `experimental.session.compacting` hook dumps the
+  pre-compaction context to Hermetis (`[compaction capture]`) before the window is
+  replaced — compaction can never lose anything the model saw.
 
 ## Flow
 

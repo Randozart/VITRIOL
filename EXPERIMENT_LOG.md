@@ -842,3 +842,15 @@ vitriol setup` re-run.
 - BUG FIXED: db.get_edge_targets UNION broke after P3.1 migration (episodes e.* UNION
   knowledge_nodes n.* — column counts diverged after git_rev/superseded/superseded_by
   added). Fixed with explicit matching columns (_type, id, created_at, content, strength).
+
+## 2026-08-06 — Full-launch test: decode regression was another stale-build artifact
+
+launch_vitriol_full.sh test revealed gen decode 8-15 t/s (baseline ~30). Root cause:
+STALE incremental build (the Layer-1a-era build dir had accumulated dirty state over the
+dirty tools/cli/cli.cpp + debug prints). Clean rebuild (rm -rf build + PIC) yields
+37-38 t/s — BETTER than baseline. Embeddings still correct on the fresh binary.
+ALSO FIXED: scripts/build-llama-server.sh — a clean build FAILED (cpp-httplib static
+lib linked into libllama-common.so without -fPIC). Added
+-DCMAKE_POSITION_INDEPENDENT_CODE=ON.
+Full stack (gen :8080 + embed :8081 + Hermetis :8090) verified: gen 36-38 t/s,
+correctness PASS, VRAM 7783/328 fits.

@@ -35,6 +35,7 @@ class SweepSpec:
     threads: int
     ubatch: object  # int or None (None = server default)
     parallel: object  # int or None (None = server default)
+    extra: tuple = ()  # extra server CLI args (e.g. --no-kv-offload --cache-type-k q4_0)
 
 
 # Intent: print a timestamped progress line, flushed so nohup log tails stream.
@@ -52,9 +53,12 @@ def start_server(spec):
         cmd += ["--ubatch-size", str(spec.ubatch)]
     if spec.parallel is not None:
         cmd += ["--parallel", str(spec.parallel)]
+    if spec.extra:
+        cmd += list(spec.extra)
     devnull = open(os.devnull, "w")
-    return subprocess.Popen(cmd, stdout=devnull, stderr=subprocess.DEVNULL,
-                            stdin=devnull, start_new_session=True), devnull
+    errlog = open("/tmp/opencode/server_stderr.log", "w")
+    return subprocess.Popen(cmd, stdout=devnull, stderr=errlog,
+                            stdin=devnull, start_new_session=True), devnull, errlog
 
 
 # Intent: kill every llama-server instance so the next config launches clean.
@@ -150,7 +154,11 @@ def main():
     ap.add_argument("--parallel-list", type=int, nargs="+", default=[2, 4, 8])
     ap.add_argument("--ubatch-threads", type=int, default=256,
                     help="ubatch value at which threads are swept")
+    ap.add_argument("--extra", default="",
+                    help="extra llama-server args for every config (e.g. '--no-kv-offload --cache-type-k q4_0')")
     args = ap.parse_args()
+    extra = tuple(args.extra.split())
+    ctxs = [args.ctx]  # default: single ctx; override via --ctx-list below
 
     fields = ["model", "knob", "value", "decode_tps", "eval_tps",
               "concurrent_tps", "wall_s", "correct"]
@@ -161,7 +169,7 @@ def main():
         """Launch one spec, measure in the given mode, append the CSV row."""
         log("start %s=%s (t=%s ubatch=%s parallel=%s)" % (tag, value, spec.threads,
                                                           spec.ubatch, spec.parallel))
-        proc, devnull = start_server(spec)
+        proc, devnull, errlog = start_server(spec)
         try:
             if not wait_healthy():
                 log("  FAILED to become healthy")
@@ -181,15 +189,16 @@ def main():
                              round(wall, 1), "PASS" if leg else "FAIL"])
         finally:
             devnull.close()
+            errlog.close()
             stop_server()
 
     for ub in args.ubatch_list:
-        run_cfg("ubatch", ub, SweepSpec(args.model, args.ngl, args.ctx, 4, ub, 1), "A")
+        run_cfg("ubatch", ub, SweepSpec(args.model, args.ngl, args.ctx, 4, ub, 1, extra), "A")
     for t in args.threads_list:
         run_cfg("threads", t, SweepSpec(args.model, args.ngl, args.ctx, t,
-                                        args.ubatch_threads, 1), "A")
+                                        args.ubatch_threads, 1, extra), "A")
     for p in args.parallel_list:
-        run_cfg("parallel", p, SweepSpec(args.model, args.ngl, args.ctx, 4, None, p), "B")
+        run_cfg("parallel", p, SweepSpec(args.model, args.ngl, args.ctx, 4, None, p, extra), "B")
 
     with open(args.output, "w", newline="") as f:
         w = csv.writer(f)

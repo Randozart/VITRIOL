@@ -726,3 +726,15 @@ throughput knob (amortized weight fetch in native llama.cpp). Spagyric autotune 
   conversion / wrong TQ1_0 variant / vision-model tokenizer). Stream path NOT at fault.
 - VITRIOL-knob sweep deferred: needs known-good stream model + >=24GB RAM.
 - Record: .opencode/plans/2026-08-06-spagyric-stream-path-finding.md (both repos).
+
+## 2026-08-06 — Spagyric S4b KV/context levers (DeepSeek, GTX 1070 Ti)
+
+Question: context (KV) vs weights claiming VRAM. Measured the 3 levers:
+- Default f16 KV in VRAM: 58-60 t/s, parallel ceiling p=8@c4096 (the working path).
+- --no-kv-offload (KV to host): decode 15 t/s (CPU-attention bottleneck, 4x penalty);
+  p=1 17.6 / p=8 15.5 aggregate — no recovery. REFUTED on this box.
+- --cache-type-k/v q4_0: decode 13.9 t/s + server crash (threads=4 config). REFUTED.
+Verdict: on this box KV stays in VRAM; context limited by parallel x ctx product.
+VITRIOL Layer 1a custom KV offload (CUDA-graph split) is the designed path, untested.
+Record: .opencode/plans/2026-08-06-spagyric-kv-context-levers.md (both repos).
+Harness: fixed stderr blindness (devnull -> /tmp/opencode/server_stderr.log).

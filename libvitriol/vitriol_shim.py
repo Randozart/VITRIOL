@@ -47,7 +47,7 @@ if MEMORY_MODE:
         _parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if _parent not in sys.path:
             sys.path.insert(0, _parent)
-        from libvitriol import memory as emem
+        from libvitriol import hermetis as emem
         logger.info("Emulated memory subsystem loaded (VITRIOL_MEMORY_MODE=on)")
     except ImportError as e:
         MEMORY_MODE = False

@@ -49,7 +49,7 @@ OpenCode ──POST /v1/chat/completions──► vitriol_shim.py (port 8279)
 |------|---------|
 | `scripts/vitriol` | Main CLI: config TUI, run, serve, stop. 1248 lines. |
 | `libvitriol/vitriol_shim.py` | Flask proxy: memory mode, SSE streaming, context rectification. ~850 lines. |
-| `libvitriol/memory/` | 7 modules: db, scorer, retrieval, compact, hebbian, consolidate, __init__. ~1,400 LoC. |
+| `libvitriol/hermetis/` | 7 modules: db, scorer, retrieval, compact, hebbian, consolidate, __init__. ~1,400 LoC. |
 | `llama.cpp/ggml/src/ggml-cuda/vitriol-cuda-integration.{cpp,h}` | LRU cache, config, predictive prefetching. |
 | `llama.cpp/ggml/src/ggml-cuda/vitriol-buffer.{cpp,h}` | RAM Shot buffer type (mmap + mlock + cudaHostRegister). |
 | `llama.cpp/ggml/src/ggml-cuda/ggml-cuda.cu` | VITRIOL hooks: supports_buft, LRU ensure, predictor prefetch/update. |

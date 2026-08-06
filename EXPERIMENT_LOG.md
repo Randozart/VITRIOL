@@ -302,7 +302,7 @@ Model requirements:
 |----------|-------|--------|
 | `docs/OPTIMIZATION_PLAN.md` (V2) | 590 | ✅ Full roadmap, 7 citations |
 | `docs/EMULATED_MEMORY_ARCHITECTURE.md` | 592 | ✅ DB schema, scoring, cascading retrieval, Hebbian, compaction, sleep, deployment |
-| `libvitriol/memory/` (7 modules) | ~1,400 | ✅ db, scorer, retrieval, compact, hebbian, consolidate, __init__ |
+| `libvitriol/hermetis/` (7 modules) | ~1,400 | ✅ db, scorer, retrieval, compact, hebbian, consolidate, __init__ |
 | `libvitriol/vitriol_shim.py` (memory toggle) | 763 | ✅ `VITRIOL_MEMORY_MODE=on` intercept loop, `/memory/stats`, `/memory/clear` |
 | `scripts/vitriol` (TUI + port swap) | 956 | ✅ Memory Settings menu, `--memory-mode` flag, detach/foreground port swap |
 | `~/.config/opencode/opencode.jsonc` | — | ✅ X-Project-Id, X-Session-Id custom headers |
@@ -762,8 +762,8 @@ MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
 
 ## 2026-08-06 — P1 VITRIOL memory service (OpenCode RAG)
 
-- libvitriol/copula_server.py: HTTP API (store/node/search/stats/health), localhost :8090.
-  Reuses libvitriol/memory (db, retrieval, compact). Keyword+recency scoring; GPU GGUF
+- libvitriol/hermetis_server.py: HTTP API (store/node/search/stats/health), localhost :8090.
+  Reuses libvitriol/hermetis (db, retrieval, compact). Keyword+recency scoring; GPU GGUF
   embeddings wired in P2.
 - db.py: added store_node() (knowledge-node upsert keyed by label).
 - BUG FOUND + FIXED: store_episode called _ensure_edge() without commit, leaving an open
@@ -775,4 +775,4 @@ MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
 - Plan: .opencode/plans/2026-08-06-vitriol-memory-opencode-rag.md (P1 done).
   + (refactor) param bundling per Praetor/AGENTS.md 5.3: db.EdgeSpec dataclass;
     store_episode/store_node take meta dict; get_or_create_edge/_ensure_edge take
-    EdgeSpec. Callers updated (hebbian, consolidate, shim, copula_server).
+    EdgeSpec. Callers updated (hebbian, consolidate, shim, hermetis_server).

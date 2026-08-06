@@ -16,7 +16,7 @@ Every flag, what it does, when to use it, and when not to.
 
 **Don't use when:** You need maximum throughput. The shim adds ~19% overhead (5.03 vs 6.21 tok/s) from Flask routing, JSON parsing, SQLite reads/writes, and context injection. For single-session coding tasks where you don't need cross-session recall, leave it off.
 
-**Requires:** `libvitriol/memory/` — 7 Python modules (always present, only loaded when mode is on).
+**Requires:** `libvitriol/hermetis/` — 7 Python modules (always present, only loaded when mode is on).
 
 ---
 

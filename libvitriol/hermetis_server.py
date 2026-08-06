@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Copula service — VITRIOL memory HTTP API for the OpenCode Copula plugin.
+"""Hermetis server — the memory system's HTTP API for the OpenCode plugin.
 
-Part of the Copula subsystem (the VITRIOL-to-OpenCode bond). Endpoints
-(localhost only):
-  POST /memory/store     store an episode (role: user|assistant|tool)
-  POST /memory/node      upsert a knowledge node (repo-map/file entries, keyed by label)
-  POST /memory/search    multi-hop retrieval, returns formatted snippets
-  GET  /memory/stats     per-project stats (episodes, nodes, sessions)
+Hermetis is VITRIOL's memory system (the persistent RAG brain). This service is its
+network facade. The OpenCode plugin that connects to it is the **Copula Hermetis** (the
+Copula bond into Hermetis). Endpoints (localhost only):
+  POST /hermetis/store     store an episode (role: user|assistant|tool)
+  POST /hermetis/node      upsert a knowledge node (repo-map/file entries, keyed by label)
+  POST /hermetis/search    multi-hop retrieval, returns formatted snippets
+  GET  /hermetis/stats     per-project stats (episodes, nodes, sessions)
   GET  /health           liveness
 
-Reuses libvitriol/memory (db, retrieval, compact). Semantic embeddings are wired in
+Reuses libvitriol/hermetis (db, retrieval, compact). Semantic embeddings are wired in
 P2 (GPU GGUF via llama-server /embedding); until then keyword+recency scoring runs
 (no VITRIOL_SEMANTIC_MODE needed).
 """
@@ -23,7 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, jsonify, request
 
-from memory import compact, db, retrieval
+from hermetis import compact, db, retrieval
 
 app = Flask(__name__)
 
@@ -45,10 +46,10 @@ def _project_id(payload):
 @app.route("/health", methods=["GET"])
 def health():
     """Liveness probe for the plugin and operators."""
-    return jsonify({"status": "ok", "service": "copula"})
+    return jsonify({"status": "ok", "service": "hermetis"})
 
 
-@app.route("/memory/store", methods=["POST"])
+@app.route("/hermetis/store", methods=["POST"])
 def memory_store():
     """Store a conversation turn or tool result as an episode."""
     payload = request.get_json(force=True, silent=True) or {}
@@ -67,7 +68,7 @@ def memory_store():
     return jsonify({"ok": True, "episode_id": episode_id, "project_id": pid})
 
 
-@app.route("/memory/node", methods=["POST"])
+@app.route("/hermetis/node", methods=["POST"])
 def memory_node():
     """Upsert a knowledge node keyed by label (e.g. file path -> summary)."""
     payload = request.get_json(force=True, silent=True) or {}
@@ -85,7 +86,7 @@ def memory_node():
     return jsonify({"ok": True, "node_id": node_id, "project_id": pid})
 
 
-@app.route("/memory/search", methods=["POST"])
+@app.route("/hermetis/search", methods=["POST"])
 def memory_search():
     """Multi-hop retrieval; returns formatted snippets for context injection."""
     payload = request.get_json(force=True, silent=True) or {}
@@ -117,7 +118,7 @@ def memory_search():
                     "count": len(results), "project_id": pid})
 
 
-@app.route("/memory/stats", methods=["GET"])
+@app.route("/hermetis/stats", methods=["GET"])
 def memory_stats():
     """Return per-project episode/node/session counts."""
     pid = _project_id(request.args)

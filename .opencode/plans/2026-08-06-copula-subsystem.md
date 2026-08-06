@@ -1,4 +1,4 @@
-# Copula Subsystem — VITRIOL-Memory for OpenCode (Complementary RAG)
+# Copula Subsystem — the VITRIOL-to-OpenCode bond (Hermetis memory)
 
 Date: 2026-08-06.
 
@@ -6,16 +6,19 @@ Date: 2026-08-06.
 
 Give OpenCode broad-context awareness via a complementary VITRIOL layer: the context
 window becomes a working-memory budget (measured: ~32K fast on this box), while
-VITRIOL provides the persistent RAG brain — continuous context ingestion, Aider-style
-whole-repo map, and on-demand retrieval back into the window. No proxy/MITM: a native
-OpenCode plugin (global) talks to a VITRIOL memory service over HTTP. This VITRIOL-to-
-OpenCode bond is the **Copula subsystem** (a coupling function, named 2026-08-06): the
-OpenCode Copula plugin + the VITRIOL Copula service + embedding provider + repo map.
+VITRIOL provides the persistent RAG brain — **Hermetis**, the memory system. No
+proxy/MITM: a native OpenCode plugin (global) talks to the Hermetis HTTP service over
+loopback. This VITRIOL-to-OpenCode bond is the **Copula subsystem** (a coupling
+function, named 2026-08-06). Naming:
+- **Hermetis** = the memory system (VITRIOL side): `libvitriol/hermetis` package +
+  `libvitriol/hermetis_server.py`.
+- **Copula** = the bond/connector concept.
+- **Copula Hermetis** = the OpenCode plugin that connects OpenCode into Hermetis.
 
 ## 2. Decisions (2026-08-06)
 
-- **Name**: the VITRIOL<->OpenCode integration is the **Copula subsystem**. Components:
-  Copula service (VITRIOL side), Copula plugin (OpenCode side).
+- **Name**: VITRIOL<->OpenCode integration = **Copula subsystem**; memory system =
+  **Hermetis**; the OpenCode plugin = **Copula Hermetis**.
 - **Route**: native OpenCode plugin, not the legacy shim proxy.
 - **Ingest scope**: conversations AND tool results (file reads, grep, bash) — the real
   "context gathering".
@@ -38,10 +41,10 @@ OpenCode Copula plugin + the VITRIOL Copula service + embedding provider + repo 
   classes/functions with signatures; graph ranking (PageRank on the file-dependency
   graph) selects the most-relevant portion to fit a token budget (`--map-tokens`,
   default 1k); LLM drills into specific files when the map is insufficient.
-- **VITRIOL memory spine** (`libvitriol/memory/`): per-project SQLite (`memory.db`),
+- **Hermetis memory engine** (`libvitriol/hermetis/`): per-project SQLite (`memory.db`),
   episodes/nodes/edges, multi-hop retrieval (`retrieval.py`), relevance/recency/hebbian/
   strength scoring (`scorer.py`), consolidation (`consolidate.py`), compaction
-  (`compact.py`), vector-store semantic mode (`vector_store.py`).
+  (`compact.py`), vector-store semantic mode.
 - **Embedding endpoint**: fork llama-server has `/embedding` + `/embeddings`
   (tools/server/server.cpp:191), gated on embedding mode; legacy shim exposed
   `/memory/stats`, `/memory/clear`, `/context/archive|retrieve` — but NO clean
@@ -53,30 +56,30 @@ OpenCode Copula plugin + the VITRIOL Copula service + embedding provider + repo 
 ## 4. Architecture
 
 ```
-OpenCode — Copula plugin (global ~/.config/opencode/plugins/copula.ts)
+OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts)
   |- ingest:    event.subscribe() -> per-message store (user, assistant, tool results)
-  |- retrieve:  custom tool memory_search(query) -> Copula /memory/search
+  |- retrieve:  custom tool memory_search(query) -> Hermetis /hermetis/search
   |- repo map:  auto-inject budget-limited Aider-style map at session start
                               |
                               v
-             Copula service (libvitriol/copula_server.py)
-               POST /memory/store  /memory/search  /memory/embed  /memory/repo_map
+             Hermetis server (libvitriol/hermetis_server.py)
+               POST /hermetis/store  /hermetis/search  /hermetis/embed  /hermetis/repo_map
                               |
                               v
              Embedding provider: llama-server, small embedding GGUF, GPU, :8081
-                              |  (reuses libvitriol.memory db/retrieval/scorer)
+                              |  (reuses libvitriol/hermetis db/retrieval/scorer)
 ```
 
 ## 5. Components
 
-### 5.1 Copula service (`libvitriol/copula_server.py`)
-- FastAPI/Flask, localhost-bound.
-- `POST /memory/store {project, type: episode|node, content, meta, session}`
-- `POST /memory/search {project, query, top_k}` -> multi-hop retrieval (reuse
+### 5.1 Hermetis server (`libvitriol/hermetis_server.py`)
+- Flask, localhost-bound.
+- `POST /hermetis/store {project, type: episode|node, content, meta, session}`
+- `POST /hermetis/search {project, query, top_k}` -> multi-hop retrieval (reuse
   `retrieval.py`), semantic mode via embeddings when available, keyword fallback.
-- `POST /memory/embed {text}` -> calls the embedding provider (llama-server :8081).
-- `GET /memory/repo_map {project, budget_tokens}` -> Aider-style map.
-- Reuses `libvitriol/memory/*` unchanged (db, retrieval, scorer, consolidate, compact).
+- `POST /hermetis/embed {text}` -> calls the embedding provider (llama-server :8081).
+- `GET /hermetis/repo_map {project, budget_tokens}` -> Aider-style map.
+- Reuses `libvitriol/hermetis/*` unchanged (db, retrieval, scorer, consolidate, compact).
 - Supersedes the legacy shim for the OpenCode path.
 
 ### 5.2 Embedding provider (GPU, GGUF)
@@ -92,17 +95,17 @@ OpenCode — Copula plugin (global ~/.config/opencode/plugins/copula.ts)
 - Budget-limited map (start 1k tokens, tune in P5 to the 32K fast window).
 - Stored as memory nodes; refreshed on file change (file.watcher / on-demand).
 
-### 5.4 Copula plugin (global)
+### 5.4 Copula Hermetis plugin (global)
 - **Ingest**: `event.subscribe()` -> on `message.part.updated` (assistant), user
-  messages, and `tool.execute.after` (tool results) -> POST /memory/store. Keyed by
+  messages, and `tool.execute.after` (tool results) -> POST /hermetis/store. Keyed by
   project directory + session. Includes child/subagent sessions.
-- **Retrieve**: custom tool `memory_search(query)` -> /memory/search -> snippets.
+- **Retrieve**: custom tool `memory_search(query)` -> /hermetis/search -> snippets.
 - **Repo map**: on session start, inject the budget-limited map via
   `session.prompt({noReply: true})` (adaptive: keep if it helps, drop if noise).
 
 ## 6. Phases
 
-- **P1 — DONE (2026-08-06, VITRIOL 63c3e5a)** — Copula service `libvitriol/copula_server.py`
+- **P1 — DONE (2026-08-06, VITRIOL cb99d9c)** — Hermetis server `libvitriol/hermetis_server.py`
   (store/node/search/stats/health, localhost :8090). Reuses the existing spine. Bugs
   found + fixed while building:
   - `store_episode` left the edge INSERT (`_ensure_edge`) uncommitted → open write
@@ -118,7 +121,7 @@ OpenCode — Copula plugin (global ~/.config/opencode/plugins/copula.ts)
 - **P2** — GPU embedding provider (llama-server /embedding + small GGUF) + wire into
   the service, with VRAM-contention guard + keyword fallback.
 - **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).
-- **P4** — Copula plugin (ingest hooks + `memory_search` tool + map injection).
+- **P4** — Copula Hermetis plugin (ingest hooks + `memory_search` tool + map injection).
 - **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure
   window-size impact + prefill (prompt caching); tune repo-map budget.
 
@@ -136,6 +139,6 @@ OpenCode — Copula plugin (global ~/.config/opencode/plugins/copula.ts)
 
 ## 8. Deliverables
 
-- Copula service + embedding provider + repo map builder (VITRIOL).
-- Copula plugin (ingest + search + map).
+- Hermetis server + embedding provider + repo map builder (VITRIOL).
+- Copula Hermetis plugin (ingest + search + map).
 - Per-project DB via the existing spine; docs + provenance in both repos.

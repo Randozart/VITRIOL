@@ -174,6 +174,24 @@ def hermetis_repo_map():
                     "map_tokens": repomap.estimate_tokens(map_text), "map": map_text})
 
 
+@app.route("/hermetis/context", methods=["POST"])
+def hermetis_context():
+    """Build a budget-capped context block for auto-injection (rolling window, C)."""
+    payload = request.get_json(force=True, silent=True) or {}
+    pid = _project_id(payload)
+    if not pid:
+        return jsonify({"error": "project_id required"}), 400
+    recent_text = payload.get("recent_text", "")
+    if not recent_text:
+        return jsonify({"error": "recent_text required"}), 400
+    budget = int(payload.get("budget_tokens", 3000))
+    top_k = int(payload.get("top_k", 5))
+    block = retrieval.context_block(pid, recent_text, budget, top_k)
+    return jsonify({"ok": True, "project_id": pid,
+                    "tokens": retrieval.estimate_tokens(block),
+                    "context": block})
+
+
 @app.route("/hermetis/stats", methods=["GET"])
 def memory_stats():
     """Return per-project episode/node/session counts."""

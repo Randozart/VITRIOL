@@ -10,8 +10,8 @@ import os
 import re
 from typing import Optional
 
-from . import db
-from .scorer import keyword_overlap, recency_score, compute_score
+from . import compact, db
+from .scorer import keyword_overlap, recency_score, compute_score, estimate_tokens
 
 
 # Default scoring weights — overridable via env or config
@@ -148,3 +148,49 @@ def retrieve(
 
     scored.sort(key=lambda c: c['_score'], reverse=True)
     return scored[:top_k]
+
+
+def context_block(project_id: str, recent_text: str,
+                  budget_tokens: int = 3000, top_k: int = 5) -> str:
+    """Build a budget-capped context block (episodes + current nodes) for injection.
+
+    C (2026-08-06): feeds the Copula rolling-window auto-injection. Uses current node
+    versions only (retrieve() defaults to superseded=0). Trims to budget_tokens.
+    """
+    candidates = retrieve(project_id, recent_text, top_k=top_k, cascade_depth=1)
+    lines = []
+    used = 0
+    for c in candidates:
+        if c.get('_type') == 'node':
+            body = compact.format_node(c)
+        else:
+            body = compact.format_episode(c)
+        toks = estimate_tokens(body) + 1
+        if used + toks > budget_tokens and used > 0:
+            break
+        used += toks
+        lines.append(body)
+    return '\n\n'.join(lines)
+
+
+def context_block(project_id: str, recent_text: str,
+                  budget_tokens: int = 3000, top_k: int = 5) -> str:
+    """Build a budget-capped context block (episodes + current nodes) for injection.
+
+    C (2026-08-06): feeds the Copula rolling-window auto-injection. Uses current node
+    versions only (retrieve() defaults to superseded=0). Trims to budget_tokens.
+    """
+    candidates = retrieve(project_id, recent_text, top_k=top_k, cascade_depth=1)
+    lines = []
+    used = 0
+    for c in candidates:
+        if c.get('_type') == 'node':
+            body = compact.format_node(c)
+        else:
+            body = compact.format_episode(c)
+        toks = estimate_tokens(body) + 1
+        if used + toks > budget_tokens and used > 0:
+            break
+        used += toks
+        lines.append(body)
+    return '\n\n'.join(lines)

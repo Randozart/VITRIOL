@@ -124,9 +124,11 @@ def memory_search():
         return jsonify({"error": "query required"}), 400
     top_k = int(payload.get("top_k", 5))
     cascade_depth = int(payload.get("cascade_depth", 1))
+    include_history = bool(payload.get("include_history", False))
 
     candidates = retrieval.retrieve(pid, query, top_k=top_k,
-                                    cascade_depth=cascade_depth)
+                                    cascade_depth=cascade_depth,
+                                    include_history=include_history)
     results = []
     for c in candidates:
         ctype = c.get("_type", "episode")
@@ -142,6 +144,34 @@ def memory_search():
         })
     return jsonify({"ok": True, "query": query, "results": results,
                     "count": len(results), "project_id": pid})
+
+
+@app.route("/hermetis/repo_map", methods=["POST"])
+def hermetis_repo_map():
+    """Build (and optionally store) the Aider-style repo map for a project root."""
+    payload = request.get_json(force=True, silent=True) or {}
+    pid = _project_id(payload)
+    if not pid:
+        return jsonify({"error": "project_id required"}), 400
+    root = payload.get("root", "")
+    if not root or not os.path.isdir(root):
+        return jsonify({"error": "root must be a directory"}), 400
+    budget = int(payload.get("budget_tokens", 1000))
+    do_store = bool(payload.get("store", True))
+    max_files = payload.get("max_files")
+    single_file = payload.get("file")
+    from hermetis import repomap
+    if single_file:
+        # targeted refresh of one file (file-edit trigger, P3.4)
+        stored = repomap.store_file_nodes(pid, root, [single_file])
+        map_text = repomap.build_repo_map(root, budget, max_files)
+    elif do_store:
+        map_text, stored = repomap.store_repo_map(pid, root, budget, max_files)
+    else:
+        map_text = repomap.build_repo_map(root, budget, max_files)
+        stored = 0
+    return jsonify({"ok": True, "project_id": pid, "nodes_stored": stored,
+                    "map_tokens": repomap.estimate_tokens(map_text), "map": map_text})
 
 
 @app.route("/hermetis/stats", methods=["GET"])

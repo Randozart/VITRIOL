@@ -60,7 +60,8 @@ def retrieve(
     project_id: str,
     query: str,
     top_k: int = DEFAULT_TOP_K,
-    cascade_depth: int = DEFAULT_CASCADE_DEPTH
+    cascade_depth: int = DEFAULT_CASCADE_DEPTH,
+    include_history: bool = False
 ) -> list[dict]:
     """
     Main retrieval pipeline.
@@ -68,6 +69,8 @@ def retrieve(
     1. Hop 1: Direct search over episodes and knowledge nodes
     2. Hop 2+: Edge traversal (spreading activation)
     3. Score and rank
+    include_history (2026-08-06 P3.2): include superseded node versions (default:
+    current versions only).
     """
     candidates = []
 
@@ -82,7 +85,8 @@ def retrieve(
 
     # In semantic mode, fetch all nodes (no pre-filtering needed)
     node_limit = top_k * (_CANDIDATE_MULTIPLIER // 3) if _SEMANTIC_MODE else top_k * 2
-    nodes = db.search_nodes(project_id, query, limit=node_limit)
+    nodes = db.search_nodes(project_id, query, limit=node_limit,
+                            include_history=include_history)
     for n in nodes:
         n['_type'] = 'node'
         n['_content'] = n.get('summary', '')
@@ -136,6 +140,10 @@ def retrieve(
             strength_coeff=DEFAULT_STRENGTH_WEIGHT,
         )
         candidate['_score'] = score
+        # 2026-08-06 (P3.2): nodes are the current-world source; prefer them over
+        # historical episodes when scores tie or are close.
+        if candidate.get('_type') == 'node':
+            candidate['_score'] = score + 0.05
         scored.append(candidate)
 
     scored.sort(key=lambda c: c['_score'], reverse=True)

@@ -89,13 +89,19 @@ def _init_db(conn: sqlite3.Connection):
 
         CREATE TABLE IF NOT EXISTS knowledge_nodes (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            label        TEXT NOT NULL UNIQUE,
+            label        TEXT NOT NULL,
             summary      TEXT NOT NULL,
             source_min   INTEGER,
             source_max   INTEGER,
             strength     REAL DEFAULT 1.0,
-            created_at   TEXT DEFAULT (datetime('now'))
+            git_rev      TEXT DEFAULT '',
+            superseded   INTEGER DEFAULT 0,
+            superseded_by INTEGER,
+            created_at   TEXT DEFAULT (datetime('now')),
+            UNIQUE(label, git_rev)
         );
+        CREATE INDEX IF NOT EXISTS idx_nodes_label_cur
+            ON knowledge_nodes(label, superseded);
 
         CREATE TABLE IF NOT EXISTS edges (
             id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -129,6 +135,43 @@ def _init_db(conn: sqlite3.Connection):
             created_at   TEXT DEFAULT (datetime('now'))
         );
     """)
+    conn.commit()
+
+
+def _ensure_node_schema(conn: sqlite3.Connection):
+    """Migrate a pre-versioning knowledge_nodes table to the versioned schema.
+
+    2026-08-06 (P3.1): old tables have `label` UNIQUE and no git_rev/superseded
+    columns. Rebuild -> UNIQUE(label, git_rev) + version columns, backfill
+    git_rev='', superseded=0. SQLite cannot drop a UNIQUE constraint in place.
+    """
+    cols = {r['name'] for r in conn.execute("PRAGMA table_info(knowledge_nodes)")}
+    if 'git_rev' in cols:
+        return
+    conn.execute("""
+        CREATE TABLE knowledge_nodes_new (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            label        TEXT NOT NULL,
+            summary      TEXT NOT NULL,
+            source_min   INTEGER,
+            source_max   INTEGER,
+            strength     REAL DEFAULT 1.0,
+            git_rev      TEXT DEFAULT '',
+            superseded   INTEGER DEFAULT 0,
+            superseded_by INTEGER,
+            created_at   TEXT DEFAULT (datetime('now')),
+            UNIQUE(label, git_rev)
+        )
+    """)
+    conn.execute("""
+        INSERT INTO knowledge_nodes_new
+            (id, label, summary, source_min, source_max, strength, created_at)
+        SELECT id, label, summary, source_min, source_max, strength, created_at
+        FROM knowledge_nodes
+    """)
+    conn.execute("DROP TABLE knowledge_nodes")
+    conn.execute("ALTER TABLE knowledge_nodes_new RENAME TO knowledge_nodes")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_nodes_label_cur ON knowledge_nodes(label, superseded)")
     conn.commit()
 
 
@@ -273,22 +316,51 @@ def store_episode(project_id: str, session_id: str, role: str,
 
 def store_node(project_id: str, label: str, summary: str,
                meta: dict = None) -> int:
-    """Upsert a knowledge node keyed by label (repo-map / file entries). Returns the node ID.
-    meta may carry strength, source_min, source_max."""
+    """Store a knowledge node, versioned by git_rev. Returns the node ID.
+
+    2026-08-06 (P3.1): versioned-supersede, never hard-discard. meta may carry
+    strength, source_min, source_max, git_rev. Same git_rev -> refresh the row in
+    place; new git_rev -> supersede the current row and insert the new version.
+    """
     meta = meta or {}
+    git_rev = meta.get('git_rev', '')
     with _write_lock:
         conn = _get_conn(project_id)
+        _ensure_node_schema(conn)
+
+        existing = conn.execute(
+            "SELECT id FROM knowledge_nodes WHERE label=? AND git_rev=?",
+            (label, git_rev)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE knowledge_nodes SET summary=?, strength=?,
+                   source_min=?, source_max=? WHERE id=?""",
+                (summary, meta.get('strength', 1.0),
+                 meta.get('source_min'), meta.get('source_max'), existing['id'])
+            )
+            conn.commit()
+            return existing['id']
+
+        current = conn.execute(
+            "SELECT id FROM knowledge_nodes WHERE label=? AND superseded=0",
+            (label,)
+        ).fetchone()
         cursor = conn.execute(
-            """INSERT INTO knowledge_nodes (label, summary, strength, source_min, source_max)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(label) DO UPDATE SET
-                   summary=excluded.summary, strength=excluded.strength,
-                   source_min=excluded.source_min, source_max=excluded.source_max""",
+            """INSERT INTO knowledge_nodes
+               (label, summary, strength, source_min, source_max, git_rev, superseded)
+               VALUES (?, ?, ?, ?, ?, ?, 0)""",
             (label, summary, meta.get('strength', 1.0),
-             meta.get('source_min'), meta.get('source_max'))
+             meta.get('source_min'), meta.get('source_max'), git_rev)
         )
+        new_id = cursor.lastrowid
+        if current:
+            conn.execute(
+                "UPDATE knowledge_nodes SET superseded=1, superseded_by=? WHERE id=?",
+                (new_id, current['id'])
+            )
         conn.commit()
-    return cursor.lastrowid
+    return new_id
 
 
 def search_episodes(project_id: str, query: str, limit: int = 10) -> list[dict]:
@@ -306,11 +378,15 @@ def search_episodes(project_id: str, query: str, limit: int = 10) -> list[dict]:
     return [dict(row) for row in cursor.fetchall()]
 
 
-def search_nodes(project_id: str, query: str, limit: int = 5) -> list[dict]:
-    """Search knowledge nodes by keyword overlap."""
+def search_nodes(project_id: str, query: str, limit: int = 5,
+                 include_history: bool = False) -> list[dict]:
+    """Search knowledge nodes by keyword overlap. Current versions only unless
+    include_history is set (2026-08-06 P3.2: superseded=0 default)."""
     conn = _get_conn(project_id)
+    where = "" if include_history else "WHERE superseded = 0"
     cursor = conn.execute(
-        "SELECT * FROM knowledge_nodes ORDER BY strength DESC, created_at DESC LIMIT ?",
+        "SELECT * FROM knowledge_nodes %s ORDER BY strength DESC, created_at DESC LIMIT ?"
+        % where,
         (limit * 3,)
     )
     return [dict(row) for row in cursor.fetchall()]

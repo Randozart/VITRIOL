@@ -14,6 +14,8 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
 
   // Dedupe ingested parts so streaming + transcript pulls don't double-store.
   const stored = new Set<string>()
+  // Debounce repo-map node refresh per changed file (P3.4).
+  const fileTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
   async function post(path: string, body: unknown): Promise<boolean> {
     try {
@@ -67,6 +69,26 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
             for (const p of m?.parts ?? []) {
               await storeTextPart(p, m?.info?.id ?? sessionId)
             }
+          }
+        } else if (event.type === "file.edited" || event.type === "file.watcher.updated") {
+          // File changed: refresh its Hermetis node so the map stays current (P3.4).
+          const f = (event.properties as any).file
+          if (f && projectRoot) {
+            const key = `${projectRoot}:${f}`
+            if (fileTimers.has(key)) clearTimeout(fileTimers.get(key)!)
+            fileTimers.set(
+              key,
+              setTimeout(() => {
+                fileTimers.delete(key)
+                const rel = f.startsWith(projectRoot) ? f.slice(projectRoot.length + 1) : f
+                void post("/hermetis/repo_map", {
+                  project_id: projectId,
+                  root: projectRoot,
+                  file: rel,
+                  budget_tokens: 200,
+                })
+              }, 2000),
+            )
           }
         }
       } catch {}

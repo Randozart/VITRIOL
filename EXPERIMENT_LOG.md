@@ -801,3 +801,17 @@ embedder.
   results; memory_search custom tool -> /hermetis/search. TS syntax verified (node
   strip-types). E2E simulated: store user/assistant/tool -> search ranks relevant
   episode 0.892. Restart opencode to load.
+
+## 2026-08-06 — P3: node versioning + repo map + P5 validation
+
+- P3.1 db: knowledge_nodes -> UNIQUE(label, git_rev) + git_rev/superseded/superseded_by;
+  _ensure_node_schema migrates old tables (rebuild); store_node supersedes current on
+  new git_rev, refreshes in place on same rev.
+- P3.2 retrieval: search_nodes/retrieve filter superseded=0 by default,
+  include_history opt-in; +0.05 node-over-episode score bonus.
+- P3.3 repomap.py: Aider-style map (regex symbol extraction, import-graph in-degree
+  rank, token budget); /hermetis/repo_map endpoint (full or single-file store).
+- P3.4 plugin: file.edited/file.watcher.updated -> debounced single-file node refresh.
+- P5 verified: v1 store -> edit+commit -> v2 re-store: mod.py rev1 superseded_by rev2;
+  retrieval current-only returns current rev, include_history returns both; single-file
+  refresh superseded 2 old main.py versions, current carries new symbol.

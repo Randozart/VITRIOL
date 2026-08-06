@@ -54,4 +54,7 @@ cascade retrieval and the scoring blend are original; Aider's repo-map *idea*
 ## Status
 
 - P1 done: server + engine (VITRIOL `cb99d9c`).
-- P2 embeddings (GPU GGUF), P3 repo map: pending.
+- P2 resolved (`f1e62ae`): semantic embeddings via sentence-transformers (all-MiniLM,
+  CPU). GGUF-GPU path wired + zero-guarded, gated on a fork BERT-embedding bug (backlog).
+- P4: Copula Hermetis plugin (`plugins/copula.ts`) ingests + searches.
+- P3 repo map: pending.

@@ -788,3 +788,16 @@ pass (backend- and pooling-independent). sentence-transformers NOT installed (CP
 fallback unavailable). Mitigation: zero-guard in hermetis/embed.py (near-zero -> None ->
 keyword). Paths: debug fork bert graph / pip install sentence-transformers / llama-arch
 embedder.
+
+## 2026-08-06 — P2 resolved + P4 Copula Hermetis plugin
+
+- P2: sentence-transformers installed (--user --break-system-packages; torch 2.13, CUDA
+  unavailable on driver 535 -> CPU). all-MiniLM-L6-v2 384-dim, ~86ms first encode.
+  Hermetis semantic retrieval verified: zero-keyword query ranks the right episode
+  (0.696 vs 0.533; and 0.892 in the e2e loop). GGUF-GPU path stays zero-guarded; fork
+  BERT bug -> backlog.
+- P4: plugins/copula.ts (installed ~/.config/opencode/plugins/copula.ts). event hook
+  ingests session transcript (user/assistant text) + tool.execute.after captures tool
+  results; memory_search custom tool -> /hermetis/search. TS syntax verified (node
+  strip-types). E2E simulated: store user/assistant/tool -> search ranks relevant
+  episode 0.892. Restart opencode to load.

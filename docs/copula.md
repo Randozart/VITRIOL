@@ -21,9 +21,19 @@ the statistical coupling function — two systems, one joint distribution.
 | component | side | role |
 | --- | --- | --- |
 | Hermetis server | VITRIOL (`libvitriol/hermetis_server.py`) | HTTP API: `/hermetis/store`, `/hermetis/node`, `/hermetis/search`, `/hermetis/stats`, `/health`. Reuses the `libvitriol/hermetis` spine. |
-| Copula Hermetis plugin | OpenCode (`~/.config/opencode/plugins/copula.ts`) | ingests per-message context (user/assistant/tool results incl. subagents), exposes a `memory_search` tool, injects the repo map at session start. |
-| Embedding provider | VITRIOL (P2) | small embedding GGUF via llama-server `/embedding` on GPU (:8081); keyword fallback if VRAM is tight. |
+| Copula Hermetis plugin | OpenCode (`~/.config/opencode/plugins/copula.ts`; versioned at `plugins/copula.ts`) | ingests per-message context (user/assistant/tool results incl. subagents), exposes a `memory_search` tool, injects the repo map at session start. |
+| Embedding provider | VITRIOL (sentence-transformers CPU; GGUF-GPU path wired but gated on a fork bug) | all-MiniLM-L6-v2 semantic scoring; GGUF-GPU fallback ready once the fork's BERT bug is fixed. |
 | Repo map builder | VITRIOL (P3) | Aider-style: tree-sitter symbols + file-graph rank + token budget. |
+
+## Running the stack
+
+```fish
+# 1. Hermetis memory service (localhost :8090)
+VITRIOL_SEMANTIC_MODE=on python3 libvitriol/hermetis_server.py --port 8090
+# 2. (optional) generation server, e.g. Mellum: ngl=24 c=32768 t=4
+# 3. OpenCode picks up the Copula Hermetis plugin at ~/.config/opencode/plugins/copula.ts
+#    (copy from VITRIOL/plugins/copula.ts; restart opencode to load it)
+```
 
 ## Flow
 
@@ -36,7 +46,12 @@ comes from the Aider-style repo map, not from growing the window.
 
 - P1 done (VITRIOL `cb99d9c`): Hermetis server + `store_node` helper + the
   edge-write-commit fix (5s stall) + diff-aware praetor hook.
-- P2 embeddings, P3 repo map, P4 Copula Hermetis plugin, P5 validation: pending — see
+- P2 resolved (`f1e62ae`): semantic embeddings via sentence-transformers (all-MiniLM,
+  CPU). GGUF-GPU path wired + zero-guarded but gated on a fork BERT-embedding bug
+  (backlog).
+- P4 plugin (`plugins/copula.ts`): ingest (session transcript + tool results) +
+  `memory_search` tool; installed at `~/.config/opencode/plugins/copula.ts`.
+- P3 repo map, P5 validation: pending — see
   `.opencode/plans/2026-08-06-copula-subsystem.md`.
 
 ## Notes

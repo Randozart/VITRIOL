@@ -140,7 +140,12 @@ OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts
   the fork's attention/graph changes to isolate the regression (own investigation, not on
   Copula's critical path).
 - **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).
-- **P4** — Copula Hermetis plugin (ingest hooks + `memory_search` tool + map injection).
+- **P4 — DONE (2026-08-06)** — Copula Hermetis plugin (`plugins/copula.ts`, installed
+  `~/.config/opencode/plugins/copula.ts`): event-hook ingest of user/assistant text
+  (session transcript on idle) + `tool.execute.after` tool-result capture, deduped;
+  `memory_search` custom tool -> Hermetis `/hermetis/search`. End-to-end verified:
+  store user/assistant/tool -> semantic search ranks the relevant episode (0.892).
+  Restart opencode to load the global plugin.
 - **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure
   window-size impact + prefill (prompt caching); tune repo-map budget.
 

@@ -714,3 +714,15 @@ Reading: ubatch and threads are not decode levers; --parallel is the decode
 throughput knob (amortized weight fetch in native llama.cpp). Spagyric autotune axis
 = --parallel; fix threads=4; ubatch default. Report:
 .opencode/plans/2026-08-06-spagyric-decode-knob-sweep.md
+
+## 2026-08-06 — Spagyric S4 stream-path: unblocked, then blocked by bad model file
+
+- vitriol setup: cap_ipc_lock=ep on llama-server + RUNPATH fix (39 ELF), verified.
+- Stream (ternary Qwen) OOM'd with Chimera auto (GGML_VULKAN=ON → VK buffer mlocks
+  every alloc). VITRIOL_CHIMERA_MODE=off fixes launch: CUDA0 482MiB + CUDA_Host
+  6480MiB pageable, healthy ~80s, RAM 11G/3.8G.
+- Output garbage in stream AND native CPU (-ngl 0); dense BitNet TQ1_0 native CPU is
+  GOOD. Verdict: qwen3.6-35b-a3b-instruct-TQ1_0.gguf is a bad file (suspects: bad
+  conversion / wrong TQ1_0 variant / vision-model tokenizer). Stream path NOT at fault.
+- VITRIOL-knob sweep deferred: needs known-good stream model + >=24GB RAM.
+- Record: .opencode/plans/2026-08-06-spagyric-stream-path-finding.md (both repos).

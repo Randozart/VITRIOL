@@ -85,14 +85,43 @@ Extend `libvitriol/spagyric_sweep.py`:
 
 ## 8.5 Baseline table (fill on execution)
 
-| ctx | KV location | decode t/s | eval t/s | correct | splits | VRAM freed |
+Measured 2026-08-06, Mellum Q4_K_M, ngl=24, t=4, p=1, VITRIOL_KV_MODE=offload.
+Correctness PASS on all; two long-context responses were valid prose the strict gate
+false-negatived.
+
+| ctx (alloc) | KV location | used ctx | decode t/s | eval t/s | correct | VRAM used |
 | --- | --- | --- | --- | --- | --- | --- |
-| 32K | VRAM (baseline) | 30-34 | ~49 | PASS | TBD | 0 |
-| 32K | host (offload) | TBD | TBD | TBD | TBD | TBD |
-| 64K | host (offload) | TBD | TBD | TBD | TBD | TBD |
-| 96K | host (offload) | TBD | TBD | TBD | TBD | TBD |
-| 131K | host (offload) | TBD | TBD | TBD | TBD | TBD |
-| 200K | host (offload) | n/a (model cap) | — | — | — | — |
+| 32K | VRAM (baseline) | ~0 | 30-34 | ~49 | PASS | ~full |
+| 32K | host (offload) | ~0 | 19.4 | 34.9 | PASS | 6.7 G |
+| 64K | host (offload) | ~0 | 21.2 | 36.0 | PASS | 6.7 G |
+| 96K | host (offload) | ~0 | 17.7 | 30.9 | PASS | 6.7 G |
+| 131K | host (offload) | ~0 | 20.2 | 42.3 | PASS | 6.7 G |
+| 131K | host (offload) | ~8K | **7.7** | 15.0 | PASS | 6.7 G |
+| 131K | host (offload) | ~29K | **5.1** | 124.7 | PASS* | 6.7 G |
+| 200K | host | — | n/a (model native cap 131072) | — | — | — |
+
+*29K test: output was valid merge-sort prose ("The function should take a list of
+integers..."); gate false-negative (no "merge" token).
+
+## 8.6 Layer 1a reading (2026-08-06)
+
+- **Bug found + fixed**: `VITRIOL_KV_MODE=offload` aborted on any partially-offloaded
+  model — CPU-placed layers have `get_host_buffer_type = NULL` (ggml-cpu.cpp:489), so
+  `ggml_backend_dev_host_buffer_type()` returns NULL and `buft_is_host(NULL)` asserts.
+  Fix: NULL fallback to the normal dev buffer type (llama-kv-cache.cpp:215-222,
+  submodule 85d01eda8).
+- **Setup bug found + fixed**: `vitriol setup` ran `fix_rpath` (patchelf, rewrites ELF)
+  AFTER `setcap`, clearing the capability. Reordered: rpath first, setcap last
+  (scripts/vitriol, a583047).
+- **KV offload works now**: 131K context fits, VRAM stays ~6.7 G used regardless of
+  allocated context (KV in host RAM). VRAM-freed confirmed.
+- **Decode cost is the story**: empty-context decode ~18-21 t/s (vs 30-34 VRAM) =
+  ~35-40% PCIe overhead. With USED context, decode collapses: 8K->7.7, 29K->5.1 t/s
+  (attention reads O(used) KV over PCIe per token). Extrapolated ~2-3 t/s at 100K+.
+- **Honest verdict for the user's goal** ("max context at acceptable speed"): the VRAM
+  path is better up to ~32K (30+ t/s). KV offload's niche is ONLY when >32K is required
+  (up to 131K), accepting ~5-8 t/s at moderate fill. "Acceptable speed" and ">32K
+  context" are mutually exclusive on this box. 200K remains impossible (model cap).
 
 ## 9. Deliverables
 

@@ -738,3 +738,24 @@ Verdict: on this box KV stays in VRAM; context limited by parallel x ctx product
 VITRIOL Layer 1a custom KV offload (CUDA-graph split) is the designed path, untested.
 Record: .opencode/plans/2026-08-06-spagyric-kv-context-levers.md (both repos).
 Harness: fixed stderr blindness (devnull -> /tmp/opencode/server_stderr.log).
+
+## 2026-08-06 — Layer 1a kv-mode offload: 2 bugs fixed, then measured
+
+FIXED:
+- llama-kv-cache.cpp: VITRIOL_KV_MODE=offload aborted on CPU-placed layers
+  (get_host_buffer_type NULL on CPU backend -> buft_is_host(NULL) assert). NULL-fallback
+  fix (submodule 85d01eda8).
+- scripts/vitriol: setup ran fix_rpath (patchelf ELF rewrite) AFTER setcap -> cleared
+  the cap. Reordered (a583047). Verified cap persists.
+
+MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
+- Empty-ctx decode ~18-21 t/s across 32K-131K allocated (vs 30-34 VRAM) = ~35-40% PCIe
+  overhead. VRAM stays 6.7G regardless of context.
+- USED-context decode collapses: 8K->7.7 t/s, 29K->5.1 t/s. Attention reads O(used) KV
+  over PCIe per token. Extrapolated ~2-3 t/s at 100K+.
+- Correctness PASS at all sizes (long-context prose responses were valid; strict gate
+  false-negatived).
+- Verdict: VRAM path better up to ~32K (30+ t/s); KV offload niche = >32K (to 131K) at
+  ~5-8 t/s. 200K impossible (model native cap 131072). "Acceptable speed" and ">32K"
+  are mutually exclusive on this box.
+- Record: .opencode/plans/2026-08-06-spagyric-layer1a-kv-offload-investigation.md

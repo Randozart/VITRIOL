@@ -120,6 +120,20 @@ OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts
     snippets.
 - **P2** — GPU embedding provider (llama-server /embedding + small GGUF) + wire into
   the service, with VRAM-contention guard + keyword fallback.
+- **P2 — BLOCKED on the fork's BERT embedding bug (2026-08-06)**. GPU-GGUF embedding
+  provider: `/embedding` + `--pooling` verified present, `nomic-embed-text-v1.5` Q8_0/F16
+  and `bge-small-en-v1.5` Q8_0 downloaded and served. BUT both BERT-family models return
+  **all-zero embeddings for many common inputs** ("fast", "how do we sort a list fast",
+  "Write a Python function for merge sort" -> norm 0.0; "hello world" -> norm 1.0).
+  Reproduces on GPU (-ngl 99) AND CPU (-ngl 0), and under `--pooling cls` / `mean` /
+  default — backend- and pooling-independent. Conclusion: a fork regression in the
+  BERT-family embedding forward pass (the fork heavily modified attention/KV/buffers).
+  sentence-transformers is NOT installed on this box (the CPU fallback is unavailable).
+  Mitigation added: **zero-guard** in `hermetis/embed.py` (near-zero vector -> None ->
+  keyword fallback) so Hermetis semantic scoring never uses poisoned zero vectors.
+  Paths forward (pick one): (a) debug the fork's BERT embedding graph/kernels; (b)
+  install `sentence-transformers` for a CPU semantic fallback; (c) try a llama-arch
+  embedding GGUF (may dodge the bert-specific bug).
 - **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).
 - **P4** — Copula Hermetis plugin (ingest hooks + `memory_search` tool + map injection).
 - **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure

@@ -32,6 +32,17 @@ def _load_sentence_model():
 
 
 def _encode(text: str):
+    """Embed text: GPU GGUF provider first (P2), sentence-transformers fallback."""
+    # 2026-08-06: Hermetis embedding provider (llama-server /v1/embeddings on GPU)
+    # replaces sentence-transformers when the embed server is up and semantic mode on.
+    try:
+        from . import embed
+        if embed.is_available():
+            emb = embed.encode(text)
+            if emb is not None:
+                return emb
+    except Exception:
+        pass
     _load_sentence_model()
     if _sentence_model is None:
         return None

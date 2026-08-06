@@ -65,7 +65,33 @@ def memory_store():
     db.get_or_create_session(pid, session_id)
     episode_id = db.store_episode(pid, session_id, role, content,
                                   meta={'token_count': token_count})
+    # 2026-08-06: warm the embedding cache on store when the GPU embedder is up,
+    # so semantic retrieval is fast (lazy compute stays the fallback).
+    try:
+        from hermetis import embed
+        if embed.is_available():
+            embed.encode(content)
+    except Exception:
+        pass
     return jsonify({"ok": True, "episode_id": episode_id, "project_id": pid})
+
+
+@app.route("/hermetis/embed", methods=["POST"])
+def hermetis_embed():
+    """Compute (and cache) an embedding via the GPU GGUF provider."""
+    payload = request.get_json(force=True, silent=True) or {}
+    text = payload.get("text", "")
+    if not text:
+        return jsonify({"error": "text required"}), 400
+    from hermetis import embed
+    if not embed.is_available():
+        return jsonify({"ok": False, "error": "embed server unavailable"}), 503
+    vec = embed.encode(text)
+    if vec is None:
+        return jsonify({"ok": False, "error": "embed failed"}), 502
+    return jsonify({"ok": True, "dims": len(vec),
+                    "preview": [round(x, 4) for x in vec[:8]],
+                    "norm": round(sum(x * x for x in vec) ** 0.5, 4)})
 
 
 @app.route("/hermetis/node", methods=["POST"])

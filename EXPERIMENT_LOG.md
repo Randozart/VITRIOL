@@ -776,3 +776,15 @@ MEASURED (Mellum Q4_K_M, ngl=24, t=4, p=1, KV offload):
   + (refactor) param bundling per Praetor/AGENTS.md 5.3: db.EdgeSpec dataclass;
     store_episode/store_node take meta dict; get_or_create_edge/_ensure_edge take
     EdgeSpec. Callers updated (hebbian, consolidate, shim, hermetis_server).
+
+## 2026-08-06 — P2 embeddings: BLOCKED by fork BERT embedding bug
+
+GPU-GGUF embedding provider verified (--embedding + --pooling present; nomic Q8_0/F16 +
+bge-small Q8_0 downloaded+served). BUT both BERT-family models return ALL-ZERO
+embeddings for many common inputs ("fast"->0.0, "how do we sort a list fast"->0.0,
+"Write a Python function for merge sort"->0.0; "hello world"->1.0). Reproduces GPU and
+CPU, under --pooling cls/mean/default. Fork regression in BERT-family embedding forward
+pass (backend- and pooling-independent). sentence-transformers NOT installed (CPU
+fallback unavailable). Mitigation: zero-guard in hermetis/embed.py (near-zero -> None ->
+keyword). Paths: debug fork bert graph / pip install sentence-transformers / llama-arch
+embedder.

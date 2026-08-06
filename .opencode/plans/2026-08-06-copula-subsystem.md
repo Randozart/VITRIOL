@@ -139,15 +139,36 @@ OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts
   stays wired + zero-guarded for later. **Fork BERT-embedding bug -> BACKLOG**: git-bisect
   the fork's attention/graph changes to isolate the regression (own investigation, not on
   Copula's critical path).
-- **P3** — Aider-style repo map builder (tree-sitter symbols + graph rank + budget).
+- **P3 — node versioning + Aider-style repo map. Design (2026-08-06, decisions
+  approved):** stale-file-data question resolved as **versioned-supersede, never
+  hard-discard**.
+  - Version identity: `git_rev` (commit hash), mtime fallback. No counter — id/created_at
+    order the supersede chain.
+  - Episodes stay purely historical (never invalidated). Current file truth lives ONLY in
+    versioned nodes. Retrieval slightly prefers nodes over episodes.
+  - Retrieval default: `superseded=0` (current only); `include_history` opt-in.
+  - Scope: versioning at the node layer (general, any label); repo map is the first
+    consumer via file-change triggers.
+  - **P3.1** schema: `knowledge_nodes` — drop `label` UNIQUE -> `UNIQUE(label, git_rev)`;
+    add `git_rev TEXT`, `superseded INT DEFAULT 0`, `superseded_by INT`; migration
+    rebuilds old tables + backfills. `store_node` supersedes the current row on new
+    git_rev (refresh in place on same git_rev).
+  - **P3.2** retrieval: `search_nodes` filters `superseded=0` by default,
+    `include_history` opt-in; small node-over-episode bonus in scoring.
+  - **P3.3** repo map builder: symbol extraction (tree-sitter or pragmatic fallback) ->
+    per-file signatures -> file-dependency rank -> token-budget map -> versioned nodes;
+    `GET /hermetis/repo_map`.
+  - **P3.4** plugin trigger: `file.edited` / `file.watcher.updated` -> re-store the file's
+    node (current git_rev) -> stale is a solved state.
+- **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure
+  window-size impact + prefill (prompt caching); tune repo-map budget; file-edit ->
+  supersede validation.
 - **P4 — DONE (2026-08-06)** — Copula Hermetis plugin (`plugins/copula.ts`, installed
   `~/.config/opencode/plugins/copula.ts`): event-hook ingest of user/assistant text
   (session transcript on idle) + `tool.execute.after` tool-result capture, deduped;
   `memory_search` custom tool -> Hermetis `/hermetis/search`. End-to-end verified:
   store user/assistant/tool -> semantic search ranks the relevant episode (0.892).
   Restart opencode to load the global plugin.
-- **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure
-  window-size impact + prefill (prompt caching); tune repo-map budget.
 
 ## 7. Risks / open flags
 

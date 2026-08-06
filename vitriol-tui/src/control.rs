@@ -1,0 +1,277 @@
+//! Control actions: start/stop/restart the stack, run doctor, load a profile.
+//!
+//! Each action expands into one or more sequential shell steps that run the
+//! existing tested scripts (`scripts/launch_vitriol_full.sh` for process
+//! control, `scripts/vitriol config load` for profile management). Steps run
+//! on a background thread, streaming output lines back to the UI through an
+//! mpsc channel. The UI can abort the current child via the shared abort flag.
+
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::thread;
+
+use crate::config::Config;
+use crate::profile::Profile;
+
+/// A user-visible control action in the CONTROLS tab.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Launch the full stack with the launch script's defaults.
+    Start,
+    /// Stop the full stack.
+    Stop,
+    /// Stop then start the full stack.
+    Restart,
+    /// Run the launch script's pre-flight checks.
+    Doctor,
+    /// Load a profile (bundled or installed) and relaunch with its knobs.
+    LoadProfile(String),
+}
+
+impl Action {
+    /// Short label for the action list.
+    pub fn label(&self) -> String {
+        match self {
+            Action::Start => "start stack".into(),
+            Action::Stop => "stop stack".into(),
+            Action::Restart => "restart stack".into(),
+            Action::Doctor => "run doctor".into(),
+            Action::LoadProfile(name) => format!("load profile: {name}"),
+        }
+    }
+
+    /// The action list: fixed actions first, then one entry per profile.
+    pub fn all(profiles: &[Profile]) -> Vec<Action> {
+        let mut actions = vec![Action::Start, Action::Stop, Action::Restart, Action::Doctor];
+        for p in profiles {
+            actions.push(Action::LoadProfile(p.name.clone()));
+        }
+        actions
+    }
+}
+
+/// One sequential shell step of an action.
+pub struct Step {
+    /// Label shown while the step runs.
+    pub label: String,
+    /// Program to execute.
+    pub program: String,
+    /// Arguments to the program.
+    pub args: Vec<String>,
+}
+
+/// Control-thread events, drained by the UI event loop.
+#[derive(Debug, Clone)]
+pub enum Event {
+    /// The whole action started.
+    Started(String),
+    /// A step began.
+    StepStarted(String),
+    /// One output line (stdout or stderr) from the current step.
+    Line(String),
+    /// The action finished; the bool is whether every step succeeded.
+    Done(bool),
+}
+
+/// Expand an action into its ordered steps.
+fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
+    let launch = cfg.launch_script().to_string_lossy().into_owned();
+    match action {
+        Action::Start => vec![Step {
+            label: "launch full stack".into(),
+            program: launch.clone(),
+            args: vec!["--no-setup".into()],
+        }],
+        Action::Stop => vec![Step {
+            label: "stop full stack".into(),
+            program: launch.clone(),
+            args: vec!["stop".into()],
+        }],
+        Action::Restart => vec![
+            Step {
+                label: "stop full stack".into(),
+                program: launch.clone(),
+                args: vec!["stop".into()],
+            },
+            Step {
+                label: "launch full stack".into(),
+                program: launch,
+                args: vec!["--no-setup".into()],
+            },
+        ],
+        Action::Doctor => vec![Step {
+            label: "pre-flight checks".into(),
+            program: launch,
+            args: vec!["doctor".into()],
+        }],
+        Action::LoadProfile(name) => {
+            let mut steps = Vec::new();
+            let cli = cfg.vitriol_cli().to_string_lossy().into_owned();
+            steps.push(Step {
+                label: format!("vitriol config load {name}"),
+                program: cli,
+                args: vec!["config".into(), "load".into(), name.clone()],
+            });
+            steps.push(Step {
+                label: "stop full stack".into(),
+                program: launch.clone(),
+                args: vec!["stop".into()],
+            });
+            let mut args = vec!["--no-setup".into()];
+            if let Some(p) = find_profile(cfg, name) {
+                args.extend(launch_flags(&p));
+            }
+            steps.push(Step {
+                label: format!("launch with {name} knobs"),
+                program: launch,
+                args,
+            });
+            steps
+        }
+    }
+}
+
+/// Find a profile by name (installed shadowing bundled).
+fn find_profile(cfg: &Config, name: &str) -> Option<Profile> {
+    crate::profile::discover(cfg)
+        .into_iter()
+        .find(|p| p.name == name)
+}
+
+/// The launch-flag set for a profile's knobs.
+fn launch_flags(p: &Profile) -> Vec<String> {
+    let mut flags = Vec::new();
+    if let Some(m) = &p.model {
+        flags.push(format!("--model={m}"));
+    }
+    if let Some(n) = p.ngl {
+        flags.push(format!("--ngl={n}"));
+    }
+    if let Some(c) = p.ctx {
+        flags.push(format!("--ctx={c}"));
+    }
+    if let Some(t) = p.threads {
+        flags.push(format!("--threads={t}"));
+    }
+    if let Some(k) = p.parallel {
+        flags.push(format!("--parallel={k}"));
+    }
+    flags
+}
+
+/// Spawn a control executor thread running `action`, streaming events on `tx`.
+/// The executor honours `abort`: while a child runs it is killed, and no
+/// further steps execute after an abort.
+pub fn spawn(action: Action, cfg: &Config, tx: Sender<Event>, abort: Arc<AtomicBool>) {
+    let cfg = cfg.clone();
+    thread::Builder::new()
+        .name("vitriol-tui-control".into())
+        .spawn(move || {
+            let _ = tx.send(Event::Started(action.label()));
+            let steps = steps_for(&action, &cfg);
+            let mut ok = true;
+            for step in steps {
+                if abort.swap(false, Ordering::Relaxed) {
+                    ok = false;
+                    break;
+                }
+                let _ = tx.send(Event::StepStarted(step.label));
+                let mut child = match Command::new(&step.program)
+                    .args(&step.args)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx.send(Event::Line(format!("spawn failed: {e}")));
+                        ok = false;
+                        break;
+                    }
+                };
+                if let Some(stdout) = child.stdout.take() {
+                    stream_lines(BufReader::new(stdout), &tx, &abort);
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    stream_lines(BufReader::new(stderr), &tx, &abort);
+                }
+                if abort.load(Ordering::Relaxed) {
+                    let _ = child.kill();
+                    ok = false;
+                    break;
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => {
+                        let _ = tx.send(Event::Line(format!("step failed: {status}")));
+                        ok = false;
+                        break;
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Event::Line(format!("wait failed: {e}")));
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(Event::Done(ok));
+        })
+        .expect("spawn vitriol-tui control thread");
+}
+
+/// Stream a pipe's lines to the UI, stopping early when abort is raised.
+fn stream_lines(mut reader: impl BufRead, tx: &Sender<Event>, abort: &AtomicBool) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let _ = tx.send(Event::Line(line.trim_end().to_string()));
+            }
+        }
+        if abort.load(Ordering::Relaxed) {
+            break;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::profile::ProfileSource;
+
+    #[test]
+    fn profile_load_expands_to_three_steps() {
+        let mut cfg = Config::from_env();
+        cfg.repo_root = std::env::temp_dir();
+        let steps = steps_for(&Action::LoadProfile("anything".into()), &cfg);
+        assert_eq!(steps.len(), 3);
+        let expected_cli = std::env::temp_dir().join("scripts/vitriol");
+        assert_eq!(steps[0].program, expected_cli.to_string_lossy());
+        assert_eq!(steps[0].args, vec!["config", "load", "anything"]);
+        assert_eq!(steps[1].args, vec!["stop"]);
+        assert!(steps[2].args.contains(&"--no-setup".to_string()));
+    }
+
+    #[test]
+    fn action_list_has_fixed_plus_profiles() {
+        let p = Profile {
+            name: "mellum2".into(),
+            description: String::new(),
+            source: ProfileSource::Bundled,
+            model: None,
+            ngl: None,
+            ctx: None,
+            threads: None,
+            parallel: None,
+        };
+        let actions = Action::all(&[p]);
+        assert_eq!(actions.len(), 5);
+        assert_eq!(actions[0], Action::Start);
+        assert_eq!(actions[4], Action::LoadProfile("mellum2".into()));
+    }
+}

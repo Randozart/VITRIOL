@@ -214,6 +214,18 @@ No performance baseline to preserve; the dashboard is additive.
   tmux: GPU gauges live (0.70/8.00 GiB 9%, 822 MHz, 35W/180W), LOGS shows the
   real gen log — live evidence of the current state (n_ctx=32768, flash-attn,
   then `cudaMalloc 448.00 MiB failed: out of memory` — avatar still holds the
-  GPU). Gates: 10 unit tests (env tests serialized via Mutex — they raced
+  GPU).   Gates: 10 unit tests (env tests serialized via Mutex — they raced
   otherwise), clippy clean, fmt clean, Praetor PASS.
-- V3: TBD
+- **V3 — DONE (2026-08-07)**: CONTROLS tab. Actions: start/stop/restart stack,
+  doctor, and one "load profile" entry per discovered profile. Process control
+  shells out to `scripts/launch_vitriol_full.sh` (`--no-setup`, `stop`,
+  `doctor`); profile load runs `vitriol config load <name>` (the config CLI —
+  syncs `~/.vitriol` + auto-installs bundled) then stops and relaunches with
+  the profile's parsed knobs (`--model/--ngl/--ctx/--threads/--parallel`).
+  Profiles discovered from repo `profiles/` (bundled) + `~/.vitriol/profiles`
+  (installed, shadowing), INI parsed section-aware. Executor: background
+  thread, sequential steps, streamed stdout+stderr lines, [x] abort kills the
+  child, nonzero exit marks the action failed. Verified live in tmux: doctor
+  streamed (PASS binary/model/ldd/RUNPATH/port/disk, FAIL cap_ipc_lock → exit
+  1 → "✗ failed: run doctor"). Gates: 14 tests, clippy clean, Praetor PASS.
+- V4: TBD

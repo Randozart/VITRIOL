@@ -6,9 +6,11 @@
 
 mod app;
 mod config;
+mod control;
 mod model;
 mod nvidia;
 mod poller;
+mod profile;
 mod theme;
 mod ui;
 
@@ -33,12 +35,14 @@ fn main() -> io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let refresh_flag = Arc::new(AtomicBool::new(false));
     poller::spawn(cfg.clone(), tx, Arc::clone(&refresh_flag));
+    let (ctrl_tx, ctrl_rx) = mpsc::channel();
 
     let mut terminal = init();
     let mut app = App::new(cfg, 120);
 
     loop {
         drain_snapshots(&rx, &mut app);
+        drain_control(&ctrl_rx, &mut app);
 
         terminal.draw(|frame| ui::draw(frame, &mut app))?;
 
@@ -57,6 +61,16 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('1') => app.log_source = app::LogSource::Gen,
                     KeyCode::Char('2') => app.log_source = app::LogSource::Hermetis,
                     KeyCode::Char('3') => app.log_source = app::LogSource::Embed,
+                    KeyCode::Char('x') if app.tab == app::Tab::Controls => app.abort_control(),
+                    KeyCode::Char('j') | KeyCode::Down if app.tab == app::Tab::Controls => {
+                        app.move_selection(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if app.tab == app::Tab::Controls => {
+                        app.move_selection(-1);
+                    }
+                    KeyCode::Enter if app.tab == app::Tab::Controls => {
+                        app.run_selected_action(&ctrl_tx);
+                    }
                     _ => {}
                 },
                 Event::Resize(_, _) => {}
@@ -78,5 +92,12 @@ fn main() -> io::Result<()> {
 fn drain_snapshots(rx: &mpsc::Receiver<model::Snapshot>, app: &mut App) {
     while let Ok(snap) = rx.try_recv() {
         app.apply_snapshot(snap);
+    }
+}
+
+/// Apply every control-thread event published since the last draw.
+fn drain_control(rx: &mpsc::Receiver<control::Event>, app: &mut App) {
+    while let Ok(event) = rx.try_recv() {
+        app.apply_control_event(event);
     }
 }

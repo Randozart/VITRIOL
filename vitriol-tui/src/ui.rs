@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline, 
 use ratatui::Frame;
 
 use crate::app::{App, LogSource, Tab};
+use crate::control::Action;
 use crate::model::Snapshot;
 use crate::theme;
 
@@ -30,6 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Dashboard => render_dashboard(frame, rows[1], app),
         Tab::Gpu => render_gpu_tab(frame, rows[1], app),
         Tab::Logs => render_logs_tab(frame, rows[1], app),
+        Tab::Controls => render_controls_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -61,6 +63,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     ];
     if app.tab == Tab::Logs {
         spans.push(Span::styled("  [1/2/3] log", theme::muted()));
+    }
+    if app.tab == Tab::Controls {
+        spans.push(Span::styled(
+            "  [↑/↓] move  [enter] run  [x] abort",
+            theme::muted(),
+        ));
     }
     spans.push(Span::styled("  ·  vitriol-tui v0.1.0", theme::muted()));
     if app.snapshot.is_empty() {
@@ -526,6 +534,108 @@ fn ratio(num: f64, den: f64) -> f64 {
     } else {
         num / den
     }
+}
+
+/// CONTROLS tab: action list on the left, streaming output on the right.
+fn render_controls_tab(frame: &mut Frame, area: Rect, app: &mut App) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(38), Constraint::Percentage(62)]).split(area);
+
+    render_action_list(frame, cols[0], app);
+    render_control_log(frame, cols[1], app);
+}
+
+/// Render the CONTROLS action list with the cursor and running state.
+fn render_action_list(frame: &mut Frame, area: Rect, app: &App) {
+    let list_panel = panel_neutral(" ACTIONS ");
+    let list_inner = list_panel.inner(area);
+    frame.render_widget(list_panel, area);
+
+    let actions = app.actions();
+    let mut lines: Vec<Line> = Vec::with_capacity(actions.len());
+    for (i, action) in actions.iter().enumerate() {
+        let running = app.control_running && app.control_action == action.label();
+        let glyph = action_glyph(running, i == app.selected_action);
+        lines.push(Line::from(Span::styled(
+            format!(" {glyph} {}", action_label(action, &app.profiles)),
+            action_style(running, i == app.selected_action),
+        )));
+    }
+    frame.render_widget(Paragraph::new(lines), list_inner);
+}
+
+/// Cursor glyph for an action-list row.
+fn action_glyph(running: bool, selected: bool) -> &'static str {
+    if running {
+        "◐"
+    } else if selected {
+        "▸"
+    } else {
+        " "
+    }
+}
+
+/// Style for an action-list row.
+fn action_style(running: bool, selected: bool) -> Style {
+    if running {
+        theme::live()
+    } else if selected {
+        theme::title()
+    } else {
+        theme::muted()
+    }
+}
+
+/// Render the streaming control-output log.
+fn render_control_log(frame: &mut Frame, area: Rect, app: &App) {
+    let log_panel = panel_neutral(" CONTROL LOG ");
+    let log_inner = log_panel.inner(area);
+    frame.render_widget(log_panel, area);
+
+    let mut log_lines: Vec<Line> = Vec::new();
+    if app.control_running {
+        log_lines.push(Line::from(vec![
+            Span::styled("◐ ", theme::live()),
+            Span::styled(
+                &app.control_action,
+                theme::live().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("  ▸ {}", app.control_step), theme::muted()),
+        ]));
+    }
+    let start = app
+        .control_log
+        .len()
+        .saturating_sub(log_inner.height as usize);
+    log_lines.extend(
+        app.control_log
+            .iter()
+            .skip(start)
+            .map(|l| Line::raw(strip_ansi(l))),
+    );
+    frame.render_widget(Paragraph::new(log_lines), log_inner);
+}
+
+/// CONTROLS action label, appending the profile description and source tag
+/// for profile-load entries.
+fn action_label(action: &Action, profiles: &[crate::profile::Profile]) -> String {
+    let Action::LoadProfile(name) = action else {
+        return action.label();
+    };
+    let Some(profile) = profiles.iter().find(|p| p.name == *name) else {
+        return action.label();
+    };
+    let mut label = action.label();
+    if !profile.description.is_empty() {
+        label.push_str("  — ");
+        label.push_str(&profile.description);
+    }
+    let src = match profile.source {
+        crate::profile::ProfileSource::Bundled => "bundled",
+        crate::profile::ProfileSource::Installed => "installed",
+    };
+    label.push_str(&format!("  [{src}]"));
+    label
 }
 
 /// A status line: colored dot + word + service description.

@@ -26,7 +26,9 @@ EMBED_LOG="$LOG_DIR/copula_embed.log"
 HERM_PORT=8090
 EMBED_PORT=8081
 
-# Defaults (Mellum2 — the recommended OpenCode model; values from profiles/mellum2)
+# Defaults (Mellum2 — GQA KV (31.5KB/token f16) so 32768 fits VRAM at full speed;
+# --reasoning off disables the template's auto-detected thinking, which interfered
+# with agentic tool-calling.)
 GEN_MODEL="${VITRIOL_GEN_MODEL:-/home/randozart/Desktop/Projects/Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf}"
 GEN_PORT="${VITRIOL_GEN_PORT:-8279}"
 NGL="${VITRIOL_NGL:-24}"
@@ -269,7 +271,7 @@ if [ "$DO_GEN" = "1" ]; then
         echo "[vitriol] gen server already on :$GEN_PORT — skipping"
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
-             --parallel "$PARALLEL" --port "$GEN_PORT")
+             --parallel "$PARALLEL" --reasoning off --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then
             echo "[vitriol]   cmd: ${CMD[*]}"

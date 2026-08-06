@@ -693,3 +693,24 @@ VITRIOL_MODE not set → native (mode 0, RAM Shot); models fit VRAM.
 Both gates passed — the prior "legible output" concern did NOT reproduce at temp 0.
 Matches/beats documented baselines (DeepSeek ~50, Mellum ~27-32). Next: Spagyr decode-knob
 sweep (ubatch/batch/parallel/threads) on these, then VITRIOL knobs.
+
+## 2026-08-06 — Spagyr S2 decode-knob sweep (both models) — parallel is the lever
+
+Harness: libvitriol/spagyr_sweep.py (mode A single-request decode t/s, mode B
+concurrent aggregate). Merge-sort prompt, 64 tok, temp 0, warmup + 3 rounds.
+All configs correctness PASS.
+
+DeepSeek IQ2_M (ngl=99 c=4096):
+  ubatch 64/128/256/512: 60.2/59.8/60.0/59.8 t/s (flat)
+  threads 2/4/8: 59.5/59.8/59.6 (flat, GPU-bound)
+  parallel 2/4/8 aggregate: 78.5 / 87.9 / 135.8 t/s  (2.3x at 8)
+
+Mellum Q4_K_M (ngl=24 c=32768):
+  ubatch 64/128/256/512: 29.8/28.3/28.8/31.1 (flat)
+  threads 2/8: 27.6 / 2.24 (t=8 catastrophic — HT contention)
+  parallel 2/4 aggregate: 37.2 / 41.8 t/s (1.4x at 4)
+
+Reading: ubatch and threads are not decode levers; --parallel is the decode
+throughput knob (amortized weight fetch in native llama.cpp). Spagyr autotune axis
+= --parallel; fix threads=4; ubatch default. Report:
+.opencode/plans/2026-08-06-spagyr-decode-knob-sweep.md

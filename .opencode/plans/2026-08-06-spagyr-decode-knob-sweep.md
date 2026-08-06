@@ -40,20 +40,64 @@ mode A (3 rounds) or mode B (N concurrent via threads), writes CSV
 (`/tmp/opencode/spagyr_sweep_<model>.csv`). Reuses the sweep_controller methodology
 (health poll, warmup, t/s from timings).
 
-## 5. Results table (fill on execution)
+## 5. Results (measured 2026-08-06)
 
-| model | knob | value | decode t/s | eval t/s | concurrent t/s (wall) | correct |
-| --- | --- | --- | --- | --- | --- | --- |
-| DeepSeek | ubatch | 512 (stock) | 58.1-58.3 | 56.7-58.4 | — | PASS |
-| DeepSeek | ubatch | 64 | TBD | TBD | — | TBD |
-| DeepSeek | ubatch | 128 | TBD | TBD | — | TBD |
-| DeepSeek | ubatch | 256 | TBD | TBD | — | TBD |
-| DeepSeek | threads | 2/8 | TBD | TBD | — | TBD |
-| DeepSeek | parallel | 2/4/8 | — | — | TBD | TBD |
-| Mellum | ubatch | 512 (stock) | 30.9-34.3 | ~49 | — | PASS |
-| Mellum | ubatch | 64/128/256 | TBD | TBD | — | TBD |
-| Mellum | threads | 2/8 | TBD | TBD | — | TBD |
-| Mellum | parallel | 2/4 | — | — | TBD | TBD |
+**DeepSeek-Coder-V2-Lite IQ2_M** (ngl=99, c=4096), all correctness PASS:
+
+| knob | value | decode t/s | eval t/s | concurrent t/s (aggregate) |
+| --- | --- | --- | --- | --- |
+| ubatch | 64 | 60.19 | 60.01 | — |
+| ubatch | 128 | 59.76 | 59.46 | — |
+| ubatch | 256 | 59.95 | 59.10 | — |
+| ubatch | 512 | 59.83 | 59.38 | — |
+| threads | 2 | 59.49 | 59.26 | — |
+| threads | 8 | 59.61 | 59.12 | — |
+| **parallel** | **2** | — | — | **78.50** |
+| **parallel** | **4** | — | — | **87.86** |
+| **parallel** | **8** | — | — | **135.83** |
+
+**Mellum2-12B Q4_K_M** (ngl=24, c=32768), all correctness PASS:
+
+| knob | value | decode t/s | eval t/s | concurrent t/s (aggregate) |
+| --- | --- | --- | --- | --- |
+| ubatch | 64 | 29.84 | 44.72 | — |
+| ubatch | 128 | 28.31 | 39.03 | — |
+| ubatch | 256 | 28.81 | 43.83 | — |
+| ubatch | 512 | 31.05 | 43.91 | — |
+| threads | 2 | 27.64 | 32.36 | — |
+| threads | 8 | **2.24** | 8.78 | — |
+| **parallel** | **2** | — | — | **37.17** |
+| **parallel** | **4** | — | — | **41.84** |
+
+## 5b. Reading (DeepSeek)
+
+- **ubatch: NOT a decode lever** (flat 59.8–60.2). Decode is memory-bound; ubatch chunks
+  the batched forward but at single-request it changes nothing.
+- **threads: NOT a decode lever** (flat 59.5–59.8) on this GPU-bound decode.
+- **parallel slots: THE lever.** Aggregate throughput 78.5 → 87.9 → 135.8 t/s for
+  p=2/4/8. The slot-shared amortization is real in native llama.cpp: one forward pass
+  serves all slots, weight fetch amortized. 8 slots ≈ 2.3× single-slot (~60 t/s).
+
+So `--spagyr-tune`'s decode autotune axis is **`--parallel`**, not ubatch/threads.
+Finer parallel sweep (p=6/12/16) + the real VITRIOL stream knobs (LRU/prefetch/pin)
+are the next S4 candidates.
+
+## 5c. Reading (both models, cross-check)
+
+- **ubatch: not a decode lever on either model** (DeepSeek 59.8–60.2 flat; Mellum
+  28.3–31.1 flat). Confirms decode is memory/bandwidth-bound, not ubatch-chunk-bound.
+- **threads: t=4 is the floor-best on this 4C/8T box.** DeepSeek flat across 2/4/8
+  (59.5–59.8, GPU-bound). Mellum: t=2 slightly worse (27.6), **t=8 catastrophic
+  (2.24 t/s, ~13× slower)** — hyperthread contention on the shared MoE/CPU-side work.
+  t=4 is the safe universal choice.
+- **parallel slots: the only decode throughput lever.** DeepSeek (bandwidth-bound,
+  IQ2_M): 78.5 → 87.9 → **135.8 t/s** at p=2/4/8 = **2.3× single-slot**. Mellum
+  (compute-bound, Q4_K_M): 37.2 → 41.8 at p=2/4 = **1.4×**. The amortization is real
+  in native llama.cpp; the win scales with how bandwidth-bound the model is.
+
+Implication for `--spagyr-tune`: autotune `--parallel` (fine-grained: 1/2/4/6/8/12/16)
+as the primary decode knob; fix threads=4; leave ubatch at default. Mellum-scale models
+gain ~1.4×, bandwidth-bound models up to 2.3×+.
 
 ## 6. Expected
 

@@ -36,6 +36,7 @@ class SweepSpec:
     ubatch: object  # int or None (None = server default)
     parallel: object  # int or None (None = server default)
     extra: tuple = ()  # extra server CLI args (e.g. --no-kv-offload --cache-type-k q4_0)
+    env: dict = None  # extra env vars for the server process (e.g. VITRIOL_KV_MODE=offload)
 
 
 # Intent: print a timestamped progress line, flushed so nohup log tails stream.
@@ -57,8 +58,11 @@ def start_server(spec):
         cmd += list(spec.extra)
     devnull = open(os.devnull, "w")
     errlog = open("/tmp/opencode/server_stderr.log", "w")
+    env = os.environ.copy()
+    if spec.env:
+        env.update(spec.env)
     return subprocess.Popen(cmd, stdout=devnull, stderr=errlog,
-                            stdin=devnull, start_new_session=True), devnull, errlog
+                            stdin=devnull, start_new_session=True, env=env), devnull, errlog
 
 
 # Intent: kill every llama-server instance so the next config launches clean.
@@ -141,6 +145,23 @@ def measure_b(n):
     return tps, wall, mean_dec, legible
 
 
+# Intent: yield (tag, value, spec, mode) configs for the sweep grid.
+# ctx-list means ctx-only single-request sweeps; otherwise the default grid.
+def build_grid(args, extra, env):
+    """Yield (tag, value, spec, mode) tuples for the configured grid."""
+    if args.ctx_list:
+        for c in args.ctx_list:
+            yield ("ctx", c, SweepSpec(args.model, args.ngl, c, 4, None, 1, extra, env), "A")
+        return
+    for ub in args.ubatch_list:
+        yield ("ubatch", ub, SweepSpec(args.model, args.ngl, args.ctx, 4, ub, 1, extra, env), "A")
+    for t in args.threads_list:
+        yield ("threads", t, SweepSpec(args.model, args.ngl, args.ctx, t,
+                                       args.ubatch_threads, 1, extra, env), "A")
+    for p in args.parallel_list:
+        yield ("parallel", p, SweepSpec(args.model, args.ngl, args.ctx, 4, None, p, extra, env), "B")
+
+
 # Intent: parse args, run the config grid, write the CSV.
 def main():
     """Parse args, run the config grid, write the CSV."""
@@ -156,8 +177,13 @@ def main():
                     help="ubatch value at which threads are swept")
     ap.add_argument("--extra", default="",
                     help="extra llama-server args for every config (e.g. '--no-kv-offload --cache-type-k q4_0')")
+    ap.add_argument("--env", default="",
+                    help="extra env vars for every config (e.g. 'VITRIOL_KV_MODE=offload')")
+    ap.add_argument("--ctx-list", type=int, nargs="+", default=None,
+                    help="if set, sweep only context sizes (mode A, t=4, p=1) and exit")
     args = ap.parse_args()
     extra = tuple(args.extra.split())
+    env = dict(kv.split("=", 1) for kv in args.env.split() if "=" in kv)
     ctxs = [args.ctx]  # default: single ctx; override via --ctx-list below
 
     fields = ["model", "knob", "value", "decode_tps", "eval_tps",
@@ -192,13 +218,8 @@ def main():
             errlog.close()
             stop_server()
 
-    for ub in args.ubatch_list:
-        run_cfg("ubatch", ub, SweepSpec(args.model, args.ngl, args.ctx, 4, ub, 1, extra), "A")
-    for t in args.threads_list:
-        run_cfg("threads", t, SweepSpec(args.model, args.ngl, args.ctx, t,
-                                        args.ubatch_threads, 1, extra), "A")
-    for p in args.parallel_list:
-        run_cfg("parallel", p, SweepSpec(args.model, args.ngl, args.ctx, 4, None, p, extra), "B")
+    for tag, value, spec, mode in build_grid(args, extra, env):
+        run_cfg(tag, value, spec, mode)
 
     with open(args.output, "w", newline="") as f:
         w = csv.writer(f)

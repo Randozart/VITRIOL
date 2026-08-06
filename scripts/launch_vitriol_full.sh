@@ -109,14 +109,35 @@ status() {
 }
 
 logs() {
-    local comp="${1:-all}"
-    local n="${2:-20}"
+    local comp="all" n="20" follow=0
+    for a in "$@"; do
+        case "$a" in
+            --follow|-f) follow=1 ;;
+            all|gen|hermetis|embed) comp="$a" ;;
+            *[0-9]*) n="$a" ;;
+            *) echo "usage: $0 logs [gen|hermetis|embed|all] [N] [--follow|-f]" >&2; exit 1 ;;
+        esac
+    done
+    tailit() {
+        if [ -f "$1" ]; then
+            if [ "$3" = "1" ]; then tail -n "$2" -f "$1"; else tail -n "$2" "$1"; fi
+        else
+            echo "  (no log at $1)"
+        fi
+    }
     case "$comp" in
-        gen) log_tail "$GEN_LOG" "$n" ;;
-        hermetis) log_tail "$HERM_LOG" "$n" ;;
-        embed) log_tail "$EMBED_LOG" "$n" ;;
-        all) echo "== gen =="; log_tail "$GEN_LOG" "$n"; echo "== hermetis =="; log_tail "$HERM_LOG" "$n"; echo "== embed =="; log_tail "$EMBED_LOG" "$n" ;;
-        *) echo "usage: $0 logs [gen|hermetis|embed|all] [N]" >&2; exit 1 ;;
+        gen) tailit "$GEN_LOG" "$n" "$follow" ;;
+        hermetis) tailit "$HERM_LOG" "$n" "$follow" ;;
+        embed) tailit "$EMBED_LOG" "$n" "$follow" ;;
+        all)
+            if [ "$follow" = "1" ]; then
+                tail -n "$n" -f "$GEN_LOG" "$HERM_LOG" "$EMBED_LOG" 2>/dev/null
+            else
+                echo "== gen =="; tailit "$GEN_LOG" "$n" 0
+                echo "== hermetis =="; tailit "$HERM_LOG" "$n" 0
+                echo "== embed =="; tailit "$EMBED_LOG" "$n" 0
+            fi
+            ;;
     esac
     exit 0
 }

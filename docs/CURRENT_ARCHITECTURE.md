@@ -13,7 +13,7 @@
 │ OpenCode — Copula Hermetis plugin (global)                        │
 │   ingest: chat.message / message.part.updated / tool.execute.after│
 │   retrieve: memory_search tool + per-turn auto-injection          │
-│   provider: gen llama-server :8080/v1                             │
+│   provider: gen llama-server :8279/v1                             │
 ├───────────────────────────────────────────────────────────────────┤
 │ Copula (the bond)                                                 │
 │   Hermetis server :8090  (/hermetis/store|search|context|repo_map…)│
@@ -33,7 +33,7 @@
 
 | server | port | model | role |
 |---|---|---|---|
-| gen | 8080 | Mellum2-12B Q4_K_M (or DeepSeek-Coder-V2-Lite) | generation backend for OpenCode |
+| gen | 8279 | Mellum2-12B Q4_K_M (or DeepSeek-Coder-V2-Lite) | generation backend for OpenCode |
 | embed | 8081 | bge-small-en-v1.5 Q8_0 | semantic embeddings for Hermetis |
 
 Both are `llama-server` from the VITRIOL fork. Verified coexisting at **36–38 t/s gen
@@ -147,12 +147,12 @@ compaction is lossless, and each turn the window is reassembled from what matter
 ## 9. How to run
 
 ```fish
-# full stack: setup(caps) + gen :8080 + Hermetis :8090 + embed :8081
+# full stack: setup(caps) + gen :8279 + Hermetis :8090 + embed :8081
 sudo /home/randozart/Desktop/Projects/VITRIOL/scripts/launch_vitriol_full.sh
 # or memory-only:
 ./scripts/launch_copula.sh
 # restart opencode (loads the global Copula Hermetis plugin); point its provider at
-# http://127.0.0.1:8080/v1
+# http://127.0.0.1:8279/v1
 ```
 
 ## 10. Key measured facts (design constraints)

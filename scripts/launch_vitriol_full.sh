@@ -21,7 +21,7 @@ LOG_DIR="${COPULA_LOG_DIR:-/tmp/opencode}"
 
 # Defaults (Mellum2 — the recommended OpenCode model; values from profiles/mellum2)
 GEN_MODEL="${VITRIOL_GEN_MODEL:-/home/randozart/Desktop/Projects/Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf}"
-GEN_PORT="${VITRIOL_GEN_PORT:-8080}"
+GEN_PORT="${VITRIOL_GEN_PORT:-8279}"
 NGL="${VITRIOL_NGL:-24}"
 CTX="${VITRIOL_CTX:-32768}"
 THREADS="${VITRIOL_THREADS:-4}"

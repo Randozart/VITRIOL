@@ -1,0 +1,53 @@
+# VITRIOL Configuration — DeepSeek-Coder-V2-Lite-Instruct IQ2_M
+# Generated 2026-08-06 by Spagyric tuning (decode-knob sweep + Phase 0 baseline).
+# Hardware: GTX 1070 Ti (8 GB) + 15 GB RAM, i7-3770 4C/8T.
+# Measured: 58 t/s single-slot; 134 t/s at parallel=8 (2.3x amortized).
+# Correctness: PASS (merge-sort gen, temp 0).
+
+[gpu]
+device = 0
+exclude_secondary = true
+
+[model]
+path = /home/randozart/Desktop/Projects/DeepSeek-Coder-V2-Lite-Instruct-IQ2_M.gguf
+context = 4096
+threads = 4
+ngl = 99
+expert_count = 0
+
+[vitriol]
+mode = native
+verbose = true
+output_cache = off
+reasoning = off
+
+[server]
+host = 0.0.0.0
+port = 8080
+parallel = 8
+
+[engine]
+mode = vitriol-dma
+ubatch_size = 512
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+quant_mode = f16
+
+[spagyric]
+schema = 1
+fingerprint = "gtx1070ti_15gb_i7-3770"
+knee_ubatch = 512
+knee_parallel = 8
+knee_threads = 4
+ngl = 99
+context = 4096
+parallel_ceiling = 8
+parallel_ceiling_reason = "VRAM: c=4096 x 8 slots fills 8 GB; p=12/16 OOM"
+high_tput_variant = "c=2048 p=16 -> 168 t/s (still no compute knee)"
+tuned_at = "2026-08-06T12:00:00Z"
+refuted_transforms = ["r2_fold", "iq_lut_pascal", "activation_delta_e1", "input_prefold"]

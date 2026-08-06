@@ -53,3 +53,21 @@ draft_n_max = 0
 
 [chimera]
 mode = auto
+
+# Spagyric (2026-08-06): measured NATIVE on this box (GTX 1070 Ti + 15 GB RAM).
+# The header above (64 GB DDR4, stream mode) is from the original tuning box.
+# On this box Mellum fits VRAM -> native mode was measured; c=32768 p=4 -> 41.8 t/s,
+# c=8192 p=8 -> 53.9 t/s. p>4 at c=32768 OOMs KV.
+[spagyric]
+schema = 1
+fingerprint = "gtx1070ti_15gb_i7-3770"
+knee_ubatch = 512
+knee_parallel = 4
+knee_threads = 4
+ngl = 24
+context = 32768
+parallel_ceiling = 4
+parallel_ceiling_reason = "VRAM: c=32768 x >4 slots exceeds KV budget"
+high_tput_variant = "c=8192 p=8 -> 53.9 t/s"
+tuned_at = "2026-08-06T12:00:00Z"
+refuted_transforms = ["r2_fold", "iq_lut_pascal", "activation_delta_e1", "input_prefold"]

@@ -22,6 +22,11 @@ function hashString(s: string): string {
 }
 
 export const CopulaHermetis: Plugin = async ({ project, client, directory, worktree }) => {
+  // Master toggle: COPULA_ENABLED=0 disables the plugin entirely (no-op hooks,
+  // zero network calls, zero injection) — for when VITRIOL/Hermetis isn't running.
+  if (process.env.COPULA_ENABLED === "0") {
+    return {}
+  }
   const projectRoot = worktree ?? directory
   const projectId = projectRoot ?? project?.id ?? "default"
 

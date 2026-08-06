@@ -25,6 +25,15 @@ the statistical coupling function — two systems, one joint distribution.
 | Embedding provider | VITRIOL (sentence-transformers CPU; GGUF-GPU path wired but gated on a fork bug) | all-MiniLM-L6-v2 semantic scoring; GGUF-GPU fallback ready once the fork's BERT bug is fixed. |
 | Repo map builder | VITRIOL (P3) | Aider-style: tree-sitter symbols + file-graph rank + token budget. |
 
+## Disabling Copula (when not using VITRIOL)
+
+- **`COPULA_ENABLED=0`** — the plugin becomes a no-op (zero network calls, zero
+  injection). The plugin is otherwise non-blocking anyway (all requests fail silently
+  when Hermetis is down).
+- **Remove the file** — delete `~/.config/opencode/plugins/copula.ts` to stop opencode
+  loading it entirely; re-enable by copying from `VITRIOL/plugins/copula.ts`.
+- Injection-only off: `COPULA_AUTO_CONTEXT=0` (keeps ingest, disables auto-injection).
+
 ## Running the stack
 
 ```fish

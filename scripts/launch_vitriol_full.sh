@@ -172,6 +172,46 @@ doctor() {
     exit $fail
 }
 
+help() {
+    cat <<EOF
+vitriol — full VITRIOL stack: setup (caps) + gen server + Copula memory.
+
+USAGE
+  vitriol [COMMAND] [FLAGS]
+
+COMMANDS
+  (none)            launch the full stack (self-heals RUNPATH, then gen + Copula)
+  stop              stop gen server + Copula (Hermetis + embed)
+  status            live diagnostics: per-component health, pid, log, GPU, fatal errors
+  logs [c] [N] [--follow|-f]   tail logs; c = gen|hermetis|embed|all (default all),
+                     N = last N lines (default 20), --follow/-f = live tail
+  doctor            pre-flight checks: binary, model, ldd, caps, RUNPATH, ports, disk
+  help | -h | --help  this message
+
+FLAGS (launch)
+  --model=PATH      gen model (default: Mellum2-12B-A2.5B-Instruct-Q4_K_M.gguf)
+  --ngl=N           gpu layers (default 24)
+  --ctx=N           context (default 32768)
+  --threads=N       threads (default 4)
+  --parallel=N      parallel slots (default 2)
+  --gen-port=P      gen port (default 8279)
+  --no-copula       gen server only
+  --no-setup        skip the sudo caps step
+  --copula-only     memory stack only
+  --verbose         print the exact launch command
+  --dry-run         print what would launch, run nothing
+
+EXAMPLES
+  vitriol                       full launch
+  vitriol status                what is running + logs + gpu
+  vitriol logs gen --follow     watch the gen server live
+  vitriol doctor                pre-flight checks
+  vitriol stop                  tear everything down
+EOF
+    exit 0
+}
+
+[ "${1:-}" = "help" ] || [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && help
 [ "${1:-}" = "stop" ] && stop
 [ "${1:-}" = "status" ] && status
 [ "${1:-}" = "logs" ] && { shift; logs "$@"; }

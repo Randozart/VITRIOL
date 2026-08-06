@@ -160,6 +160,12 @@ OpenCode — Copula Hermetis plugin (global ~/.config/opencode/plugins/copula.ts
     `GET /hermetis/repo_map`.
   - **P3.4** plugin trigger: `file.edited` / `file.watcher.updated` -> re-store the file's
     node (current git_rev) -> stale is a solved state.
+  - **P3 DONE (2026-08-06, VITRIOL a2b178c)**. P3.1 schema+store_node supersede;
+    P3.2 current-only retrieval (`include_history` opt-in) + node bonus; P3.3
+    `repomap.py` (Aider-style, regex symbols + import in-degree rank + token budget) +
+    `/hermetis/repo_map` endpoint (full/single-file); P3.4 plugin debounced
+    file-change refresh. P5 validated: edit -> old node superseded, retrieval returns
+    current, history opt-in returns both.
 - **P5** — End-to-end validation: session -> RAG -> retrieval -> context loop; measure
   window-size impact + prefill (prompt caching); tune repo-map budget; file-edit ->
   supersede validation.

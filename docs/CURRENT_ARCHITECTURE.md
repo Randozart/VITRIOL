@@ -173,9 +173,31 @@ sudo /home/randozart/Desktop/Projects/VITRIOL/scripts/launch_vitriol_full.sh
 ./scripts/launch_copula.sh
 # restart opencode (loads the global Copula Hermetis plugin); point its provider at
 # http://127.0.0.1:8279/v1
+# ops dashboard (Ratatui, builds on first use):
+vitriol tui
 ```
 
-## 10. Key measured facts (design constraints)
+## 10. vitriol-tui — the Ratatui ops dashboard
+
+`vitriol-tui/` is a standalone Rust TUI (ratatui + crossterm + ureq) launched
+by `vitriol tui`. Five tabs, themed "Vitriolum" (dark alchemical green + gold,
+Alka Officina–derived, plan `2026-08-07-vitriol-tui.md`):
+
+| tab | content |
+|---|---|
+| DASHBOARD | gen/hermetis/embed health, GPU gauges, decode-t/s sparkline |
+| GPU | btop-style gauges (VRAM/util/temp/clocks/power) + process table |
+| LOGS | live tails of gen/hermetis/embed logs, `[1/2/3]` source switch |
+| CONTROLS | start/stop/restart, doctor, `vitriol config load` + relaunch, Spagyric sweep |
+| HERMETIS | stats, recent stores (`GET /hermetis/recent`), search |
+
+Data comes from the HTTP endpoints + `nvidia-smi` + log tails; control shells
+out to `scripts/launch_vitriol_full.sh` and `scripts/vitriol` (reuse, don't
+reimplement). Decode t/s is parsed from the gen log's `eval time` lines (the
+server `/health` only returns `{"status":"ok"}`). The default Hermetis project
+id is the sanitized full cwd path, matching hermetis `_project_id`.
+
+## 11. Key measured facts (design constraints)
 
 | fact | value |
 |---|---|
@@ -188,12 +210,13 @@ sudo /home/randozart/Desktop/Projects/VITRIOL/scripts/launch_vitriol_full.sh
 | dense batch amortization | 3.6× at R=16 |
 | embedding model | bge-small-en-v1.5 Q8_0, 384-dim, CPU (native 512-token window; inputs truncated) |
 
-## 11. Repository map (this session's files)
+## 12. Repository map (this session's files)
 
 - `libvitriol/hermetis/` — memory engine (db, retrieval, scorer, compact, consolidate,
   hebbian, repomap, embed).
-- `libvitriol/hermetis_server.py` — Hermetis HTTP facade.
+- `libvitriol/hermetis_server.py` — Hermetis HTTP facade (`/hermetis/recent` added for the TUI).
 - `libvitriol/spagyric_sweep.py` — Spagyr sweep harness.
+- `vitriol-tui/` — standalone Ratatui ops dashboard (see §10).
 - `plugins/copula.ts` — Copula Hermetis plugin (versioned; installed to opencode global).
 - `profiles/{deepseek,mellum2}/config` — frozen `[spagyric]` profiles.
 - `scripts/launch_copula.sh`, `scripts/launch_vitriol_full.sh`, `scripts/praetor_diff.py`,
@@ -202,7 +225,7 @@ sudo /home/randozart/Desktop/Projects/VITRIOL/scripts/launch_vitriol_full.sh
 - Docs: `copula.md`, `hermetis.md`, `spagyric-autotuner.md`, `spagyric-profile-schema.md`,
   this file, `CHANGELOG_2026-08-06.md`, `BUGS.md`.
 
-## 12. Provenance
+## 13. Provenance
 
 VITRIOL and its forks are the user's own repos (AGENTS.md §2.2: freely borrowable).
 Everything is original re-derivation or the user's own work. Aider's repo-map *idea*

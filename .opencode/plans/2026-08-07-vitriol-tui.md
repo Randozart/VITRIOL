@@ -244,4 +244,11 @@ No performance baseline to preserve; the dashboard is additive.
   hop1_direct` with real snippets. NOTE: `/hermetis/recent` activates on the
   next hermetis restart (running server predates the endpoint; panel degrades
   to "no episodes yet" meanwhile). Gates: 16 tests, clippy clean, Praetor PASS.
-- V5: TBD
+- **V5 — DONE (2026-08-07)**: `vitriol tui` subcommand wired into
+  `scripts/vitriol` (replaced the old Textual handler; builds the Ratatui TUI
+  on first use, `exec`s it with `VITRIOL_REPO` exported so repo detection
+  works from any cwd). Old dead `libvitriol/vitriol-tui.py` removed.
+  `docs/CURRENT_ARCHITECTURE.md` gains §10 (dashboard spec + tab table) and
+  repo-map entries; headings renumbered. Verified: `./scripts/vitriol tui`
+  launches the dashboard in tmux with the correct project id.
+  **All phases V1–V5 complete.**

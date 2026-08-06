@@ -1274,6 +1274,7 @@ usage() {
   vitriol config set <key> <val>  set a config value
   vitriol calibrate [--quick] [--model <path>]  auto-tune config for this hardware+model
   vitriol setup              set CAP_IPC_LOCK capability
+  vitriol tui                terminal ops dashboard (Ratatui, auto-builds first run)
   vitriol help               this message
 
 Run options:
@@ -2359,21 +2360,15 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         ;;
 
     tui)
-        TUI_SCRIPT="${LLAMA_DIR}/../libvitriol/vitriol-tui.py"
-        if [[ ! -f "$TUI_SCRIPT" ]]; then
-            echo "ERROR: TUI script not found at $TUI_SCRIPT"
-            exit 1
+        # Terminal ops dashboard (Ratatui). Replaces the old Textual TUI
+        # (libvitriol/vitriol-tui.py, never built out). Builds on first use;
+        # VITRIOL_REPO is exported so repo detection works from any cwd.
+        TUI_BIN="${PROJECT_DIR}/vitriol-tui/target/release/vitriol-tui"
+        if [[ ! -x "$TUI_BIN" ]]; then
+            echo "[vitriol] building vitriol-tui (first run)…"
+            (cd "${PROJECT_DIR}/vitriol-tui" && cargo build --release) || exit 1
         fi
-        # Check if textual is installed
-        python3 -c "import textual" 2>/dev/null || {
-            echo "ERROR: Textual Python library not installed"
-            echo "  Install with: pip install --user textual"
-            exit 1
-        }
-        echo "Starting VITRIOL TUI Dashboard..."
-        echo "  (Run 'vitriol serve --detach' first to have stats)"
-        echo ""
-        python3 "$TUI_SCRIPT" "${@}"
+        exec env VITRIOL_REPO="$PROJECT_DIR" "$TUI_BIN"
         ;;
 
     config)
@@ -2420,7 +2415,6 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
 
     setup)
         BUILD_DIR="${LLAMA_DIR}/build/bin"
-
         # 2026-08-06: fix RUNPATH FIRST. patchelf rewrites the ELF and clears file
         # capabilities, so setcap-after-patchelf would be wiped. Order: rpath, then caps.
         fix_rpath "$BUILD_DIR"

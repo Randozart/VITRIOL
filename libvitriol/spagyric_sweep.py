@@ -162,6 +162,69 @@ def build_grid(args, extra, env):
         yield ("parallel", p, SweepSpec(args.model, args.ngl, args.ctx, 4, None, p, extra, env), "B")
 
 
+# Intent: pick the PASSing row with the best metric for one knob, or None.
+def best_row(rows, knob, metric_idx):
+    """Pick the PASSing row with the best float metric for a knob, or None."""
+    cands = [r for r in rows if r[1] == knob and r[7] == "PASS" and r[metric_idx]]
+    if not cands:
+        return None
+    return max(cands, key=lambda r: float(r[metric_idx]))
+
+
+# Intent: write the sweep winner as an installable profile under profiles-dir.
+# Never clobbers: the target is <name>-swept, and a timestamp suffix is added
+# if that already exists.
+def build_profile(args, rows):
+    """Write the per-knob winners as <name>-swept/config + meta, return path."""
+    name = args.build_profile
+    profiles_dir = os.path.expanduser(args.profiles_dir)
+    os.makedirs(profiles_dir, exist_ok=True)
+    base = os.path.join(profiles_dir, "%s-swept" % name)
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    target = base
+    if os.path.exists(target):
+        target = "%s-%s" % (base, stamp)
+    os.makedirs(target)
+
+    ub = best_row(rows, "ubatch", 3)      # decode_tps (mode A)
+    th = best_row(rows, "threads", 3)     # decode_tps (mode A)
+    pa = best_row(rows, "parallel", 5)    # concurrent_tps (mode B)
+
+    lines = ["# VITRIOL Configuration — Spagyric sweep winner",
+             "# Generated %s for %s" % (stamp, args.build_profile)]
+    if ub:
+        lines.append("#  ubatch=%s decode=%.2f t/s (PASS)" % (ub[2], float(ub[3])))
+    if th:
+        lines.append("#  threads=%s decode=%.2f t/s (PASS)" % (th[2], float(th[3])))
+    if pa:
+        lines.append("#  parallel=%s concurrent=%.2f t/s (PASS)" % (pa[2], float(pa[5])))
+    lines.append("")
+    lines.append("[model]")
+    lines.append("path = %s" % args.model)
+    lines.append("ngl = %d" % args.ngl)
+    lines.append("context = %d" % args.ctx)
+    if th:
+        lines.append("threads = %s" % th[2])
+    lines.append("")
+    lines.append("[engine]")
+    if ub:
+        lines.append("ubatch_size = %s" % ub[2])
+    lines.append("")
+    lines.append("[server]")
+    if pa:
+        lines.append("parallel = %s" % pa[2])
+    lines.append("")
+
+    with open(os.path.join(target, "config"), "w") as f:
+        f.write("\n".join(lines))
+    with open(os.path.join(target, "meta"), "w") as f:
+        f.write("name=%s\n" % os.path.basename(target))
+        f.write("description=Spagyric sweep winner (%s)\n" % stamp)
+        f.write("created=%d\n" % int(time.time()))
+    log("profile -> %s" % os.path.join(target, "config"))
+    return target
+
+
 # Intent: parse args, run the config grid, write the CSV.
 def main():
     """Parse args, run the config grid, write the CSV."""
@@ -181,6 +244,10 @@ def main():
                     help="extra env vars for every config (e.g. 'VITRIOL_KV_MODE=offload')")
     ap.add_argument("--ctx-list", type=int, nargs="+", default=None,
                     help="if set, sweep only context sizes (mode A, t=4, p=1) and exit")
+    ap.add_argument("--build-profile", default="",
+                    help="write the per-knob winner as <profiles-dir>/<name>-swept after the grid")
+    ap.add_argument("--profiles-dir", default="~/.vitriol/profiles",
+                    help="profiles directory for --build-profile (default ~/.vitriol/profiles)")
     args = ap.parse_args()
     extra = tuple(args.extra.split())
     env = dict(kv.split("=", 1) for kv in args.env.split() if "=" in kv)
@@ -226,6 +293,8 @@ def main():
         w.writerow(fields)
         w.writerows(rows)
     log("done -> %s" % args.output)
+    if args.build_profile:
+        build_profile(args, rows)
 
 
 if __name__ == "__main__":

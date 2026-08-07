@@ -808,7 +808,7 @@ impl Officina {
                 target = cmd.target
             )];
             out.push(format!(
-                "  ├── tensors: {} ({} maskable, {skipped} quantized byte-copied)",
+                "  ├── tensors: {} ({} maskable, {skipped} unsupported)",
                 matches.len(),
                 maskable.len()
             ));
@@ -841,7 +841,15 @@ impl Officina {
             let masked = match t.ggml_type {
                 0 => vitriol_calibrate::rewrite::mask_f32(&payload, ratio, seed),
                 1 => vitriol_calibrate::rewrite::mask_f16(&payload, ratio, seed),
-                _ => payload,
+                _ => {
+                    let bs = vitriol_calibrate::rewrite::block_size(t.ggml_type);
+                    match bs {
+                        Some(bs) => {
+                            vitriol_calibrate::rewrite::mask_quantized(&payload, ratio, bs, seed)
+                        }
+                        None => payload,
+                    }
+                }
             };
             changed += t.size as u64;
             edits.push(vitriol_calibrate::rewrite::Edit {
@@ -855,7 +863,7 @@ impl Officina {
         }
         self.record_op(
             &format!(
-                "dissolved {}: {} tensors, {skipped} quantized skipped",
+                "dissolved {}: {} tensors, {skipped} unsupported",
                 cmd.target,
                 maskable.len()
             ),
@@ -865,12 +873,12 @@ impl Officina {
         vec![
             format!("[COMMITTED] wrote {}", dst.display()),
             format!(
-                "  ├── {} tensors masked ({:.0}% of {} elements)",
+                "  ├── {} tensors masked ({:.0}% of {} bytes)",
                 maskable.len(),
                 ratio * 100.0,
                 changed
             ),
-            format!("  └── {skipped} quantized tensors byte-copied (iq2_s/iq4_nl masking pending)"),
+            format!("  └── {skipped} tensors unsupported (byte-copied)"),
         ]
     }
 

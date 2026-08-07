@@ -14,7 +14,21 @@ use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-use crate::gguf::tensor_size_bytes;
+use crate::gguf::{tensor_size_bytes, GGML_TYPE_TABLE};
+
+/// The block size (bytes) of a super-block quant whose f16 scale `d` sits at
+/// block offset 0 (so a zero scale zeroes every value — dequant = scale × code),
+/// or None for unsupported types. Block byte-size equals the GGUF type size for
+/// block formats.
+pub fn block_size(ggml_type: i32) -> Option<usize> {
+    match ggml_type {
+        16..=23 => GGML_TYPE_TABLE
+            .iter()
+            .find(|t| t.enum_val == ggml_type)
+            .map(|t| t.type_size as usize),
+        _ => None,
+    }
+}
 
 /// A parsed tensor payload location.
 #[derive(Debug, Clone)]
@@ -178,9 +192,37 @@ pub fn mask_f32(payload: &[u8], ratio: f64, seed: u64) -> Vec<u8> {
     out
 }
 
-/// True when a GGML type can be masked exactly by this module (raw fp types).
+/// True when a GGML type can be masked exactly by this module: raw fp types
+/// (element-level) and the super-block formats whose f16 scale sits at block
+/// offset 0 (block-level zeroing — dequant = scale × code, so a zero scale
+/// zeroes every value in the block).
 pub fn maskable(ggml_type: i32) -> bool {
-    matches!(ggml_type, 0 | 1) // f32, f16
+    matches!(ggml_type, 0 | 1) || block_size(ggml_type).is_some()
+}
+
+/// Zero the f16 scale (bytes 0..2) of a random `ratio` fraction of blocks in a
+/// quantized payload. Every dequantized value in a zero-scale block becomes 0
+/// (dequant = scale × code) — exact, size-preserving, no block decode needed.
+pub fn mask_quantized(payload: &[u8], ratio: f64, block_size: usize, seed: u64) -> Vec<u8> {
+    let mut rng = SplitMix64::new(seed);
+    let mut out = payload.to_vec();
+    if block_size == 0 || payload.len() < block_size {
+        return out;
+    }
+    let n_blocks = payload.len() / block_size;
+    let to_zero = (n_blocks as f64 * ratio.clamp(0.0, 1.0)) as usize;
+    let mut picked = std::collections::HashSet::new();
+    let mut guard = 0u64;
+    while picked.len() < to_zero && guard < (n_blocks as u64 + 1) * 8 {
+        let idx = (rng.next() % n_blocks.max(1) as u64) as usize;
+        if picked.insert(idx) {
+            let base = idx * block_size;
+            out[base] = 0;
+            out[base + 1] = 0;
+        }
+        guard += 1;
+    }
+    out
 }
 
 /// SplitMix64 — deterministic seedable PRNG for mask selection.
@@ -375,8 +417,40 @@ mod tests {
     fn maskable_classification() {
         assert!(maskable(0)); // f32
         assert!(maskable(1)); // f16
-        assert!(!maskable(20)); // iq4_nl
-        assert!(!maskable(22)); // iq2_s
+        assert!(maskable(20)); // iq4_nl
+        assert!(maskable(22)); // iq2_s
+        assert!(maskable(16)); // iq2_xxs
+        assert!(!maskable(10)); // q2_K (scale not at offset 0)
+        assert_eq!(block_size(20), Some(18));
+        assert_eq!(block_size(22), Some(82));
+        assert_eq!(block_size(16), Some(66));
+    }
+
+    #[test]
+    fn mask_quantized_zeroes_blocks_via_scale() {
+        // two iq4_nl blocks (18 bytes each) with nonzero scales
+        let mut payload = Vec::new();
+        for b in 0..4 {
+            payload.push(0x00); // scale low
+            payload.push(0x3C + b as u8); // scale high (nonzero f16)
+            payload.extend_from_slice(&[0xAB; 16]);
+        }
+        let masked = mask_quantized(&payload, 0.5, 18, 1);
+        assert_eq!(masked.len(), payload.len());
+        // exactly 2 blocks' scales zeroed; other bytes untouched
+        let zeroed_scales = (0..4)
+            .filter(|&b| masked[b * 18] == 0 && masked[b * 18 + 1] == 0)
+            .count();
+        assert_eq!(zeroed_scales, 2);
+        // untouched blocks keep original data
+        for b in 0..4 {
+            if masked[b * 18] != 0 || masked[b * 18 + 1] != 0 {
+                assert_eq!(
+                    &masked[b * 18 + 2..b * 18 + 18],
+                    &payload[b * 18 + 2..b * 18 + 18]
+                );
+            }
+        }
     }
 
     #[test]

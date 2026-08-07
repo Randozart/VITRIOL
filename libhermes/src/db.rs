@@ -155,6 +155,11 @@ impl Hermes {
             })
     }
 
+    /// The memory root directory.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// The per-project database path.
     fn db_path(&self, project_id: &str) -> PathBuf {
         self.root.join(project_id).join("memory.db")

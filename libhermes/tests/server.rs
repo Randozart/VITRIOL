@@ -13,6 +13,7 @@ use tower::ServiceExt;
 fn state_at(root: std::path::PathBuf) -> ServerState {
     ServerState {
         h: Arc::new(Hermes::new(&root)),
+        last_request: None,
     }
 }
 
@@ -149,8 +150,8 @@ async fn validation_and_pending_routes() {
         Some(serde_json::json!({"project_id": "p"})),
     )
     .await;
-    assert_eq!(s, StatusCode::NOT_IMPLEMENTED);
-    assert!(j["error"].as_str().unwrap().contains("P4"));
+    assert_eq!(s, StatusCode::BAD_REQUEST); // root missing
+    assert!(j["error"].as_str().unwrap().contains("root"));
 
     let (s, j) = call(&st, "GET", "/pymander/list", None).await;
     assert_eq!(s, StatusCode::NOT_IMPLEMENTED);

@@ -16,8 +16,10 @@
 //! concurrent readers).
 
 pub mod compact;
+pub mod consolidate;
 pub mod db;
 pub mod hebbian;
+pub mod repomap;
 pub mod retrieval;
 pub mod scorer;
 pub mod server;

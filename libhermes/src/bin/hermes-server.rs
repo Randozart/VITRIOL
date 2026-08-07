@@ -1,9 +1,11 @@
 //! The `hermes` HTTP server binary — the Rust replacement for
-//! `hermetis_server.py`. Serves `/health`, `/hermetis/*`, and (once P4/P5 land)
-//! `/pymander/*` with the same JSON contracts.
+//! `hermetis_server.py`. Serves `/health`, `/hermetis/*`, and (once P5 lands)
+//! `/pymander/*` with the same JSON contracts. Runs the idle-triggered memory
+//! consolidation loop in the background; every request marks the worker active.
 
 use std::sync::Arc;
 
+use libhermes::consolidate::ConsolidationWorker;
 use libhermes::{Hermes, ServerState};
 
 #[tokio::main]
@@ -26,8 +28,13 @@ async fn main() -> std::io::Result<()> {
             _ => {}
         }
     }
+    let h = Arc::new(Hermes::new(&Hermes::default_root()));
+    let worker = ConsolidationWorker::new();
+    let ticker = worker.ticker();
+    tokio::spawn(worker.run_loop(h.clone()));
     let state = ServerState {
-        h: Arc::new(Hermes::new(&Hermes::default_root())),
+        h: h.clone(),
+        last_request: Some(ticker),
     };
     println!("hermes: serving on http://{host}:{port}");
     libhermes::server::serve(&host, port, state).await

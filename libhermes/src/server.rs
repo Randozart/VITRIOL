@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::middleware;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
@@ -22,6 +23,8 @@ use crate::{EpisodeMeta, EpisodeWrite, NodeMeta};
 #[derive(Clone)]
 pub struct ServerState {
     pub h: Arc<Hermes>,
+    /// Optional idle ticker bumped on every request (memory consolidation).
+    pub last_request: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// Build the route table.
@@ -40,7 +43,27 @@ pub fn router(state: ServerState) -> Router {
         .route("/pymander/search", post(pymander_search))
         .route("/pymander/select", post(pymander_select))
         .route("/pymander/context", post(pymander_context))
+        .layer(middleware::from_fn_with_state(state.clone(), mark_active))
         .with_state(state)
+}
+
+/// Bump the consolidation idle ticker on every request.
+async fn mark_active(
+    axum::extract::State(st): axum::extract::State<ServerState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<axum::http::Response<axum::body::Body>, axum::http::StatusCode> {
+    if let Some(ticker) = &st.last_request {
+        ticker.store(now_secs(), std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(next.run(req).await)
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Resolve + sanitize a project_id (Python `_project_id`).
@@ -318,8 +341,46 @@ async fn stats(
     )
 }
 
-async fn repo_map() -> (StatusCode, Json<serde_json::Value>) {
-    err(501, "repo_map: repomap port is P4 — not built yet")
+async fn repo_map(
+    State(st): State<ServerState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(pid) = project_id(&payload) else {
+        return err(400, "project_id required");
+    };
+    let root_str = payload.get("root").and_then(|r| r.as_str()).unwrap_or("");
+    let root = std::path::Path::new(root_str);
+    if root_str.is_empty() || !root.is_dir() {
+        return err(400, "root must be a directory");
+    }
+    let budget = payload
+        .get("budget_tokens")
+        .and_then(|b| b.as_i64())
+        .unwrap_or(1000) as usize;
+    let do_store = payload
+        .get("store")
+        .and_then(|s| s.as_bool())
+        .unwrap_or(true);
+    let max_files = payload
+        .get("max_files")
+        .and_then(|m| m.as_i64())
+        .map(|v| v as usize);
+    let single_file = payload.get("file").and_then(|f| f.as_str());
+    let (map_text, stored) = if let Some(file) = single_file {
+        let n = crate::repomap::store_file_nodes(&st.h, &pid, root, &[file.to_string()]);
+        (crate::repomap::build_repo_map(root, budget, max_files), n)
+    } else if do_store {
+        crate::repomap::store_repo_map(&st.h, &pid, root, budget, max_files)
+    } else {
+        (crate::repomap::build_repo_map(root, budget, max_files), 0)
+    };
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true, "project_id": pid, "nodes_stored": stored,
+            "map_tokens": crate::scorer::estimate_tokens(&map_text), "map": map_text,
+        })),
+    )
 }
 
 async fn pymander_list() -> (StatusCode, Json<serde_json::Value>) {

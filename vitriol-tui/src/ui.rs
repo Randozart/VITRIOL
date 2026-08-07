@@ -871,7 +871,39 @@ fn render_subsystems_tab(frame: &mut Frame, area: Rect, app: &App) {
 /// PROFILES tab: editable active-config rows. Enter edits inline, d removes,
 /// r reloads from disk; the edit buffer is shown in place of the value.
 fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
-    let block = panel_neutral(" ACTIVE CONFIG ");
+    if app.profile_prompt.is_some() {
+        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
+        render_profile_panes(frame, rows[0], app);
+        let buf = app.profile_prompt.clone().unwrap_or_default();
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" profile name: {buf}█   (Enter save, Esc cancel) "),
+                theme::gold_muted(),
+            ))),
+            rows[1],
+        );
+    } else {
+        render_profile_panes(frame, area, app);
+    }
+}
+
+/// The two profile panes: active config rows + profile list.
+fn render_profile_panes(frame: &mut Frame, area: Rect, app: &mut App) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).split(area);
+    render_config_pane(frame, cols[0], app);
+    render_profile_pane(frame, cols[1], app);
+}
+
+/// Left pane: the active-config entry list (form-style editor).
+fn render_config_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.profile_focus == crate::app::ProfileFocus::Config;
+    let title = if focused {
+        " ACTIVE CONFIG "
+    } else {
+        " CONFIG "
+    };
+    let block = panel_neutral(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -895,14 +927,60 @@ fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
     let lines = Layout::vertical(inner_rows).split(inner);
 
     for (i, e) in app.config_file.entries.iter().enumerate() {
-        let row = profile_row(app, e, i);
+        let selected = focused && i == app.profile_selection;
+        let row = profile_row(app, e, selected);
         frame.render_widget(Paragraph::new(row), lines[i]);
     }
 }
 
+/// Right pane: the profile list with load/delete targets.
+fn render_profile_pane(frame: &mut Frame, area: Rect, app: &mut App) {
+    let focused = app.profile_focus == crate::app::ProfileFocus::List;
+    let block = panel_neutral(" PROFILES ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let n = app.profiles.len();
+    if n == 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "no profiles  (s = save current config)",
+                theme::muted(),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let mut inner_rows = Vec::with_capacity(n);
+    for _ in 0..n {
+        inner_rows.push(Constraint::Length(1));
+    }
+    inner_rows.push(Constraint::Min(0));
+    let lines = Layout::vertical(inner_rows).split(inner);
+
+    for (i, p) in app.profiles.iter().enumerate() {
+        let selected = focused && i == app.profile_list_selection;
+        let style = if selected {
+            theme::title().add_modifier(Modifier::REVERSED)
+        } else {
+            theme::text()
+        };
+        let src = match p.source {
+            crate::profile::ProfileSource::Bundled => " [bundled]",
+            crate::profile::ProfileSource::Installed => "",
+        };
+        let mut spans = vec![Span::styled(p.name.clone(), style)];
+        spans.push(Span::styled(src, theme::muted()));
+        if !p.description.is_empty() {
+            spans.push(Span::styled(format!("  {}", p.description), theme::muted()));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), lines[i]);
+    }
+}
+
 /// Compute one config row line (key span + value/buffer span) for index `i`.
-fn profile_row(app: &App, e: &crate::config_edit::Entry, i: usize) -> Line<'static> {
-    let selected = i == app.profile_selection;
+fn profile_row(app: &App, e: &crate::config_edit::Entry, selected: bool) -> Line<'static> {
     let key = full_key(e);
     let editing = selected && app.profile_edit.is_some();
     let value = if editing {

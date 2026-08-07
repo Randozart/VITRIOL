@@ -131,7 +131,7 @@ fn push_key(out: &mut Vec<Entry>, line: &str, section: &str) {
 }
 
 /// Render entries back to INI text, grouping by section in first-seen order.
-fn render_entries(entries: &[Entry]) -> String {
+pub fn render_entries(entries: &[Entry]) -> String {
     let mut sections: Vec<&str> = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut by_section: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
@@ -170,6 +170,11 @@ fn atomic_write(path: &Path, text: &str) -> Result<(), String> {
     let tmp = dir.join(format!(".{}.tmp", file_stem(path)));
     fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
     fs::rename(&tmp, path).map_err(|e| format!("rename to {}: {e}", path.display()))
+}
+
+/// Atomic write used by the PROFILES save/load (temp + rename).
+pub fn atomic_write_path(path: &Path, text: &str) -> Result<(), String> {
+    atomic_write(path, text)
 }
 
 /// The file name without the final extension (for a temp sibling name).

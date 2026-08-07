@@ -63,6 +63,15 @@ impl Tab {
     }
 }
 
+/// Which PROFILES pane has focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileFocus {
+    /// The active-config entry list (editable rows).
+    Config,
+    /// The profile list (save/load/delete targets).
+    List,
+}
+
 /// Which service log the LOGS tab is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogSource {
@@ -123,6 +132,12 @@ pub struct App {
     pub profile_selection: usize,
     /// Inline edit buffer (editing the selected entry's value when Some).
     pub profile_edit: Option<String>,
+    /// Which PROFILES pane has focus: the active-config rows or the profile list.
+    pub profile_focus: ProfileFocus,
+    /// Cursor into the profile list pane.
+    pub profile_list_selection: usize,
+    /// Save-as profile name input buffer (Some = prompt active).
+    pub profile_prompt: Option<String>,
     /// Discovered guide docs for the GUIDE tab.
     pub guide_docs: Vec<crate::guide::Doc>,
     /// Cursor into the GUIDE index.
@@ -160,6 +175,9 @@ impl App {
             config_file,
             profile_selection: 0,
             profile_edit: None,
+            profile_focus: ProfileFocus::Config,
+            profile_list_selection: 0,
+            profile_prompt: None,
             guide_docs,
             guide_selection: 0,
             guide_scroll: 0,
@@ -280,6 +298,132 @@ impl App {
     pub fn profile_reload(&mut self) {
         self.config_file = crate::config_edit::ConfigFile::load(&self.cfg);
         self.profile_edit = None;
+    }
+
+    /// Toggle PROFILES pane focus (config rows <-> profile list).
+    pub fn profile_pane_toggle(&mut self) {
+        self.profile_focus = match self.profile_focus {
+            ProfileFocus::Config => ProfileFocus::List,
+            ProfileFocus::List => ProfileFocus::Config,
+        };
+        self.profile_edit = None;
+    }
+
+    /// Move the profile-list cursor, wrapping.
+    pub fn profile_list_move(&mut self, delta: isize) {
+        if self.profile_prompt.is_some() {
+            return;
+        }
+        let len = self.profiles.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.profile_list_selection as isize;
+        self.profile_list_selection = ((cur + delta).rem_euclid(len as isize)) as usize;
+    }
+
+    /// Begin the save-as-profile name prompt.
+    pub fn profile_save_start(&mut self) {
+        self.profile_prompt = Some(String::new());
+    }
+
+    /// Append a character to the save-as name buffer.
+    pub fn profile_save_type(&mut self, c: char) {
+        if let Some(buf) = &mut self.profile_prompt {
+            buf.push(c);
+        }
+    }
+
+    /// Remove the last character from the save-as name buffer.
+    pub fn profile_save_backspace(&mut self) {
+        if let Some(buf) = &mut self.profile_prompt {
+            buf.pop();
+        }
+    }
+
+    /// Abort the save-as prompt.
+    pub fn profile_save_cancel(&mut self) {
+        self.profile_prompt = None;
+    }
+
+    /// Commit the save-as prompt: write the active config as a new profile.
+    pub fn profile_save_commit(&mut self) -> Result<(), String> {
+        let Some(name) = self.profile_prompt.clone() else {
+            return Ok(());
+        };
+        let name = name.trim().to_string();
+        if !valid_profile_name(&name) {
+            return Err(format!(
+                "invalid profile name '{name}' (letters, numbers, hyphens, underscores)"
+            ));
+        }
+        if self.profiles.iter().any(|p| p.name == name) {
+            return Err(format!("profile '{name}' already exists"));
+        }
+        self.profile_prompt = None;
+        let dir = self.cfg.installed_profiles_dir().join(&name);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
+        let config_text = crate::config_edit::render_entries(&self.config_file.entries);
+        std::fs::write(dir.join("config"), config_text)
+            .map_err(|e| format!("write config: {e}"))?;
+        let meta = format!(
+            "name={name}\ndescription={}\ncreated={}\n",
+            chrono_stamp(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        );
+        std::fs::write(dir.join("meta"), meta).map_err(|e| format!("write meta: {e}"))?;
+        self.profile_reload_list();
+        Ok(())
+    }
+
+    /// Load the selected profile's config into the active config (no restart).
+    pub fn profile_load_selected(&mut self) -> Result<(), String> {
+        let Some(profile) = self.profiles.get(self.profile_list_selection) else {
+            return Ok(());
+        };
+        let src = match profile.source {
+            crate::profile::ProfileSource::Installed => {
+                self.cfg.installed_profiles_dir().join(&profile.name)
+            }
+            crate::profile::ProfileSource::Bundled => {
+                self.cfg.bundled_profiles_dir().join(&profile.name)
+            }
+        };
+        let text = std::fs::read_to_string(src.join("config"))
+            .map_err(|e| format!("read {}: {e}", src.join("config").display()))?;
+        let path = self.cfg.home_dir.join(".vitriol").join("config");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
+        }
+        crate::config_edit::atomic_write_path(&path, &text)?;
+        self.config_file = crate::config_edit::ConfigFile::load(&self.cfg);
+        Ok(())
+    }
+
+    /// Delete the selected INSTALLED profile (bundled profiles are protected).
+    pub fn profile_delete_selected(&mut self) -> Result<(), String> {
+        let Some(profile) = self.profiles.get(self.profile_list_selection) else {
+            return Ok(());
+        };
+        if profile.source != crate::profile::ProfileSource::Installed {
+            return Err(format!("'{}' is bundled — cannot delete", profile.name));
+        }
+        let dir = self.cfg.installed_profiles_dir().join(&profile.name);
+        std::fs::remove_dir_all(&dir).map_err(|e| format!("remove {}: {e}", dir.display()))?;
+        self.profile_list_selection = self
+            .profile_list_selection
+            .saturating_sub(1)
+            .min(self.profiles.len().saturating_sub(1));
+        self.profile_reload_list();
+        Ok(())
+    }
+
+    /// Re-discover the profile list after a save/delete.
+    pub fn profile_reload_list(&mut self) {
+        self.profiles = crate::profile::discover(&self.cfg);
     }
 
     /// Move the GUIDE index cursor, wrapping.
@@ -433,6 +577,42 @@ impl App {
     }
 }
 
+/// Whether `name` is a valid profile name (alnum, hyphen, underscore).
+fn valid_profile_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Current UTC date as `YYYY-MM-DD HH:MM` for profile meta descriptions.
+fn chrono_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    let (y, m, d) = civil_from_days(days);
+    let (hh, mm) = (rem / 3600, (rem % 3600) / 60);
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}")
+}
+
+/// Convert days since epoch to (year, month, day) — Howard Hinnant's civil
+/// calendar algorithm (public domain).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +642,49 @@ mod tests {
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
         assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Guide);
+    }
+
+    #[test]
+    fn profile_name_validation() {
+        assert!(valid_profile_name("mellum2"));
+        assert!(valid_profile_name("deep-seek_v2"));
+        assert!(!valid_profile_name(""));
+        assert!(!valid_profile_name("bad name"));
+        assert!(!valid_profile_name("bad/name"));
+    }
+
+    #[test]
+    fn civil_calendar_known_epoch() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19723), (2024, 1, 1));
+    }
+
+    #[test]
+    fn profile_save_requires_valid_unique_name() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        app.profile_prompt = Some("bad name".into());
+        assert!(app.profile_save_commit().is_err());
+        assert!(app.profile_prompt.is_some());
+    }
+
+    #[test]
+    fn profile_pane_toggle_switches_focus() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        assert_eq!(app.profile_focus, ProfileFocus::Config);
+        app.profile_pane_toggle();
+        assert_eq!(app.profile_focus, ProfileFocus::List);
+        app.profile_pane_toggle();
+        assert_eq!(app.profile_focus, ProfileFocus::Config);
+    }
+
+    #[test]
+    fn profile_list_move_wraps() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        let len = app.profiles.len();
+        app.profile_list_move(-1);
+        assert_eq!(app.profile_list_selection, len.saturating_sub(1));
     }
 }

@@ -33,11 +33,13 @@ pub enum Tab {
     Profiles,
     /// Guide: scroll VITRIOL docs, provenance, and the Pymander corpus.
     Guide,
+    /// Officina: the model-surgery workshop REPL (Alka / SPQL).
+    Officina,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
@@ -46,6 +48,7 @@ impl Tab {
         Tab::Subsystems,
         Tab::Profiles,
         Tab::Guide,
+        Tab::Officina,
     ];
 
     /// Short label used in the tab bar.
@@ -59,6 +62,7 @@ impl Tab {
             Tab::Subsystems => "SUBSYSTEMS",
             Tab::Profiles => "PROFILES",
             Tab::Guide => "GUIDE",
+            Tab::Officina => "OFFICINA",
         }
     }
 }
@@ -146,6 +150,8 @@ pub struct App {
     pub guide_scroll: usize,
     /// Reader pane width at last draw (markdown wraps to this).
     pub guide_width: usize,
+    /// The Officina REPL session (OFFICINA tab).
+    pub officina: crate::officina::Officina,
     /// Loaded Ascensus secrets for the SUBSYSTEMS tab.
     pub ascensus: crate::secrets::Secrets,
     /// Cursor into the SUBSYSTEMS row list.
@@ -175,6 +181,7 @@ impl App {
         let config_file = crate::config_edit::ConfigFile::load(&cfg);
         let guide_docs = crate::guide::discover(&cfg);
         let ascensus = crate::secrets::Secrets::load(&cfg.secrets_path());
+        let officina = crate::officina::Officina::new(&cfg.home_dir);
         Self {
             cfg,
             snapshot: Snapshot::default(),
@@ -201,6 +208,7 @@ impl App {
             guide_selection: 0,
             guide_scroll: 0,
             guide_width: 80,
+            officina,
             ascensus,
             subsystem_selection: 0,
             ascensus_edit: None,
@@ -456,6 +464,26 @@ impl App {
         }
         let cur = self.subsystem_selection as isize;
         self.subsystem_selection = ((cur + delta).rem_euclid(len as isize)) as usize;
+    }
+
+    /// Build the Officina op context from the current app state.
+    pub fn officina_ctx(&self) -> crate::officina::OpCtx<'_> {
+        let model_path = self
+            .config_file
+            .entries
+            .iter()
+            .find(|e| e.section == "model" && e.key == "path")
+            .map(|e| std::path::PathBuf::from(&e.value));
+        let profile = self
+            .profiles
+            .get(self.profile_list_selection)
+            .map(|p| p.name.clone());
+        crate::officina::OpCtx {
+            cfg: &self.cfg,
+            snap: &self.snapshot,
+            model_path,
+            profile,
+        }
     }
 
     /// Begin the ASCENSUS key/model editor, seeded from the current secrets.
@@ -740,12 +768,12 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 8);
+        assert_eq!(Tab::ALL.len(), 9);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
-        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Guide);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Officina);
     }
 
     #[test]

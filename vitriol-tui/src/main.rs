@@ -13,6 +13,7 @@ mod guide;
 mod markdown;
 mod model;
 mod nvidia;
+mod officina;
 mod poller;
 mod profile;
 mod search;
@@ -59,7 +60,8 @@ fn main() -> io::Result<()> {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Char('Q')
-                        if app.tab != app::Tab::Hermetis || app.search_query.is_empty() =>
+                        if app.tab != app::Tab::Officina
+                            && (app.tab != app::Tab::Hermetis || app.search_query.is_empty()) =>
                     {
                         break;
                     }
@@ -67,7 +69,8 @@ fn main() -> io::Result<()> {
                         break;
                     }
                     KeyCode::Char('r')
-                        if app.tab != app::Tab::Profiles
+                        if app.tab != app::Tab::Officina
+                            && app.tab != app::Tab::Profiles
                             && (app.tab != app::Tab::Hermetis || app.search_query.is_empty()) =>
                     {
                         refresh_flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -83,6 +86,7 @@ fn main() -> io::Result<()> {
                         app::Tab::Profiles => handle_profiles_key(&mut app, key),
                         app::Tab::Guide => handle_guide_key(&mut app, key),
                         app::Tab::Subsystems => handle_subsystems_key(&mut app, key),
+                        app::Tab::Officina => handle_officina_key(&mut app, key),
                         _ => {}
                     },
                 },
@@ -148,6 +152,48 @@ fn handle_guide_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('k') | KeyCode::Up => app.guide_move(-1),
         KeyCode::Char('p') | KeyCode::PageDown => app.guide_scroll_lines(20, 40),
         KeyCode::Char('n') | KeyCode::PageUp => app.guide_scroll_lines(-20, 40),
+        _ => {}
+    }
+}
+
+/// OFFICINA tab keys: type, edit, run on Enter, history via arrows.
+fn handle_officina_key(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Enter => {
+            let line = std::mem::take(&mut app.officina.input);
+            if line.trim().is_empty() {
+                return;
+            }
+            app.officina.output.push_back(format!("▶ {line}"));
+            let cfg = &app.cfg;
+            let snap = &app.snapshot;
+            let model_path = app
+                .config_file
+                .entries
+                .iter()
+                .find(|e| e.section == "model" && e.key == "path")
+                .map(|e| std::path::PathBuf::from(&e.value));
+            let ctx = crate::officina::OpCtx {
+                cfg,
+                snap,
+                model_path,
+                profile: None,
+            };
+            let out = app.officina.run(&line, &ctx);
+            for l in out {
+                app.officina.output.push_back(l);
+            }
+            if app.officina.output.len() > 500 {
+                let excess = app.officina.output.len() - 500;
+                for _ in 0..excess {
+                    app.officina.output.pop_front();
+                }
+            }
+        }
+        KeyCode::Backspace => app.officina.backspace(),
+        KeyCode::Up => app.officina.history_nav(-1),
+        KeyCode::Down => app.officina.history_nav(1),
+        KeyCode::Char(c) => app.officina.type_char(c),
         _ => {}
     }
 }

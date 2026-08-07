@@ -36,6 +36,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Subsystems => render_subsystems_tab(frame, rows[1], app),
         Tab::Profiles => render_profiles_tab(frame, rows[1], app),
         Tab::Guide => render_guide_tab(frame, rows[1], app),
+        Tab::Officina => render_officina_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -1184,6 +1185,143 @@ fn render_guide_reader(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(lines).scroll((app.guide_scroll as u16, 0)),
         inner,
     );
+}
+
+/// OFFICINA tab: left = REPL (output + two-line ALKA-☿ prompt), right = the
+/// Spagyric Journal sidebar.
+fn render_officina_tab(frame: &mut Frame, area: Rect, app: &mut App) {
+    let sidebar = app.officina.config.sidebar_width.min(60);
+    let cols =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(sidebar as u16)]).split(area);
+    render_officina_repl(frame, cols[0], app);
+    render_officina_journal(frame, cols[1], app);
+}
+
+/// Left pane: output scrollback + the prompt.
+fn render_officina_repl(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = panel_neutral(" OFFICINA ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    let body: Vec<Line> = app
+        .officina
+        .output
+        .iter()
+        .take(rows[0].height as usize)
+        .map(|l| Line::from(Span::styled(l.clone(), theme::text())))
+        .collect();
+    frame.render_widget(Paragraph::new(body).scroll((0, 0)), rows[0]);
+
+    let ctx = app.officina_ctx();
+    let header = app.officina.prompt_header(&ctx);
+    let mut p1 = vec![Span::styled("┌──(", theme::CYAN)];
+    let logo = if app.officina.config.bold_logo {
+        theme::title().add_modifier(Modifier::BOLD)
+    } else {
+        theme::title()
+    };
+    p1.push(Span::styled("☿ ALKA", logo));
+    p1.push(Span::styled(")-[", theme::CYAN));
+    p1.push(Span::styled(header, theme::muted()));
+    p1.push(Span::styled("]", theme::CYAN));
+    let prompt_line = Line::from(p1);
+
+    let input = format!("{}█", app.officina.input);
+    let p2 = Line::from(vec![
+        Span::styled("└───> ", theme::CYAN),
+        Span::styled(input, theme::text()),
+    ]);
+    let prompt = Paragraph::new(vec![prompt_line, p2]);
+    frame.render_widget(prompt, rows[1]);
+}
+
+/// Right pane: the Spagyric Journal (mem arenas, transformation log, cognition).
+fn render_officina_journal(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = panel_neutral(" SPAGYRIC JOURNAL ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(" MEM ARENAS", theme::gold_muted())));
+    let used = app
+        .snapshot
+        .gpu
+        .as_ref()
+        .map(|g| g.vram_used_mib)
+        .unwrap_or(0) as f64
+        / 1024.0;
+    let total = app
+        .snapshot
+        .gpu
+        .as_ref()
+        .map(|g| g.vram_total_mib)
+        .unwrap_or(0) as f64
+        / 1024.0;
+    lines.push(Line::from(Span::styled(
+        format!("  VRAM: {used:.1}/{total:.1} GiB"),
+        theme::muted(),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  decode: {:.1} t/s", app.snapshot.gen.decode_t_s),
+        theme::muted(),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  context: {}", app.snapshot.gen.n_ctx.unwrap_or(0)),
+        theme::muted(),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  hermetis: {} ep / {} nodes",
+            app.snapshot.hermetis.episodes.unwrap_or(0),
+            app.snapshot.hermetis.nodes.unwrap_or(0)
+        ),
+        theme::muted(),
+    )));
+
+    lines.push(Line::from(Span::styled(
+        " TRANSFORMATION LOG",
+        theme::gold_muted(),
+    )));
+    if app.officina.journal.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (none committed)",
+            theme::muted(),
+        )));
+    } else {
+        for (i, entry) in app.officina.journal.iter().enumerate().rev().take(8) {
+            lines.push(Line::from(Span::styled(
+                format!("  [{i}] {}", entry.text),
+                theme::text(),
+            )));
+        }
+    }
+    let rec = app
+        .officina
+        .recording
+        .clone()
+        .unwrap_or_else(|| "off".into());
+    lines.push(Line::from(Span::styled(
+        format!("  recording: {rec}"),
+        theme::muted(),
+    )));
+
+    lines.push(Line::from(Span::styled(
+        format!(" DRIFT: {:.4}", app.officina.drift),
+        theme::gold_muted(),
+    )));
+    let state = if app.officina.model_dirty {
+        "dirty"
+    } else {
+        "clean"
+    };
+    lines.push(Line::from(Span::styled(
+        format!(" model: {state}"),
+        theme::muted(),
+    )));
+    lines.push(Line::from(Span::styled("  (HELP in REPL)", theme::muted())));
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]

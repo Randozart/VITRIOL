@@ -34,6 +34,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Controls => render_controls_tab(frame, rows[1], app),
         Tab::Hermetis => render_hermetis_tab(frame, rows[1], app),
         Tab::Subsystems => render_subsystems_tab(frame, rows[1], app),
+        Tab::Profiles => render_profiles_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -825,6 +826,77 @@ fn render_subsystems_tab(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(row.config.join(" · "), theme::muted()),
         ]);
         frame.render_widget(Paragraph::new(line), lines[i]);
+    }
+}
+
+/// PROFILES tab: editable active-config rows. Enter edits inline, d removes,
+/// r reloads from disk; the edit buffer is shown in place of the value.
+fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = panel_neutral(" ACTIVE CONFIG ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let n = app.config_file.entries.len();
+    if n == 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "no config entries (empty ~/.vitriol/config)",
+                theme::muted(),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let mut inner_rows = Vec::with_capacity(n);
+    for _ in 0..n {
+        inner_rows.push(Constraint::Length(1));
+    }
+    inner_rows.push(Constraint::Min(0));
+    let lines = Layout::vertical(inner_rows).split(inner);
+
+    for (i, e) in app.config_file.entries.iter().enumerate() {
+        let selected = i == app.profile_selection;
+        let key = if e.section.is_empty() {
+            format!("{}:", e.key)
+        } else {
+            format!("{}.{}", e.section, e.key)
+        };
+        let is_editing = selected && app.profile_edit.is_some();
+        let buf = if is_editing {
+            app.profile_edit.clone().unwrap_or_default()
+        } else {
+            e.value.clone()
+        };
+        let row_style = if selected {
+            theme::title().add_modifier(Modifier::REVERSED)
+        } else {
+            theme::text()
+        };
+        let key_span = if selected {
+            Span::styled(format!("{key:<24}"), row_style)
+        } else {
+            Span::styled(format!("{key:<24}"), theme::muted())
+        };
+        let val_style = if is_editing {
+            theme::live()
+        } else if selected {
+            row_style
+        } else {
+            theme::text()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                key_span,
+                Span::styled(buf, val_style),
+                if is_editing {
+                    Span::styled(" █", theme::live())
+                } else {
+                    Span::styled("", theme::text())
+                },
+            ])),
+            lines[i],
+        );
     }
 }
 

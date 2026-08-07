@@ -29,17 +29,20 @@ pub enum Tab {
     Hermetis,
     /// Subsystem diagnostics: Tria Prima services + alchemical layers.
     Subsystems,
+    /// Profiles: edit the active config INI (form-style) + manage profiles.
+    Profiles,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
         Tab::Controls,
         Tab::Hermetis,
         Tab::Subsystems,
+        Tab::Profiles,
     ];
 
     /// Short label used in the tab bar.
@@ -51,6 +54,7 @@ impl Tab {
             Tab::Controls => "CONTROLS",
             Tab::Hermetis => "HERMETIS",
             Tab::Subsystems => "SUBSYSTEMS",
+            Tab::Profiles => "PROFILES",
         }
     }
 }
@@ -109,6 +113,12 @@ pub struct App {
     pub search_results: Vec<SearchHit>,
     /// Whether a search request is in flight.
     pub search_in_flight: bool,
+    /// Loaded active config for the PROFILES tab.
+    pub config_file: crate::config_edit::ConfigFile,
+    /// Cursor into the PROFILES entry list.
+    pub profile_selection: usize,
+    /// Inline edit buffer (editing the selected entry's value when Some).
+    pub profile_edit: Option<String>,
     /// When the previous tick was consumed, for per-tick hooks.
     last_tick: Instant,
 }
@@ -117,6 +127,7 @@ impl App {
     /// Create empty app state. `history_cap` bounds the sparkline sample ring.
     pub fn new(cfg: Config, history_cap: usize) -> Self {
         let profiles = profile::discover(&cfg);
+        let config_file = crate::config_edit::ConfigFile::load(&cfg);
         Self {
             cfg,
             snapshot: Snapshot::default(),
@@ -133,6 +144,9 @@ impl App {
             search_query: String::new(),
             search_results: Vec::new(),
             search_in_flight: false,
+            config_file,
+            profile_selection: 0,
+            profile_edit: None,
             last_tick: Instant::now(),
         }
     }
@@ -171,6 +185,84 @@ impl App {
     pub fn apply_search_results(&mut self, results: Vec<SearchHit>) {
         self.search_results = results;
         self.search_in_flight = false;
+    }
+
+    /// Move the PROFILES cursor, wrapping, unless editing inline.
+    pub fn profile_move(&mut self, delta: isize) {
+        if self.profile_edit.is_some() {
+            return;
+        }
+        let len = self.config_file.entries.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.profile_selection as isize;
+        self.profile_selection = ((cur + delta).rem_euclid(len as isize)) as usize;
+    }
+
+    /// Begin inline-editing the selected entry's value.
+    pub fn profile_edit_selected(&mut self) {
+        let idx = self.profile_selection;
+        if let Some(e) = self.config_file.entries.get(idx) {
+            self.profile_edit = Some(e.value.clone());
+        }
+    }
+
+    /// Append a character to the inline edit buffer.
+    pub fn profile_type(&mut self, c: char) {
+        if let Some(buf) = &mut self.profile_edit {
+            buf.push(c);
+        }
+    }
+
+    /// Remove the last character from the inline edit buffer.
+    pub fn profile_backspace(&mut self) {
+        if let Some(buf) = &mut self.profile_edit {
+            buf.pop();
+        }
+    }
+
+    /// Commit the inline edit (or cancel if the buffer is empty) and save.
+    pub fn profile_commit(&mut self) -> Result<(), String> {
+        let Some(buf) = self.profile_edit.take() else {
+            return Ok(());
+        };
+        if buf.is_empty() {
+            return Ok(());
+        }
+        let idx = self.profile_selection;
+        let Some(entry) = self.config_file.entries.get(idx).cloned() else {
+            return Ok(());
+        };
+        self.config_file.upsert(&entry.section, &entry.key, buf);
+        self.config_file.save()
+    }
+
+    /// Abort the inline edit without saving.
+    pub fn profile_cancel_edit(&mut self) {
+        self.profile_edit = None;
+    }
+
+    /// Remove the selected entry from the config and save.
+    pub fn profile_remove_selected(&mut self) -> Result<(), String> {
+        let idx = self.profile_selection;
+        let Some(entry) = self.config_file.entries.get(idx) else {
+            return Ok(());
+        };
+        let section = entry.section.clone();
+        let key = entry.key.clone();
+        self.config_file.remove(&section, &key);
+        self.profile_selection = self
+            .profile_selection
+            .saturating_sub(1)
+            .min(self.config_file.entries.len().saturating_sub(1));
+        self.config_file.save()
+    }
+
+    /// Reload the config file from disk (e.g. after an external edit).
+    pub fn profile_reload(&mut self) {
+        self.config_file = crate::config_edit::ConfigFile::load(&self.cfg);
+        self.profile_edit = None;
     }
 
     /// The CONTROLS action list.
@@ -314,11 +406,11 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 6);
+        assert_eq!(Tab::ALL.len(), 7);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
-        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Subsystems);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Profiles);
     }
 }

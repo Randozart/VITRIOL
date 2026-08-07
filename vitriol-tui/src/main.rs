@@ -6,6 +6,7 @@
 
 mod app;
 mod config;
+mod config_edit;
 mod control;
 mod model;
 mod nvidia;
@@ -84,6 +85,34 @@ fn main() -> io::Result<()> {
                     KeyCode::Char('k') | KeyCode::Up if app.tab == app::Tab::Controls => {
                         app.move_selection(-1);
                     }
+                    KeyCode::Char('j') | KeyCode::Down if app.tab == app::Tab::Profiles => {
+                        app.profile_move(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if app.tab == app::Tab::Profiles => {
+                        app.profile_move(-1);
+                    }
+                    KeyCode::Enter if app.tab == app::Tab::Profiles => {
+                        if app.profile_edit.is_some() {
+                            let _ = app.profile_commit();
+                        } else {
+                            app.profile_edit_selected();
+                        }
+                    }
+                    KeyCode::Esc if app.tab == app::Tab::Profiles => app.profile_cancel_edit(),
+                    KeyCode::Char('d') if app.tab == app::Tab::Profiles => {
+                        if app.profile_edit.is_none() {
+                            let _ = app.profile_remove_selected();
+                        }
+                    }
+                    KeyCode::Char('r') if app.tab == app::Tab::Profiles => {
+                        if app.profile_edit.is_none() {
+                            app.profile_reload();
+                        }
+                    }
+                    KeyCode::Backspace if app.tab == app::Tab::Profiles => {
+                        app.profile_backspace();
+                    }
+                    KeyCode::Char(c) if app.tab == app::Tab::Profiles => app.profile_type(c),
                     KeyCode::Enter if app.tab == app::Tab::Controls => {
                         app.run_selected_action(&ctrl_tx);
                     }

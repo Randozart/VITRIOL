@@ -95,13 +95,20 @@ dropped alka-lang.
 
 ## 8. Results
 
-- **P0+P1 landed** (single commit): OFFICINA tab (9th), two-pane layout (REPL +
-  Spagyric Journal sidebar), two-line ALKA-☿ prompt with configurable telemetry
-  (`~/.vitriol/officina.toml`), `officina/` module (config, grammar, grimoire,
-  mod). Commands live: HELP, CLEAR, UNDO, RECORD/STOP/PLAY, COMPILE (.spagyr
-  bundle), DESCRIBE (gguf metadata census via vitriol-calibrate), MAP (system
-  memory), TEST (live gen server + syntax check). DISSOLVE/COAGULATE report
-  "P3 not built yet" — no fake results. Old alka-lang dropped entirely; name
-  repurposed.
-- P2 (tensor catalog), P3 (offline rewrite), P4 (routing/AOT) — next.
+- **P0+P1** (`33d10fa`): OFFICINA tab (9th), two-pane REPL + Spagyric Journal
+  sidebar, two-line ALKA-☿ prompt with configurable telemetry
+  (`~/.vitriol/officina.toml`); commands HELP, CLEAR, UNDO, RECORD/STOP/PLAY,
+  COMPILE (.spagyr bundle), DESCRIBE, MAP, TEST. DISSOLVE/COAGULATE report
+  "P3 not built yet" — no fake results. Old alka-lang dropped; name repurposed.
+- **P2** (`1f023a5`): tensor catalog in `libvitriol/src/gguf.rs`
+  (ModelInfo.tensors + type_name); DESCRIBE layer.N[.mlp|norm|attn] renders
+  per-tensor quant + size rows (mlp → ffn group).
+- **P3a** (`768f362`): W0 value census (`libvitriol/src/census.rs`, f32/f16/
+  q8_0/q4_0 decode) + CENSUS op (dead-lane %, entropy, magnitude). Verified on
+  the real DeepSeek model (deepseek2 · 27 layers · 6/64 experts · 377 tensors ·
+  5.90 GiB): f32 norms census clean; iq2_s/iq4_nl reported unsupported.
+- **P3b** (pending): offline rewrite — needs iq2_s/iq4_nl/iq2_xxs block decode +
+  re-quantization + byte-exact GGUF rewrite + logit-parity. Biggest single
+  chunk; scoped separately.
+- P4 (routing/AOT) deferred — no runtime consumer.
 

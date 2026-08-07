@@ -383,20 +383,103 @@ async fn repo_map(
     )
 }
 
-async fn pymander_list() -> (StatusCode, Json<serde_json::Value>) {
-    err(501, "pymander: Pymander port is P5 — not built yet")
+async fn pymander_list(State(st): State<ServerState>) -> (StatusCode, Json<serde_json::Value>) {
+    let domains = crate::pymander::list_domains(st.h.root());
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"ok": true, "domains": domains})),
+    )
 }
 
-async fn pymander_search() -> (StatusCode, Json<serde_json::Value>) {
-    err(501, "pymander: Pymander port is P5 — not built yet")
+async fn pymander_search(
+    State(st): State<ServerState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let domain = payload.get("domain").and_then(|d| d.as_str()).unwrap_or("");
+    let query = payload.get("query").and_then(|q| q.as_str()).unwrap_or("");
+    if domain.is_empty() || query.is_empty() {
+        return err(400, "domain and query required");
+    }
+    let top_k = payload.get("top_k").and_then(|t| t.as_i64()).unwrap_or(5) as usize;
+    let hits = match crate::pymander::search(&st.h, domain, query, top_k) {
+        Ok(h) => h,
+        Err(e) => return err(400, &e),
+    };
+    let results: Vec<serde_json::Value> = hits
+        .iter()
+        .map(|h| {
+            serde_json::json!({
+                "label": h.get("label").cloned().unwrap_or(serde_json::json!("")),
+                "summary": h.get("summary").and_then(|s| s.as_str()).unwrap_or(""),
+                "score": (h.get("_score").and_then(|s| s.as_f64()).unwrap_or(0.0) * 10000.0).round() / 10000.0,
+            })
+        })
+        .collect();
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"ok": true, "domain": domain, "results": results})),
+    )
 }
 
-async fn pymander_select() -> (StatusCode, Json<serde_json::Value>) {
-    err(501, "pymander: Pymander port is P5 — not built yet")
+async fn pymander_select(
+    State(st): State<ServerState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(pid) = project_id(&payload) else {
+        return err(400, "project_id required");
+    };
+    let domains: Vec<String> = payload
+        .get("domains")
+        .and_then(|d| d.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|d| d.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    match crate::pymander::set_selection(st.h.root(), &pid, &domains) {
+        Ok(res) => (
+            StatusCode::OK,
+            Json(
+                serde_json::json!({"ok": true, "project_id": pid, "domains": res.get("domains").cloned().unwrap_or(serde_json::json!([]))}),
+            ),
+        ),
+        Err(e) => err(400, &e),
+    }
 }
 
-async fn pymander_context() -> (StatusCode, Json<serde_json::Value>) {
-    err(501, "pymander: Pymander port is P5 — not built yet")
+async fn pymander_context(
+    State(st): State<ServerState>,
+    Json(payload): Json<serde_json::Value>,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let Some(pid) = project_id(&payload) else {
+        return err(400, "project_id required");
+    };
+    let query = payload.get("query").and_then(|q| q.as_str()).unwrap_or("");
+    let budget = payload
+        .get("budget_tokens")
+        .and_then(|b| b.as_i64())
+        .unwrap_or(3000) as usize;
+    let top_k = payload.get("top_k").and_then(|t| t.as_i64()).unwrap_or(3) as usize;
+    let block = crate::pymander::build_doctrine(
+        &st.h,
+        st.h.root(),
+        &pid,
+        &crate::pymander::DoctrineOpts {
+            query: query.to_string(),
+            budget_tokens: budget,
+            top_k,
+        },
+    );
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "ok": true, "project_id": pid,
+            "tokens": crate::scorer::estimate_tokens(&block),
+            "context": block,
+        })),
+    )
 }
 
 fn err(code: u16, msg: &str) -> (StatusCode, Json<serde_json::Value>) {

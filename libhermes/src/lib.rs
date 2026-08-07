@@ -19,6 +19,7 @@ pub mod compact;
 pub mod consolidate;
 pub mod db;
 pub mod hebbian;
+pub mod pymander;
 pub mod repomap;
 pub mod retrieval;
 pub mod scorer;

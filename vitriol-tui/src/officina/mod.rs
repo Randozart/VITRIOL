@@ -624,6 +624,105 @@ impl Officina {
         out
     }
 
+    /// ASCENSUS > RECTIFY: a cloud model generates N calibration prompts from
+    /// the intent, then they run locally as a batch, each recording its fired
+    /// experts as a transaction in the named mask.
+    fn ascensus_rectify(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
+        if cmd.target.is_empty() {
+            return vec!["[ERR] ASCENSUS > RECTIFY > \"intent\" N into <mask>".into()];
+        }
+        let n: usize = cmd
+            .args
+            .iter()
+            .find_map(|a| a.parse().ok())
+            .unwrap_or(5)
+            .clamp(1, 25);
+        let mask_name = mask_from_args(&cmd.args).unwrap_or_else(|| "default".into());
+        let secrets = crate::secrets::Secrets::load(&ctx.cfg.secrets_path());
+        let api_key = secrets.api_key.trim().to_string();
+        let model = if secrets.model.trim().is_empty() {
+            "gemini-2.5-flash".to_string()
+        } else {
+            secrets.model.trim().to_string()
+        };
+        if api_key.is_empty() {
+            return vec![
+                "[ERR] no Gemini key in ~/.vitriol/secrets — set it in the SUBSYSTEMS tab.".into(),
+            ];
+        }
+        if !cmd.commit {
+            return vec![
+                format!(
+                    "[PROBE] ASCENSUS > RECTIFY \"{}\" — {n} prompts into {mask_name}",
+                    cmd.target
+                ),
+                format!("  ├── cloud model: {model}"),
+                "  ├── generates N calibration prompts, then runs them locally".into(),
+                "  └── (Run with 'COMMIT overwrite >' to execute the batch)".into(),
+            ];
+        }
+        let cloud_prompt = format!(
+            "Generate {n} diverse, rigorous systems-programming prompts to calibrate a local \
+             code model for the intent: \"{}\". Output ONLY a numbered list, one prompt per \
+             line, no commentary, no headers.",
+            cmd.target
+        );
+        let reply = match gemini_generate(&api_key, &model, &cloud_prompt) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("[ERR] ascensus: {e}")],
+        };
+        let prompts = parse_numbered_list(&reply);
+        if prompts.is_empty() {
+            return vec![
+                "[ERR] cloud model returned no prompts to calibrate with.".into(),
+                format!("  reply: {}", reply.chars().take(160).collect::<String>()),
+            ];
+        }
+        let path = mask::mask_path(&self.home, &mask_name);
+        let mut mask_file =
+            mask::MaskFile::load(&path).unwrap_or_else(|_| mask::MaskFile::new(&mask_name));
+        let mut out = vec![format!(
+            "[ASCENSUS] running {n} calibration prompts into {mask_name}"
+        )];
+        let mut recorded = 0usize;
+        for (i, prompt) in prompts.iter().take(n).enumerate() {
+            let payload = match generate(ctx.cfg, prompt, 128, true) {
+                Ok(p) => p,
+                Err(e) => {
+                    out.push(format!("  [{}/{}] gen error: {e}", i + 1, n));
+                    continue;
+                }
+            };
+            let Some(fired) = parse_rectify_experts(&payload) else {
+                out.push(format!("  [{}/{}] no expert data", i + 1, n));
+                continue;
+            };
+            let txn = mask_file.add(now_ts(), prompt, "ascensus", fired.clone());
+            recorded += 1;
+            out.push(format!(
+                "  [{}/{}] \"{}\" → txn #{} (+{} experts)",
+                i + 1,
+                n,
+                prompt.chars().take(40).collect::<String>(),
+                txn.id,
+                fired.len()
+            ));
+        }
+        if let Err(e) = mask_file.save(&path) {
+            return vec![format!("[ERR] save mask: {e}")];
+        }
+        out.push(format!(
+            "  └── {recorded}/{n} transactions recorded → {mask_name} ({} active)",
+            mask_file.union_active().len()
+        ));
+        self.record_op(
+            &format!("ascensus rectify: {n} prompts into {mask_name}"),
+            &cmd.raw,
+            0.0,
+        );
+        out
+    }
+
     /// GUIDE: render the how-to manual (`docs/officina-guide.md`), optionally
     /// filtered to one section by topic.
     fn guide(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
@@ -824,12 +923,11 @@ impl Officina {
     /// RECTIFY: run a generation and record the fired experts into a named mask.
     /// Live firing data comes from the fork's expert-activity hook (the server
     /// `rectify` response field); without it, commit reports honestly.
+    /// `ASCENSUS > RECTIFY` generates N calibration prompts from a cloud model
+    /// and runs them as a batch.
     fn rectify(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
         if cmd.cloud {
-            return vec![
-                "[ERR] ASCENSUS > RECTIFY: cloud calibration batch (R3) is not built yet.".into(),
-                "  Manual: RECTIFY > \"prompt\" into <mask> per prompt.".into(),
-            ];
+            return self.ascensus_rectify(cmd, ctx);
         }
         if cmd.target.is_empty() {
             return vec!["[ERR] RECTIFY > \"prompt\" into <mask> requires a quoted prompt".into()];
@@ -1050,6 +1148,66 @@ fn read_payload(path: &Path, offset: u64, size: u64) -> std::io::Result<Vec<u8>>
     let mut buf = vec![0u8; size as usize];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// Call the Gemini generateContent API and return the combined text.
+fn gemini_generate(api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(60))
+        .build();
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
+    let body = serde_json::json!({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.8},
+    });
+    let resp = agent
+        .post(&url)
+        .query("key", api_key)
+        .send_json(body)
+        .map_err(|e| format!("gemini request failed: {e}"))?;
+    let payload: serde_json::Value = resp
+        .into_json()
+        .map_err(|_| "bad gemini response".to_string())?;
+    let mut text = String::new();
+    for part in payload
+        .get("candidates")
+        .and_then(|c| c.get(0))
+        .and_then(|c| c.get("content"))
+        .and_then(|c| c.get("parts"))
+        .and_then(|p| p.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(t) = part.get("text").and_then(|t| t.as_str()) {
+            text.push_str(t);
+        }
+    }
+    if text.is_empty() {
+        return Err("empty gemini reply".into());
+    }
+    Ok(text)
+}
+
+/// Extract a numbered/bulleted list of lines from a model reply.
+fn parse_numbered_list(reply: &str) -> Vec<String> {
+    reply
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| {
+            let l = l.trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == ')' || c == '-'
+            });
+            let l = l.trim();
+            if l.is_empty() {
+                None
+            } else {
+                Some(l.to_string())
+            }
+        })
+        .filter(|l| l.len() > 4)
+        .collect()
 }
 
 /// Current unix time.
@@ -1917,12 +2075,33 @@ mod tests {
     }
 
     #[test]
-    fn ascensus_rectify_reports_r3_pending() {
-        let mut o = Officina::new(Path::new("/nonexistent"));
+    fn ascensus_rectify_probe_needs_key() {
+        let home = std::env::temp_dir().join("officina_ascensus_probe");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
         let snap = Snapshot::default();
-        let cfg = Config::from_env();
-        let lines = o.run("ASCENSUS > RECTIFY > \"vulkan\" 50", &ctx(&cfg, &snap));
-        assert!(lines[0].contains("R3"));
+        let mut cfg = Config::from_env();
+        cfg.home_dir = home.clone(); // no secrets here -> no key
+        let lines = o.run("ASCENSUS > RECTIFY > \"vulkan\" 3", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("no Gemini key"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn parse_numbered_list_extracts_prompts() {
+        let reply =
+            "1. Write a Vulkan shader\n- Implement a memory pool\n 3) Spinlock in Rust\n\n5. x\n";
+        let prompts = parse_numbered_list(reply);
+        assert_eq!(prompts.len(), 3);
+        assert!(prompts[0].contains("Vulkan"));
+        assert!(prompts[2].contains("Spinlock"));
+    }
+
+    #[test]
+    fn mask_from_args_into_target() {
+        let args = vec!["50".to_string(), "into".to_string(), "vulkan".to_string()];
+        assert_eq!(mask_from_args(&args), Some("vulkan".to_string()));
+        assert_eq!(mask_from_args(&["50".into()]), None);
     }
 
     #[test]

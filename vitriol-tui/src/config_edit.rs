@@ -85,42 +85,64 @@ fn parse_entries(text: &str) -> Vec<Entry> {
     let mut section = String::new();
     for line in text.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if skip_comment(line) {
             continue;
         }
-        if let Some(s) = line.strip_prefix('[') {
-            if let Some(close) = s.strip_suffix(']') {
-                section = close.trim().to_string();
-            }
+        if let Some(s) = section_of(line) {
+            section = s;
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            let key = k.trim();
-            if key.is_empty() {
-                continue;
-            }
-            out.push(Entry {
-                section: section.clone(),
-                key: key.to_string(),
-                value: v.trim().to_string(),
-            });
-        }
+        push_key(&mut out, line, &section);
     }
     out
 }
 
+/// True for blank lines and comment lines (start with `#`).
+fn skip_comment(line: &str) -> bool {
+    line.is_empty() || line.starts_with('#')
+}
+
+/// The trimmed section name when `line` is a `[section]` header, else None.
+fn section_of(line: &str) -> Option<String> {
+    let stripped = line.strip_prefix('[')?;
+    let close = stripped.strip_suffix(']')?;
+    let name = close.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Push one `key = value` line onto `out` under the active section.
+fn push_key(out: &mut Vec<Entry>, line: &str, section: &str) {
+    let Some((k, v)) = line.split_once('=') else {
+        return;
+    };
+    let key = k.trim();
+    if key.is_empty() {
+        return;
+    }
+    out.push(Entry {
+        section: section.to_string(),
+        key: key.to_string(),
+        value: v.trim().to_string(),
+    });
+}
+
 /// Render entries back to INI text, grouping by section in first-seen order.
 fn render_entries(entries: &[Entry]) -> String {
-    let mut sections: Vec<String> = Vec::new();
-    let mut by_section: BTreeMap<String, Vec<&Entry>> = BTreeMap::new();
+    let mut sections: Vec<&str> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut by_section: BTreeMap<&str, Vec<&Entry>> = BTreeMap::new();
     for e in entries {
-        if !sections.contains(&e.section) {
-            sections.push(e.section.clone());
+        if seen.insert(&e.section) {
+            sections.push(&e.section);
         }
-        by_section.entry(e.section.clone()).or_default().push(e);
+        by_section.entry(&e.section).or_default().push(e);
     }
     let mut out = String::new();
-    for section in &sections {
+    for section in sections {
         if !section.is_empty() {
             out.push('[');
             out.push_str(section);

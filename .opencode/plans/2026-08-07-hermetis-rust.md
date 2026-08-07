@@ -102,5 +102,17 @@ supersede/selection behavior, search ordering).
   identical ordering + content (score drift only from the time-dependent
   recency term). 24 tests, clippy/fmt/Praetor clean (Praetor-driven refactors:
   param bundling, early returns, single-loop cascade decomposition).
-- Next: P3 (axum server + parity harness), P4 (consolidation + repomap),
-  P5 (Pymander CLI), P6 (delete Python modules + repoint launchers).
+- **P3 landed** (`49ead5e`): axum server (`hermes-server` binary). `/health`,
+  `/hermetis/{store,node,search,context,recent,stats}` live with Python-parity
+  JSON contracts (live cross-check: identical search results/ordering);
+  `/hermetis/embed` → 503 (semantic-off); repo_map/pymander 501 until P4/P5.
+  Route-handler tests via tower oneshot.
+- **P4 landed** (`885aaf3`): `consolidate.rs` (unconsolidated-batch detection,
+  deterministic summary, node+`consolidated_from` edges, node decay, retention
+  prune; `ConsolidationWorker` idle loop wired into the server with a
+  mark-active middleware) + `repomap.rs` (per-lang symbol/import regexes,
+  import-graph in-degree ranking, budgeted Aider-style map, git-rev versioned
+  node storage) + `/hermetis/repo_map` route. 32 tests,
+  clippy/fmt/Praetor clean (Praetor-driven single-loop decomposition).
+- Next: P5 (Pymander CLI + `/pymander/*`), P6 (delete Python memory modules +
+  repoint launchers + provenance).

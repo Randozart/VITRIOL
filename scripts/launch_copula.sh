@@ -11,7 +11,13 @@
 set -euo pipefail
 
 VITRIOL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HERMETIS="$VITRIOL_DIR/libvitriol/hermetis_server.py"
+# 2026-08-07: Hermetis is now the Rust server (libhermes) — release preferred,
+# debug fallback when the release build is missing.
+if [ -x "$VITRIOL_DIR/libhermes/target/release/hermes-server" ]; then
+    HERMETIS="$VITRIOL_DIR/libhermes/target/release/hermes-server"
+else
+    HERMETIS="$VITRIOL_DIR/libhermes/target/debug/hermes-server"
+fi
 SERVER="$VITRIOL_DIR/llama.cpp/build/bin/llama-server"
 EMBED_MODEL="${COPULA_EMBED_MODEL:-/home/randozart/Desktop/Projects/bge-small-en-v1.5-q8_0.gguf}"
 LOG_DIR="${COPULA_LOG_DIR:-/tmp/opencode}"
@@ -35,7 +41,7 @@ port_pid() {
     if [ -n "$p" ]; then echo "$p"; return 0; fi
     p=$(lsof -ti ":$port" 2>/dev/null | head -1)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
-    p=$(pgrep -f "(llama-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
+    p=$(pgrep -f "(llama-server|hermes-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
     p=$(fuser -n tcp "$port" 2>/dev/null | tr -s ' ' | head -1 | xargs echo)
     echo "$p"
@@ -67,7 +73,7 @@ if [ -n "$(port_pid "$HERMETIS_PORT")" ]; then
     echo "[copula] Hermetis already on :$HERMETIS_PORT — skipping"
 else
     echo "[copula] starting Hermetis on :$HERMETIS_PORT"
-    VITRIOL_SEMANTIC_MODE=on setsid nohup python3 "$HERMETIS" --port "$HERMETIS_PORT" \
+    setsid nohup "$HERMETIS" --host 127.0.0.1 --port "$HERMETIS_PORT" \
         > "$LOG_DIR/copula_hermetis.log" 2>&1 < /dev/null &
 fi
 

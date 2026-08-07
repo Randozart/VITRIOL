@@ -60,7 +60,7 @@ port_pid() {
     if [ -n "$p" ]; then echo "$p"; return 0; fi
     # The socket tools can fail to attribute our own servers' pids; the cmdline
     # always carries --port, so pgrep is the reliable fallback.
-    p=$(pgrep -f "(llama-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
+    p=$(pgrep -f "(llama-server|hermes-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
     p=$(fuser -n tcp "$port" 2>/dev/null | tr -s ' ' | head -1 | xargs echo)
     echo "$p"

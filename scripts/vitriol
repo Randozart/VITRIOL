@@ -2394,7 +2394,12 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # Reference mind (Pymander) store + ingest. P1: domains, ingest,
         # search, per-project selection. Reuses the Hermetis db machinery.
         shift
-        PYMAN=("python3" "${PROJECT_DIR}/libvitriol/pymander.py")
+        # 2026-08-07: Pymander CLI is now the Rust binary (libhermes).
+        if [ -x "${PROJECT_DIR}/libhermes/target/release/pymander" ]; then
+            PYMAN=("${PROJECT_DIR}/libhermes/target/release/pymander")
+        else
+            PYMAN=("${PROJECT_DIR}/libhermes/target/debug/pymander")
+        fi
         if [[ $# -eq 0 ]]; then
             "${PYMAN[@]}" --help
             exit 0

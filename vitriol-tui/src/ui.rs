@@ -35,6 +35,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Hermetis => render_hermetis_tab(frame, rows[1], app),
         Tab::Subsystems => render_subsystems_tab(frame, rows[1], app),
         Tab::Profiles => render_profiles_tab(frame, rows[1], app),
+        Tab::Guide => render_guide_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -912,6 +913,104 @@ fn value_span(value: &str, selected: bool, editing: bool) -> Span<'static> {
         theme::text()
     };
     Span::styled(value.to_string(), style)
+}
+
+/// GUIDE tab: doc index on the left, scrolled rendered markdown on the right.
+fn render_guide_tab(frame: &mut Frame, area: Rect, app: &mut App) {
+    let cols = Layout::horizontal([Constraint::Percentage(35), Constraint::Min(0)]).split(area);
+
+    render_guide_index(frame, cols[0], app);
+    render_guide_reader(frame, cols[1], app);
+}
+
+/// Left pane: the discoverable doc index.
+fn render_guide_index(frame: &mut Frame, area: Rect, app: &App) {
+    let block = panel_neutral(" INDEX ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if app.guide_docs.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("no docs", theme::muted()))),
+            inner,
+        );
+        return;
+    }
+
+    let mut rows = Vec::with_capacity(app.guide_docs.len());
+    for _ in 0..app.guide_docs.len() {
+        rows.push(Constraint::Length(1));
+    }
+    rows.push(Constraint::Min(0));
+    let lines = Layout::vertical(rows).split(inner);
+
+    for (i, doc) in app.guide_docs.iter().enumerate() {
+        let selected = i == app.guide_selection;
+        let style = if selected {
+            theme::title().add_modifier(Modifier::REVERSED)
+        } else {
+            theme::text()
+        };
+        let kind = Span::styled(format!("{:>10} ", doc.kind.label()), theme::muted());
+        let title = Span::styled(doc.title.clone(), style);
+        frame.render_widget(Paragraph::new(Line::from(vec![kind, title])), lines[i]);
+    }
+}
+
+/// Right pane: the selected doc's body, scrolled. The provenance footer line is
+/// shown above the body when the doc carries one.
+fn render_guide_reader(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = panel_neutral(" DOCUMENT ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let body = app.guide_body();
+    if body.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "select a doc on the left",
+                theme::muted(),
+            ))),
+            inner,
+        );
+        return;
+    }
+
+    let provenance = app
+        .guide_docs
+        .get(app.guide_selection)
+        .and_then(|d| d.provenance.clone());
+
+    let n = body.len();
+    let height = inner.height as usize;
+    let max_scroll = n.saturating_sub(height);
+    if app.guide_scroll > max_scroll {
+        app.guide_scroll = max_scroll;
+    }
+
+    let mut lines: Vec<Line> = body
+        .iter()
+        .skip(app.guide_scroll)
+        .map(|l| {
+            let style = if l.starts_with('#') {
+                theme::title()
+            } else {
+                theme::text()
+            };
+            Line::from(Span::styled(l.clone(), style))
+        })
+        .collect();
+    if let Some(p) = provenance {
+        lines.push(Line::from(Span::styled(
+            format!("PROVENANCE: {p}"),
+            theme::gold_muted(),
+        )));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).scroll((app.guide_scroll as u16, 0)),
+        inner,
+    );
 }
 
 #[cfg(test)]

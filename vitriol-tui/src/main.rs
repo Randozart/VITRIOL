@@ -8,6 +8,7 @@ mod app;
 mod config;
 mod config_edit;
 mod control;
+mod guide;
 mod model;
 mod nvidia;
 mod poller;
@@ -113,6 +114,20 @@ fn main() -> io::Result<()> {
                         app.profile_backspace();
                     }
                     KeyCode::Char(c) if app.tab == app::Tab::Profiles => app.profile_type(c),
+                    KeyCode::Char('j') | KeyCode::Down if app.tab == app::Tab::Guide => {
+                        app.guide_move(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if app.tab == app::Tab::Guide => {
+                        app.guide_move(-1);
+                    }
+                    KeyCode::Char('p') | KeyCode::PageDown if app.tab == app::Tab::Guide => {
+                        let height = 40usize;
+                        app.guide_scroll_lines(20, height);
+                    }
+                    KeyCode::Char('n') | KeyCode::PageUp if app.tab == app::Tab::Guide => {
+                        let height = 40usize;
+                        app.guide_scroll_lines(-20, height);
+                    }
                     KeyCode::Enter if app.tab == app::Tab::Controls => {
                         app.run_selected_action(&ctrl_tx);
                     }

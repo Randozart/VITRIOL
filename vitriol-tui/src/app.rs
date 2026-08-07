@@ -31,11 +31,13 @@ pub enum Tab {
     Subsystems,
     /// Profiles: edit the active config INI (form-style) + manage profiles.
     Profiles,
+    /// Guide: scroll VITRIOL docs, provenance, and the Pymander corpus.
+    Guide,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
@@ -43,6 +45,7 @@ impl Tab {
         Tab::Hermetis,
         Tab::Subsystems,
         Tab::Profiles,
+        Tab::Guide,
     ];
 
     /// Short label used in the tab bar.
@@ -55,6 +58,7 @@ impl Tab {
             Tab::Hermetis => "HERMETIS",
             Tab::Subsystems => "SUBSYSTEMS",
             Tab::Profiles => "PROFILES",
+            Tab::Guide => "GUIDE",
         }
     }
 }
@@ -119,6 +123,12 @@ pub struct App {
     pub profile_selection: usize,
     /// Inline edit buffer (editing the selected entry's value when Some).
     pub profile_edit: Option<String>,
+    /// Discovered guide docs for the GUIDE tab.
+    pub guide_docs: Vec<crate::guide::Doc>,
+    /// Cursor into the GUIDE index.
+    pub guide_selection: usize,
+    /// Scroll offset within the rendered guide body.
+    pub guide_scroll: usize,
     /// When the previous tick was consumed, for per-tick hooks.
     last_tick: Instant,
 }
@@ -128,6 +138,7 @@ impl App {
     pub fn new(cfg: Config, history_cap: usize) -> Self {
         let profiles = profile::discover(&cfg);
         let config_file = crate::config_edit::ConfigFile::load(&cfg);
+        let guide_docs = crate::guide::discover(&cfg);
         Self {
             cfg,
             snapshot: Snapshot::default(),
@@ -147,6 +158,9 @@ impl App {
             config_file,
             profile_selection: 0,
             profile_edit: None,
+            guide_docs,
+            guide_selection: 0,
+            guide_scroll: 0,
             last_tick: Instant::now(),
         }
     }
@@ -263,6 +277,39 @@ impl App {
     pub fn profile_reload(&mut self) {
         self.config_file = crate::config_edit::ConfigFile::load(&self.cfg);
         self.profile_edit = None;
+    }
+
+    /// Move the GUIDE index cursor, wrapping.
+    pub fn guide_move(&mut self, delta: isize) {
+        let len = self.guide_docs.len();
+        if len == 0 {
+            return;
+        }
+        let cur = self.guide_selection as isize;
+        self.guide_selection = ((cur + delta).rem_euclid(len as isize)) as usize;
+        self.guide_scroll = 0;
+    }
+
+    /// Scroll the rendered guide body within `height` visible lines.
+    pub fn guide_scroll_lines(&mut self, delta: isize, height: usize) {
+        let Some(doc) = self.guide_docs.get(self.guide_selection) else {
+            return;
+        };
+        let text = std::fs::read_to_string(&doc.path).unwrap_or_default();
+        let max = crate::guide::render_markdown(&text)
+            .len()
+            .saturating_sub(height);
+        let cur = self.guide_scroll as isize;
+        self.guide_scroll = ((cur + delta).max(0)).min(max as isize) as usize;
+    }
+
+    /// The currently selected guide doc's rendered lines.
+    pub fn guide_body(&self) -> Vec<String> {
+        let Some(doc) = self.guide_docs.get(self.guide_selection) else {
+            return Vec::new();
+        };
+        let text = std::fs::read_to_string(&doc.path).unwrap_or_default();
+        crate::guide::render_markdown(&text)
     }
 
     /// The CONTROLS action list.
@@ -406,11 +453,11 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 7);
+        assert_eq!(Tab::ALL.len(), 8);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
-        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Profiles);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Guide);
     }
 }

@@ -8,13 +8,13 @@
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Gauge, Paragraph, Sparkline, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Sparkline, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, LogSource, Tab};
 use crate::control::Action;
 use crate::model::Snapshot;
-use crate::{subsystems, theme};
+use crate::{braille, subsystems, theme};
 
 /// Draw the whole UI for the current app state.
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -250,12 +250,14 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
             vram_ratio * 100.0
         ),
         vram_ratio,
+        theme::BrailleRamp::Capacity,
     );
     render_gauge_row(
         frame,
         rows[2],
         &format!("UTIL  {}%", gpu.util_pct),
         gpu.util_pct as f64 / 100.0,
+        theme::BrailleRamp::Activity,
     );
 
     frame.render_widget(
@@ -281,26 +283,43 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     frame.render_widget(Paragraph::new(proc_lines), rows[4]);
 }
 
-/// One btop-style gauge row: a muted label line above a fill bar.
-fn render_gauge_row(frame: &mut Frame, area: Rect, label: &str, ratio: f64) {
+/// One btop-style gauge row: a muted label line above a braille-dot fill bar.
+fn render_gauge_row(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    ratio: f64,
+    ramp: theme::BrailleRamp,
+) {
     let cols =
         Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(label, theme::muted()))),
+        Paragraph::new(Line::from(Span::styled(
+            label,
+            theme::gauge_label_style(ramp, ratio),
+        ))),
         cols[0],
     );
-    let fill_style = if ratio > 0.8 {
-        theme::gauge_fill_warn()
-    } else {
-        theme::gauge_fill()
-    };
-    frame.render_widget(
-        Gauge::default()
-            .ratio(ratio.clamp(0.0, 1.0))
-            .label("")
-            .gauge_style(fill_style),
-        cols[1],
-    );
+    render_braille_bar(frame, cols[1], ratio, ramp);
+}
+
+/// A braille-dot gradient gauge filling `area` at `ratio`, colored by `ramp`.
+/// Cells span the full width; empty cells render blank, lit cells get the ramp
+/// color at their position fraction.
+fn render_braille_bar(frame: &mut Frame, area: Rect, ratio: f64, ramp: theme::BrailleRamp) {
+    let bar = braille::bar(ratio, area.width as usize);
+    let spans: Vec<Span> = bar
+        .iter()
+        .map(|c| {
+            let style = if c.lit {
+                Style::new().fg(ramp.color(c.t)).bg(theme::BG)
+            } else {
+                theme::muted()
+            };
+            Span::styled(c.ch.to_string(), style)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// DECODE card: sparkline of recent t/s plus the latest value.
@@ -388,50 +407,68 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
     render_metric_row(
         frame,
         g_rows[1],
-        "VRAM",
-        vram_ratio,
-        &format!(
-            "{:.2}/{:.2} GiB {:.0}%",
-            gpu.vram_used_mib as f64 / 1024.0,
-            gpu.vram_total_mib as f64 / 1024.0,
-            vram_ratio * 100.0
-        ),
+        MetricRow {
+            label: "VRAM",
+            ratio: vram_ratio,
+            value: format!(
+                "{:.2}/{:.2} GiB {:.0}%",
+                gpu.vram_used_mib as f64 / 1024.0,
+                gpu.vram_total_mib as f64 / 1024.0,
+                vram_ratio * 100.0
+            ),
+            ramp: theme::BrailleRamp::Capacity,
+        },
     );
     render_metric_row(
         frame,
         g_rows[2],
-        "UTIL",
-        gpu.util_pct as f64 / 100.0,
-        &format!("{}%", gpu.util_pct),
+        MetricRow {
+            label: "UTIL",
+            ratio: gpu.util_pct as f64 / 100.0,
+            value: format!("{}%", gpu.util_pct),
+            ramp: theme::BrailleRamp::Activity,
+        },
     );
     render_metric_row(
         frame,
         g_rows[3],
-        "TEMP",
-        gpu.temp_c as f64 / 100.0,
-        &format!("{}°C", gpu.temp_c),
+        MetricRow {
+            label: "TEMP",
+            ratio: gpu.temp_c as f64 / 100.0,
+            value: format!("{}°C", gpu.temp_c),
+            ramp: theme::BrailleRamp::Heat,
+        },
     );
     render_metric_row(
         frame,
         g_rows[4],
-        "SM CLK",
-        gpu.sm_clock_mhz as f64 / 2000.0,
-        &format!("{} MHz", gpu.sm_clock_mhz),
+        MetricRow {
+            label: "SM CLK",
+            ratio: gpu.sm_clock_mhz as f64 / 2000.0,
+            value: format!("{} MHz", gpu.sm_clock_mhz),
+            ramp: theme::BrailleRamp::Pulse,
+        },
     );
     render_metric_row(
         frame,
         g_rows[5],
-        "MEM CLK",
-        gpu.mem_clock_mhz as f64 / 8000.0,
-        &format!("{} MHz", gpu.mem_clock_mhz),
+        MetricRow {
+            label: "MEM CLK",
+            ratio: gpu.mem_clock_mhz as f64 / 8000.0,
+            value: format!("{} MHz", gpu.mem_clock_mhz),
+            ramp: theme::BrailleRamp::Pulse,
+        },
     );
     let power_ratio = ratio(gpu.power_w, gpu.power_limit_w);
     render_metric_row(
         frame,
         g_rows[6],
-        "POWER",
-        power_ratio,
-        &format!("{:.0}W / {:.0}W", gpu.power_w, gpu.power_limit_w),
+        MetricRow {
+            label: "POWER",
+            ratio: power_ratio,
+            value: format!("{:.0}W / {:.0}W", gpu.power_w, gpu.power_limit_w),
+            ramp: theme::BrailleRamp::Power,
+        },
     );
 
     let proc_panel = panel_neutral(" PROCESSES ");
@@ -456,8 +493,17 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Paragraph::new(lines), p_inner);
 }
 
-/// A GPU metric row: label | gauge | value.
-fn render_metric_row(frame: &mut Frame, area: Rect, label: &str, r: f64, value: &str) {
+/// One GPU metric row's data: label, value text, ratio, and color ramp.
+/// Bundled to keep `render_metric_row` at 5 params (AGENTS §5.3).
+struct MetricRow {
+    label: &'static str,
+    value: String,
+    ratio: f64,
+    ramp: theme::BrailleRamp,
+}
+
+/// A GPU metric row: label | braille gauge | value.
+fn render_metric_row(frame: &mut Frame, area: Rect, metric: MetricRow) {
     let cols = Layout::horizontal([
         Constraint::Length(8),
         Constraint::Min(0),
@@ -465,23 +511,15 @@ fn render_metric_row(frame: &mut Frame, area: Rect, label: &str, r: f64, value: 
     ])
     .split(area);
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(label, theme::muted()))),
+        Paragraph::new(Line::from(Span::styled(metric.label, theme::muted()))),
         cols[0],
     );
-    let fill_style = if r > 0.8 {
-        theme::gauge_fill_warn()
-    } else {
-        theme::gauge_fill()
-    };
+    render_braille_bar(frame, cols[1], metric.ratio, metric.ramp);
     frame.render_widget(
-        Gauge::default()
-            .ratio(r.clamp(0.0, 1.0))
-            .label("")
-            .gauge_style(fill_style),
-        cols[1],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(value, theme::live()))),
+        Paragraph::new(Line::from(Span::styled(
+            metric.value,
+            theme::gauge_value_style(metric.ramp, metric.ratio),
+        ))),
         cols[2],
     );
 }

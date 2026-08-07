@@ -5,6 +5,7 @@
 //! See `.opencode/plans/2026-08-07-vitriol-tui.md`.
 
 mod app;
+mod braille;
 mod config;
 mod config_edit;
 mod control;

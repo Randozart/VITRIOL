@@ -1,0 +1,57 @@
+CREATE TABLE config (
+            key   TEXT PRIMARY KEY,
+            value TEXT
+        );
+CREATE TABLE edges (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_type    TEXT NOT NULL,
+            from_id      INTEGER NOT NULL,
+            to_type      TEXT NOT NULL,
+            to_id        INTEGER NOT NULL,
+            relation     TEXT NOT NULL,
+            weight       REAL DEFAULT 1.0,
+            updated_at   TEXT DEFAULT (datetime('now')),
+            UNIQUE(from_type, from_id, to_type, to_id, relation)
+        );
+CREATE TABLE embeddings (
+            content_hash TEXT PRIMARY KEY,
+            content_type TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
+CREATE TABLE episodes (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   TEXT NOT NULL,
+            turn_index   INTEGER NOT NULL,
+            role         TEXT NOT NULL,
+            content      TEXT NOT NULL,
+            token_count  INTEGER DEFAULT 0,
+            created_at   TEXT DEFAULT (datetime('now'))
+        );
+CREATE INDEX idx_episodes_created
+            ON episodes(created_at);
+CREATE INDEX idx_episodes_session
+            ON episodes(session_id, turn_index);
+CREATE INDEX idx_nodes_label_cur
+            ON knowledge_nodes(label, superseded);
+CREATE TABLE knowledge_nodes (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            label        TEXT NOT NULL,
+            summary      TEXT NOT NULL,
+            source_min   INTEGER,
+            source_max   INTEGER,
+            strength     REAL DEFAULT 1.0,
+            git_rev      TEXT DEFAULT '',
+            superseded   INTEGER DEFAULT 0,
+            superseded_by INTEGER,
+            created_at   TEXT DEFAULT (datetime('now')),
+            UNIQUE(label, git_rev)
+        );
+CREATE TABLE sessions (
+            session_id   TEXT PRIMARY KEY,
+            label        TEXT,
+            turn_count   INTEGER DEFAULT 0,
+            created_at   TEXT DEFAULT (datetime('now')),
+            updated_at   TEXT DEFAULT (datetime('now'))
+        );
+CREATE TABLE sqlite_sequence(name,seq);

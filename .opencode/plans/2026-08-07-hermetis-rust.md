@@ -77,4 +77,19 @@ supersede/selection behavior, search ordering).
 
 ## 7. Results
 
-(fill as I go)
+- **P1 landed**: crate `libhermes` (rusqlite bundled, sha2). `db.rs` ports the
+  full DB layer byte-for-byte: SCHEMA_DDL (identical to Python `_init_db`),
+  WAL + `synchronous=NORMAL` + `busy_timeout=30000`, single write mutex
+  (Python `_write_lock`), `get_or_create_session`, `store_episode` (auto
+  turn_index, turn_count bump, `follows` edge, committed edge write),
+  `store_node` (versioned supersede, never hard-discard), fetch/search shapes,
+  `edge_targets` (explicit UNION column lists), `get_or_create_edge`/
+  `update_edge_weight`, `config`, and the embeddings cache
+  (`content_hash` = sha256 hex, get/store blob).
+- **Schema parity verified**: Rust-created DB's `sqlite_master` is byte-identical
+  to a Python-created DB (57 statements) — permanent fixture test
+  `tests/fixtures/python.schema` + `tests/parity.rs` (byte-parity + readback of
+  Python-shaped data). 7 tests green, clippy/fmt/Praetor clean.
+- Next: P2 (retrieval/scorer/compact/hebbian, bit-exact semantic-off), P3 (axum
+  server + parity harness), P4 (consolidation + repomap), P5 (Pymander CLI),
+  P6 (delete Python modules + repoint launchers).

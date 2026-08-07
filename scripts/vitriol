@@ -1593,7 +1593,7 @@ print(f'pin{o[\"pin_first_n_layers\"]} ctx{o[\"context\"]} ubatch{o[\"ubatch_siz
 # Parse config before command dispatch so env vars override
 parse_config
 
-CMD="${1:-help}"
+CMD="${1:-tui}"
 case "$CMD" in
     run)
         shift

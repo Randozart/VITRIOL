@@ -142,6 +142,14 @@ class PymanderStoreTests(unittest.TestCase):
         # Falls back to the first installed domain, so still non-empty.
         self.assertTrue(block)
 
+    def test_promotion_candidates_curated(self):
+        res = pymander.add_candidate("systems", "Gemini answer",
+                                     "the promoted insight", source="ascensus")
+        self.assertEqual(res["candidate"], "Gemini answer")
+        listed = pymander.list_candidates("systems")
+        self.assertEqual(listed["systems"][0]["label"], "Gemini answer")
+        self.assertEqual(listed["systems"][0]["source"], "ascensus")
+
 
 if __name__ == "__main__":
     unittest.main()

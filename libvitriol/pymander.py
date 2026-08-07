@@ -324,6 +324,60 @@ def _domain_section(domain: str, query: str, top_k: int, budget: int) -> str:
     return "\n".join(parts)
 
 
+def _candidates_path() -> str:
+    """JSON file listing curated Ascensus/Hermetis answers worth promoting."""
+    return os.path.join(db.MEMORY_DIR, "pymander", "candidates.json")
+
+
+def add_candidate(domain: str, label: str, summary: str, source: str = "") -> dict:
+    """Add a promotion candidate (curated: a user/machine decision to fold in).
+
+    Candidates are NOT auto-merged into the corpus — the user reviews them and
+    either re-ingests via `vitriol pymander ingest` or deletes. This is the
+    learning loop's second half (Ascensus → Hermetis → candidate → curated
+    promotion), implemented per AGENTS cleanroom (quality + license care).
+    """
+    domain = sanitize_domain(domain)
+    path = _candidates_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            data = {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        data = {}
+    data.setdefault(domain, []).append({
+        "label": label, "summary": summary, "source": source})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2, sort_keys=True)
+    return {"domain": domain, "candidate": label}
+
+
+def list_candidates(domain: str = "") -> dict:
+    """List promotion candidates (all domains, or one domain)."""
+    try:
+        with open(_candidates_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+    if domain:
+        return {domain: data.get(domain, [])}
+    return data
+
+
+def _cmd_promote(args) -> int:
+    if args.action == "add":
+        res = add_candidate(args.domain, args.label, args.summary, args.source)
+    elif args.action == "list":
+        res = list_candidates(args.domain)
+    else:
+        print("usage: promote add <domain> <label> <summary> | promote list [domain]")
+        return 2
+    print(json.dumps(res, indent=2, sort_keys=True, default=str))
+    return 0
+
+
 def estimate_tokens_doctrine(block: str) -> int:
     """Estimate tokens of a doctrine block (4 chars ≈ 1 token)."""
     return retrieval.estimate_tokens(block)
@@ -379,6 +433,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctrine.add_argument("--query", default="")
     p_doctrine.add_argument("--budget", type=int, default=3000)
     p_doctrine.set_defaults(fn=_cmd_doctrine)
+
+    p_promote = sub.add_parser(
+        "promote", help="curate Ascensus/Hermetis answers into candidates")
+    p_promote.add_argument("action", choices=["add", "list"])
+    p_promote.add_argument("domain", nargs="?")
+    p_promote.add_argument("label", nargs="?")
+    p_promote.add_argument("summary", nargs="?")
+    p_promote.add_argument("--source", default="")
+    p_promote.set_defaults(fn=_cmd_promote)
     return ap
 
 

@@ -20,7 +20,9 @@ pub mod db;
 pub mod hebbian;
 pub mod retrieval;
 pub mod scorer;
+pub mod server;
 
 /// Convenience re-exports.
 pub use db::{EdgeSpec, EpisodeMeta, EpisodeWrite, Hermes, NodeMeta};
 pub use retrieval::{retrieve, RetrieveParams};
+pub use server::{router, ServerState};

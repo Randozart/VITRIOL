@@ -161,7 +161,7 @@ impl Hermes {
     }
 
     /// Open a connection with the Python pragmas + schema, creating the dir.
-    fn conn(&self, project_id: &str) -> Result<Connection> {
+    pub fn conn(&self, project_id: &str) -> Result<Connection> {
         let path = self.db_path(project_id);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)

@@ -116,4 +116,28 @@ relaunch (avoid the stale-release-binary trap).
 
 ## 9. Results
 
-(fill as I go)
+- **C1** (`ebf14c3`): 11 curated `docs/optimizations/*.md` (6 validated, 5
+  refuted/recorded), numbers cited from spagyric plans + docs.
+- **C2** (`cde5756`): `pulldown-cmark 0.12` dep; `markdown.rs` CommonMark →
+  styled lines (headings/code/lists/quotes/rules/links/tables, hard-wrapped,
+  Options::all for tables); `guide.rs` discovers only `docs/optimizations/`
+  (title + summary + provenance); reader uses rendered lines; SUBSYSTEMS glyphs
+  now use the same alchemical glyphs as the dashboard (🜂/🜄/🜁).
+- **C3** (`151ff8c`): PROFILES two-pane (config rows | profile list),
+  save-as prompt (`s`), load (`l`/Enter), delete (`d`, installed only), reload
+  (`r`), pane toggle (`,`/`.`); main.rs key handlers split per-tab to satisfy
+  Praetor complexity (also fixed latent global-`r` shadowing Profiles reload).
+- **C4** (`073b7c1`): `spagyric_sweep.py --build-profile <name>` writes per-knob
+  winner (`correct=PASS`, max decode/concurrent t/s) to
+  `<profiles>/<name>-swept/config` + meta (never clobbers); CONTROLS gains
+  `sweep+save: <name>`.
+- **C5** (`b3e4c77`): `secrets.rs` (`~/.vitriol/secrets`, 0600, masked display,
+  temp+rename with per-target tmp name); `config::secrets_path()`; SUBSYSTEMS
+  ASCENSUS row reads secrets + Enter opens key/model editor; `plugins/copula.ts`
+  reads secrets file first (env override), synced to installed copy. Real-key
+  leak audit clean (only fake test fixtures in repo); `~/.vitriol/secrets` never
+  written under the repo; test pollution of the real secrets file fixed and
+  cleaned.
+- Gates: 66 tests, clippy `-D warnings` clean, fmt clean, Praetor PASS on all
+  changed files, `cargo build --release` rebuilt (11:58).
+

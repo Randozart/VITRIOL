@@ -1275,6 +1275,8 @@ usage() {
   vitriol calibrate [--quick] [--model <path>]  auto-tune config for this hardware+model
   vitriol setup              set CAP_IPC_LOCK capability
   vitriol tui                terminal ops dashboard (Ratatui, auto-builds first run)
+  vitriol install [--prefix DIR] [--no-build]  symlink vitriol onto your PATH
+  vitriol uninstall          remove the install-script symlinks
   vitriol pymander list     list Pymander reference-mind domains
   vitriol pymander ingest <domain> <file.md|->  ingest corpus as atomic nodes
   vitriol pymander nodes <domain>   show a domain's current nodes
@@ -2375,6 +2377,17 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             (cd "${PROJECT_DIR}/vitriol-tui" && cargo build --release) || exit 1
         fi
         exec env VITRIOL_REPO="$PROJECT_DIR" "$TUI_BIN"
+        ;;
+
+    install)
+        # Symlink `vitriol` (and vitriol-tui) onto PATH via scripts/install.sh.
+        shift
+        exec bash "${PROJECT_DIR}/scripts/install.sh" "$@"
+        ;;
+
+    uninstall)
+        # Remove the install.sh symlinks.
+        exec bash "${PROJECT_DIR}/scripts/install.sh" --uninstall
         ;;
 
     pymander)

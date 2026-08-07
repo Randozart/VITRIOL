@@ -59,6 +59,11 @@ pub fn banner() -> Style {
     Style::new().fg(GOLD).bg(BG).add_modifier(Modifier::BOLD)
 }
 
+/// Muted gold for non-port (logical-layer) glyphs.
+pub fn gold_muted() -> Style {
+    Style::new().fg(GOLD).bg(BG)
+}
+
 /// Border style for a service panel, coloured by liveness: green when up,
 /// red when down, dim when unknown.
 pub fn panel_border(up: bool) -> Style {

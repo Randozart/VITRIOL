@@ -12,6 +12,7 @@ mod nvidia;
 mod poller;
 mod profile;
 mod search;
+mod subsystems;
 mod theme;
 mod ui;
 

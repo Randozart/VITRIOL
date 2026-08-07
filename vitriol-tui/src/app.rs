@@ -27,16 +27,19 @@ pub enum Tab {
     Controls,
     /// Hermetis memory: stats, recent stores, search.
     Hermetis,
+    /// Subsystem diagnostics: Tria Prima services + alchemical layers.
+    Subsystems,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 5] = [
+    pub const ALL: [Tab; 6] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
         Tab::Controls,
         Tab::Hermetis,
+        Tab::Subsystems,
     ];
 
     /// Short label used in the tab bar.
@@ -47,6 +50,7 @@ impl Tab {
             Tab::Logs => "LOGS",
             Tab::Controls => "CONTROLS",
             Tab::Hermetis => "HERMETIS",
+            Tab::Subsystems => "SUBSYSTEMS",
         }
     }
 }
@@ -310,11 +314,11 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 5);
+        assert_eq!(Tab::ALL.len(), 6);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
-        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Hermetis);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Subsystems);
     }
 }

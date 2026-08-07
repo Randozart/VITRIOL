@@ -14,7 +14,7 @@ use ratatui::Frame;
 use crate::app::{App, LogSource, Tab};
 use crate::control::Action;
 use crate::model::Snapshot;
-use crate::theme;
+use crate::{subsystems, theme};
 
 /// Draw the whole UI for the current app state.
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -33,6 +33,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Logs => render_logs_tab(frame, rows[1], app),
         Tab::Controls => render_controls_tab(frame, rows[1], app),
         Tab::Hermetis => render_hermetis_tab(frame, rows[1], app),
+        Tab::Subsystems => render_subsystems_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -786,6 +787,45 @@ fn short_name(name: &str) -> String {
         .next()
         .map(str::to_owned)
         .unwrap_or_else(|| name.to_string())
+}
+
+/// SUBSYSTEMS tab: one row per Tria Prima service + alchemical layer, glyph,
+/// liveness dot, live value, and the config keys that drive it (read-only).
+fn render_subsystems_tab(frame: &mut Frame, area: Rect, app: &App) {
+    let rows = subsystems::rows(&app.cfg, &app.snapshot);
+    let title = format!(" {} ALCHEMICAL LAYERS ", theme::GLYPH_GPU);
+    let block = panel_neutral(&title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut inner_rows = Vec::new();
+    for _ in &rows {
+        inner_rows.push(Constraint::Length(2));
+    }
+    inner_rows.push(Constraint::Min(0));
+    let lines = Layout::vertical(inner_rows).split(inner);
+
+    for (i, row) in rows.iter().enumerate() {
+        let dot = match row.status {
+            subsystems::Status::Up => Span::styled("●", theme::live()),
+            subsystems::Status::Down => Span::styled("●", Style::default().fg(theme::RED)),
+            subsystems::Status::Unknown => Span::styled("◌", theme::muted()),
+        };
+        let group = if row.group == subsystems::GROUP_SERVICES {
+            theme::title()
+        } else {
+            theme::gold_muted()
+        };
+        let line = Line::from(vec![
+            dot,
+            Span::styled(format!(" {}", row.glyph), group),
+            Span::styled(format!(" {:<10}", row.name), theme::title()),
+            Span::styled(format!(" {}", row.value), theme::text()),
+            Span::styled("   … ", theme::muted()),
+            Span::styled(row.config.join(" · "), theme::muted()),
+        ]);
+        frame.render_widget(Paragraph::new(line), lines[i]);
+    }
 }
 
 #[cfg(test)]

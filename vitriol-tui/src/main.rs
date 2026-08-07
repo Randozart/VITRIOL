@@ -10,6 +10,7 @@ mod config;
 mod config_edit;
 mod control;
 mod guide;
+mod markdown;
 mod model;
 mod nvidia;
 mod poller;

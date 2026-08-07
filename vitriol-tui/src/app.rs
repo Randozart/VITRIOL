@@ -129,6 +129,8 @@ pub struct App {
     pub guide_selection: usize,
     /// Scroll offset within the rendered guide body.
     pub guide_scroll: usize,
+    /// Reader pane width at last draw (markdown wraps to this).
+    pub guide_width: usize,
     /// When the previous tick was consumed, for per-tick hooks.
     last_tick: Instant,
 }
@@ -161,6 +163,7 @@ impl App {
             guide_docs,
             guide_selection: 0,
             guide_scroll: 0,
+            guide_width: 80,
             last_tick: Instant::now(),
         }
     }
@@ -296,20 +299,20 @@ impl App {
             return;
         };
         let text = std::fs::read_to_string(&doc.path).unwrap_or_default();
-        let max = crate::guide::render_markdown(&text)
+        let max = crate::markdown::render(&text, self.guide_width.max(1))
             .len()
             .saturating_sub(height);
         let cur = self.guide_scroll as isize;
         self.guide_scroll = ((cur + delta).max(0)).min(max as isize) as usize;
     }
 
-    /// The currently selected guide doc's rendered lines.
-    pub fn guide_body(&self) -> Vec<String> {
+    /// The currently selected guide doc's rendered, wrapped lines.
+    pub fn guide_body(&self) -> Vec<ratatui::text::Line<'static>> {
         let Some(doc) = self.guide_docs.get(self.guide_selection) else {
             return Vec::new();
         };
         let text = std::fs::read_to_string(&doc.path).unwrap_or_default();
-        crate::guide::render_markdown(&text)
+        crate::markdown::render(&text, self.guide_width.max(1))
     }
 
     /// The CONTROLS action list.

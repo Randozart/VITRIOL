@@ -989,18 +989,23 @@ fn render_guide_index(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             theme::text()
         };
-        let kind = Span::styled(format!("{:>10} ", doc.kind.label()), theme::muted());
-        let title = Span::styled(doc.title.clone(), style);
-        frame.render_widget(Paragraph::new(Line::from(vec![kind, title])), lines[i]);
+        let mut spans = vec![Span::styled("⚗ ", theme::gold_muted())];
+        spans.push(Span::styled(doc.title.clone(), style));
+        if let Some(summary) = &doc.summary {
+            spans.push(Span::styled(format!("  {summary}"), theme::muted()));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), lines[i]);
     }
 }
 
 /// Right pane: the selected doc's body, scrolled. The provenance footer line is
-/// shown above the body when the doc carries one.
+/// shown after the body when the doc carries one.
 fn render_guide_reader(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = panel_neutral(" DOCUMENT ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    app.guide_width = inner.width as usize;
 
     let body = app.guide_body();
     if body.is_empty() {
@@ -1026,18 +1031,7 @@ fn render_guide_reader(frame: &mut Frame, area: Rect, app: &mut App) {
         app.guide_scroll = max_scroll;
     }
 
-    let mut lines: Vec<Line> = body
-        .iter()
-        .skip(app.guide_scroll)
-        .map(|l| {
-            let style = if l.starts_with('#') {
-                theme::title()
-            } else {
-                theme::text()
-            };
-            Line::from(Span::styled(l.clone(), style))
-        })
-        .collect();
+    let mut lines: Vec<Line> = body.into_iter().skip(app.guide_scroll).collect();
     if let Some(p) = provenance {
         lines.push(Line::from(Span::styled(
             format!("PROVENANCE: {p}"),

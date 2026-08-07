@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use crate::config::Config;
 use crate::model::Snapshot;
+use crate::theme;
 
 /// Liveness colour for a subsystem row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,7 +80,7 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
     };
     vec![
         Row {
-            glyph: "▀",
+            glyph: theme::GLYPH_GEN,
             name: "GEN",
             value: gen.1,
             status: gen.0,
@@ -87,7 +88,7 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
             group: GROUP_SERVICES,
         },
         Row {
-            glyph: "☽",
+            glyph: theme::GLYPH_HERM,
             name: "HERMETIS",
             value: herm.1,
             status: herm.0,
@@ -95,7 +96,7 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
             group: GROUP_SERVICES,
         },
         Row {
-            glyph: "◼",
+            glyph: theme::GLYPH_EMBED,
             name: "EMBED",
             value: embed.1,
             status: embed.0,

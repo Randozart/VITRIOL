@@ -114,5 +114,16 @@ supersede/selection behavior, search ordering).
   import-graph in-degree ranking, budgeted Aider-style map, git-rev versioned
   node storage) + `/hermetis/repo_map` route. 32 tests,
   clippy/fmt/Praetor clean (Praetor-driven single-loop decomposition).
-- Next: P5 (Pymander CLI + `/pymander/*`), P6 (delete Python memory modules +
-  repoint launchers + provenance).
+- **P5 landed** (`cd424f2`): `pymander.rs` (domains, markdown ingest with
+  versioned supersede + strength 1.0 parity, list/search/select/doctrine,
+  promote candidates) + `pymander` CLI bin + `/pymander/{list,search,select,
+  context}` routes. Live CLI + server smoke (ingest → search → doctrine).
+- **P6 landed** (`9d043b1`): deleted `libvitriol/hermetis/`,
+  `hermetis_server.py`, `pymander.py`, `pymander_test.py` (+ stale `__pycache__`);
+  `launch_copula.sh` + `launch_vitriol_full.sh` + `vitriol pymander` now run the
+  Rust `hermes-server` / `pymander` binaries (release preferred, debug fallback).
+  `vitriol_shim.py` degrades gracefully (ImportError → MEMORY_MODE off).
+  Provenance `docs/provenance/hermes-rust.md`. Full stack re-verified live
+  (health/store/recent/ingest/search). 32 tests, clippy/fmt/Praetor clean.
+- **Hermetis Rust port complete.** Semantic-on (Rust embed provider) remains the
+  next phase when the GPU embed server is reachable.

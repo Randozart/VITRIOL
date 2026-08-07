@@ -67,7 +67,18 @@ port_pid() {
     return 0
 }
 port_up() { [ "$(health_of "$1")" != "down" ]; }
-health_of() { curl -s -m 3 "http://127.0.0.1:$1/health" 2>/dev/null || echo down; }
+# Retrying health check: a just-restarted server may answer nothing for a
+# second; retry briefly before declaring "down" (2026-08-07: status wrongly
+# reported down right after a restart).
+health_of() {
+    local out=""
+    for _ in 1 2 3; do
+        out=$(curl -s -m 2 "http://127.0.0.1:$1/health" 2>/dev/null)
+        if [ -n "$out" ]; then echo "$out"; return 0; fi
+        sleep 1
+    done
+    echo down
+}
 log_tail() { [ -f "$1" ] && tail -n "${2:-3}" "$1" || echo "  (no log at $1)"; }
 # Fatal markers only — the benign "failed to fit params" ngl warning must not trip this.
 log_err() { [ -f "$1" ] && grep -qiE "error while loading|cannot open shared|cannot open shared object|segmentation fault|ggml_assert|terminate called|abort\(|no such file|couldn't bind" "$1" && { echo "  !! log shows a fatal error:" && tail -n 4 "$1"; }; true; }

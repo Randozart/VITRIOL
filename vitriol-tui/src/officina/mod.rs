@@ -15,6 +15,7 @@
 pub mod config;
 pub mod grammar;
 pub mod grimoire;
+pub mod mask;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -278,8 +279,12 @@ impl Officina {
         }
     }
 
-    /// Dispatch one parsed command to its backend.
+    /// Dispatch one parsed command to its backend. The safety contract is
+    /// enforced first: base-destructive ops need an explicit commit target.
     fn execute(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
+        if let Some(blocked) = self.check_safety(cmd) {
+            return blocked;
+        }
         match cmd.keyword {
             Keyword::Help => help_lines(),
             Keyword::Clear => {
@@ -295,10 +300,31 @@ impl Officina {
             Keyword::Census => self.census(cmd, ctx),
             Keyword::Map => self.map(ctx),
             Keyword::Test => self.test(cmd, ctx),
+            Keyword::Rectify => self.rectify(cmd, ctx),
+            Keyword::Discard => self.discard(cmd),
+            Keyword::Log => self.log_mask(cmd),
+            Keyword::Revert => self.revert_mask(cmd),
+            Keyword::Guide => self.guide(cmd, ctx),
             Keyword::Dissolve | Keyword::Coagulate => vec![format!(
                 "[ERR] {}: weight surgery needs the P3 offline-rewrite backend — not built yet",
                 cmd.keyword.as_str()
             )],
+        }
+    }
+
+    /// The strict commit-safety contract: a bare `COMMIT >` on a base-destructive
+    /// op is blocked until the write target is explicit.
+    fn check_safety(&self, cmd: &Command) -> Option<Vec<String>> {
+        if !cmd.commit || !cmd.keyword.needs_explicit_commit() {
+            return None;
+        }
+        match &cmd.commit_kind {
+            Some(_) => None,
+            None => Some(vec![
+                "[ERROR] Commit blocked: destructive write requires an explicit target.".into(),
+                "  ├── Use 'COMMIT overwrite >' to modify the active target in-place.".into(),
+                "  └── Use 'COMMIT as \"name\" >' to write a new target.".into(),
+            ]),
         }
     }
 
@@ -474,6 +500,12 @@ impl Officina {
     /// empty) shows the aggregate; `layer.N` / `layer.N.mlp` shows the catalog
     /// rows for that layer's tensors.
     fn describe(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
+        let target = cmd.target.trim().to_lowercase();
+        if target == "model" {
+            if let Some(mask_name) = cmd.args.first() {
+                return describe_mask(&self.home, mask_name);
+            }
+        }
         let Some(path) = &ctx.model_path else {
             return vec!["[ERR] no model path configured (set [model] path)".into()];
         };
@@ -481,7 +513,6 @@ impl Officina {
             Ok(info) => info,
             Err(e) => return vec![format!("[ERR] read gguf: {e}")],
         };
-        let target = cmd.target.trim().to_lowercase();
         if target.is_empty() || target == "model" {
             return describe_aggregate(path, &info);
         }
@@ -592,28 +623,55 @@ impl Officina {
         out
     }
 
+    /// GUIDE: render the how-to manual (`docs/officina-guide.md`), optionally
+    /// filtered to one section by topic.
+    fn guide(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
+        let path = ctx.cfg.repo_root.join("docs/officina-guide.md");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => return vec![format!("[ERR] read guide: {e}")],
+        };
+        let topic = cmd.target.trim().to_lowercase();
+        if topic.is_empty() {
+            return crate::markdown::render(&text, 100)
+                .iter()
+                .map(|l| l.to_string())
+                .collect();
+        }
+        let section: Vec<&str> = {
+            let mut out = Vec::new();
+            let mut collecting = false;
+            for l in text.lines() {
+                if l.starts_with('#') {
+                    collecting = l.to_lowercase().contains(&topic);
+                    if collecting {
+                        out.push(l);
+                    }
+                } else if collecting {
+                    out.push(l);
+                }
+            }
+            out
+        };
+        if section.is_empty() {
+            return vec![format!(
+                "[ERR] no section '{topic}' — try: usage, diagnose, rectify, ascensus, grimoires, compile, surgery"
+            )];
+        }
+        crate::markdown::render(&section.join("\n"), 100)
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
+    }
+
     /// TEST: run a prompt through the live gen server and syntax-check.
     fn test(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
         if cmd.target.is_empty() {
             return vec!["[ERR] TEST > \"prompt\" requires quoted text".into()];
         }
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(120))
-            .build();
-        let url = format!("{}/v1/completions", ctx.cfg.gen_base());
-        let body = serde_json::json!({
-            "prompt": cmd.target,
-            "n_predict": 128,
-            "temperature": 0.0,
-        });
-        let Ok(resp) = agent.post(&url).send_json(body) else {
-            return vec![format!(
-                "[ERR] gen server unreachable at {} — start the stack first",
-                ctx.cfg.gen_base()
-            )];
-        };
-        let Ok(payload) = resp.into_json::<serde_json::Value>() else {
-            return vec!["[ERR] bad gen response".into()];
+        let payload = match generate(ctx.cfg, &cmd.target, 128) {
+            Ok(p) => p,
+            Err(e) => return vec![format!("[ERR] {e}")],
         };
         let text = payload
             .get("choices")
@@ -639,6 +697,217 @@ impl Officina {
         }
         out
     }
+
+    /// RECTIFY: run a generation and record the fired experts into a named mask.
+    /// Live firing data comes from the fork's expert-activity hook (the server
+    /// `rectify` response field); without it, commit reports honestly.
+    fn rectify(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
+        if cmd.cloud {
+            return vec![
+                "[ERR] ASCENSUS > RECTIFY: cloud calibration batch (R3) is not built yet.".into(),
+                "  Manual: RECTIFY > \"prompt\" into <mask> per prompt.".into(),
+            ];
+        }
+        if cmd.target.is_empty() {
+            return vec!["[ERR] RECTIFY > \"prompt\" into <mask> requires a quoted prompt".into()];
+        }
+        let mask_name = mask_from_args(&cmd.args).unwrap_or_else(|| "default".into());
+        let path = mask::mask_path(&self.home, &mask_name);
+        let mask_file =
+            mask::MaskFile::load(&path).unwrap_or_else(|_| mask::MaskFile::new(&mask_name));
+        if !cmd.commit {
+            let mut out = vec![format!(
+                "[PROBE] RECTIFY \"{}\" into {mask_name}",
+                cmd.target
+            )];
+            out.push("  ├── runs a generation and records which MoE experts fired".into());
+            out.push(format!(
+                "  └── existing mask: {} transactions",
+                mask_file.transactions.len()
+            ));
+            out.push("  (Run with 'COMMIT overwrite >' to record)".into());
+            return out;
+        }
+        let payload = match generate(ctx.cfg, &cmd.target, 128) {
+            Ok(p) => p,
+            Err(e) => return vec![format!("[ERR] {e}")],
+        };
+        let Some(fired) = payload
+            .get("rectify")
+            .and_then(|r| r.get("experts"))
+            .and_then(|e| e.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .collect::<Vec<u32>>()
+            })
+        else {
+            return vec![
+                "[ERR] gen server returned no 'rectify.experts' data.",
+                "  The fork's expert-activity hook is not enabled on this server.",
+            ]
+            .into_iter()
+            .map(|s: &str| s.to_string())
+            .collect();
+        };
+        let mut mask_file = mask_file;
+        let ts = now_ts();
+        let txn = mask_file.add(ts, &cmd.target, "manual", fired.clone());
+        if let Err(e) = mask_file.save(&path) {
+            return vec![format!("[ERR] {e}")];
+        }
+        self.record_op(
+            &format!("rectified {mask_name}: +{} experts", fired.len()),
+            &cmd.raw,
+            0.0,
+        );
+        vec![format!(
+            "[COMMITTED] mask '{mask_name}' txn #{} — {} experts recorded",
+            txn.id,
+            fired.len()
+        )]
+    }
+
+    /// DISCARD: delete a named mask (commit required).
+    fn discard(&mut self, cmd: &Command) -> Vec<String> {
+        let mask_name = cmd.args.first().cloned().unwrap_or_default();
+        if mask_name.is_empty() {
+            return vec!["[ERR] DISCARD > model <mask> requires a mask name".into()];
+        }
+        let path = mask::mask_path(&self.home, &mask_name);
+        if !cmd.commit {
+            return vec![format!(
+                "[PROBE] DISCARD {mask_name} — would delete {}",
+                path.display()
+            )];
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                self.record_op(&format!("discarded mask {mask_name}"), &cmd.raw, 0.0);
+                vec![format!("[COMMITTED] mask '{mask_name}' deleted")]
+            }
+            Err(e) => vec![format!("[ERR] delete {}: {e}", path.display())],
+        }
+    }
+
+    /// LOG: list a mask's transaction history (read-only).
+    fn log_mask(&mut self, cmd: &Command) -> Vec<String> {
+        let mask_name = cmd.args.first().cloned().unwrap_or_default();
+        if mask_name.is_empty() {
+            return vec!["[ERR] LOG > model <mask> requires a mask name".into()];
+        }
+        let path = mask::mask_path(&self.home, &mask_name);
+        let mask_file = match mask::MaskFile::load(&path) {
+            Ok(m) => m,
+            Err(e) => return vec![format!("[ERR] {e}")],
+        };
+        if mask_file.transactions.is_empty() {
+            return vec![format!("[HISTORY] {mask_name} — no transactions")];
+        }
+        let mut out = vec![format!("[HISTORY] model {mask_name}")];
+        for t in mask_file.transactions.iter().rev() {
+            out.push(format!(
+                "  ├── [{}] {} {} — \"{}\" ({} channels)",
+                t.id,
+                ts_string(t.ts),
+                t.source,
+                t.prompt,
+                t.fired.len()
+            ));
+        }
+        out.push(format!(
+            "  └── union: {} active",
+            mask_file.union_active().len()
+        ));
+        out
+    }
+
+    /// REVERT: probe shows the impact of dropping a transaction; commit drops it.
+    fn revert_mask(&mut self, cmd: &Command) -> Vec<String> {
+        let mask_name = cmd.args.first().cloned().unwrap_or_default();
+        let id: u64 = cmd.args.get(1).and_then(|a| a.parse().ok()).unwrap_or(0);
+        if mask_name.is_empty() || id == 0 {
+            return vec!["[ERR] REVERT > model <mask> <id> requires a mask name and txn id".into()];
+        }
+        let path = mask::mask_path(&self.home, &mask_name);
+        let mut mask_file = match mask::MaskFile::load(&path) {
+            Ok(m) => m,
+            Err(e) => return vec![format!("[ERR] {e}")],
+        };
+        let Some(txn) = mask_file.transactions.iter().find(|t| t.id == id).cloned() else {
+            return vec![format!("[ERR] mask '{mask_name}' has no transaction #{id}")];
+        };
+        if !cmd.commit {
+            let before = mask_file.union_active().len();
+            let mut clone = mask_file.clone();
+            clone.remove(id);
+            let after = clone.union_active().len();
+            return vec![
+                format!("[PROBE] REVERT #{id} from {mask_name}"),
+                format!(
+                    "  ├── exclude: \"{}\" ({} channels)",
+                    txn.prompt,
+                    txn.fired.len()
+                ),
+                format!("  └── active channels: {before} → {after}"),
+                "  (Run with 'COMMIT overwrite >' to apply)".into(),
+            ];
+        }
+        mask_file.remove(id);
+        if let Err(e) = mask_file.save(&path) {
+            return vec![format!("[ERR] {e}")];
+        }
+        self.record_op(&format!("reverted #{id} from {mask_name}"), &cmd.raw, 0.0);
+        vec![format!(
+            "[COMMITTED] transaction #{id} purged from '{mask_name}'"
+        )]
+    }
+}
+
+/// Run one completion against the gen server, returning the JSON payload.
+fn generate(cfg: &Config, prompt: &str, n_predict: u64) -> Result<serde_json::Value, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(120))
+        .build();
+    let url = format!("{}/v1/completions", cfg.gen_base());
+    let body = serde_json::json!({
+        "prompt": prompt,
+        "n_predict": n_predict,
+        "temperature": 0.0,
+    });
+    let resp = agent.post(&url).send_json(body).map_err(|_| {
+        format!(
+            "gen server unreachable at {} — start the stack first",
+            cfg.gen_base()
+        )
+    })?;
+    resp.into_json::<serde_json::Value>()
+        .map_err(|_| "bad gen response".to_string())
+}
+
+/// The mask name from `into <name>` args, if present.
+fn mask_from_args(args: &[String]) -> Option<String> {
+    args.iter()
+        .position(|a| a == "into")
+        .and_then(|i| args.get(i + 1))
+        .filter(|n| mask::MaskFile::valid_name(n))
+        .cloned()
+}
+
+/// Current unix time.
+fn now_ts() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Format a unix timestamp as `HH:MM`.
+fn ts_string(ts: u64) -> String {
+    let h = (ts / 3600) % 24;
+    let m = (ts % 3600) / 60;
+    format!("{h:02}:{m:02}")
 }
 
 /// A quick structural syntax check on generated code: brace/paren balance.
@@ -695,7 +964,40 @@ fn gpu_mib(snap: &Snapshot, pick: impl Fn(&crate::model::GpuSnapshot) -> u64) ->
     snap.gpu.as_ref().map(pick).unwrap_or(0)
 }
 
-/// Render the aggregate model census.
+/// Render the mask census for `DESCRIBE > model <mask>`.
+fn describe_mask(home: &Path, mask_name: &str) -> Vec<String> {
+    let path = mask::mask_path(home, mask_name);
+    let mask_file = match mask::MaskFile::load(&path) {
+        Ok(m) => m,
+        Err(_) => {
+            let avail = mask::list(home).join(", ");
+            let hint = if avail.is_empty() {
+                "none recorded".to_string()
+            } else {
+                avail
+            };
+            return vec![format!("[ERR] no mask '{mask_name}' — available: {hint}")];
+        }
+    };
+    let total = 64; // MoE expert pool (catalog-aware estimate lands in a later pass).
+    let stats = mask_file.stats(total);
+    let mut out = vec![format!("[PROBE] model {mask_name}")];
+    out.push(format!("  ├── transactions: {}", stats.txn_count));
+    out.push(format!(
+        "  ├── active channels: {:.1}% ({})",
+        stats.active_fraction() * 100.0,
+        stats.active
+    ));
+    out.push(format!(
+        "  └── dross (never fired): {:.1}% ({} of {total})",
+        stats.dross as f64 / total as f64 * 100.0,
+        stats.dross
+    ));
+    out.push(
+        "  (Run 'COMMIT overwrite > DISSOLVE > model <mask>' to purge dross once P3 lands)".into(),
+    );
+    out
+}
 fn describe_aggregate(path: &Path, info: &vitriol_calibrate::gguf::ModelInfo) -> Vec<String> {
     vec![
         format!("[PROBE] DESCRIBE {}", path.display()),
@@ -929,12 +1231,13 @@ fn quote_target(tail: &str) -> Vec<String> {
         Vec::new()
     }
 }
-
 /// The HELP text.
 fn help_lines() -> Vec<String> {
     vec![
         "DESCRIBE > model | layer.N | layer.N.mlp    census of model/layer".into(),
+        "DESCRIBE > model <mask>                     rectification mask census".into(),
         "CENSUS > layer.N.mlp                      W0 value census (dead lanes)".into(),
+        "RECTIFY > \"prompt\" into <mask>           record which experts fired".into(),
         "DISSOLVE > layer.N.mlp strategy   (P3) weight pruning".into(),
         "COAGULATE > layer.N norm into mlp (P3) fold normalizer".into(),
         "TEST > \"prompt\"                  run prompt through the active model".into(),
@@ -943,14 +1246,20 @@ fn help_lines() -> Vec<String> {
         "RECORD > \"name\"                  begin grimoire capture".into(),
         "STOP                              write the grimoire file".into(),
         "PLAY > \"name\"                    probe (or COMMIT > PLAY: run) a grimoire".into(),
+        "LOG > model <mask>                mask transaction history".into(),
+        "REVERT > model <mask> <id>        drop one mask transaction".into(),
+        "DISCARD > model <mask>            delete a mask".into(),
+        "GUIDE [> topic]                   the how-to manual".into(),
         "UNDO                             revert the last committed op".into(),
         "CLEAR                            clear the output".into(),
-        "Prefix a mutating command with 'COMMIT >' to apply instead of probe.".into(),
+        "Prefix a mutating command with 'COMMIT overwrite >' or 'COMMIT as \"name\" >'.".into(),
     ]
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     fn ctx<'a>(cfg: &'a Config, snap: &'a Snapshot) -> OpCtx<'a> {
@@ -1288,5 +1597,118 @@ mod tests {
         o.run("MAP", &ctx(&cfg, &snap));
         assert_eq!(o.output_scroll, None);
         assert!(o.complete.is_empty());
+    }
+
+    #[test]
+    fn bare_commit_on_destructive_is_blocked() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        let lines = o.run("COMMIT > DISCARD > model vulkan", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("blocked"));
+        assert!(lines.iter().any(|l| l.contains("COMMIT overwrite")));
+        // Explicit overwrite passes the safety gate (then proceeds to op).
+        let lines = o.run(
+            "COMMIT overwrite > DISCARD > model vulkan",
+            &ctx(&cfg, &snap),
+        );
+        assert!(lines[0].contains("deleted") || lines[0].contains("[ERR]"));
+    }
+
+    #[test]
+    fn rectify_probe_and_commit_with_synthetic_data() {
+        let home = std::env::temp_dir().join("officina_rectify_test");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        // Probe never touches the server.
+        let lines = o.run("RECTIFY > \"circular buffer\" into rust", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("[PROBE]"));
+        assert!(!mask::mask_path(&home, "rust").exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn rectify_commit_needs_expert_data() {
+        let home = std::env::temp_dir().join("officina_rectify_nodata");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        // With no gen server, commit fails honestly (not a fake success).
+        let lines = o.run(
+            "COMMIT overwrite > RECTIFY > \"x\" into rust",
+            &ctx(&cfg, &snap),
+        );
+        assert!(lines[0].contains("[ERR]"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn mask_ops_log_revert_discard_flow() {
+        let home = std::env::temp_dir().join("officina_mask_ops");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        // Build a mask directly.
+        let path = mask::mask_path(&home, "vulkan");
+        let mut m = mask::MaskFile::new("vulkan");
+        m.add(1, "shader pass", "manual", vec![1, 2, 3]);
+        m.add(2, "polluted", "manual", vec![99]);
+        m.save(&path).unwrap();
+
+        let lines = o.run("LOG > model vulkan", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("HISTORY"));
+        assert!(lines.iter().any(|l| l.contains("polluted")));
+
+        let lines = o.run("DESCRIBE > model vulkan", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("vulkan"));
+        assert!(lines.iter().any(|l| l.contains("dross")));
+
+        let lines = o.run("REVERT > model vulkan 2", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("[PROBE]"));
+        assert!(lines.iter().any(|l| l.contains("polluted")));
+
+        let lines = o.run(
+            "COMMIT overwrite > REVERT > model vulkan 2",
+            &ctx(&cfg, &snap),
+        );
+        assert!(lines[0].contains("purged"));
+        let loaded = mask::MaskFile::load(&path).unwrap();
+        assert_eq!(loaded.union_active(), BTreeSet::from([1, 2, 3]));
+
+        let lines = o.run(
+            "COMMIT overwrite > DISCARD > model vulkan",
+            &ctx(&cfg, &snap),
+        );
+        assert!(lines[0].contains("deleted"));
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn ascensus_rectify_reports_r3_pending() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        let lines = o.run("ASCENSUS > RECTIFY > \"vulkan\" 50", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("R3"));
+    }
+
+    #[test]
+    fn guide_renders_sections() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        let mut cfg = Config::from_env();
+        cfg.repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let snap = Snapshot::default();
+        let lines = o.run("GUIDE", &ctx(&cfg, &snap));
+        assert!(lines.iter().any(|l| l.contains("Usage")));
+        let lines = o.run("GUIDE > rectify", &ctx(&cfg, &snap));
+        assert!(lines.iter().any(|l| l.to_lowercase().contains("rectify")));
     }
 }

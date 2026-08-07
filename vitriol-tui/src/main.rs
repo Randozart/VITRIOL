@@ -77,6 +77,10 @@ fn main() -> io::Result<()> {
                     }
                     KeyCode::Tab if app.tab != app::Tab::Officina => app.next_tab(),
                     KeyCode::BackTab => app.prev_tab(),
+                    // Shift+arrows cycle tabs so plain arrows stay free for
+                    // in-screen navigation.
+                    KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => app.next_tab(),
+                    KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => app.prev_tab(),
                     // Tab-specific keys dispatch to a handler per tab (keeps
                     // main's complexity under the Praetor gate).
                     _ => match app.tab {

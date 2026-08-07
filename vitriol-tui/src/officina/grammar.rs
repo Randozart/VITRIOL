@@ -3,15 +3,19 @@
 //! Keyword-first, pipe-delimited, non-Turing-complete:
 //!
 //! ```text
-//! COMMAND  := [ "COMMIT" ">" ] KEYWORD ">" TARGET [ARGS]
-//! KEYWORD  := DESCRIBE | DISSOLVE | COAGULATE | TEST | MAP | COMPILE
-//!           | RECORD | STOP | PLAY | UNDO | CLEAR | HELP
+//! COMMAND  := [ "ASCENSUS" ">" ] [ "COMMIT" [ "overwrite" | "as" NAME ] ">" ]
+//!             KEYWORD ">" TARGET [ARGS]
+//! KEYWORD  := DESCRIBE | CENSUS | RECTIFY | DISSOLVE | COAGULATE | TEST | MAP
+//!           | COMPILE | RECORD | STOP | PLAY | DISCARD | LOG | REVERT
+//!           | UNDO | CLEAR | HELP
 //! ```
 //!
 //! Uppercase keywords come first; lowercase targets/args follow; `>` is the
-//! work conduit. A `COMMIT >` prefix turns a mutating probe into an apply.
-//! Read-only keywords ignore the prefix. Parse errors carry a message the REPL
-//! prints as-is.
+//! work conduit. `COMMIT >` applies a mutating probe; `COMMIT overwrite >`
+//! modifies the active target in place; `COMMIT as "name" >` writes a clone.
+//! `ASCENSUS >` marks the command as cloud-assisted (batch calibration).
+//! Read-only keywords ignore the commit prefix. Parse errors carry a message
+//! the REPL prints as-is.
 
 /// A command keyword.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +24,8 @@ pub enum Keyword {
     Describe,
     /// W0 value census of a layer (dead-lane %, entropy; read-only).
     Census,
+    /// Record a firing transaction into a rectification mask.
+    Rectify,
     /// Prune weights (weight surgery; P3 backend).
     Dissolve,
     /// Fold a normalizer into adjacent weights (P3 backend).
@@ -36,6 +42,14 @@ pub enum Keyword {
     Stop,
     /// Parse + run a grimoire (probe by default, `COMMIT > PLAY` applies).
     Play,
+    /// Delete a named rectification mask.
+    Discard,
+    /// List a mask's transaction history (read-only).
+    Log,
+    /// Remove one transaction from a mask (probe shows impact).
+    Revert,
+    /// Render the workshop how-to manual (read-only).
+    Guide,
     /// Revert the last committed transformation.
     Undo,
     /// Clear the output scrollback.
@@ -50,6 +64,7 @@ impl Keyword {
         match self {
             Keyword::Describe => "DESCRIBE",
             Keyword::Census => "CENSUS",
+            Keyword::Rectify => "RECTIFY",
             Keyword::Dissolve => "DISSOLVE",
             Keyword::Coagulate => "COAGULATE",
             Keyword::Test => "TEST",
@@ -58,6 +73,10 @@ impl Keyword {
             Keyword::Record => "RECORD",
             Keyword::Stop => "STOP",
             Keyword::Play => "PLAY",
+            Keyword::Discard => "DISCARD",
+            Keyword::Log => "LOG",
+            Keyword::Revert => "REVERT",
+            Keyword::Guide => "GUIDE",
             Keyword::Undo => "UNDO",
             Keyword::Clear => "CLEAR",
             Keyword::Help => "HELP",
@@ -72,17 +91,45 @@ impl Keyword {
                 | Keyword::Census
                 | Keyword::Test
                 | Keyword::Map
+                | Keyword::Log
+                | Keyword::Guide
                 | Keyword::Help
                 | Keyword::Clear
         )
     }
+
+    /// True for keywords that mutate the base model or a mask — these need an
+    /// explicit `COMMIT overwrite >` / `COMMIT as "name" >` (safety contract).
+    pub fn needs_explicit_commit(self) -> bool {
+        matches!(
+            self,
+            Keyword::Rectify
+                | Keyword::Dissolve
+                | Keyword::Coagulate
+                | Keyword::Discard
+                | Keyword::Revert
+        )
+    }
+}
+
+/// The explicit write target of a `COMMIT` prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitKind {
+    /// `COMMIT overwrite >` — modify the active target in place.
+    Overwrite,
+    /// `COMMIT as "name" >` — write a clone under a new name.
+    SaveAs(String),
 }
 
 /// A parsed command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
-    /// `COMMIT >` was prefixed: apply instead of probe.
+    /// `COMMIT` was prefixed: apply instead of probe.
     pub commit: bool,
+    /// The explicit write target when `commit` was not bare.
+    pub commit_kind: Option<CommitKind>,
+    /// `ASCENSUS >` was prefixed: cloud-assisted (batch calibration).
+    pub cloud: bool,
     /// The keyword.
     pub keyword: Keyword,
     /// The target token (may be empty for STOP/UNDO/CLEAR/HELP).
@@ -101,10 +148,21 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
         return Err(ParseError::Empty);
     }
     let mut rest = raw;
-    let mut commit = false;
-    if let Some(after) = strip_prefix_keyword(rest, "COMMIT") {
-        commit = true;
+    let mut cloud = false;
+    if let Some(after) = strip_prefix_keyword(rest, "ASCENSUS") {
+        cloud = true;
         rest = after.trim();
+    }
+    let mut commit = false;
+    let mut commit_kind = None;
+    if let Some(after) = rest.strip_prefix("COMMIT") {
+        commit = true;
+        let mut after = after.trim_start();
+        if let Some((kind, rest2)) = parse_commit_kind(after) {
+            commit_kind = Some(kind);
+            after = rest2.trim_start();
+        }
+        rest = after.strip_prefix('>').unwrap_or(after).trim();
     }
     let (keyword_text, after_kw) = match split_keyword(rest) {
         Some((kw, after)) => (kw, after),
@@ -114,11 +172,29 @@ pub fn parse(line: &str) -> Result<Command, ParseError> {
     let (target, args) = split_target_args(after_kw);
     Ok(Command {
         commit,
+        commit_kind,
+        cloud,
         keyword,
         target,
         args,
         raw: raw.to_string(),
     })
+}
+
+/// Parse `overwrite` or `as "name"` off the commit head.
+fn parse_commit_kind(s: &str) -> Option<(CommitKind, &str)> {
+    let s = s.trim_start();
+    if let Some(rest) = s.strip_prefix("overwrite") {
+        return Some((CommitKind::Overwrite, rest));
+    }
+    if let Some(rest) = s.strip_prefix("as") {
+        let rest = rest.trim_start();
+        let quoted = rest.strip_prefix('"')?;
+        let end = quoted.find('"')?;
+        let name = quoted[..end].to_string();
+        return Some((CommitKind::SaveAs(name), &quoted[end + 1..]));
+    }
+    None
 }
 
 /// A parse outcome other than a command.
@@ -163,6 +239,7 @@ fn parse_keyword(text: &str) -> Result<Keyword, ParseError> {
     let kw = match up.as_str() {
         "DESCRIBE" => Keyword::Describe,
         "CENSUS" => Keyword::Census,
+        "RECTIFY" => Keyword::Rectify,
         "DISSOLVE" => Keyword::Dissolve,
         "COAGULATE" => Keyword::Coagulate,
         "TEST" => Keyword::Test,
@@ -171,6 +248,10 @@ fn parse_keyword(text: &str) -> Result<Keyword, ParseError> {
         "RECORD" => Keyword::Record,
         "STOP" => Keyword::Stop,
         "PLAY" => Keyword::Play,
+        "DISCARD" => Keyword::Discard,
+        "LOG" => Keyword::Log,
+        "REVERT" => Keyword::Revert,
+        "GUIDE" => Keyword::Guide,
         "UNDO" => Keyword::Undo,
         "CLEAR" => Keyword::Clear,
         "HELP" => Keyword::Help,
@@ -272,5 +353,76 @@ mod tests {
         let c = parse("STOP").unwrap();
         assert_eq!(c.keyword, Keyword::Stop);
         assert!(c.target.is_empty());
+    }
+
+    #[test]
+    fn commit_kinds_parse() {
+        let c = parse("COMMIT overwrite > DISSOLVE > layer.12.mlp wanda 0.35").unwrap();
+        assert!(c.commit);
+        assert_eq!(c.commit_kind, Some(CommitKind::Overwrite));
+
+        let c = parse("COMMIT as \"vitriol-vulkan\" > COMPILE > \"x\"").unwrap();
+        assert!(c.commit);
+        assert_eq!(
+            c.commit_kind,
+            Some(CommitKind::SaveAs("vitriol-vulkan".into()))
+        );
+
+        let c = parse("COMMIT > COMPILE > \"x\"").unwrap();
+        assert!(c.commit);
+        assert_eq!(c.commit_kind, None);
+    }
+
+    #[test]
+    fn ascensus_modifier_sets_cloud() {
+        let c = parse("ASCENSUS > RECTIFY > \"specialize in Vulkan\" 50").unwrap();
+        assert!(c.cloud);
+        assert_eq!(c.keyword, Keyword::Rectify);
+        assert_eq!(c.target, "specialize in Vulkan");
+        assert_eq!(c.args, vec!["50"]);
+
+        let c = parse("RECTIFY > \"write a circular buffer\"").unwrap();
+        assert!(!c.cloud);
+        assert_eq!(c.keyword, Keyword::Rectify);
+    }
+
+    #[test]
+    fn new_keywords_parse() {
+        assert_eq!(
+            parse("LOG > model vulkan_shaders").unwrap().keyword,
+            Keyword::Log
+        );
+        assert_eq!(
+            parse("REVERT > model vulkan_shaders 2").unwrap().keyword,
+            Keyword::Revert
+        );
+        assert_eq!(
+            parse("DISCARD > model vulkan_shaders").unwrap().keyword,
+            Keyword::Discard
+        );
+    }
+
+    #[test]
+    fn rect_mask_target_and_args() {
+        let c = parse("DESCRIBE > model vulkan_shaders").unwrap();
+        assert_eq!(c.keyword, Keyword::Describe);
+        assert_eq!(c.target, "model");
+        assert_eq!(c.args, vec!["vulkan_shaders"]);
+    }
+
+    #[test]
+    fn needs_explicit_commit_classification() {
+        for kw in [
+            Keyword::Rectify,
+            Keyword::Dissolve,
+            Keyword::Coagulate,
+            Keyword::Discard,
+            Keyword::Revert,
+        ] {
+            assert!(kw.needs_explicit_commit());
+        }
+        assert!(Keyword::Log.is_read_only());
+        assert!(!Keyword::Compile.needs_explicit_commit());
+        assert!(!Keyword::Test.needs_explicit_commit());
     }
 }

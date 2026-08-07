@@ -1304,6 +1304,23 @@ fn render_officina_journal(frame: &mut Frame, area: Rect, app: &mut App) {
         theme::muted(),
     )));
 
+    lines.push(Line::from(Span::styled(" MASKS", theme::gold_muted())));
+    let mask_names = crate::officina::mask::list(&app.cfg.home_dir);
+    if mask_names.is_empty() {
+        lines.push(Line::from(Span::styled("  (none)", theme::muted())));
+    } else {
+        for name in mask_names.iter().take(5) {
+            let path = crate::officina::mask::mask_path(&app.cfg.home_dir, name);
+            let pct = crate::officina::mask::MaskFile::load(&path)
+                .map(|m| m.stats(64).active_fraction() * 100.0)
+                .unwrap_or(0.0);
+            lines.push(Line::from(Span::styled(
+                format!("  {name:<24} [{pct:.0}% active]"),
+                theme::text(),
+            )));
+        }
+    }
+
     lines.push(Line::from(Span::styled(
         " TRANSFORMATION LOG",
         theme::gold_muted(),

@@ -55,10 +55,22 @@ pub struct Officina {
     pub input: String,
     /// Rendered output scrollback.
     pub output: VecDeque<String>,
+    /// Output scrollback offset up from the bottom; `None` follows the tail.
+    pub output_scroll: Option<usize>,
     /// Command history for up-arrow recall.
     history: VecDeque<String>,
     /// Cursor into history while recalling.
     history_pos: Option<usize>,
+    /// Active completion candidates (built on Tab).
+    complete: Vec<String>,
+    /// Cursor into `complete`.
+    complete_pos: usize,
+    /// Input snapshot the candidate list was built from (stale check).
+    complete_base: String,
+    /// The candidate last applied (stale check while cycling).
+    complete_last: String,
+    /// Cached catalog metadata for layer-target completion.
+    catalog_cache: Option<(PathBuf, u64)>,
     /// Transformation journal (committed ops).
     pub journal: Vec<JournalEntry>,
     /// Cumulative estimated logit drift.
@@ -80,8 +92,14 @@ impl Officina {
             config,
             input: String::new(),
             output: VecDeque::with_capacity(500),
+            output_scroll: None,
             history: VecDeque::with_capacity(200),
             history_pos: None,
+            complete: Vec::new(),
+            complete_pos: 0,
+            complete_base: String::new(),
+            complete_last: String::new(),
+            catalog_cache: None,
             journal: Vec::new(),
             drift: 0.0,
             model_dirty: false,
@@ -94,11 +112,13 @@ impl Officina {
     pub fn type_char(&mut self, c: char) {
         self.input.push(c);
         self.history_pos = None;
+        self.clear_complete();
     }
 
     /// Remove the last character from the command line.
     pub fn backspace(&mut self) {
         self.input.pop();
+        self.clear_complete();
     }
 
     /// Walk command history (delta +1 down, -1 up), restoring into `input`.
@@ -117,6 +137,105 @@ impl Officina {
         let next = (cur + delta).clamp(0, len - 1);
         self.history_pos = Some(next as usize);
         self.input = self.history[next as usize].clone();
+        self.clear_complete();
+    }
+
+    /// The `[start, end)` output window to render for `height` visible lines.
+    /// `None` scroll follows the newest lines; a frozen offset shows history.
+    pub fn output_window(&self, height: usize) -> (usize, usize) {
+        let len = self.output.len();
+        if len == 0 || height == 0 {
+            return (0, 0);
+        }
+        let off = self.output_scroll.unwrap_or(0).min(len.saturating_sub(1));
+        let end = len.saturating_sub(off);
+        let start = end.saturating_sub(height).min(end);
+        (start, end)
+    }
+
+    /// Scroll the output by `delta` screen-lines; returning to the bottom
+    /// (`off` reaches 0) re-enables tail-follow.
+    pub fn output_scroll_lines(&mut self, delta: isize, height: usize) {
+        let len = self.output.len();
+        if len == 0 {
+            return;
+        }
+        let max_off = len.saturating_sub(1);
+        let cur = self.output_scroll.unwrap_or(0) as isize;
+        let next = cur + delta;
+        if next <= 0 {
+            self.output_scroll = None;
+        } else {
+            self.output_scroll = Some((next as usize).min(max_off));
+        }
+        let _ = height;
+    }
+
+    /// Build the completion candidates for the current input, if stale.
+    pub fn completions(&self) -> Vec<String> {
+        self.complete.clone()
+    }
+
+    /// Cycle the active completion list; builds it fresh when the input
+    /// changed since it was last built. Applies the candidate to the input.
+    pub fn cycle_complete(&mut self, ctx: &OpCtx) {
+        let stale = self.complete.is_empty()
+            || (self.complete_base != self.input && self.complete_last != self.input);
+        if stale {
+            self.complete = build_completions(&self.input, &self.home, self.catalog_cache.as_ref());
+            self.complete_pos = 0;
+            self.complete_base = self.input.clone();
+            self.complete_last = String::new();
+        }
+        if self.complete.is_empty() {
+            return;
+        }
+        let cand = self.complete[self.complete_pos].clone();
+        self.complete_pos = (self.complete_pos + 1) % self.complete.len();
+        self.complete_last = cand.clone();
+        self.input = cand;
+        let _ = ctx;
+    }
+
+    /// Drop the current completion state (called on typing/backspace).
+    pub fn clear_complete(&mut self) {
+        self.complete.clear();
+        self.complete_pos = 0;
+        self.complete_base = String::new();
+        self.complete_last = String::new();
+    }
+
+    /// Cache the model layer count for target completion (metadata-only read,
+    /// done lazily on first layer-target completion).
+    pub fn ensure_catalog(&mut self, model_path: Option<&Path>) {
+        if self.catalog_cache.is_some() {
+            return;
+        }
+        let Some(path) = model_path else {
+            return;
+        };
+        if let Ok(info) = vitriol_calibrate::gguf::read_gguf(path) {
+            self.catalog_cache = Some((path.to_path_buf(), info.block_count));
+        }
+    }
+
+    /// Run a raw input line: parse + execute, returning new output lines.
+    pub fn run(&mut self, line: &str, ctx: &OpCtx) -> Vec<String> {
+        self.history_pos = None;
+        self.output_scroll = None;
+        self.clear_complete();
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !trimmed.starts_with("//") {
+            self.history.push_back(trimmed.to_string());
+            if self.history.len() > 200 {
+                self.history.pop_front();
+            }
+        }
+        match grammar::parse(line) {
+            Err(ParseError::Empty) => Vec::new(),
+            Err(e) => vec![format!("[ERR] {e}")],
+            Ok(cmd) => self.execute(&cmd, ctx),
+        }
     }
 
     /// The rendered prompt header telemetry string (top line).
@@ -156,23 +275,6 @@ impl Officina {
             "ALKA".into()
         } else {
             blocks.join("]-[")
-        }
-    }
-
-    /// Run a raw input line: parse + execute, returning new output lines.
-    pub fn run(&mut self, line: &str, ctx: &OpCtx) -> Vec<String> {
-        self.history_pos = None;
-        let trimmed = line.trim();
-        if !trimmed.is_empty() && !trimmed.starts_with("//") {
-            self.history.push_back(trimmed.to_string());
-            if self.history.len() > 200 {
-                self.history.pop_front();
-            }
-        }
-        match grammar::parse(line) {
-            Err(ParseError::Empty) => Vec::new(),
-            Err(e) => vec![format!("[ERR] {e}")],
-            Ok(cmd) => self.execute(&cmd, ctx),
         }
     }
 
@@ -696,6 +798,138 @@ fn human_bytes(b: u64) -> String {
     format!("{b} B")
 }
 
+/// Build full-line completion candidates for `input`. `home` provides the
+/// grimoire list; `catalog` (if present) supplies the layer count.
+fn build_completions(input: &str, home: &Path, catalog: Option<&(PathBuf, u64)>) -> Vec<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return keyword_candidates("", false);
+    }
+    // `COMMIT >` prefix: keyword stage while there is no second pipe.
+    if let Some(tail) = trimmed.strip_prefix("COMMIT >") {
+        let tail = tail.trim_start();
+        if tail.contains('>') {
+            return target_stage(trimmed, home, catalog);
+        }
+        return keyword_candidates(tail, true);
+    }
+    // No COMMIT prefix.
+    if trimmed.contains('>') {
+        return target_stage(trimmed, home, catalog);
+    }
+    keyword_candidates(trimmed, false)
+}
+
+/// Target stage: parse the keyword from the segment before the last pipe.
+fn target_stage(input: &str, home: &Path, catalog: Option<&(PathBuf, u64)>) -> Vec<String> {
+    let last_pipe = input.rfind('>').unwrap_or(0);
+    let head = input[..last_pipe].trim();
+    let tail = input[last_pipe + 1..].trim_start();
+    let kw = match grammar::parse(&format!("{head} > x")) {
+        Ok(cmd) => cmd.keyword,
+        Err(_) => return Vec::new(),
+    };
+    target_candidates(kw, tail, home, catalog)
+}
+
+/// Full-line keyword candidates matching a case-insensitive prefix.
+fn keyword_candidates(prefix: &str, committed: bool) -> Vec<String> {
+    let p = prefix.to_lowercase();
+    let mut out = Vec::new();
+    for kw in [
+        Keyword::Describe,
+        Keyword::Census,
+        Keyword::Dissolve,
+        Keyword::Coagulate,
+        Keyword::Test,
+        Keyword::Map,
+        Keyword::Compile,
+        Keyword::Record,
+        Keyword::Stop,
+        Keyword::Play,
+        Keyword::Undo,
+        Keyword::Clear,
+        Keyword::Help,
+    ] {
+        let name = kw.as_str().to_lowercase();
+        if !name.starts_with(&p) {
+            continue;
+        }
+        if committed {
+            out.push(format!("COMMIT > {} > ", kw.as_str()));
+        } else {
+            out.push(format!("{} > ", kw.as_str()));
+            if !kw.is_read_only() {
+                out.push(format!("COMMIT > {} > ", kw.as_str()));
+            }
+        }
+    }
+    out
+}
+
+/// Target-stage candidates for a keyword, filtered by the tail prefix.
+fn target_candidates(
+    kw: Keyword,
+    tail: &str,
+    home: &Path,
+    catalog: Option<&(PathBuf, u64)>,
+) -> Vec<String> {
+    match kw {
+        Keyword::Describe | Keyword::Census | Keyword::Dissolve | Keyword::Coagulate => {
+            layer_targets(tail, catalog)
+        }
+        Keyword::Record | Keyword::Play => grimoire_targets(tail, home),
+        Keyword::Test | Keyword::Compile => quote_target(tail),
+        _ => Vec::new(),
+    }
+}
+
+/// `model`, `layer.N`, and `layer.N.{mlp,norm,attn}` candidates.
+fn layer_targets(tail: &str, catalog: Option<&(PathBuf, u64)>) -> Vec<String> {
+    let t = tail.to_lowercase();
+    let mut cands: Vec<String> = Vec::new();
+    if "model".starts_with(&t) {
+        cands.push("model".to_string());
+    }
+    let layers = catalog.map(|(_, n)| *n).unwrap_or(1);
+    let mut layer_cands: Vec<String> = (0..layers)
+        .map(|i| format!("layer.{i}"))
+        .filter(|c| c.starts_with(&t))
+        .collect();
+    if let Some(rest) = tail.strip_prefix("layer.") {
+        let idx = rest.split('.').next().unwrap_or("");
+        if !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()) {
+            for sfx in ["mlp", "norm", "attn"] {
+                let full = format!("layer.{idx}.{sfx}");
+                if full.starts_with(&t) {
+                    layer_cands.push(full);
+                }
+            }
+        }
+    }
+    cands.append(&mut layer_cands);
+    cands
+}
+
+/// Grimoire-name candidates (quoted) for RECORD/PLAY.
+fn grimoire_targets(tail: &str, home: &Path) -> Vec<String> {
+    let t = tail.to_lowercase();
+    grimoire::list(home)
+        .into_iter()
+        .map(|n| format!("\"{n}\""))
+        .filter(|c| t.is_empty() || c.to_lowercase().starts_with(&t))
+        .collect()
+}
+
+/// Quoted-name template for TEST/COMPILE.
+fn quote_target(tail: &str) -> Vec<String> {
+    if tail.is_empty() || tail.starts_with('"') {
+        vec!["\"…\"".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 /// The HELP text.
 fn help_lines() -> Vec<String> {
     vec![
@@ -930,5 +1164,129 @@ mod tests {
     fn census_keyword_is_read_only() {
         use crate::officina::grammar::Keyword;
         assert!(Keyword::Census.is_read_only());
+    }
+
+    #[test]
+    fn output_window_follows_tail_by_default() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        for i in 0..10 {
+            o.output.push_back(format!("line {i}"));
+        }
+        // None = tail: the newest `height` lines end at the last line.
+        let (s, e) = o.output_window(4);
+        assert_eq!((s, e), (6, 10));
+    }
+
+    #[test]
+    fn output_window_frozen_offset_shows_history() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        for i in 0..10 {
+            o.output.push_back(format!("line {i}"));
+        }
+        o.output_scroll = Some(5);
+        let (s, e) = o.output_window(4);
+        assert_eq!((s, e), (1, 5));
+        // Offset clamps to the top.
+        o.output_scroll = Some(99);
+        let (s, e) = o.output_window(4);
+        assert_eq!((s, e), (0, 1));
+    }
+
+    #[test]
+    fn output_window_empty() {
+        let o = Officina::new(Path::new("/nonexistent"));
+        assert_eq!(o.output_window(5), (0, 0));
+    }
+
+    #[test]
+    fn output_scroll_lines_reenters_follow_at_bottom() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        for i in 0..20 {
+            o.output.push_back(format!("line {i}"));
+        }
+        o.output_scroll_lines(5, 4);
+        assert_eq!(o.output_scroll, Some(5));
+        o.output_scroll_lines(-5, 4);
+        assert_eq!(o.output_scroll, None);
+    }
+
+    #[test]
+    fn completions_keyword_stage() {
+        let o = Officina::new(Path::new("/nonexistent"));
+        assert!(build_completions("", &o.home, None).contains(&"DESCRIBE > ".into()));
+        let cands = build_completions("DES", &o.home, None);
+        assert!(cands.contains(&"DESCRIBE > ".into()));
+        assert!(!cands.contains(&"COMMIT > DESCRIBE > ".into()));
+        assert!(!cands.contains(&"TEST > ".into()));
+    }
+
+    #[test]
+    fn completions_commit_prefix_not_duplicated() {
+        let o = Officina::new(Path::new("/nonexistent"));
+        let cands = build_completions("COMMIT > DIS", &o.home, None);
+        assert!(cands.contains(&"COMMIT > DISSOLVE > ".into()));
+        assert!(!cands.contains(&"DISSOLVE > ".into()));
+    }
+
+    #[test]
+    fn completions_target_stage() {
+        let o = Officina::new(Path::new("/nonexistent"));
+        let catalog = Some((PathBuf::from("/x"), 27u64));
+        let cands = build_completions("DESCRIBE > layer.0.", &o.home, catalog.as_ref());
+        assert!(cands.contains(&"layer.0.mlp".into()));
+        assert!(cands.contains(&"layer.0.norm".into()));
+        assert!(cands.contains(&"layer.0.attn".into()));
+        let cands = build_completions("CENSUS > ", &o.home, catalog.as_ref());
+        assert!(cands.contains(&"model".into()));
+        assert!(cands.contains(&"layer.0".into()));
+        assert!(cands.contains(&"layer.26".into()));
+        assert!(!cands.contains(&"layer.27".into()));
+    }
+
+    #[test]
+    fn completions_grimoire_names() {
+        let home = std::env::temp_dir().join("officina_complete_test");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
+        o.recipe.push("MAP".into());
+        o.recording = Some("sys-opt".into());
+        let _ = o.stop_recording();
+        let cands = build_completions("PLAY > ", &o.home, None);
+        assert!(cands.iter().any(|c| c.contains("sys-opt")));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn cycle_complete_applies_and_wraps() {
+        let home = std::env::temp_dir().join("officina_cycle_test");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        let c = ctx(&cfg, &snap);
+        o.input = "DIS".into();
+        o.cycle_complete(&c);
+        assert_eq!(o.input, "DISSOLVE > ");
+        // Same base -> cycle to the next candidate (COMMIT > DISSOLVE >).
+        o.cycle_complete(&c);
+        assert_eq!(o.input, "COMMIT > DISSOLVE > ");
+        // And back around.
+        o.cycle_complete(&c);
+        assert_eq!(o.input, "DISSOLVE > ");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn run_resets_scroll_and_completions() {
+        let mut o = Officina::new(Path::new("/nonexistent"));
+        o.output.push_back("a".into());
+        o.output_scroll = Some(3);
+        o.complete.push("x".into());
+        o.complete_base = "y".into();
+        let snap = Snapshot::default();
+        let cfg = Config::from_env();
+        o.run("MAP", &ctx(&cfg, &snap));
+        assert_eq!(o.output_scroll, None);
+        assert!(o.complete.is_empty());
     }
 }

@@ -75,7 +75,7 @@ fn main() -> io::Result<()> {
                     {
                         refresh_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
-                    KeyCode::Tab => app.next_tab(),
+                    KeyCode::Tab if app.tab != app::Tab::Officina => app.next_tab(),
                     KeyCode::BackTab => app.prev_tab(),
                     // Tab-specific keys dispatch to a handler per tab (keeps
                     // main's complexity under the Praetor gate).
@@ -156,7 +156,8 @@ fn handle_guide_key(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
-/// OFFICINA tab keys: type, edit, run on Enter, history via arrows.
+/// OFFICINA tab keys: type, edit, run on Enter, history via arrows, Tab
+/// autofills, PgUp/PgDn scroll the output.
 fn handle_officina_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Enter => {
@@ -190,6 +191,27 @@ fn handle_officina_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
+        KeyCode::Tab => {
+            let model_path = app
+                .config_file
+                .entries
+                .iter()
+                .find(|e| e.section == "model" && e.key == "path")
+                .map(|e| std::path::PathBuf::from(&e.value));
+            let model_path = model_path.as_deref();
+            app.officina.ensure_catalog(model_path);
+            let cfg = &app.cfg;
+            let snap = &app.snapshot;
+            let ctx = crate::officina::OpCtx {
+                cfg,
+                snap,
+                model_path: model_path.map(std::path::Path::to_path_buf),
+                profile: None,
+            };
+            app.officina.cycle_complete(&ctx);
+        }
+        KeyCode::PageUp => app.officina.output_scroll_lines(10, 20),
+        KeyCode::PageDown => app.officina.output_scroll_lines(-10, 20),
         KeyCode::Backspace => app.officina.backspace(),
         KeyCode::Up => app.officina.history_nav(-1),
         KeyCode::Down => app.officina.history_nav(1),

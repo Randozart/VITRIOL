@@ -1197,21 +1197,28 @@ fn render_officina_tab(frame: &mut Frame, area: Rect, app: &mut App) {
     render_officina_journal(frame, cols[1], app);
 }
 
-/// Left pane: output scrollback + the prompt.
+/// Left pane: output scrollback + the prompt + completion bar.
 fn render_officina_repl(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = panel_neutral(" OFFICINA ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    let rows = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+    let (start, end) = app.officina.output_window(rows[0].height as usize);
     let body: Vec<Line> = app
         .officina
         .output
         .iter()
-        .take(rows[0].height as usize)
+        .skip(start)
+        .take(end.saturating_sub(start))
         .map(|l| Line::from(Span::styled(l.clone(), theme::text())))
         .collect();
-    frame.render_widget(Paragraph::new(body).scroll((0, 0)), rows[0]);
+    frame.render_widget(Paragraph::new(body), rows[0]);
 
     let ctx = app.officina_ctx();
     let header = app.officina.prompt_header(&ctx);
@@ -1234,6 +1241,24 @@ fn render_officina_repl(frame: &mut Frame, area: Rect, app: &mut App) {
     ]);
     let prompt = Paragraph::new(vec![prompt_line, p2]);
     frame.render_widget(prompt, rows[1]);
+
+    let completions = app.officina.completions();
+    if completions.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  Tab = autofill · PgUp/PgDn = scroll",
+                theme::muted(),
+            ))),
+            rows[2],
+        );
+    } else {
+        let shown: Vec<&str> = completions.iter().take(6).map(|s| s.as_str()).collect();
+        let label = format!("  ⧉ {} (Tab cycles)", shown.join(" · "));
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(label, theme::gold_muted()))),
+            rows[2],
+        );
+    }
 }
 
 /// Right pane: the Spagyric Journal (mem arenas, transformation log, cognition).

@@ -103,5 +103,7 @@ flow. Gates: test/clippy/fmt/Praetor each commit; release rebuild.
   DeepSeek model (HTTP 200, sane 0..63 ids, top-6/layer/token unioned). The
   model's diverse routing fires all 64 experts on generic prompts — a genuine
   finding, not a bug.
-- R3 (ASCENSUS > RECTIFY batch) and R4 (DISSOLVE > model <mask> after P3) next.
+- **R4 landed** (`f70919c`): `DISSOLVE > model <mask>` drops dross experts. `DrossEdit::apply()` zeroes every block fully inside a dross expert's FFW row range (conservative: blocks straddling an expert boundary are kept). `n_ffn_expert` auto-detected as the largest dim divisible by n_expert. **Live-verified on the real DeepSeek model**: 133 FFN tensors, 515,049 blocks zeroed for dross 40..63; expert 63 → 1368/1368 blocks (100%), expert 0 kept; replan OK.
+- The full Officina loop is live: RECTIFY (tally) → LOG/REVERT/DISCARD (manage) → DESCRIBE > model <mask> (census) → COMMIT as "x" > DISSOLVE > model <mask> (drop dross) → COMMIT as "x" > COMPILE (bundle).
+- COAGULATE remains unimplemented (low value — the model's FFN weights are quantized, not size-preservingly foldable). Live logit-parity (server restart on the rewritten file) pending GPU.
 

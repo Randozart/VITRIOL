@@ -16,6 +16,7 @@ mod nvidia;
 mod poller;
 mod profile;
 mod search;
+mod secrets;
 mod subsystems;
 mod theme;
 mod ui;
@@ -81,6 +82,7 @@ fn main() -> io::Result<()> {
                         app::Tab::Hermetis => handle_hermetis_key(&mut app, key, &search_tx),
                         app::Tab::Profiles => handle_profiles_key(&mut app, key),
                         app::Tab::Guide => handle_guide_key(&mut app, key),
+                        app::Tab::Subsystems => handle_subsystems_key(&mut app, key),
                         _ => {}
                     },
                 },
@@ -146,6 +148,35 @@ fn handle_guide_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('k') | KeyCode::Up => app.guide_move(-1),
         KeyCode::Char('p') | KeyCode::PageDown => app.guide_scroll_lines(20, 40),
         KeyCode::Char('n') | KeyCode::PageUp => app.guide_scroll_lines(-20, 40),
+        _ => {}
+    }
+}
+
+/// SUBSYSTEMS tab keys: navigate rows; Enter on ASCENSUS opens/advances the
+/// key+model editor.
+fn handle_subsystems_key(app: &mut App, key: crossterm::event::KeyEvent) {
+    if app.ascensus_edit.is_some() {
+        handle_ascensus_edit(app, key);
+        return;
+    }
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => app.subsystem_move(1),
+        KeyCode::Char('k') | KeyCode::Up => app.subsystem_move(-1),
+        KeyCode::Enter => app.ascensus_edit_start(),
+        _ => {}
+    }
+}
+
+/// ASCENSUS editor keys (SUBSYSTEMS tab).
+fn handle_ascensus_edit(app: &mut App, key: crossterm::event::KeyEvent) {
+    match key.code {
+        KeyCode::Char(',') | KeyCode::Char('.') | KeyCode::Tab => app.ascensus_edit_toggle_field(),
+        KeyCode::Enter => {
+            let _ = app.ascensus_edit_next();
+        }
+        KeyCode::Backspace => app.ascensus_edit_backspace(),
+        KeyCode::Esc => app.ascensus_edit_cancel(),
+        KeyCode::Char(c) => app.ascensus_edit_type(c),
         _ => {}
     }
 }

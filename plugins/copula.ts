@@ -8,6 +8,9 @@
 // Retrieve: `memory_search` custom tool -> Hermetis /hermetis/search.
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 
 const HERMETIS_URL = process.env.COPULA_HERMETIS_URL ?? "http://127.0.0.1:7980"
 const MAX_CONTENT = 20000
@@ -15,6 +18,30 @@ const AUTO_CONTEXT = process.env.COPULA_AUTO_CONTEXT !== "0"
 const CONTEXT_BUDGET = Number(process.env.COPULA_CONTEXT_BUDGET ?? 1500)
 const CONTEXT_TOP_K = Number(process.env.COPULA_CONTEXT_TOP_K ?? 5)
 const CONTEXT_MIN_SCORE = Number(process.env.COPULA_CONTEXT_MIN_SCORE ?? 0.3)
+
+// Read Ascensus secrets managed by vitriol-tui at ~/.vitriol/secrets (0600).
+// The TUI writes [ascensus] api_key/model there; env vars remain the override.
+function readSecrets(): { apiKey: string; model: string } {
+  try {
+    const p = path.join(os.homedir(), ".vitriol", "secrets")
+    const text = fs.readFileSync(p, "utf8")
+    let apiKey = ""
+    let model = ""
+    for (const line of text.split("\n")) {
+      const t = line.trim()
+      if (!t || t.startsWith("#") || t.startsWith("[")) continue
+      const i = t.indexOf("=")
+      if (i < 0) continue
+      const k = t.slice(0, i).trim()
+      const v = t.slice(i + 1).trim()
+      if (k === "api_key") apiKey = v
+      else if (k === "model") model = v
+    }
+    return { apiKey, model }
+  } catch {
+    return { apiKey: "", model: "" }
+  }
+}
 
 function hashString(s: string): string {
   let h = 5381
@@ -287,12 +314,13 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
           reasoning: tool.schema.string().optional().describe("Your local reasoning attempt, so the cloud model can improve on it."),
         },
         async execute(args, _context) {
-          const key = process.env.GEMINI_API_KEY
+          const secrets = readSecrets()
+          const key = process.env.GEMINI_API_KEY || secrets.apiKey
           if (!key) {
-            return "Ascensus not configured: GEMINI_API_KEY is unset. Reply locally instead."
+            return "Ascensus not configured: no GEMINI_API_KEY in env or ~/.vitriol/secrets. Set it in the SUBSYSTEMS tab, or export GEMINI_API_KEY. Reply locally instead."
           }
           try {
-            const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash"
+            const model = process.env.GEMINI_MODEL || secrets.model || "gemini-2.5-flash"
             const maxTokens = Number(process.env.GEMINI_MAX_TOKENS ?? 2048)
             const payload = {
               contents: [{

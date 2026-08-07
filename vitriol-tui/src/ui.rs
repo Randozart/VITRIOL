@@ -831,21 +831,33 @@ fn short_name(name: &str) -> String {
 
 /// SUBSYSTEMS tab: one row per Tria Prima service + alchemical layer, glyph,
 /// liveness dot, live value, and the config keys that drive it (read-only).
-fn render_subsystems_tab(frame: &mut Frame, area: Rect, app: &App) {
+fn render_subsystems_tab(frame: &mut Frame, area: Rect, app: &mut App) {
     let rows = subsystems::rows(&app.cfg, &app.snapshot);
+    if app.ascensus_edit.is_some() {
+        let v = Layout::vertical([Constraint::Min(0), Constraint::Length(3)]).split(area);
+        render_subsystem_rows(frame, v[0], app, &rows);
+        render_ascensus_editor(frame, v[1], app);
+    } else {
+        render_subsystem_rows(frame, area, app, &rows);
+    }
+}
+
+/// The SUBSYSTEMS row list, with the selected row highlighted.
+fn render_subsystem_rows(frame: &mut Frame, area: Rect, app: &mut App, rows: &[subsystems::Row]) {
     let title = format!(" {} ALCHEMICAL LAYERS ", theme::GLYPH_GPU);
     let block = panel_neutral(&title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let mut inner_rows = Vec::new();
-    for _ in &rows {
+    for _ in rows {
         inner_rows.push(Constraint::Length(2));
     }
     inner_rows.push(Constraint::Min(0));
     let lines = Layout::vertical(inner_rows).split(inner);
 
     for (i, row) in rows.iter().enumerate() {
+        let selected = i == app.subsystem_selection;
         let dot = match row.status {
             subsystems::Status::Up => Span::styled("●", theme::live()),
             subsystems::Status::Down => Span::styled("●", Style::default().fg(theme::RED)),
@@ -856,16 +868,67 @@ fn render_subsystems_tab(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             theme::gold_muted()
         };
+        let name_style = if selected {
+            theme::title().add_modifier(Modifier::REVERSED)
+        } else {
+            theme::title()
+        };
         let line = Line::from(vec![
             dot,
             Span::styled(format!(" {}", row.glyph), group),
-            Span::styled(format!(" {:<10}", row.name), theme::title()),
+            Span::styled(format!(" {:<10}", row.name), name_style),
             Span::styled(format!(" {}", row.value), theme::text()),
             Span::styled("   … ", theme::muted()),
             Span::styled(row.config.join(" · "), theme::muted()),
         ]);
         frame.render_widget(Paragraph::new(line), lines[i]);
     }
+}
+
+/// The ASCENSUS key/model editor form.
+fn render_ascensus_editor(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = panel_neutral(" ASCENSUS SECRETS ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let Some(edit) = &app.ascensus_edit else {
+        return;
+    };
+    let key_style = if edit.key_field {
+        theme::live()
+    } else {
+        theme::muted()
+    };
+    let model_style = if !edit.key_field {
+        theme::live()
+    } else {
+        theme::muted()
+    };
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  api_key  ", theme::title()),
+            Span::styled(edit.api_key.clone(), key_style),
+            if edit.key_field {
+                Span::styled("█", theme::live())
+            } else {
+                Span::styled("", theme::text())
+            },
+        ])),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("  model    ", theme::title()),
+            Span::styled(edit.model.clone(), model_style),
+            if !edit.key_field {
+                Span::styled("█", theme::live())
+            } else {
+                Span::styled("", theme::text())
+            },
+        ])),
+        rows[1],
+    );
 }
 
 /// PROFILES tab: editable active-config rows. Enter edits inline, d removes,

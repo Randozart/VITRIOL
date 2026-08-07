@@ -55,6 +55,11 @@ pub fn rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
     out
 }
 
+/// Number of rows the SUBSYSTEMS tab would render (services + layers).
+pub fn rows_len(cfg: &Config, snap: &Snapshot) -> usize {
+    rows(cfg, snap).len()
+}
+
 /// The three port-bearing services (gen / hermetis / embed), liveness from the
 /// latest poll.
 fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
@@ -109,9 +114,17 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
 /// The non-port alchemical layers, config and env-driven.
 fn layer_rows(cfg: &Config) -> Vec<Row> {
     let kv = load_config(cfg);
-    let ascensus_configured = !std::env::var("GEMINI_API_KEY")
-        .map(|k| k.trim().is_empty())
-        .unwrap_or(true);
+    let secrets = crate::secrets::Secrets::load(&cfg.secrets_path());
+    let ascensus_value = if secrets.has_key() {
+        let model = if secrets.model.is_empty() {
+            "default model".to_string()
+        } else {
+            secrets.model.clone()
+        };
+        format!("cloud escalation · {} · {model}", secrets.mask())
+    } else {
+        "cloud escalation · no key".into()
+    };
     vec![
         Row {
             glyph: "♄",
@@ -132,17 +145,13 @@ fn layer_rows(cfg: &Config) -> Vec<Row> {
         Row {
             glyph: "♀",
             name: "ASCENSUS",
-            value: if ascensus_configured {
-                "cloud escalation · key set".into()
-            } else {
-                "cloud escalation · no key".into()
-            },
-            status: if ascensus_configured {
+            value: ascensus_value,
+            status: if secrets.has_key() {
                 Status::Up
             } else {
                 Status::Down
             },
-            config: vec!["GEMINI_API_KEY"],
+            config: vec!["secrets · api_key/model"],
             group: GROUP_LAYERS,
         },
         Row {
@@ -275,6 +284,16 @@ mod tests {
         assert_eq!(gen.status, Status::Down);
         // Comfortable value encoding; assert it carries the port.
         assert!(gen.value.contains(&cfg.gen_port.to_string()));
+    }
+
+    #[test]
+    fn ascensus_row_reflects_missing_secrets() {
+        let mut cfg = Config::from_env();
+        cfg.home_dir = "/nonexistent".into();
+        let rows = rows(&cfg, &Snapshot::default());
+        let asc = rows.iter().find(|r| r.name == "ASCENSUS").unwrap();
+        assert_eq!(asc.status, Status::Down);
+        assert!(asc.value.contains("no key"));
     }
 
     #[test]

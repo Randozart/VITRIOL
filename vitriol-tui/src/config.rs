@@ -106,6 +106,12 @@ impl Config {
         self.home_dir.join(".vitriol/profiles")
     }
 
+    /// Path of the Ascensus secrets file (`~/.vitriol/secrets`). This file
+    /// holds the Gemini API key + model and is NEVER committed to the repo.
+    pub fn secrets_path(&self) -> PathBuf {
+        self.home_dir.join(".vitriol/secrets")
+    }
+
     /// Base URL of the gen server.
     pub fn gen_base(&self) -> String {
         format!("http://127.0.0.1:{}", self.gen_port)

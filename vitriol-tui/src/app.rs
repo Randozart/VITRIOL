@@ -146,8 +146,26 @@ pub struct App {
     pub guide_scroll: usize,
     /// Reader pane width at last draw (markdown wraps to this).
     pub guide_width: usize,
+    /// Loaded Ascensus secrets for the SUBSYSTEMS tab.
+    pub ascensus: crate::secrets::Secrets,
+    /// Cursor into the SUBSYSTEMS row list.
+    pub subsystem_selection: usize,
+    /// Active Ascensus key/model editor (Some = editing).
+    pub ascensus_edit: Option<AscensusEdit>,
     /// When the previous tick was consumed, for per-tick hooks.
     last_tick: Instant,
+}
+
+/// The ASCENSUS editor: key + model buffers; `field` is true when editing the
+/// key, false when editing the model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AscensusEdit {
+    /// API key input buffer.
+    pub api_key: String,
+    /// Model input buffer.
+    pub model: String,
+    /// True = editing the API key field, false = editing the model field.
+    pub key_field: bool,
 }
 
 impl App {
@@ -156,6 +174,7 @@ impl App {
         let profiles = profile::discover(&cfg);
         let config_file = crate::config_edit::ConfigFile::load(&cfg);
         let guide_docs = crate::guide::discover(&cfg);
+        let ascensus = crate::secrets::Secrets::load(&cfg.secrets_path());
         Self {
             cfg,
             snapshot: Snapshot::default(),
@@ -182,6 +201,9 @@ impl App {
             guide_selection: 0,
             guide_scroll: 0,
             guide_width: 80,
+            ascensus,
+            subsystem_selection: 0,
+            ascensus_edit: None,
             last_tick: Instant::now(),
         }
     }
@@ -424,6 +446,88 @@ impl App {
     /// Re-discover the profile list after a save/delete.
     pub fn profile_reload_list(&mut self) {
         self.profiles = crate::profile::discover(&self.cfg);
+    }
+
+    /// Move the SUBSYSTEMS row cursor, wrapping.
+    pub fn subsystem_move(&mut self, delta: isize) {
+        let len = crate::subsystems::rows_len(&self.cfg, &self.snapshot);
+        if len == 0 {
+            return;
+        }
+        let cur = self.subsystem_selection as isize;
+        self.subsystem_selection = ((cur + delta).rem_euclid(len as isize)) as usize;
+    }
+
+    /// Begin the ASCENSUS key/model editor, seeded from the current secrets.
+    pub fn ascensus_edit_start(&mut self) {
+        if self.ascensus_edit.is_none() {
+            self.ascensus_edit = Some(AscensusEdit {
+                api_key: self.ascensus.api_key.clone(),
+                model: self.ascensus.model.clone(),
+                key_field: true,
+            });
+        }
+    }
+
+    /// Append a character to the currently edited ASCENSUS field.
+    pub fn ascensus_edit_type(&mut self, c: char) {
+        if let Some(edit) = &mut self.ascensus_edit {
+            if edit.key_field {
+                edit.api_key.push(c);
+            } else {
+                edit.model.push(c);
+            }
+        }
+    }
+
+    /// Remove the last character from the currently edited ASCENSUS field.
+    pub fn ascensus_edit_backspace(&mut self) {
+        if let Some(edit) = &mut self.ascensus_edit {
+            if edit.key_field {
+                edit.api_key.pop();
+            } else {
+                edit.model.pop();
+            }
+        }
+    }
+
+    /// Toggle which ASCENSUS field is being edited (key <-> model).
+    pub fn ascensus_edit_toggle_field(&mut self) {
+        if let Some(edit) = &mut self.ascensus_edit {
+            edit.key_field = !edit.key_field;
+        }
+    }
+
+    /// Advance the ASCENSUS editor: on the key field -> model field; on the
+    /// model field -> save and close.
+    pub fn ascensus_edit_next(&mut self) -> Result<(), String> {
+        let Some(mut edit) = self.ascensus_edit.clone() else {
+            return Ok(());
+        };
+        if edit.key_field {
+            edit.key_field = false;
+            self.ascensus_edit = Some(edit);
+            return Ok(());
+        }
+        self.ascensus_commit(edit)
+    }
+
+    /// Commit the ASCENSUS editor: write secrets to `~/.vitriol/secrets` (0600).
+    pub fn ascensus_commit(&mut self, edit: AscensusEdit) -> Result<(), String> {
+        let s = crate::secrets::Secrets {
+            api_key: edit.api_key.trim().to_string(),
+            model: edit.model.trim().to_string(),
+        };
+        let path = self.cfg.secrets_path();
+        s.save(&path)?;
+        self.ascensus = s;
+        self.ascensus_edit = None;
+        Ok(())
+    }
+
+    /// Abort the ASCENSUS editor without saving.
+    pub fn ascensus_edit_cancel(&mut self) {
+        self.ascensus_edit = None;
     }
 
     /// Move the GUIDE index cursor, wrapping.
@@ -686,5 +790,44 @@ mod tests {
         let len = app.profiles.len();
         app.profile_list_move(-1);
         assert_eq!(app.profile_list_selection, len.saturating_sub(1));
+    }
+
+    #[test]
+    fn ascensus_edit_roundtrip_saves_masked() {
+        let tmp = std::env::temp_dir().join("vitriol_app_secrets_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut cfg = Config::from_env();
+        cfg.home_dir = tmp.clone();
+        let mut app = App::new(cfg, 120);
+        app.ascensus_edit_start();
+        app.ascensus_edit_type('k');
+        app.ascensus_edit_backspace();
+        let edit = AscensusEdit {
+            api_key: "AIza-secret-key-9999".into(),
+            model: "gemini-2.5-flash".into(),
+            key_field: false,
+        };
+        app.ascensus_commit(edit).unwrap();
+        assert!(app.ascensus.has_key());
+        assert!(!app.ascensus.mask().contains("secret-key"));
+        assert_eq!(app.ascensus.mask(), "••••9999");
+        assert_eq!(app.ascensus.model, "gemini-2.5-flash");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn ascensus_edit_next_advances_then_commits() {
+        let tmp = std::env::temp_dir().join("vitriol_app_secrets_next_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut cfg = Config::from_env();
+        cfg.home_dir = tmp.clone();
+        let mut app = App::new(cfg, 120);
+        app.ascensus_edit_start();
+        assert!(app.ascensus_edit.as_ref().unwrap().key_field);
+        app.ascensus_edit_next().unwrap();
+        assert!(!app.ascensus_edit.as_ref().unwrap().key_field);
+        app.ascensus_edit_next().unwrap();
+        assert!(app.ascensus_edit.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -39,7 +39,12 @@ const SAMPLE_CAP: u64 = 262_144;
 pub fn census_tensor(path: &Path, entry: &TensorEntry) -> std::io::Result<Census> {
     let mut f = File::open(path)?;
     f.seek(SeekFrom::Start(entry.offset))?;
-    let n_elems: u64 = entry.shape.iter().copied().map(|d| d.max(0) as u64).product();
+    let n_elems: u64 = entry
+        .shape
+        .iter()
+        .copied()
+        .map(|d| d.max(0) as u64)
+        .product();
     match entry.ggml_type {
         0 => census_raw(&mut f, n_elems, 4, read_f32),
         1 => census_raw(&mut f, n_elems, 2, read_f16),

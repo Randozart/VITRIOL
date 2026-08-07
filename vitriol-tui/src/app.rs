@@ -286,3 +286,35 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    /// No-auto-launch invariant (2026-08-07): constructing the app must not start
+    /// the stack. It is pure monitoring until the user triggers an explicit
+    /// control action from the CONTROLS tab. This guards against a later phase
+    /// (sweep progress, auto-restart) silently spawning processes at init.
+    #[test]
+    fn fresh_app_does_not_launch_stack() {
+        let cfg = Config::from_env();
+        let app = App::new(cfg, 120);
+        assert!(!app.control_running);
+        assert!(app.control_action.is_empty());
+        assert!(app.control_step.is_empty());
+        assert!(app.control_log.is_empty());
+        assert_eq!(app.tab, Tab::Dashboard);
+    }
+
+    /// Tab registry stays consistent with the labels rendered in the tab bar.
+    #[test]
+    fn tab_all_matches_labels() {
+        assert_eq!(Tab::ALL.len(), 5);
+        for tab in Tab::ALL {
+            assert!(!tab.label().is_empty());
+        }
+        assert_eq!(Tab::ALL[0], Tab::Dashboard);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Hermetis);
+    }
+}

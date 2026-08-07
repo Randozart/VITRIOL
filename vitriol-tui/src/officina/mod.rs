@@ -669,7 +669,7 @@ impl Officina {
         if cmd.target.is_empty() {
             return vec!["[ERR] TEST > \"prompt\" requires quoted text".into()];
         }
-        let payload = match generate(ctx.cfg, &cmd.target, 128) {
+        let payload = match generate(ctx.cfg, &cmd.target, 128, false) {
             Ok(p) => p,
             Err(e) => return vec![format!("[ERR] {e}")],
         };
@@ -728,28 +728,15 @@ impl Officina {
             out.push("  (Run with 'COMMIT overwrite >' to record)".into());
             return out;
         }
-        let payload = match generate(ctx.cfg, &cmd.target, 128) {
+        let payload = match generate(ctx.cfg, &cmd.target, 128, true) {
             Ok(p) => p,
             Err(e) => return vec![format!("[ERR] {e}")],
         };
-        let Some(fired) = payload
-            .get("rectify")
-            .and_then(|r| r.get("experts"))
-            .and_then(|e| e.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_u64())
-                    .map(|v| v as u32)
-                    .collect::<Vec<u32>>()
-            })
-        else {
+        let Some(fired) = parse_rectify_experts(&payload) else {
             return vec![
-                "[ERR] gen server returned no 'rectify.experts' data.",
-                "  The fork's expert-activity hook is not enabled on this server.",
-            ]
-            .into_iter()
-            .map(|s: &str| s.to_string())
-            .collect();
+                "[ERR] gen server returned no 'rectify.experts' data.".into(),
+                "  The fork's expert-activity hook is not enabled on this server.".into(),
+            ];
         };
         let mut mask_file = mask_file;
         let ts = now_ts();
@@ -866,16 +853,24 @@ impl Officina {
 }
 
 /// Run one completion against the gen server, returning the JSON payload.
-fn generate(cfg: &Config, prompt: &str, n_predict: u64) -> Result<serde_json::Value, String> {
+fn generate(
+    cfg: &Config,
+    prompt: &str,
+    n_predict: u64,
+    rectify: bool,
+) -> Result<serde_json::Value, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(120))
         .build();
     let url = format!("{}/v1/completions", cfg.gen_base());
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "prompt": prompt,
         "n_predict": n_predict,
         "temperature": 0.0,
     });
+    if rectify {
+        body["rectify"] = serde_json::json!(true);
+    }
     let resp = agent.post(&url).send_json(body).map_err(|_| {
         format!(
             "gen server unreachable at {} — start the stack first",
@@ -893,6 +888,20 @@ fn mask_from_args(args: &[String]) -> Option<String> {
         .and_then(|i| args.get(i + 1))
         .filter(|n| mask::MaskFile::valid_name(n))
         .cloned()
+}
+
+/// The fired expert ids from a completion payload's `rectify.experts` array.
+fn parse_rectify_experts(payload: &serde_json::Value) -> Option<Vec<u32>> {
+    payload
+        .get("rectify")
+        .and_then(|r| r.get("experts"))
+        .and_then(|e| e.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_u64())
+                .map(|v| v as u32)
+                .collect()
+        })
 }
 
 /// Current unix time.
@@ -1710,5 +1719,17 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Usage")));
         let lines = o.run("GUIDE > rectify", &ctx(&cfg, &snap));
         assert!(lines.iter().any(|l| l.to_lowercase().contains("rectify")));
+    }
+
+    #[test]
+    fn parse_rectify_experts_from_response() {
+        let payload: serde_json::Value =
+            serde_json::json!({"choices": [], "rectify": {"experts": [3, 7, 42]}});
+        assert_eq!(parse_rectify_experts(&payload), Some(vec![3, 7, 42]));
+        assert_eq!(parse_rectify_experts(&serde_json::json!({})), None);
+        assert_eq!(
+            parse_rectify_experts(&serde_json::json!({"rectify": {"experts": []}})),
+            Some(vec![])
+        );
     }
 }

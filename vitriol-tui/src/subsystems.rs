@@ -212,25 +212,50 @@ fn parse_flattened(text: &str) -> HashMap<String, String> {
     let mut section = "";
     for line in text.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if skip_line(line) {
             continue;
         }
-        if let Some(s) = line.strip_prefix('[') {
-            if let Some(close) = s.strip_suffix(']') {
-                section = close.trim();
-            }
+        if let Some(close) = section_of(line) {
+            section = close;
             continue;
         }
-        if let Some((k, v)) = line.split_once('=') {
-            let key = if section.is_empty() {
-                k.trim().to_string()
-            } else {
-                format!("{section}.{}", k.trim())
-            };
-            out.insert(key, v.trim().to_string());
-        }
+        insert_key(&mut out, line, section);
     }
     out
+}
+
+/// True for blank lines and comments (begins with `#`).
+fn skip_line(line: &str) -> bool {
+    line.is_empty() || line.starts_with('#')
+}
+
+/// The section name when `line` is a `[section]` header; else `None`.
+fn section_of(line: &str) -> Option<&str> {
+    let stripped = line.strip_prefix('[')?;
+    let close = stripped.strip_suffix(']')?;
+    let name = close.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+/// Insert one `k=v` line into the map under the active section.
+fn insert_key(out: &mut HashMap<String, String>, line: &str, section: &str) {
+    let Some((raw_k, v)) = line.split_once('=') else {
+        return;
+    };
+    let k = raw_k.trim();
+    if k.is_empty() {
+        return;
+    }
+    let key = if section.is_empty() {
+        k.to_string()
+    } else {
+        format!("{section}.{}", k)
+    };
+    out.insert(key, v.trim().to_string());
 }
 
 #[cfg(test)]

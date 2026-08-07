@@ -367,32 +367,22 @@ impl Officina {
         }
     }
 
-    /// DESCRIBE: GGUF metadata census of the active model.
+    /// DESCRIBE: GGUF metadata census of the active model. Target `model` (or
+    /// empty) shows the aggregate; `layer.N` / `layer.N.mlp` shows the catalog
+    /// rows for that layer's tensors.
     fn describe(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
         let Some(path) = &ctx.model_path else {
             return vec!["[ERR] no model path configured (set [model] path)".into()];
         };
-        let _ = cmd;
-        match vitriol_calibrate::gguf::read_gguf(path) {
-            Ok(info) => {
-                let mut out = vec![format!("[PROBE] DESCRIBE {}", path.display())];
-                out.push(format!("  ├── arch: {}", info.architecture));
-                out.push(format!("  ├── layers: {}", info.block_count));
-                out.push(format!(
-                    "  ├── experts: {}/{}",
-                    info.expert_used_count, info.expert_count
-                ));
-                out.push(format!("  ├── embedding: {}", info.embedding_length));
-                out.push(format!("  ├── context: {}", info.context_length));
-                out.push(format!("  ├── tensors: {}", info.tensor_count));
-                out.push(format!(
-                    "  └── total: {:.2} GiB",
-                    info.total_size_bytes as f64 / 1073741824.0
-                ));
-                out
-            }
-            Err(e) => vec![format!("[ERR] read gguf: {e}")],
+        let info = match vitriol_calibrate::gguf::read_gguf(path) {
+            Ok(info) => info,
+            Err(e) => return vec![format!("[ERR] read gguf: {e}")],
+        };
+        let target = cmd.target.trim().to_lowercase();
+        if target.is_empty() || target == "model" {
+            return describe_aggregate(path, &info);
         }
+        describe_layer(&info, &target)
     }
 
     /// MAP: real system memory layout.
@@ -534,10 +524,99 @@ fn gpu_mib(snap: &Snapshot, pick: impl Fn(&crate::model::GpuSnapshot) -> u64) ->
     snap.gpu.as_ref().map(pick).unwrap_or(0)
 }
 
+/// Render the aggregate model census.
+fn describe_aggregate(path: &Path, info: &vitriol_calibrate::gguf::ModelInfo) -> Vec<String> {
+    vec![
+        format!("[PROBE] DESCRIBE {}", path.display()),
+        format!("  ├── arch: {}", info.architecture),
+        format!("  ├── layers: {}", info.block_count),
+        format!(
+            "  ├── experts: {}/{}",
+            info.expert_used_count, info.expert_count
+        ),
+        format!("  ├── embedding: {}", info.embedding_length),
+        format!("  ├── context: {}", info.context_length),
+        format!("  ├── tensors: {}", info.tensor_count),
+        format!(
+            "  └── total: {:.2} GiB",
+            info.total_size_bytes as f64 / 1073741824.0
+        ),
+    ]
+}
+
+/// Render the tensor catalog rows for a `layer.N[.suffix]` target.
+fn describe_layer(info: &vitriol_calibrate::gguf::ModelInfo, target: &str) -> Vec<String> {
+    let Some(idx) = layer_index(target) else {
+        return vec![format!(
+            "[ERR] target '{target}' — expected 'layer.N' or 'layer.N.mlp|norm|attn'"
+        )];
+    };
+    let suffix = target.split('.').nth(2).unwrap_or("").to_lowercase();
+    // The LARQL-style "mlp" group is the GGUF `ffn_*` tensors.
+    let needle = if suffix == "mlp" { "ffn" } else { &suffix };
+    let prefix = format!("blk.{idx}.");
+    let mut rows: Vec<String> = info
+        .tensors
+        .iter()
+        .filter(|t| {
+            t.name.to_lowercase().starts_with(&prefix)
+                && (needle.is_empty() || t.name.to_lowercase().contains(needle))
+        })
+        .map(|t| {
+            format!(
+                "  ├── {:<44} {:>10} {:>9}",
+                t.name,
+                vitriol_calibrate::gguf::type_name(t.ggml_type),
+                human_bytes(t.size_bytes)
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        return vec![format!("[PROBE] layer.{idx} — no matching tensors")];
+    }
+    let suffix_label = if suffix.is_empty() {
+        String::new()
+    } else {
+        format!(".{suffix}")
+    };
+    let head = format!("[PROBE] layer.{idx}{suffix_label} — {} tensors", rows.len());
+    if rows.len() > 24 {
+        rows.truncate(24);
+        rows.push(format!(
+            "  └── … {} more",
+            info.tensors.len().saturating_sub(24)
+        ));
+    }
+    let mut out = vec![head];
+    out.append(&mut rows);
+    out
+}
+
+/// Parse `layer.N` -> layer index.
+fn layer_index(target: &str) -> Option<u64> {
+    let rest = target.strip_prefix("layer.")?;
+    let idx = rest.split('.').next()?;
+    idx.parse().ok()
+}
+
+/// Compact human size (KiB/MiB/GiB).
+fn human_bytes(b: u64) -> String {
+    if b >= 1 << 30 {
+        return format!("{:.2} GiB", b as f64 / (1 << 30) as f64);
+    }
+    if b >= 1 << 20 {
+        return format!("{:.1} MiB", b as f64 / (1 << 20) as f64);
+    }
+    if b >= 1 << 10 {
+        return format!("{:.0} KiB", b as f64 / (1 << 10) as f64);
+    }
+    format!("{b} B")
+}
+
 /// The HELP text.
 fn help_lines() -> Vec<String> {
     vec![
-        "DESCRIBE > model | layer.N.mlp    census of model/layer metadata".into(),
+        "DESCRIBE > model | layer.N | layer.N.mlp    census of model/layer".into(),
         "DISSOLVE > layer.N.mlp strategy   (P3) weight pruning".into(),
         "COAGULATE > layer.N norm into mlp (P3) fold normalizer".into(),
         "TEST > \"prompt\"                  run prompt through the active model".into(),
@@ -640,5 +719,74 @@ mod tests {
     fn syntax_check_balances() {
         assert_eq!(syntax_check("int f(){ return (1+2)*3; }"), "BALANCED");
         assert_eq!(syntax_check("int f( { return;"), "UNBALANCED");
+    }
+
+    #[test]
+    fn layer_index_and_suffix_parse() {
+        assert_eq!(layer_index("layer.12"), Some(12));
+        assert_eq!(layer_index("layer.12.mlp"), Some(12));
+        assert_eq!(layer_index("model"), None);
+    }
+
+    #[test]
+    fn describe_layer_filters_catalog() {
+        use vitriol_calibrate::gguf::{ModelInfo, TensorEntry};
+        let info = ModelInfo {
+            architecture: "qwen2".into(),
+            context_length: 0,
+            block_count: 0,
+            expert_count: 0,
+            expert_used_count: 0,
+            embedding_length: 0,
+            head_count: 0,
+            head_count_kv: 0,
+            has_mtp: false,
+            total_size_bytes: 0,
+            tensor_count: 0,
+            per_layer_attn_bytes: 0,
+            per_layer_experts_bytes: 0,
+            tensors: vec![
+                TensorEntry {
+                    name: "blk.12.ffn_gate.weight".into(),
+                    shape: vec![1, 2],
+                    ggml_type: 16,
+                    offset: 0,
+                    size_bytes: 1024,
+                },
+                TensorEntry {
+                    name: "blk.13.ffn_gate.weight".into(),
+                    shape: vec![1, 2],
+                    ggml_type: 16,
+                    offset: 0,
+                    size_bytes: 1024,
+                },
+                TensorEntry {
+                    name: "blk.12.input_layernorm.weight".into(),
+                    shape: vec![2],
+                    ggml_type: 1,
+                    offset: 0,
+                    size_bytes: 512,
+                },
+            ],
+        };
+        let rows = describe_layer(&info, "layer.12");
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].contains("layer.12"));
+        assert!(rows.iter().any(|r| r.contains("ffn_gate")));
+        assert!(rows.iter().any(|r| r.contains("iq2_xxs")));
+        let rows_mlp = describe_layer(&info, "layer.12.mlp");
+        assert_eq!(rows_mlp.len(), 2);
+        assert!(rows_mlp[1].contains("ffn_gate"));
+        let rows_none = describe_layer(&info, "layer.12.attn");
+        assert!(rows_none[0].contains("no matching"));
+        let bad = describe_layer(&info, "model");
+        assert!(bad[0].contains("[ERR]"));
+    }
+
+    #[test]
+    fn human_bytes_formats() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(4096), "4 KiB");
+        assert_eq!(human_bytes(2 * 1048576), "2.0 MiB");
     }
 }

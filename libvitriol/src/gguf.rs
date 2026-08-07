@@ -19,6 +19,32 @@ pub struct ModelInfo {
     pub tensor_count: usize,
     pub per_layer_attn_bytes: u64,
     pub per_layer_experts_bytes: u64,
+    /// The tensor catalog: one entry per weight (name, shape, type, offset).
+    pub tensors: Vec<TensorEntry>,
+}
+
+/// One weight tensor in the catalog — the "row" of the weight database.
+#[derive(Debug, Clone)]
+pub struct TensorEntry {
+    /// Fully qualified tensor name, e.g. `blk.12.ffn_gate.weight`.
+    pub name: String,
+    /// Logical shape (GGUF dims).
+    pub shape: Vec<i64>,
+    /// GGML type enum value.
+    pub ggml_type: i32,
+    /// Byte offset of the tensor payload in the file.
+    pub offset: u64,
+    /// Encoded payload size in bytes.
+    pub size_bytes: u64,
+}
+
+/// The GGML type name for an enum value (falls back to `unknown-N`).
+pub fn type_name(enum_val: i32) -> String {
+    GGML_TYPE_TABLE
+        .iter()
+        .find(|t| t.enum_val == enum_val)
+        .map(|t| t.name.to_string())
+        .unwrap_or_else(|| format!("unknown-{enum_val}"))
 }
 
 pub struct GgmlTypeInfo {
@@ -170,11 +196,12 @@ pub fn read_gguf(path: &Path) -> anyhow::Result<ModelInfo> {
         kl.contains("nextn_predict") || kl.contains("mtp")
     });
 
-    // Parse tensors for per-layer sizes
+    // Parse tensors for per-layer sizes and build the catalog.
     let mut per_attn: HashMap<u64,u64> = HashMap::new();
     let mut per_exp: HashMap<u64,u64> = HashMap::new();
     let mut total_size: u64 = 0;
     let mut has_mtp_tensor = false;
+    let mut tensors: Vec<TensorEntry> = Vec::with_capacity(tensor_count as usize);
 
     for _ in 0..tensor_count {
         let tname = read_str(&mut f);
@@ -182,9 +209,16 @@ pub fn read_gguf(path: &Path) -> anyhow::Result<ModelInfo> {
         let mut dims = Vec::with_capacity(nd as usize);
         for _ in 0..nd { dims.push(read_i64(&mut f)); }
         let dtype = read_i32(&mut f);
-        let _off = read_u64(&mut f);
+        let off = read_u64(&mut f);
         let tsize = tensor_size_bytes(dtype, &dims);
         total_size += tsize;
+        tensors.push(TensorEntry {
+            name: tname.clone(),
+            shape: dims.clone(),
+            ggml_type: dtype,
+            offset: off,
+            size_bytes: tsize,
+        });
         if let Some((lidx, sfx)) = parse_layer(&tname) {
             let sl = sfx.to_lowercase();
             if sl.contains("attn_qkv") || sl.contains("attn_output") {
@@ -216,6 +250,7 @@ pub fn read_gguf(path: &Path) -> anyhow::Result<ModelInfo> {
         tensor_count: tensor_count as usize,
         per_layer_attn_bytes: aa,
         per_layer_experts_bytes: ae,
+        tensors,
     })
 }
 

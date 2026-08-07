@@ -197,7 +197,29 @@ reimplement). Decode t/s is parsed from the gen log's `eval time` lines (the
 server `/health` only returns `{"status":"ok"}`). The default Hermetis project
 id is the sanitized full cwd path, matching hermetis `_project_id`.
 
-## 11. Key measured facts (design constraints)
+## 11. Pymander — the reference mind (P1: store + ingest)
+
+Hermetis remembers *what happened* (episodic); **Pymander** is the static,
+curated answer to *how we do a domain well*. Content is hand-authored **atomic
+nodes** (small pieces of task-relevant knowledge). Plan
+`2026-08-07-pymander-p1.md`, building on `2026-08-06-pymander-ascensus.md`.
+
+Store: each domain is a distinct Hermetis memory root
+`~/.vitriol/pymander/<domain>/memory.db`, reached via `hermetis.db` with
+project_id `pymander/<domain>` — so node **versioning** (git_rev supersede),
+**strength**, and the **embedding cache** all come free. Ingest turns markdown
+(`## heading` → atomic node, `docs/pymander/*.md`) into nodes, embeds
+best-effort (see §4 embedding; keyword falls back when the embed server is
+down).
+
+CLI: `vitriol pymander {list|ingest|nodes|search|select|active}` →
+`libvitriol/pymander.py`. Per-project selection (which domains are active for a
+project) persists to `~/.vitriol/pymander/selection.json`.
+
+Out of scope so far (P2+): doctrine injection into the window, the `pymander`
+opencode tool, Ascensus, and the promotion path.
+
+## 12. Key measured facts (design constraints)
 
 | fact | value |
 |---|---|
@@ -210,12 +232,13 @@ id is the sanitized full cwd path, matching hermetis `_project_id`.
 | dense batch amortization | 3.6× at R=16 |
 | embedding model | bge-small-en-v1.5 Q8_0, 384-dim, CPU (native 512-token window; inputs truncated) |
 
-## 12. Repository map (this session's files)
+## 13. Repository map (this session's files)
 
 - `libvitriol/hermetis/` — memory engine (db, retrieval, scorer, compact, consolidate,
   hebbian, repomap, embed).
 - `libvitriol/hermetis_server.py` — Hermetis HTTP facade (`/hermetis/recent` added for the TUI).
 - `libvitriol/spagyric_sweep.py` — Spagyr sweep harness.
+- `libvitriol/pymander.py` (+ `pymander_test.py`) — Pymander reference-mind store/ingest (see §11).
 - `vitriol-tui/` — standalone Ratatui ops dashboard (see §10).
 - `plugins/copula.ts` — Copula Hermetis plugin (versioned; installed to opencode global).
 - `profiles/{deepseek,mellum2}/config` — frozen `[spagyric]` profiles.
@@ -223,9 +246,10 @@ id is the sanitized full cwd path, matching hermetis `_project_id`.
   `scripts/build-llama-server.sh` (fixed).
 - `.praetor.toml` — intent-comment check disabled (rule rejects valid Python comments).
 - Docs: `copula.md`, `hermetis.md`, `spagyric-autotuner.md`, `spagyric-profile-schema.md`,
-  this file, `CHANGELOG_2026-08-06.md`, `BUGS.md`.
+  `pymander/` (corpus), `provenance/pymander.md`, this file, `CHANGELOG_2026-08-06.md`,
+  `BUGS.md`.
 
-## 13. Provenance
+## 14. Provenance
 
 VITRIOL and its forks are the user's own repos (AGENTS.md §2.2: freely borrowable).
 Everything is original re-derivation or the user's own work. Aider's repo-map *idea*

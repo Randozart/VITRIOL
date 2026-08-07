@@ -1275,6 +1275,12 @@ usage() {
   vitriol calibrate [--quick] [--model <path>]  auto-tune config for this hardware+model
   vitriol setup              set CAP_IPC_LOCK capability
   vitriol tui                terminal ops dashboard (Ratatui, auto-builds first run)
+  vitriol pymander list     list Pymander reference-mind domains
+  vitriol pymander ingest <domain> <file.md|->  ingest corpus as atomic nodes
+  vitriol pymander nodes <domain>   show a domain's current nodes
+  vitriol pymander search <domain> <query>  retrieve nodes for a query
+  vitriol pymander select <project_id> <domain...>  set active domains for a project
+  vitriol pymander active <project_id>  show a project's active domains
   vitriol help               this message
 
 Run options:
@@ -2369,6 +2375,18 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             (cd "${PROJECT_DIR}/vitriol-tui" && cargo build --release) || exit 1
         fi
         exec env VITRIOL_REPO="$PROJECT_DIR" "$TUI_BIN"
+        ;;
+
+    pymander)
+        # Reference mind (Pymander) store + ingest. P1: domains, ingest,
+        # search, per-project selection. Reuses the Hermetis db machinery.
+        shift
+        PYMAN=("python3" "${PROJECT_DIR}/libvitriol/pymander.py")
+        if [[ $# -eq 0 ]]; then
+            "${PYMAN[@]}" --help
+            exit 0
+        fi
+        "${PYMAN[@]}" "$@"
         ;;
 
     config)

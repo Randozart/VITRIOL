@@ -91,14 +91,17 @@ flow. Gates: test/clippy/fmt/Praetor each commit; release rebuild.
 
 ## 10. Results
 
-- **R1a+R1b landed**: grammar (COMMIT overwrite/as kinds, ASCENSUS modifier,
-  RECTIFY/DISCARD/LOG/REVERT/GUIDE keywords, `needs_explicit_commit` safety
-  classification), strict commit-safety validator, `mask.rs` engine (sparse
-  transactions, derived union, surgical revert, JSON files at
-  `~/.vitriol/masks/*.mask`), ops (rectify probe/commit with honest no-data
-  error, discard, log, revert, `DESCRIBE > model <mask>` census, `GUIDE` manual
-  render), journal `[MASKS]` panel, `docs/officina-guide.md` how-to. Tab nav
-  moved to Shift+arrows (plain arrows stay free).
-- R2 (fork expert-activity hook), R3 (ASCENSUS > RECTIFY batch), R4
-  (DISSOLVE > model <mask> after P3) — next.
+- **R1a+R1b landed** (`10bf411`): grammar (COMMIT overwrite/as kinds, ASCENSUS
+  modifier, RECTIFY/DISCARD/LOG/REVERT/GUIDE), strict commit-safety validator,
+  `mask.rs` engine, ops, journal `[MASKS]`, `docs/officina-guide.md`, Shift+arrow
+  tab nav.
+- **R2 landed** (`61dd39876` fork + `5ef89fe`): expert-activity hook in the
+  llama.cpp fork. `build_moe_ffn` emits an absolute-expert-id tensor
+  (`ffn_moe_topk`); a scheduler eval callback tallies the top-k router selection
+  per layer per token into the context's fired set; `/v1/completions` with
+  `"rectify":true` returns `rectify.experts`. Verified LIVE on the real
+  DeepSeek model (HTTP 200, sane 0..63 ids, top-6/layer/token unioned). The
+  model's diverse routing fires all 64 experts on generic prompts — a genuine
+  finding, not a bug.
+- R3 (ASCENSUS > RECTIFY batch) and R4 (DISSOLVE > model <mask> after P3) next.
 

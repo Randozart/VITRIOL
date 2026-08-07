@@ -23,13 +23,15 @@ code borrowed.
 
 ## Live firing data
 
-`RECTIFY` consumes a `rectify.experts` field in the gen server completion
-response, produced by a planned llama.cpp fork hook (R2). Until the hook is
-enabled, commit reports an honest "no expert-activity data" error — no fake
-results. The mask engine, versioning, rollback, census, and safety contract are
-fully functional and tested with constructed firing data.
+`RECTIFY` consumes the `rectify.experts` field in the gen server completion
+response, produced by the fork's expert-activity hook (R2, landed): `build_moe_ffn`
+emits an absolute-expert-id tensor named `ffn_moe_topk` (group-MoE offsets
+added), and a scheduler eval callback tallies the top-`n_expert_used` router
+selection per layer per token into a per-context fired set. `/v1/completions`
+with `"rectify":true` returns the union. Verified live on the real DeepSeek
+model.
 
 ## Status
 
-R1a+R1b landed. R2 (fork hook), R3 (ASCENSUS > RECTIFY batch), R4
-(DISSOLVE > model <mask>) pending.
+R1a+R1b, R2 landed. R3 (ASCENSUS > RECTIFY batch), R4 (DISSOLVE > model <mask>)
+pending.

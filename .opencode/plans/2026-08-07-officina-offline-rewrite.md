@@ -65,17 +65,20 @@ rewrite — standard GGUF spec (public format) re-implemented; no third-party co
 
 ## 8. Results
 
-- **P3b-1/P3b-2/P3b-3 landed**: `libvitriol/src/rewrite.rs` — `plan()`
-  (header/tensor-index parse), `copy_and_edit()` (byte-copy + same-size in-place
-  payload edits), `mask_f16`/`mask_f32` (exact unique-index zeroing, SplitMix64
-  seeded). `DISSOLVE > layer.N[.group] magnitude <ratio>` now probes the impact
-  table and commits via `COMMIT as "name" >` → writes
-  `~/.vitriol/rewrites/<name>.gguf` (f16/f32 tensors masked; quantized
-  iq2_s/iq4_nl byte-copied, reported). Header stays byte-identical; rewritten
-  file is same-size. 9 libvitriol + 123 tui tests green, clippy/fmt/praetor
-  clean (also fixed pre-existing libvitriol clippy nits: clamp, div_ceil,
-  OR→range).
-- Remaining: quantized-block masking (iq2_s/iq4_nl decode→zero→re-encode),
-  COAGULATE norm-fold, R4 (`DISSOLVE > model <mask>` drop-dross), live
-  logit-parity (server restart on the rewritten file).
+- **P3b-1/2/3** (`799b00a`): `libvitriol/src/rewrite.rs` — `plan()` (header/
+  tensor-index parse), `copy_and_edit()` (byte-copy + same-size in-place edits),
+  `mask_f16`/`mask_f32` (exact unique-index zeroing). `DISSOLVE > layer.N[.group]
+  magnitude <ratio>` probes + commits (`COMMIT as "name" >` writes
+  `~/.vitriol/rewrites/<name>.gguf`).
+- **P3b quantized masking** (`b8b9b79`): `mask_quantized` zeroes the f16 block
+  scale (offset 0..2) of a ratio of blocks — dequant = scale × code, so a zero
+  scale zeroes the whole block, for iq2_xxs/iq2_xs/iq3_xxs/iq1_s/iq4_nl/iq3_s/
+  iq2_s/iq4_xs. **Live-verified on the real DeepSeek model**: 10 layer.0 tensors
+  masked across iq2_s/iq4_nl/iq3_s, 5.89 GiB pruned copy written, 50% of iq2_s
+  blocks zeroed, replan OK (header valid, sizes equal).
+- R3 (`ASCENSUS > RECTIFY` cloud batch) landed separately (`79a4f8c`).
+- Remaining: COAGULATE norm-fold (low value — the model's ffn weights are
+  quantized, not foldable size-preservingly), R4 `DISSOLVE > model <mask>`
+  drop-dross (needs shape-aware expert→block mapping; boundary-alignment risk),
+  live logit-parity (server restart on the rewritten file).
 

@@ -18,6 +18,8 @@
 pub enum Keyword {
     /// Census of a layer/model (read-only).
     Describe,
+    /// W0 value census of a layer (dead-lane %, entropy; read-only).
+    Census,
     /// Prune weights (weight surgery; P3 backend).
     Dissolve,
     /// Fold a normalizer into adjacent weights (P3 backend).
@@ -47,6 +49,7 @@ impl Keyword {
     pub fn as_str(self) -> &'static str {
         match self {
             Keyword::Describe => "DESCRIBE",
+            Keyword::Census => "CENSUS",
             Keyword::Dissolve => "DISSOLVE",
             Keyword::Coagulate => "COAGULATE",
             Keyword::Test => "TEST",
@@ -65,7 +68,12 @@ impl Keyword {
     pub fn is_read_only(self) -> bool {
         matches!(
             self,
-            Keyword::Describe | Keyword::Test | Keyword::Map | Keyword::Help | Keyword::Clear
+            Keyword::Describe
+                | Keyword::Census
+                | Keyword::Test
+                | Keyword::Map
+                | Keyword::Help
+                | Keyword::Clear
         )
     }
 }
@@ -154,6 +162,7 @@ fn parse_keyword(text: &str) -> Result<Keyword, ParseError> {
     let up = text.to_ascii_uppercase();
     let kw = match up.as_str() {
         "DESCRIBE" => Keyword::Describe,
+        "CENSUS" => Keyword::Census,
         "DISSOLVE" => Keyword::Dissolve,
         "COAGULATE" => Keyword::Coagulate,
         "TEST" => Keyword::Test,

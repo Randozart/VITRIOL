@@ -190,6 +190,7 @@ impl Officina {
             Keyword::Play => self.play(cmd, ctx),
             Keyword::Compile => self.compile(cmd, ctx),
             Keyword::Describe => self.describe(cmd, ctx),
+            Keyword::Census => self.census(cmd, ctx),
             Keyword::Map => self.map(ctx),
             Keyword::Test => self.test(cmd, ctx),
             Keyword::Dissolve | Keyword::Coagulate => vec![format!(
@@ -385,6 +386,74 @@ impl Officina {
         describe_layer(&info, &target)
     }
 
+    /// CENSUS: W0 value census of a layer's tensors (dead-lane %, entropy).
+    fn census(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
+        let Some(path) = &ctx.model_path else {
+            return vec!["[ERR] no model path configured (set [model] path)".into()];
+        };
+        let info = match vitriol_calibrate::gguf::read_gguf(path) {
+            Ok(info) => info,
+            Err(e) => return vec![format!("[ERR] read gguf: {e}")],
+        };
+        let target = cmd.target.trim().to_lowercase();
+        let entries: Vec<&vitriol_calibrate::gguf::TensorEntry> =
+            if target.is_empty() || target == "model" {
+                info.tensors.iter().take(CENSUS_TENSOR_CAP).collect()
+            } else {
+                match matching_tensors(&info, &target) {
+                    Some(list) => list,
+                    None => {
+                        return vec![format!(
+                        "[ERR] target '{target}' — expected 'layer.N' or 'layer.N.mlp|norm|attn'"
+                    )]
+                    }
+                }
+            };
+        if entries.is_empty() {
+            return vec![format!("[PROBE] CENSUS {target} — no matching tensors")];
+        }
+        let mut out = vec![format!(
+            "[PROBE] CENSUS {target} — {} tensors",
+            entries.len()
+        )];
+        let mut agg_dead: f64 = 0.0;
+        let mut agg_elems: u64 = 0;
+        for t in entries {
+            match vitriol_calibrate::census::census_tensor(path, t) {
+                Ok(c) if c.unsupported => {
+                    out.push(format!(
+                        "  ├── {:<40} {:>10} unsupported for value census",
+                        t.name,
+                        vitriol_calibrate::gguf::type_name(t.ggml_type)
+                    ));
+                }
+                Ok(c) => {
+                    agg_dead += c.zero_fraction * c.sampled as f64;
+                    agg_elems += c.sampled;
+                    out.push(format!(
+                        "  ├── {:<40} {:>10} dead {:>5.1}%  ent {:.2} bits  |x|̄ {:.3e}",
+                        t.name,
+                        vitriol_calibrate::gguf::type_name(t.ggml_type),
+                        c.zero_fraction * 100.0,
+                        c.entropy_bits,
+                        c.abs_mean
+                    ));
+                }
+                Err(e) => {
+                    out.push(format!("  ├── {} read error: {e}", t.name));
+                }
+            }
+        }
+        if agg_elems > 0 {
+            out.push(format!(
+                "  └── aggregate dead lanes: {:.1}% ({} sampled)",
+                agg_dead / agg_elems as f64 * 100.0,
+                agg_elems
+            ));
+        }
+        out
+    }
+
     /// MAP: real system memory layout.
     fn map(&mut self, ctx: &OpCtx) -> Vec<String> {
         let used_mib = gpu_mib(ctx.snap, |g| g.vram_used_mib);
@@ -546,22 +615,16 @@ fn describe_aggregate(path: &Path, info: &vitriol_calibrate::gguf::ModelInfo) ->
 
 /// Render the tensor catalog rows for a `layer.N[.suffix]` target.
 fn describe_layer(info: &vitriol_calibrate::gguf::ModelInfo, target: &str) -> Vec<String> {
-    let Some(idx) = layer_index(target) else {
+    let Some(list) = matching_tensors(info, target) else {
         return vec![format!(
             "[ERR] target '{target}' — expected 'layer.N' or 'layer.N.mlp|norm|attn'"
         )];
     };
-    let suffix = target.split('.').nth(2).unwrap_or("").to_lowercase();
-    // The LARQL-style "mlp" group is the GGUF `ffn_*` tensors.
-    let needle = if suffix == "mlp" { "ffn" } else { &suffix };
-    let prefix = format!("blk.{idx}.");
-    let mut rows: Vec<String> = info
-        .tensors
+    if list.is_empty() {
+        return vec![format!("[PROBE] {target} — no matching tensors")];
+    }
+    let mut rows: Vec<String> = list
         .iter()
-        .filter(|t| {
-            t.name.to_lowercase().starts_with(&prefix)
-                && (needle.is_empty() || t.name.to_lowercase().contains(needle))
-        })
         .map(|t| {
             format!(
                 "  ├── {:<44} {:>10} {:>9}",
@@ -571,26 +634,46 @@ fn describe_layer(info: &vitriol_calibrate::gguf::ModelInfo, target: &str) -> Ve
             )
         })
         .collect();
-    if rows.is_empty() {
-        return vec![format!("[PROBE] layer.{idx} — no matching tensors")];
-    }
-    let suffix_label = if suffix.is_empty() {
-        String::new()
-    } else {
-        format!(".{suffix}")
-    };
-    let head = format!("[PROBE] layer.{idx}{suffix_label} — {} tensors", rows.len());
+    let suffix_label = target
+        .split('.')
+        .nth(2)
+        .filter(|s| !s.is_empty())
+        .map(|s| format!(".{s}"))
+        .unwrap_or_default();
+    let head = format!("[PROBE] {target}{suffix_label} — {} tensors", list.len());
     if rows.len() > 24 {
         rows.truncate(24);
-        rows.push(format!(
-            "  └── … {} more",
-            info.tensors.len().saturating_sub(24)
-        ));
+        rows.push("  └── … more".into());
     }
     let mut out = vec![head];
     out.append(&mut rows);
     out
 }
+
+/// The catalog tensors matching a `layer.N[.suffix]` target. `None` when the
+/// target is not a layer form.
+fn matching_tensors<'a>(
+    info: &'a vitriol_calibrate::gguf::ModelInfo,
+    target: &str,
+) -> Option<Vec<&'a vitriol_calibrate::gguf::TensorEntry>> {
+    let idx = layer_index(target)?;
+    let suffix = target.split('.').nth(2).unwrap_or("").to_lowercase();
+    // The LARQL-style "mlp" group is the GGUF `ffn_*` tensors.
+    let needle = if suffix == "mlp" { "ffn" } else { &suffix };
+    let prefix = format!("blk.{idx}.");
+    Some(
+        info.tensors
+            .iter()
+            .filter(|t| {
+                t.name.to_lowercase().starts_with(&prefix)
+                    && (needle.is_empty() || t.name.to_lowercase().contains(needle))
+            })
+            .collect(),
+    )
+}
+
+/// Cap on tensors processed by an aggregate CENSUS.
+const CENSUS_TENSOR_CAP: usize = 64;
 
 /// Parse `layer.N` -> layer index.
 fn layer_index(target: &str) -> Option<u64> {
@@ -617,6 +700,7 @@ fn human_bytes(b: u64) -> String {
 fn help_lines() -> Vec<String> {
     vec![
         "DESCRIBE > model | layer.N | layer.N.mlp    census of model/layer".into(),
+        "CENSUS > layer.N.mlp                      W0 value census (dead lanes)".into(),
         "DISSOLVE > layer.N.mlp strategy   (P3) weight pruning".into(),
         "COAGULATE > layer.N norm into mlp (P3) fold normalizer".into(),
         "TEST > \"prompt\"                  run prompt through the active model".into(),
@@ -788,5 +872,63 @@ mod tests {
         assert_eq!(human_bytes(512), "512 B");
         assert_eq!(human_bytes(4096), "4 KiB");
         assert_eq!(human_bytes(2 * 1048576), "2.0 MiB");
+    }
+
+    #[test]
+    fn matching_tensors_respects_layer_and_group() {
+        use vitriol_calibrate::gguf::{ModelInfo, TensorEntry};
+        let info = ModelInfo {
+            architecture: "qwen2".into(),
+            context_length: 0,
+            block_count: 0,
+            expert_count: 0,
+            expert_used_count: 0,
+            embedding_length: 0,
+            head_count: 0,
+            head_count_kv: 0,
+            has_mtp: false,
+            total_size_bytes: 0,
+            tensor_count: 0,
+            per_layer_attn_bytes: 0,
+            per_layer_experts_bytes: 0,
+            tensors: vec![
+                TensorEntry {
+                    name: "blk.0.attn_q.weight".into(),
+                    shape: vec![2],
+                    ggml_type: 1,
+                    offset: 0,
+                    size_bytes: 4,
+                },
+                TensorEntry {
+                    name: "blk.0.ffn_gate.weight".into(),
+                    shape: vec![2],
+                    ggml_type: 16,
+                    offset: 0,
+                    size_bytes: 8,
+                },
+                TensorEntry {
+                    name: "blk.1.attn_q.weight".into(),
+                    shape: vec![2],
+                    ggml_type: 1,
+                    offset: 0,
+                    size_bytes: 4,
+                },
+            ],
+        };
+        let all = matching_tensors(&info, "layer.0").unwrap();
+        assert_eq!(all.len(), 2);
+        let attn = matching_tensors(&info, "layer.0.attn").unwrap();
+        assert_eq!(attn.len(), 1);
+        assert!(attn[0].name.contains("attn_q"));
+        let mlp = matching_tensors(&info, "layer.0.mlp").unwrap();
+        assert_eq!(mlp.len(), 1);
+        assert!(mlp[0].name.contains("ffn_gate"));
+        assert!(matching_tensors(&info, "model").is_none());
+    }
+
+    #[test]
+    fn census_keyword_is_read_only() {
+        use crate::officina::grammar::Keyword;
+        assert!(Keyword::Census.is_read_only());
     }
 }

@@ -225,6 +225,62 @@ def memory_recent():
     ]})
 
 
+@app.route("/pymander/list", methods=["GET"])
+def pymander_list():
+    """List installed Pymander reference-mind domains."""
+    from pymander import list_domains
+    return jsonify({"ok": True, "domains": list_domains()})
+
+
+@app.route("/pymander/search", methods=["POST"])
+def pymander_search():
+    """Retrieve the most relevant Pymander nodes for a domain + query."""
+    payload = request.get_json(force=True, silent=True) or {}
+    domain = payload.get("domain", "")
+    query = payload.get("query", "")
+    if not domain or not query:
+        return jsonify({"error": "domain and query required"}), 400
+    from pymander import sanitize_domain, search
+    try:
+        hits = search(sanitize_domain(domain), query,
+                      top_k=int(payload.get("top_k", 5)))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify({"ok": True, "domain": domain, "results": [
+        {"label": h.get("label"), "summary": h.get("summary", ""),
+         "score": round(h.get("_score", 0.0), 4)} for h in hits
+    ]})
+
+
+@app.route("/pymander/select", methods=["POST"])
+def pymander_select():
+    """Set the active Pymander domains for a project."""
+    payload = request.get_json(force=True, silent=True) or {}
+    pid = _project_id(payload)
+    if not pid:
+        return jsonify({"error": "project_id required"}), 400
+    domains = payload.get("domains", [])
+    from pymander import set_selection
+    res = set_selection(pid, domains)
+    return jsonify({"ok": True, **res})
+
+
+@app.route("/pymander/context", methods=["POST"])
+def pymander_context():
+    """Build a budgeted Pymander doctrine block for a project's active domains."""
+    payload = request.get_json(force=True, silent=True) or {}
+    pid = _project_id(payload)
+    if not pid:
+        return jsonify({"error": "project_id required"}), 400
+    from pymander import build_doctrine, estimate_tokens_doctrine
+    block = build_doctrine(pid, payload.get("query", ""),
+                           int(payload.get("budget_tokens", 3000)),
+                           int(payload.get("top_k", 3)))
+    return jsonify({"ok": True, "project_id": pid,
+                    "tokens": estimate_tokens_doctrine(block),
+                    "context": block})
+
+
 @app.route("/hermetis/stats", methods=["GET"])
 def memory_stats():
     """Return per-project episode/node/session counts."""

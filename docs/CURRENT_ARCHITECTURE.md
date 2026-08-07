@@ -219,6 +219,15 @@ project) persists to `~/.vitriol/pymander/selection.json`.
 Out of scope so far (P2+): doctrine injection into the window, the `pymander`
 opencode tool, Ascensus, and the promotion path.
 
+### P2 — injection + tool (2026-08-07)
+
+`/pymander/*` endpoints on the Hermetis server: `list`, `search`, `select`,
+`context` (budgeted doctrine block across a project's selected domains).
+Copula plugin (`plugins/copula.ts`) gains a `pymander_search` tool and injects
+a `[Pymander doctrine]` block once per session on the first user message
+(reuses the Hermetis auto-inject machinery; label added to the re-ingest skip
+list). Doctrine content follows the project's `selection.json`.
+
 ## 12. Key measured facts (design constraints)
 
 | fact | value |
@@ -236,7 +245,7 @@ opencode tool, Ascensus, and the promotion path.
 
 - `libvitriol/hermetis/` — memory engine (db, retrieval, scorer, compact, consolidate,
   hebbian, repomap, embed).
-- `libvitriol/hermetis_server.py` — Hermetis HTTP facade (`/hermetis/recent` added for the TUI).
+- `libvitriol/hermetis_server.py` — Hermetis HTTP facade (`/hermetis/recent` + `/pymander/*` added for TUI/Pymander).
 - `libvitriol/spagyric_sweep.py` — Spagyr sweep harness.
 - `libvitriol/pymander.py` (+ `pymander_test.py`) — Pymander reference-mind store/ingest (see §11).
 - `vitriol-tui/` — standalone Ratatui ops dashboard (see §10).

@@ -280,6 +280,61 @@ def _cmd_active(args) -> int:
     return 0
 
 
+def build_doctrine(project_id: str, query: str = "", budget_tokens: int = 3000,
+                   top_k: int = 3) -> str:
+    """Build a budgeted doctrine block for the project's selected domains.
+
+    Aggregates the top nodes of each selected domain into a labeled, budgeted
+    text block intended for window injection (the [Pymander doctrine] context).
+    The model's static *how* lives here, selected per project. Falls back to the
+    first installed domain when the project has no explicit selection.
+    """
+    domains = get_selection(project_id) or list_domains()[:1]
+    sections = []
+    used = 0
+    for domain in domains:
+        text = _domain_section(domain, query, top_k, budget_tokens - used)
+        if not text:
+            continue
+        text_toks = retrieval.estimate_tokens(text) + 1
+        if used + text_toks > budget_tokens and used > 0:
+            break
+        used += text_toks
+        sections.append(text)
+    return "\n\n".join(sections)
+
+
+def _domain_section(domain: str, query: str, top_k: int, budget: int) -> str:
+    """One domain's doctrine lines under a per-domain budget ('' when none)."""
+    try:
+        hits = search(domain, query, top_k=top_k)
+    except ValueError:
+        return ""
+    if not hits:
+        return ""
+    parts = [f"## {domain}"]
+    used = 0
+    for hit in hits:
+        body = f"- {hit.get('label', '')}: {hit.get('summary', '')}"
+        toks = retrieval.estimate_tokens(body) + 1
+        if used + toks > budget and used > 0:
+            break
+        used += toks
+        parts.append(body)
+    return "\n".join(parts)
+
+
+def estimate_tokens_doctrine(block: str) -> int:
+    """Estimate tokens of a doctrine block (4 chars ≈ 1 token)."""
+    return retrieval.estimate_tokens(block)
+
+
+def _cmd_doctrine(args) -> int:
+    block = build_doctrine(args.project_id, args.query, args.budget)
+    print(block)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """CLI: vitriol pymander <cmd>. Subcommands mirror the P1 scope."""
     ap = argparse.ArgumentParser(prog="vitriol pymander",
@@ -317,6 +372,13 @@ def build_parser() -> argparse.ArgumentParser:
         "active", help="show the active domains for a project")
     p_active.add_argument("project_id")
     p_active.set_defaults(fn=_cmd_active)
+
+    p_doctrine = sub.add_parser(
+        "doctrine", help="build a budgeted doctrine block for a project")
+    p_doctrine.add_argument("project_id")
+    p_doctrine.add_argument("--query", default="")
+    p_doctrine.add_argument("--budget", type=int, default=3000)
+    p_doctrine.set_defaults(fn=_cmd_doctrine)
     return ap
 
 

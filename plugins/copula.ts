@@ -35,6 +35,8 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
   const stored = new Set<string>()
   // Dedupe auto-injected context blocks (rolling window, B).
   const injected = new Set<string>()
+  // Sessions that already received the Pymander doctrine block (inject once).
+  const doctrineGiven = new Set<string>()
   // Debounce repo-map node refresh per changed file (P3.4).
   const fileTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
@@ -68,7 +70,7 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
     if (part?.type === "text" && typeof part.text === "string") {
       // Skip the plugin's own labels (injected context + compaction capture) so they
       // are never re-ingested as conversation.
-      if (part.text.startsWith("[Hermetis context]") || part.text.startsWith("[compaction capture]")) return
+      if (part.text.startsWith("[Hermetis context]") || part.text.startsWith("[compaction capture]") || part.text.startsWith("[Pymander doctrine]")) return
       // synthetic text parts carry tool/tool-output content; plain text is assistant prose.
       const role = part.synthetic ? "tool" : "assistant"
       await store(role, part.text, sessionId)
@@ -105,6 +107,33 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
       if (injected.has(h)) return
       injected.add(h)
       const labeled = `[Hermetis context]\n${block}`
+      await client.session.prompt({
+        body: { noReply: true, parts: [{ type: "text", text: labeled }] },
+        path: { id: sessionId },
+      })
+    } catch {}
+  }
+
+  // Doctrine (Pymander, static *how*) injected once per session start, bounded,
+  // labeled so it is never re-ingested. Uses the project's selected domains.
+  async function injectDoctrine(sessionId: string): Promise<void> {
+    if (doctrineGiven.has(sessionId)) return
+    try {
+      const res = await fetch(`${HERMETIS_URL}/pymander/context`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project_id: projectId,
+          budget_tokens: CONTEXT_BUDGET,
+          top_k: CONTEXT_TOP_K,
+        }),
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      const block: string = data?.context ?? ""
+      if (!block?.trim()) return
+      doctrineGiven.add(sessionId)
+      const labeled = `[Pymander doctrine]\n${block}`
       await client.session.prompt({
         body: { noReply: true, parts: [{ type: "text", text: labeled }] },
         path: { id: sessionId },
@@ -174,6 +203,7 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
         if (text?.trim() && role === "user") {
           await store("user", text, sessionId)
           if (AUTO_CONTEXT) await injectContext(sessionId, text)
+          await injectDoctrine(sessionId)
         }
       } catch {}
     },
@@ -216,6 +246,60 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
           }
         },
       }),
+      pymander_search: tool({
+        description:
+          "Search Pymander, the curated reference mind (how this project does a domain well). Static hand-authored atomic nodes, distinct from episodic Hermetis memory. Use for a domain pattern/convention; pass a domain (or omit and let it fall back to the project's selected domains).",
+        args: {
+          domain: tool.schema.string().optional().describe("Pymander domain to search (e.g. systems). Omit to use the project's selected domains."),
+          query: tool.schema.string().describe("The search query"),
+          top_k: tool.schema.number().optional().describe("Number of results (default 3)"),
+        },
+        async execute(args, _context) {
+          try {
+            const domains = args.domain
+              ? [args.domain]
+              : await getSelectedDomains(projectId)
+            const out: string[] = []
+            for (const d of domains) {
+              const res = await fetch(`${HERMETIS_URL}/pymander/search`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ domain: d, query: args.query, top_k: args.top_k ?? 3 }),
+              })
+              if (!res.ok) continue
+              const data = await res.json()
+              for (const r of (data?.results ?? [])) {
+                out.push(`[${d} ${r.score}] ${r.label}: ${r.summary}`)
+              }
+            }
+            if (!out.length) return "No Pymander doctrine found for that query."
+            return out.join("\n\n")
+          } catch {
+            return "Pymander search failed (service unreachable)."
+          }
+        },
+      }),
     },
+  }
+}
+
+// Pymander: read the project's selected domains from selection.json via /pymander/context.
+async function getSelectedDomains(projectId: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${HERMETIS_URL}/pymander/context`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: projectId, budget_tokens: 1, top_k: 1 }),
+    })
+    if (!res.ok) return []
+    const data = await res.json()
+    // context is empty when nothing selected; parse the ## domain markers.
+    const ctx: string = data?.context ?? ""
+    return ctx
+      .split("\n")
+      .filter((l) => l.startsWith("## "))
+      .map((l) => l.slice(3).trim())
+  } catch {
+    return []
   }
 }

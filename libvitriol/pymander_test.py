@@ -127,6 +127,21 @@ class PymanderStoreTests(unittest.TestCase):
         out = pymander._cmd_list(pymander.build_parser().parse_args(["list"]))
         self.assertEqual(out, 0)
 
+    def test_build_doctrine_uses_selection(self):
+        pymander.ingest_markdown(self.domain, CORPUS)
+        pymander.ingest_markdown("systems2", CORPUS)
+        pymander.set_selection("proj_x", ["systems", "systems2"])
+        block = pymander.build_doctrine("proj_x", "memory safety")
+        self.assertIn("## systems", block)
+        self.assertIn("Memory Safety Rules", block)
+        self.assertIn("## systems2", block)
+
+    def test_build_doctrine_budget_empty_with_no_selection(self):
+        pymander.ingest_markdown(self.domain, CORPUS)
+        block = pymander.build_doctrine("unselected_proj", "memory safety")
+        # Falls back to the first installed domain, so still non-empty.
+        self.assertTrue(block)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,6 +37,8 @@ pub struct TensorSlot {
     pub name: String,
     /// GGML type enum value.
     pub ggml_type: i32,
+    /// Logical shape (GGUF dims).
+    pub ne: Vec<i64>,
     /// Byte offset of the payload in the file.
     pub offset: u64,
     /// Payload size in bytes.
@@ -103,20 +105,21 @@ pub fn plan(path: &Path) -> anyhow::Result<RewritePlan> {
     })
 }
 
-/// Read one tensor-info entry: (name, ggml_type, offset, size).
+/// Read one tensor-info entry into a slot.
 fn read_tensor_slot(f: &mut File) -> TensorSlot {
     let name = read_str(f);
     let nd = read_u32(f);
-    let mut dims = Vec::with_capacity(nd as usize);
+    let mut ne = Vec::with_capacity(nd as usize);
     for _ in 0..nd {
-        dims.push(read_i64(f));
+        ne.push(read_i64(f));
     }
     let ggml_type = read_i32(f);
     let offset = read_u64(f);
-    let size = tensor_size_bytes(ggml_type, &dims);
+    let size = tensor_size_bytes(ggml_type, &ne);
     TensorSlot {
         name,
         ggml_type,
+        ne,
         offset,
         size,
     }
@@ -223,6 +226,117 @@ pub fn mask_quantized(payload: &[u8], ratio: f64, block_size: usize, seed: u64) 
         guard += 1;
     }
     out
+}
+
+/// The expert-drop operation on one FFN weight tensor (bundled to keep the
+/// entry point under the param-count gate).
+pub struct DrossEdit<'a> {
+    /// Encoded tensor payload.
+    pub payload: &'a [u8],
+    /// GGML type enum value.
+    pub ggml_type: i32,
+    /// Logical shape (GGUF dims).
+    pub ne: &'a [i64],
+    /// Total expert count (the MoE pool).
+    pub n_expert: u64,
+    /// Hidden size per expert.
+    pub n_ffn_expert: u64,
+    /// Dross (never-fired) expert ids, sorted.
+    pub dross: &'a [u32],
+}
+
+impl DrossEdit<'_> {
+    /// Zero every block fully contained within a dross expert's element range.
+    ///
+    /// The tensor is 2-D `[a, b]` where one dim equals
+    /// `n_expert × n_ffn_expert` (the expert-major dim) and the other is the
+    /// hidden dim. Blocks tile the contiguous dim (ne[0]). A block is zeroed
+    /// only when its entire element range lies inside one dross expert's rows,
+    /// so blocks straddling an expert boundary are kept — conservative, never
+    /// corrupts an active expert's rows.
+    ///
+    /// Returns the masked payload and the number of blocks zeroed.
+    pub fn apply(&self) -> Option<(Vec<u8>, u64)> {
+        let Self {
+            payload,
+            ggml_type,
+            ne,
+            n_expert,
+            n_ffn_expert,
+            dross,
+        } = *self;
+        if ne.len() < 2 {
+            return None;
+        }
+        let blk = block_size(ggml_type)? as i64;
+        if blk <= 0 {
+            return None;
+        }
+        let a = ne[0];
+        let b = ne[1];
+        let expert_total = (n_expert * n_ffn_expert) as i64;
+        // Determine which dim is expert-major.
+        let expert_dim = if a == expert_total {
+            0
+        } else if b == expert_total {
+            1
+        } else {
+            return None;
+        };
+        let mut out = payload.to_vec();
+        let mut zeroed = 0u64;
+        // Element-index of a block given its byte position.
+        // Column-major: element(i, j) is at i + j*a. Bytes-per-element is
+        // fractional for block quants (e.g. iq2_s = 82/256 B/el), so use f64.
+        let bytes_per_el = payload.len() as f64 / (a * b) as f64;
+        let elems_per_block = (blk as f64 / bytes_per_el) as i64;
+        if elems_per_block <= 0 {
+            return None;
+        }
+        let n_blocks = payload.len() / blk as usize;
+        for bi in 0..n_blocks {
+            let byte_off = (bi * blk as usize) as i64;
+            let el_start = (byte_off as f64 / bytes_per_el) as i64;
+            let el_end = el_start + elems_per_block;
+            if el_end > a * b {
+                continue;
+            }
+            // Map the block's element range to expert-major indices.
+            let (em_start, em_end) = if expert_dim == 0 {
+                (el_start, el_end)
+            } else {
+                // expert-major on dim 1: element range spans a fixed j (= i/a)
+                let j_start = el_start / a;
+                let j_end = (el_end - 1) / a;
+                if j_start != j_end {
+                    continue; // block crosses rows — conservative skip
+                }
+                (j_start, j_end + 1)
+            };
+            if in_dross(em_start, em_end, n_ffn_expert, dross) {
+                let base = (bi * blk as usize) as usize;
+                out[base] = 0;
+                out[base + 1] = 0;
+                zeroed += 1;
+            }
+        }
+        Some((out, zeroed))
+    }
+}
+
+/// True when the `[s, e)` element range lies entirely within one dross expert's
+/// rows.
+fn in_dross(s: i64, e: i64, n_ffn_expert: u64, dross: &[u32]) -> bool {
+    if e <= s {
+        return false;
+    }
+    let exp_size = n_ffn_expert as i64;
+    let expert_of_start = s / exp_size;
+    let expert_of_end = (e - 1) / exp_size;
+    if expert_of_start != expert_of_end {
+        return false; // spans two experts
+    }
+    dross.binary_search(&(expert_of_start as u32)).is_ok()
 }
 
 /// SplitMix64 — deterministic seedable PRNG for mask selection.
@@ -424,6 +538,56 @@ mod tests {
         assert_eq!(block_size(20), Some(18));
         assert_eq!(block_size(22), Some(82));
         assert_eq!(block_size(16), Some(66));
+    }
+
+    #[test]
+    fn mask_dross_zeroes_expert_rows_only() {
+        // iq4_nl (blk=32 elements). ne=[64, 1], n_expert=2, n_ffn=32 =>
+        // expert_total=64 on dim0. Block0=[0,32)=expert0, block1=[32,64)=expert1.
+        let ne = [64i64, 1i64];
+        let mut payload = Vec::new();
+        for _ in 0..2 {
+            payload.push(0x01); // nonzero scale low
+            payload.push(0x3C); // nonzero scale high
+            payload.extend_from_slice(&[0xAB; 16]);
+        }
+        let (masked, zeroed) = DrossEdit {
+            payload: &payload,
+            ggml_type: 20,
+            ne: &ne,
+            n_expert: 2,
+            n_ffn_expert: 32,
+            dross: &[0],
+        }
+        .apply()
+        .unwrap();
+        assert_eq!(zeroed, 1);
+        // block0 (expert0) scale zeroed, block1 (expert1) untouched
+        assert_eq!(masked[0], 0);
+        assert_eq!(masked[1], 0);
+        assert_eq!(masked[18], 0x01);
+        assert_eq!(masked[19], 0x3C);
+    }
+
+    #[test]
+    fn mask_dross_skips_spanning_blocks() {
+        // ne=[8, 4], n_expert=4, n_ffn=2 => expert_total=8 on dim0.
+        // Single 32-el block spans experts 0..3 -> kept (conservative).
+        let ne = [8i64, 4i64];
+        let mut payload = vec![0x01u8, 0x3C];
+        payload.extend_from_slice(&[0xAB; 16]);
+        let (masked, zeroed) = DrossEdit {
+            payload: &payload,
+            ggml_type: 20,
+            ne: &ne,
+            n_expert: 4,
+            n_ffn_expert: 2,
+            dross: &[0],
+        }
+        .apply()
+        .unwrap();
+        assert_eq!(zeroed, 0);
+        assert_eq!(masked[0], 0x01);
     }
 
     #[test]

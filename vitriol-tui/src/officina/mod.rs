@@ -771,6 +771,9 @@ impl Officina {
         let Some(path) = &ctx.model_path else {
             return vec!["[ERR] no model path configured (set [model] path)".into()];
         };
+        if cmd.target.eq_ignore_ascii_case("model") {
+            return self.dissolve_dross(cmd, path);
+        }
         if cmd.target.is_empty() {
             return vec!["[ERR] DISSOLVE > layer.N[.group] strategy ratio".into()];
         }
@@ -892,6 +895,121 @@ impl Officina {
             }
             _ => active.to_path_buf(),
         }
+    }
+
+    /// DISSOLVE > model <mask>: drop the dross experts (never fired per the
+    /// rectification mask) by zeroing their FFN weight blocks.
+    fn dissolve_dross(&mut self, cmd: &Command, path: &Path) -> Vec<String> {
+        let mask_name = cmd.args.first().cloned().unwrap_or_default();
+        if mask_name.is_empty() {
+            return vec!["[ERR] DISSOLVE > model <mask> requires a mask name".into()];
+        }
+        let mask_file = match mask::MaskFile::load(&mask::mask_path(&self.home, &mask_name)) {
+            Ok(m) => m,
+            Err(e) => return vec![format!("[ERR] {e}")],
+        };
+        let n_expert = match vitriol_calibrate::gguf::read_gguf(path) {
+            Ok(info) => info.expert_count.max(1),
+            Err(_) => 64,
+        };
+        let active = mask_file.union_active();
+        let dross: Vec<u32> = (0..n_expert)
+            .map(|e| e as u32)
+            .filter(|e| !active.contains(e))
+            .collect();
+        if dross.is_empty() {
+            return vec![format!(
+                "[PROBE] model {mask_name} — no dross experts (all {n_expert} fired)"
+            )];
+        }
+        let plan = match vitriol_calibrate::rewrite::plan(path) {
+            Ok(p) => p,
+            Err(e) => return vec![format!("[ERR] {e}")],
+        };
+        // FFN tensors across all layers, with their per-expert row count.
+        let mut targets = Vec::new();
+        for (i, t) in plan.tensors.iter().enumerate() {
+            let lower = t.name.to_lowercase();
+            let is_ffn = lower.contains("ffn_gate")
+                || lower.contains("ffn_up")
+                || lower.contains("ffn_down");
+            if !is_ffn {
+                continue;
+            }
+            let Some(n_ffn) =
+                t.ne.iter()
+                    .copied()
+                    .filter(|&d| d % n_expert as i64 == 0 && d / n_expert as i64 > 1)
+                    .max()
+                    .map(|d| (d / n_expert as i64) as u64)
+            else {
+                continue;
+            };
+            targets.push((i, n_ffn));
+        }
+        if targets.is_empty() {
+            return vec![format!(
+                "[PROBE] model {mask_name} — no FFN tensors found in the model"
+            )];
+        }
+        if !cmd.commit {
+            let mut out = vec![format!(
+                "[PROBE] DISSOLVE model {mask_name} — drop {} dross experts",
+                dross.len()
+            )];
+            out.push(format!(
+                "  ├── experts: {}",
+                describe_dross(&dross, n_expert)
+            ));
+            out.push(format!("  ├── tensors: {} FFN layers", targets.len()));
+            out.push("  └── zeroes the FFN weight blocks of never-fired experts".into());
+            out.push("  (Run with 'COMMIT overwrite >' or 'COMMIT as \"name\" >' to write)".into());
+            return out;
+        }
+        let mut edits = Vec::new();
+        let mut blocks = 0u64;
+        for (i, n_ffn) in targets {
+            let t = &plan.tensors[i];
+            let payload = read_payload(path, t.offset, t.size).unwrap_or_default();
+            if payload.len() != t.size as usize {
+                continue;
+            }
+            let dross_edit = vitriol_calibrate::rewrite::DrossEdit {
+                payload: &payload,
+                ggml_type: t.ggml_type,
+                ne: &t.ne,
+                n_expert,
+                n_ffn_expert: n_ffn,
+                dross: &dross,
+            };
+            if let Some((masked, z)) = dross_edit.apply() {
+                blocks += z;
+                edits.push(vitriol_calibrate::rewrite::Edit {
+                    index: i,
+                    bytes: masked,
+                });
+            }
+        }
+        let dst = self.dissolve_target(cmd, path);
+        if let Err(e) = vitriol_calibrate::rewrite::copy_and_edit(path, &dst, &plan, &edits) {
+            return vec![format!("[ERR] {e}")];
+        }
+        self.record_op(
+            &format!(
+                "dissolved model by {mask_name}: dropped {} dross experts",
+                dross.len()
+            ),
+            &cmd.raw,
+            0.1,
+        );
+        vec![
+            format!("[COMMITTED] wrote {}", dst.display()),
+            format!(
+                "  ├── dropped {} dross experts ({blocks} blocks zeroed)",
+                dross.len()
+            ),
+            format!("  └── experts kept: {}", describe_dross(&dross, n_expert)),
+        ]
     }
 
     /// TEST: run a prompt through the live gen server and syntax-check.
@@ -1156,6 +1274,32 @@ fn read_payload(path: &Path, offset: u64, size: u64) -> std::io::Result<Vec<u8>>
     let mut buf = vec![0u8; size as usize];
     f.read_exact(&mut buf)?;
     Ok(buf)
+}
+
+/// Compact description of a dross-expert list.
+fn describe_dross(dross: &[u32], n_expert: u64) -> String {
+    let total = n_expert as u32;
+    let kept = total.saturating_sub(dross.len() as u32);
+    if dross.len() > 12 {
+        let head: Vec<String> = dross.iter().take(6).map(|e| e.to_string()).collect();
+        format!(
+            "{} dross / {total} total, {kept} kept — {}{}, …",
+            dross.len(),
+            head.join(","),
+            if dross.len() > 6 { ",…" } else { "" }
+        )
+    } else {
+        format!(
+            "{}/{} dross, {kept} kept: {}",
+            dross.len(),
+            total,
+            dross
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
 }
 
 /// Call the Gemini generateContent API and return the combined text.
@@ -2125,6 +2269,26 @@ mod tests {
         assert!(lines.iter().any(|l| l.contains("Usage")));
         let lines = o.run("GUIDE > rectify", &ctx(&cfg, &snap));
         assert!(lines.iter().any(|l| l.to_lowercase().contains("rectify")));
+    }
+
+    #[test]
+    fn describe_dross_summaries() {
+        assert!(describe_dross(&[], 64).contains("0/64"));
+        assert!(describe_dross(&[1, 2, 3], 64).contains("61 kept"));
+        assert!(describe_dross(&(0..20).collect::<Vec<u32>>(), 64).contains("…"));
+    }
+
+    #[test]
+    fn dissolve_dross_probe_needs_mask() {
+        let home = std::env::temp_dir().join("officina_dross_probe");
+        let _ = std::fs::remove_dir_all(&home);
+        let mut o = Officina::new(&home);
+        let snap = Snapshot::default();
+        let mut cfg = Config::from_env();
+        cfg.home_dir = home.clone();
+        let lines = o.run("DISSOLVE > model missing_mask", &ctx(&cfg, &snap));
+        assert!(lines[0].contains("[ERR]"));
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

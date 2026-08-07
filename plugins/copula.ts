@@ -279,6 +279,50 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
           }
         },
       }),
+      ascensus: tool({
+        description:
+          "Escalate a genuinely-hard inquiry to a configured cloud model (Google Gemini) that takes over the wheel. Use only when the question is beyond your reliable local ability or needs a second opinion. The query and your reasoning attempt are sent; no file contents or secrets leave the machine. Escalations are stored to memory so the system learns and self-reduces future escalation.",
+        args: {
+          query: tool.schema.string().describe("The user's hard inquiry, as-is."),
+          reasoning: tool.schema.string().optional().describe("Your local reasoning attempt, so the cloud model can improve on it."),
+        },
+        async execute(args, _context) {
+          const key = process.env.GEMINI_API_KEY
+          if (!key) {
+            return "Ascensus not configured: GEMINI_API_KEY is unset. Reply locally instead."
+          }
+          try {
+            const model = process.env.GEMINI_MODEL ?? "gemini-2.5-flash"
+            const maxTokens = Number(process.env.GEMINI_MAX_TOKENS ?? 2048)
+            const payload = {
+              contents: [{
+                parts: [{ text: args.reasoning
+                  ? `User inquiry: ${args.query}\n\nLocal reasoning attempt:\n${args.reasoning}`
+                  : `User inquiry: ${args.query}` }],
+              }],
+              generationConfig: { maxOutputTokens: maxTokens },
+            }
+            const res = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+            )
+            if (!res.ok) {
+              const err = await res.text()
+              return `Ascensus call failed (HTTP ${res.status}). ${err.slice(0, 300)}`
+            }
+            const data = await res.json()
+            const answer = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("\n")
+            if (!answer) {
+              return "Ascensus returned no text. Reply locally instead."
+            }
+            // Learning loop: store the escalation so Hermetis can learn from it.
+            await store("tool", `[ascensus] model=${model}\n${args.query}\n→\n${answer.slice(0, 8000)}`, "default")
+            return `[Ascensus — cloud answer from ${model}]\n${answer}`
+          } catch (e) {
+            return `Ascensus call failed: ${e instanceof Error ? e.message : String(e)}`
+          }
+        },
+      }),
     },
   }
 }

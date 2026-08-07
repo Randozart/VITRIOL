@@ -42,7 +42,7 @@ Per project (`~/.vitriol/<project_id>/memory.db`):
 | `GET /hermetis/stats` | per-project counts |
 | `GET /health` | liveness |
 
-Run: `python3 libvitriol/hermetis_server.py --port 8090`
+Run: `python3 libvitriol/hermetis_server.py --port 7980`
 
 ## Provenance
 

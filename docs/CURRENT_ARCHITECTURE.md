@@ -16,8 +16,8 @@
 │   provider: gen llama-server :8279/v1                             │
 ├───────────────────────────────────────────────────────────────────┤
 │ Copula (the bond)                                                 │
-│   Hermetis server :8090  (/hermetis/store|search|context|repo_map…)│
-│   embed server :8081 (small embedding GGUF, CPU)                 │
+│   Hermetis server :7980  (/hermetis/store|search|context|repo_map…)│
+│   embed server :4779 (small embedding GGUF, CPU)                 │
 ├───────────────────────────────────────────────────────────────────┤
 │ Hermetis (memory brain) — libvitriol/hermetis/                    │
 │   SQLite per-project · retrieval · scorer · repomap · embed ·     │
@@ -34,7 +34,15 @@
 | server | port | model | role |
 |---|---|---|---|
 | gen | 8279 | Mellum2-12B Q4_K_M (or DeepSeek-Coder-V2-Lite) | generation backend for OpenCode |
-| embed | 8081 | bge-small-en-v1.5 Q8_0 | semantic embeddings for Hermetis |
+| hermetis | 7980 | — (sqlite) | Hermetis memory RAG facade |
+| embed | 4779 | bge-small-en-v1.5 Q8_0 | semantic embeddings for Hermetis |
+
+> **Port scheme — Tria Prima (2026-08-07).** The three services map to the alchemical
+> principles; each port encodes an atomic transmutation `<from><to>` (element numbers):
+> gen=**Sulfur** 82→79 (Pb→Au, the Opus), hermetis=**Mercury** 79→80 (Au→Hg), embed=**Salt**
+> 47→79 (Ag→Au). Zero source-of-truth in `scripts/vitriol-ports.sh`; env-overridable
+> (`VITRIOL_GEN_PORT`/`VITRIOL_HERM_PORT`/`VITRIOL_EMBED_PORT`). Intentionally avoids the
+> common dev port 8080.
 
 Both are `llama-server` from the VITRIOL fork. Verified coexisting at **36–38 t/s gen
 decode + full-speed embeddings** on a GTX 1070 Ti 8 GB (VRAM 7783/328 MiB) after a clean
@@ -95,9 +103,9 @@ the model's native SWA (bounded KV on most layers) and VITRIOL's server-side
 
 The bond between OpenCode and VITRIOL's memory. Components:
 
-- **Hermetis server** (`libvitriol/hermetis_server.py`, :8090): HTTP facade —
+- **Hermetis server** (`libvitriol/hermetis_server.py`, :7980): HTTP facade —
   `/hermetis/store`, `/node`, `/search`, `/context`, `/repo_map`, `/embed`, `/stats`.
-- **Embed server** (:8081): llama-server with a small embedding GGUF (CPU `ngl=0`; the
+- **Embed server** (:4779): llama-server with a small embedding GGUF (CPU `ngl=0`; the
   33M bge model is ~10-30 ms on CPU, and batch-scaled VRAM would starve the gen
   server), `/v1/embeddings`.
 - **Copula Hermetis plugin** (`plugins/copula.ts` → `~/.config/opencode/plugins/`):
@@ -158,8 +166,8 @@ compaction is lossless, and each turn the window is reassembled from what matter
 | `COPULA_AUTO_CONTEXT` | on | per-turn auto-injection |
 | `COPULA_CONTEXT_BUDGET` | 3000 | injected context token cap |
 | `COPULA_CONTEXT_TOP_K` | 5 | retrieved items per injection |
-| `COPULA_HERMETIS_URL` | http://127.0.0.1:8090 | Hermetis server |
-| `COPULA_EMBED_URL` / `VITRIOL_EMBED_URL` | http://127.0.0.1:8081 | embed server |
+| `COPULA_HERMETIS_URL` | http://127.0.0.1:7980 | Hermetis server |
+| `COPULA_EMBED_URL` / `VITRIOL_EMBED_URL` | http://127.0.0.1:4779 | embed server |
 | `VITRIOL_SEMANTIC_MODE` | off | enable semantic embeddings |
 | `VITRIOL_KV_MODE` | — | `offload`/`sparse` KV placement |
 | `VITRIOL_MEMORY_DIR` | ~/.vitriol | memory DB root |
@@ -167,7 +175,7 @@ compaction is lossless, and each turn the window is reassembled from what matter
 ## 9. How to run
 
 ```fish
-# full stack: setup(caps) + gen :8279 + Hermetis :8090 + embed :8081
+# full stack: setup(caps) + gen :8279 + Hermetis :7980 + embed :4779
 sudo /home/randozart/Desktop/Projects/VITRIOL/scripts/launch_vitriol_full.sh
 # or memory-only:
 ./scripts/launch_copula.sh

@@ -29,8 +29,10 @@ from hermetis import compact, db, retrieval
 app = Flask(__name__)
 
 # Bound to localhost only; the plugin talks to it over loopback.
+# Mercury (Au79->Hg80) default port 7980; env-overridable, mirrors the single
+# source of truth scripts/vitriol-ports.sh (Tria Prima scheme, 2026-08-07).
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8090
+DEFAULT_PORT = int(os.environ.get("VITRIOL_HERM_PORT", "7980"))
 
 
 def _project_id(payload):

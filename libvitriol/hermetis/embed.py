@@ -10,7 +10,9 @@ import os
 import threading
 import urllib.request
 
-EMBED_URL = os.environ.get('VITRIOL_EMBED_URL', 'http://127.0.0.1:8081')
+# Salt (Ag47->Au79) embed default port 4779; env-overridable, mirrors
+# scripts/vitriol-ports.sh (Tria Prima scheme, 2026-08-07).
+EMBED_URL = os.environ.get('VITRIOL_EMBED_URL', 'http://127.0.0.1:4779')
 EMBED_MODEL = os.environ.get('VITRIOL_EMBED_MODEL', 'nomic-embed-text-v1.5')
 
 _CACHE = {}

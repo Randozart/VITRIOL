@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # launch_copula.sh — bring up the Copula stack: Hermetis memory + optional GPU embed server.
 #
-#   launch_copula.sh            start Hermetis (:8090) + GPU embed server (:8081)
+#   launch_copula.sh            start Hermetis (:7980) + GPU embed server (:4779)
 #   launch_copula.sh stop       stop both
 #   COPULA_NO_EMBED=1 ...       skip the embed server (semantic falls back)
 #   COPULA_EMBED_PORT=...       override embed port
@@ -15,8 +15,13 @@ HERMETIS="$VITRIOL_DIR/libvitriol/hermetis_server.py"
 SERVER="$VITRIOL_DIR/llama.cpp/build/bin/llama-server"
 EMBED_MODEL="${COPULA_EMBED_MODEL:-/home/randozart/Desktop/Projects/bge-small-en-v1.5-q8_0.gguf}"
 LOG_DIR="${COPULA_LOG_DIR:-/tmp/opencode}"
-HERMETIS_PORT="${COPULA_HERMETIS_PORT:-8090}"
-EMBED_PORT="${COPULA_EMBED_PORT:-8081}"
+
+# Ports from the single source of truth (Tria Prima scheme).
+# shellcheck source=vitriol-ports.sh
+# shellcheck disable=SC1091
+source "$VITRIOL_DIR/scripts/vitriol-ports.sh"
+HERMETIS_PORT="${COPULA_HERMETIS_PORT:-$VITRIOL_HERM_PORT}"
+EMBED_PORT="${COPULA_EMBED_PORT:-$VITRIOL_EMBED_PORT}"
 # Embed server runs on CPU (ngl=0): the bge model is tiny (33M) so CPU embedding is
 # ~10-30 ms, and it avoids OOM (batch-scaled compute buffers starve the gen server on
 # an 8 GB card). Context stays at the model's native 512 — bge-small-en-v1.5's

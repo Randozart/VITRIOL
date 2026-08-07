@@ -1,9 +1,10 @@
 //! Endpoints, log locations, and identity for VITRIOL services.
 //!
-//! Defaults mirror `scripts/launch_vitriol_full.sh`: gen on 8279, Hermetis on
-//! 8090, embed on 8081, logs under `$COPULA_LOG_DIR` (default `/tmp/opencode`).
-//! Every value is overridable via the same environment variables the launch
-//! script honours, so the TUI always talks to the stack the script owns.
+//! Defaults mirror `scripts/launch_vitriol_full.sh` + `scripts/vitriol-ports.sh`
+//! (Tria Prima): gen 8279, Hermetis 7980, embed 4779, logs under `$COPULA_LOG_DIR`
+//! (default `/tmp/opencode`). Every value is overridable via the same environment
+//! variables the launch script honours, so the TUI always talks to the stack the
+//! script owns.
 
 use std::env;
 use std::path::PathBuf;
@@ -40,11 +41,11 @@ impl Config {
         let hermetis_port = env::var("VITRIOL_HERM_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(8090);
+            .unwrap_or(7980);
         let embed_port = env::var("VITRIOL_EMBED_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(8081);
+            .unwrap_or(4779);
         let log_dir = env::var_os("COPULA_LOG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp/opencode"));
@@ -202,8 +203,8 @@ mod tests {
         env::remove_var("VITRIOL_PROJECT_ID");
         let cfg = Config::from_env();
         assert_eq!(cfg.gen_port, 8279);
-        assert_eq!(cfg.hermetis_port, 8090);
-        assert_eq!(cfg.embed_port, 8081);
+        assert_eq!(cfg.hermetis_port, 7980);
+        assert_eq!(cfg.embed_port, 4779);
         assert_eq!(cfg.log_dir, PathBuf::from("/tmp/opencode"));
     }
 

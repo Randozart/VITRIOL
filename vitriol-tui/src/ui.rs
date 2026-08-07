@@ -74,7 +74,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     spans.push(Span::styled("  ·  vitriol-tui v0.1.0", theme::muted()));
     if app.snapshot.is_empty() {
         spans.push(Span::styled(
-            "  ·  stack unreachable — nothing on :8279/:8090/:8081",
+            "  ·  stack unreachable — nothing on :8279/:7980/:4779",
             Style::default().fg(theme::ORANGE),
         ));
     }

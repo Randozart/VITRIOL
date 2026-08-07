@@ -9,7 +9,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
 
-const HERMETIS_URL = process.env.COPULA_HERMETIS_URL ?? "http://127.0.0.1:8090"
+const HERMETIS_URL = process.env.COPULA_HERMETIS_URL ?? "http://127.0.0.1:7980"
 const MAX_CONTENT = 20000
 const AUTO_CONTEXT = process.env.COPULA_AUTO_CONTEXT !== "0"
 const CONTEXT_BUDGET = Number(process.env.COPULA_CONTEXT_BUDGET ?? 1500)

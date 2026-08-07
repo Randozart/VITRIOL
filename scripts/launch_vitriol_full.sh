@@ -23,8 +23,13 @@ LOG_DIR="${COPULA_LOG_DIR:-/tmp/opencode}"
 GEN_LOG="$LOG_DIR/vitriol_gen.log"
 HERM_LOG="$LOG_DIR/copula_hermetis.log"
 EMBED_LOG="$LOG_DIR/copula_embed.log"
-HERM_PORT=8090
-EMBED_PORT=8081
+
+# Ports come from the single source of truth (Tria Prima scheme; see vitriol-ports.sh).
+# shellcheck source=vitriol-ports.sh
+# shellcheck disable=SC1091
+source "$VITRIOL_DIR/scripts/vitriol-ports.sh"
+HERM_PORT="$VITRIOL_HERM_PORT"
+EMBED_PORT="$VITRIOL_EMBED_PORT"
 
 # Defaults (Mellum2-Claude-Thinking Q2_K — the opencode agent model. A reasoning
 # distill: --reasoning-format deepseek extracts <think> to reasoning_content; -fa on +

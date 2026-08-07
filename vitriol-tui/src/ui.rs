@@ -856,48 +856,62 @@ fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
     let lines = Layout::vertical(inner_rows).split(inner);
 
     for (i, e) in app.config_file.entries.iter().enumerate() {
-        let selected = i == app.profile_selection;
-        let key = if e.section.is_empty() {
-            format!("{}:", e.key)
-        } else {
-            format!("{}.{}", e.section, e.key)
-        };
-        let is_editing = selected && app.profile_edit.is_some();
-        let buf = if is_editing {
-            app.profile_edit.clone().unwrap_or_default()
-        } else {
-            e.value.clone()
-        };
-        let row_style = if selected {
-            theme::title().add_modifier(Modifier::REVERSED)
-        } else {
-            theme::text()
-        };
-        let key_span = if selected {
-            Span::styled(format!("{key:<24}"), row_style)
-        } else {
-            Span::styled(format!("{key:<24}"), theme::muted())
-        };
-        let val_style = if is_editing {
-            theme::live()
-        } else if selected {
-            row_style
-        } else {
-            theme::text()
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                key_span,
-                Span::styled(buf, val_style),
-                if is_editing {
-                    Span::styled(" █", theme::live())
-                } else {
-                    Span::styled("", theme::text())
-                },
-            ])),
-            lines[i],
-        );
+        let row = profile_row(app, e, i);
+        frame.render_widget(Paragraph::new(row), lines[i]);
     }
+}
+
+/// Compute one config row line (key span + value/buffer span) for index `i`.
+fn profile_row(app: &App, e: &crate::config_edit::Entry, i: usize) -> Line<'static> {
+    let selected = i == app.profile_selection;
+    let key = full_key(e);
+    let editing = selected && app.profile_edit.is_some();
+    let value = if editing {
+        app.profile_edit.clone().unwrap_or_default()
+    } else {
+        e.value.clone()
+    };
+    Line::from(vec![
+        key_span(&key, selected),
+        value_span(&value, selected, editing),
+        if editing {
+            Span::styled(" █", theme::live())
+        } else {
+            Span::styled("", theme::text())
+        },
+    ])
+}
+
+/// The `section.key` display form of an entry.
+fn full_key(e: &crate::config_edit::Entry) -> String {
+    if e.section.is_empty() {
+        format!("{}:", e.key)
+    } else {
+        format!("{}.{}", e.section, e.key)
+    }
+}
+
+/// Style + pad the key span, reversed when selected.
+fn key_span(key: &str, selected: bool) -> Span<'static> {
+    let style = if selected {
+        theme::title().add_modifier(Modifier::REVERSED)
+    } else {
+        theme::muted()
+    };
+    Span::styled(format!("{key:<24}"), style)
+}
+
+/// Style the value span: live while editing, selected style when cursor is on
+/// the row, plain text otherwise.
+fn value_span(value: &str, selected: bool, editing: bool) -> Span<'static> {
+    let style = if editing {
+        theme::live()
+    } else if selected {
+        theme::title().add_modifier(Modifier::REVERSED)
+    } else {
+        theme::text()
+    };
+    Span::styled(value.to_string(), style)
 }
 
 #[cfg(test)]

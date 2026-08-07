@@ -149,15 +149,19 @@ fn render_entries(entries: &[Entry]) -> String {
             out.push_str("]\n");
         }
         let rows = by_section.get(section).map(|v| v.as_slice()).unwrap_or(&[]);
-        for e in rows {
-            out.push_str(&e.key);
-            out.push_str(" = ");
-            out.push_str(&e.value);
-            out.push('\n');
-        }
-        out.push('\n');
+        append_section(&mut out, rows);
     }
     out
+}
+
+/// Append the key/value lines of one section, preserving entry order.
+fn append_section(out: &mut String, rows: &[&Entry]) {
+    for e in rows {
+        out.push_str(&e.key);
+        out.push_str(" = ");
+        out.push_str(&e.value);
+        out.push('\n');
+    }
 }
 
 /// Write `text` to `path` atomically: temp file in the same dir, then rename.

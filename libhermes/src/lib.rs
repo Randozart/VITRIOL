@@ -15,7 +15,12 @@
 //! "database is locked" stalls). Reads open a fresh connection (WAL allows
 //! concurrent readers).
 
+pub mod compact;
 pub mod db;
+pub mod hebbian;
+pub mod retrieval;
+pub mod scorer;
 
 /// Convenience re-exports.
 pub use db::{EdgeSpec, EpisodeMeta, EpisodeWrite, Hermes, NodeMeta};
+pub use retrieval::{retrieve, RetrieveParams};

@@ -90,6 +90,17 @@ supersede/selection behavior, search ordering).
   to a Python-created DB (57 statements) — permanent fixture test
   `tests/fixtures/python.schema` + `tests/parity.rs` (byte-parity + readback of
   Python-shaped data). 7 tests green, clippy/fmt/Praetor clean.
-- Next: P2 (retrieval/scorer/compact/hebbian, bit-exact semantic-off), P3 (axum
-  server + parity harness), P4 (consolidation + repomap), P5 (Pymander CLI),
-  P6 (delete Python modules + repoint launchers).
+- **P2 landed**: `scorer.rs` (estimate_tokens, keyword_overlap Jaccard, recency
+  decay, composite `compute_score` with bundled `ScoreInput`/`ScoreWeights`),
+  `compact.rs` (format_episode/node/compact + budgeted `compact_context` with
+  `CompactOptions`), `hebbian.rs` (is_referenced, update_weights split into
+  per-candidate/per-pair helpers), `retrieval.rs` (classify_intent,
+  `retrieve` pipeline split hop1/cascade/score, `context_block` with
+  `ContextBlockOptions`). Semantic-off is bit-exact: `tests/parity_p2.rs`
+  asserts keyword_overlap/estimate_tokens/formatters match captured Python
+  values exactly. Live cross-check vs Python `retrieve` on the same fixture:
+  identical ordering + content (score drift only from the time-dependent
+  recency term). 24 tests, clippy/fmt/Praetor clean (Praetor-driven refactors:
+  param bundling, early returns, single-loop cascade decomposition).
+- Next: P3 (axum server + parity harness), P4 (consolidation + repomap),
+  P5 (Pymander CLI), P6 (delete Python modules + repoint launchers).

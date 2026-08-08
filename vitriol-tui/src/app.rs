@@ -124,6 +124,9 @@ pub struct App {
     pub control_log: VecDeque<String>,
     /// Shared abort flag for the control executor.
     pub control_abort: Arc<AtomicBool>,
+    /// The action that most recently finished (consumed by the Done handler so
+    /// a successful sweep+save can auto-select its `<name>-swept` winner).
+    pub finished_action: Option<Action>,
     /// Search query buffer for the HERMETIS tab.
     pub search_query: String,
     /// Last Hermetis search hits.
@@ -142,6 +145,11 @@ pub struct App {
     pub profile_list_selection: usize,
     /// Save-as profile name input buffer (Some = prompt active).
     pub profile_prompt: Option<String>,
+    /// PROFILES-tab selected profile: Start/Restart apply its knobs as CLI
+    /// overrides (flags-only — the active config file is left untouched).
+    /// 2026-08-08: Start no longer auto-launches a loaded profile; the selected
+    /// profile is the Start target, chosen explicitly with `t`.
+    pub selected_profile: Option<String>,
     /// Discovered guide docs for the GUIDE tab.
     pub guide_docs: Vec<crate::guide::Doc>,
     /// Cursor into the GUIDE index.
@@ -195,6 +203,7 @@ impl App {
             control_step: String::new(),
             control_log: VecDeque::with_capacity(200),
             control_abort: Arc::new(AtomicBool::new(false)),
+            finished_action: None,
             search_query: String::new(),
             search_results: Vec::new(),
             search_in_flight: false,
@@ -204,6 +213,7 @@ impl App {
             profile_focus: ProfileFocus::Config,
             profile_list_selection: 0,
             profile_prompt: None,
+            selected_profile: None,
             guide_docs,
             guide_selection: 0,
             guide_scroll: 0,
@@ -456,6 +466,53 @@ impl App {
         self.profiles = crate::profile::discover(&self.cfg);
     }
 
+    /// Select the profile at the cursor as the Start target (flags-only — no
+    /// config write, no launch). None clears the selection.
+    pub fn select_profile(&mut self, name: Option<String>) {
+        self.selected_profile = name;
+    }
+
+    /// Overwrite the selected INSTALLED profile with the current active config.
+    /// Bundled profiles are protected; the selection stays valid afterwards.
+    pub fn profile_overwrite_selected(&mut self) -> Result<(), String> {
+        let Some(profile) = self.profiles.get(self.profile_list_selection) else {
+            return Ok(());
+        };
+        if profile.source != crate::profile::ProfileSource::Installed {
+            return Err(format!("'{}' is bundled — cannot overwrite", profile.name));
+        }
+        let dir = self.cfg.installed_profiles_dir().join(&profile.name);
+        let config_text = crate::config_edit::render_entries(&self.config_file.entries);
+        crate::config_edit::atomic_write_path(&dir.join("config"), &config_text)?;
+        self.profile_reload_list();
+        Ok(())
+    }
+
+    /// Run the Spagyric sweep with save on the selected profile.
+    pub fn profile_sweep_selected(&self) -> Option<Action> {
+        let profile = self.profiles.get(self.profile_list_selection)?;
+        Some(Action::SweepAndSave(profile.name.clone()))
+    }
+
+    /// After a successful sweep+save, the winner lives at `<name>-swept`.
+    /// Reload the list and make it the selected Start target.
+    pub fn profile_select_sweep_winner(&mut self, name: &str) {
+        let winner = format!("{name}-swept");
+        self.profile_reload_list();
+        if let Some(idx) = self.profiles.iter().position(|p| p.name == winner) {
+            self.profile_list_selection = idx;
+            self.select_profile(Some(winner.clone()));
+            self.profile_focus = ProfileFocus::List;
+            self.push_control_line(format!(
+                "✓ sweep winner '{winner}' selected — CONTROLS ▸ Start"
+            ));
+        } else {
+            self.push_control_line(format!(
+                "✗ sweep finished but '{winner}' not found (profile write failed?)"
+            ));
+        }
+    }
+
     /// Move the SUBSYSTEMS row cursor, wrapping.
     pub fn subsystem_move(&mut self, delta: isize) {
         let len = crate::subsystems::rows_len(&self.cfg, &self.snapshot);
@@ -593,21 +650,18 @@ impl App {
 
     /// The CONTROLS action list.
     pub fn actions(&self) -> Vec<Action> {
-        Action::all(&self.profiles)
+        Action::all(&self.profiles, self.selected_profile.as_deref())
     }
 
-    /// Start the currently selected control action, if none is running.
-    pub fn run_selected_action(&mut self, ctrl_tx: &std::sync::mpsc::Sender<Event>) {
+    /// Run a specific control action (from CONTROLS Enter or a PROFILES key).
+    pub fn run_action(&mut self, action: Action, ctrl_tx: &std::sync::mpsc::Sender<Event>) {
         if self.control_running {
             self.push_control_line("action already running".into());
             return;
         }
-        let actions = self.actions();
-        let Some(action) = actions.get(self.selected_action).cloned() else {
-            return;
-        };
         self.control_running = true;
         self.control_action = action.label();
+        self.finished_action = Some(action.clone());
         self.control_abort.store(false, Ordering::Relaxed);
         control::spawn(
             action,
@@ -615,6 +669,15 @@ impl App {
             ctrl_tx.clone(),
             Arc::clone(&self.control_abort),
         );
+    }
+
+    /// Start the currently selected control action, if none is running.
+    pub fn run_selected_action(&mut self, ctrl_tx: &std::sync::mpsc::Sender<Event>) {
+        let actions = self.actions();
+        let Some(action) = actions.get(self.selected_action).cloned() else {
+            return;
+        };
+        self.run_action(action, ctrl_tx);
     }
 
     /// Request abort of the running control action.
@@ -654,6 +717,16 @@ impl App {
                 self.control_abort.store(false, Ordering::Relaxed);
                 let verdict = if ok { "✓ done" } else { "✗ failed" };
                 self.push_control_line(format!("{verdict}: {}", self.control_action));
+                let sweep_name = self.finished_action.clone().and_then(|a| match a {
+                    Action::SweepAndSave(name) => Some(name),
+                    _ => None,
+                });
+                self.finished_action = None;
+                if ok {
+                    if let Some(name) = sweep_name {
+                        self.profile_select_sweep_winner(&name);
+                    }
+                }
             }
         }
     }

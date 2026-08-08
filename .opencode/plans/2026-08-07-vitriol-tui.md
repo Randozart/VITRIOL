@@ -136,6 +136,11 @@ block-fill with green→gold gradient. Decode sparkline: green.
 - launch a Spagyric sweep (detached) + tail its log
 - log pane switching, manual refresh, theme toggle
 
+Decoupled load/start (2026-08-08): profile **load** only writes the active
+config — it never relaunches. Start/Restart apply the PROFILES-tab **selected**
+profile as CLI flag overrides (config file untouched); a successful sweep+save
+auto-selects the `<name>-swept` winner as the Start target.
+
 ## CLI Wiring
 
 - `vitriol tui` → dispatches to `vitriol-tui`

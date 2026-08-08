@@ -660,12 +660,19 @@ fn render_control_log(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// CONTROLS action label, appending the profile description and source tag
-/// for profile-load entries.
+/// for profile-bearing entries (selected Start, sweep, sweep+save).
 fn action_label(action: &Action, profiles: &[crate::profile::Profile]) -> String {
-    let Action::LoadProfile(name) = action else {
+    let name = match action {
+        Action::Start {
+            selected: Some(name),
+        } => Some(name.as_str()),
+        Action::RunSweep(name) | Action::SweepAndSave(name) => Some(name.as_str()),
+        _ => None,
+    };
+    let Some(name) = name else {
         return action.label();
     };
-    let Some(profile) = profiles.iter().find(|p| p.name == *name) else {
+    let Some(profile) = profiles.iter().find(|p| p.name == name) else {
         return action.label();
     };
     let mut label = action.label();
@@ -1035,6 +1042,9 @@ fn render_profile_pane(frame: &mut Frame, area: Rect, app: &mut App) {
             crate::profile::ProfileSource::Installed => "",
         };
         let mut spans = vec![Span::styled(p.name.clone(), style)];
+        if app.selected_profile.as_deref() == Some(p.name.as_str()) {
+            spans.push(Span::styled(" ▸ start", theme::gold_muted()));
+        }
         spans.push(Span::styled(src, theme::muted()));
         if !p.description.is_empty() {
             spans.push(Span::styled(format!("  {}", p.description), theme::muted()));

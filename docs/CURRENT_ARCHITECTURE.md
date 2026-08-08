@@ -196,8 +196,15 @@ Alka Officina–derived, plan `2026-08-07-vitriol-tui.md`):
 | DASHBOARD | gen/hermetis/embed health, GPU gauges, decode-t/s sparkline |
 | GPU | btop-style gauges (VRAM/util/temp/clocks/power) + process table |
 | LOGS | live tails of gen/hermetis/embed logs, `[1/2/3]` source switch |
-| CONTROLS | start/stop/restart, doctor, `vitriol config load` + relaunch, Spagyric sweep |
+| CONTROLS | start/stop/restart, doctor, `vitriol setup`, Spagyric sweep |
+| PROFILES | active-config form editor + profile list: load, select-for-start, save-as-new, overwrite, delete, sweep |
 | HERMETIS | stats, recent stores (`GET /hermetis/recent`), search |
+
+Profile/start semantics (2026-08-08): loading a profile just writes its config
+into the active `~/.vitriol/config` (no relaunch). The PROFILES tab keeps a
+**selected** profile (`t`) that Start/Restart apply as CLI flag overrides
+(`--model/--ngl/--ctx/--threads/--parallel`, config file untouched). A successful
+Spagyric sweep+save auto-selects its `<name>-swept` winner as the Start target.
 
 Data comes from the HTTP endpoints + `nvidia-smi` + log tails; control shells
 out to `scripts/launch_vitriol_full.sh` and `scripts/vitriol` (reuse, don't

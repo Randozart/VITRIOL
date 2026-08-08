@@ -19,16 +19,17 @@ use crate::profile::Profile;
 /// A user-visible control action in the CONTROLS tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Launch the full stack with the launch script's defaults.
-    Start,
+    /// Launch the full stack; `selected` is a profile whose knobs are applied
+    /// as CLI overrides (flags-only — the active config file is left as-is).
+    Start { selected: Option<String> },
     /// Stop the full stack.
     Stop,
-    /// Stop then start the full stack.
-    Restart,
+    /// Stop then start the full stack; `selected` mirrors Start's profile.
+    Restart { selected: Option<String> },
     /// Run the launch script's pre-flight checks.
     Doctor,
-    /// Load a profile (bundled or installed) and relaunch with its knobs.
-    LoadProfile(String),
+    /// Run `vitriol setup` — set CAP_IPC_LOCK for page-locked stream mode.
+    Setup,
     /// Run a Spagyric decode-knob sweep for a profile's model.
     RunSweep(String),
     /// Run the sweep AND write the per-knob winner as `<name>-swept` profile.
@@ -39,21 +40,37 @@ impl Action {
     /// Short label for the action list.
     pub fn label(&self) -> String {
         match self {
-            Action::Start => "start stack".into(),
+            Action::Start {
+                selected: Some(name),
+            } => format!("start stack ({name})"),
+            Action::Start { selected: None } => "start stack".into(),
             Action::Stop => "stop stack".into(),
-            Action::Restart => "restart stack".into(),
+            Action::Restart {
+                selected: Some(name),
+            } => format!("restart stack ({name})"),
+            Action::Restart { selected: None } => "restart stack".into(),
             Action::Doctor => "run doctor".into(),
-            Action::LoadProfile(name) => format!("load profile: {name}"),
+            Action::Setup => "vitriol setup (CAP_IPC_LOCK)".into(),
             Action::RunSweep(name) => format!("sweep: {name}"),
             Action::SweepAndSave(name) => format!("sweep+save: {name}"),
         }
     }
 
-    /// The action list: fixed actions first, then load + sweep per profile.
-    pub fn all(profiles: &[Profile]) -> Vec<Action> {
-        let mut actions = vec![Action::Start, Action::Stop, Action::Restart, Action::Doctor];
+    /// The action list: fixed process actions first, then a sweep row per profile.
+    /// `selected` is the profile Start/Restart will apply as CLI overrides.
+    pub fn all(profiles: &[Profile], selected: Option<&str>) -> Vec<Action> {
+        let mut actions = vec![
+            Action::Start {
+                selected: selected.map(str::to_owned),
+            },
+            Action::Stop,
+            Action::Restart {
+                selected: selected.map(str::to_owned),
+            },
+            Action::Doctor,
+            Action::Setup,
+        ];
         for p in profiles {
-            actions.push(Action::LoadProfile(p.name.clone()));
             actions.push(Action::RunSweep(p.name.clone()));
             actions.push(Action::SweepAndSave(p.name.clone()));
         }
@@ -88,17 +105,17 @@ pub enum Event {
 fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
     let launch = cfg.launch_script().to_string_lossy().into_owned();
     match action {
-        Action::Start => vec![Step {
-            label: "launch full stack".into(),
+        Action::Start { selected } => vec![Step {
+            label: action.label(),
             program: launch.clone(),
-            args: vec!["--no-setup".into()],
+            args: launch_args(cfg, selected.as_deref()),
         }],
         Action::Stop => vec![Step {
             label: "stop full stack".into(),
             program: launch.clone(),
             args: vec!["stop".into()],
         }],
-        Action::Restart => vec![
+        Action::Restart { selected } => vec![
             Step {
                 label: "stop full stack".into(),
                 program: launch.clone(),
@@ -107,7 +124,7 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
             Step {
                 label: "launch full stack".into(),
                 program: launch,
-                args: vec!["--no-setup".into()],
+                args: launch_args(cfg, selected.as_deref()),
             },
         ],
         Action::Doctor => vec![Step {
@@ -115,33 +132,36 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
             program: launch,
             args: vec!["doctor".into()],
         }],
-        Action::LoadProfile(name) => {
-            let mut steps = Vec::new();
+        Action::Setup => {
+            // 2026-08-07: `sudo -n` keeps the no-tty control thread honest — a
+            // cached/passwordless sudo succeeds, otherwise it fails cleanly with
+            // a log line instead of hanging on a password prompt.
             let cli = cfg.vitriol_cli().to_string_lossy().into_owned();
-            steps.push(Step {
-                label: format!("vitriol config load {name}"),
-                program: cli,
-                args: vec!["config".into(), "load".into(), name.clone()],
-            });
-            steps.push(Step {
-                label: "stop full stack".into(),
-                program: launch.clone(),
-                args: vec!["stop".into()],
-            });
-            let mut args = vec!["--no-setup".into()];
-            if let Some(p) = find_profile(cfg, name) {
-                args.extend(launch_flags(&p));
-            }
-            steps.push(Step {
-                label: format!("launch with {name} knobs"),
-                program: launch,
-                args,
-            });
-            steps
+            vec![Step {
+                label: "set CAP_IPC_LOCK (page-locked stream)".into(),
+                program: "sudo".into(),
+                args: vec!["-n".into(), cli, "setup".into()],
+            }]
         }
         Action::RunSweep(name) => sweep_steps(cfg, name, false),
         Action::SweepAndSave(name) => sweep_steps(cfg, name, true),
     }
+}
+
+/// Launch args: `--no-setup` plus, when a profile is selected, its knob flags
+/// as CLI overrides (flags-only — the active config stays untouched). 2026-08-08:
+/// Start/Restart now honour the PROFILES-tab selected profile.
+fn launch_args(cfg: &Config, selected: Option<&str>) -> Vec<String> {
+    let mut args = vec!["--no-setup".into()];
+    if let Some(name) = selected {
+        if let Some(p) = find_profile(cfg, name) {
+            let flags = launch_flags(&p);
+            if !flags.is_empty() {
+                args.extend(flags);
+            }
+        }
+    }
+    args
 }
 
 /// Sweep steps for a profile: run `spagyric_sweep.py`; when `save` is set, also
@@ -310,20 +330,21 @@ mod tests {
     use crate::profile::ProfileSource;
 
     #[test]
-    fn profile_load_expands_to_three_steps() {
+    fn start_with_selected_profile_appends_launch_flags() {
         let mut cfg = Config::from_env();
         cfg.repo_root = std::env::temp_dir();
-        let steps = steps_for(&Action::LoadProfile("anything".into()), &cfg);
-        assert_eq!(steps.len(), 3);
-        let expected_cli = std::env::temp_dir().join("scripts/vitriol");
-        assert_eq!(steps[0].program, expected_cli.to_string_lossy());
-        assert_eq!(steps[0].args, vec!["config", "load", "anything"]);
-        assert_eq!(steps[1].args, vec!["stop"]);
-        assert!(steps[2].args.contains(&"--no-setup".to_string()));
+        let started = steps_for(
+            &Action::Start {
+                selected: Some("anything".into()),
+            },
+            &cfg,
+        );
+        assert_eq!(started.len(), 1);
+        assert!(started[0].args.contains(&"--no-setup".to_string()));
     }
 
     #[test]
-    fn action_list_has_fixed_plus_profiles() {
+    fn action_list_has_fixed_plus_sweeps_per_profile() {
         let p = Profile {
             name: "mellum2".into(),
             description: String::new(),
@@ -334,12 +355,34 @@ mod tests {
             threads: None,
             parallel: None,
         };
-        let actions = Action::all(&[p]);
+        let actions = Action::all(&[p], None);
         assert_eq!(actions.len(), 7);
-        assert_eq!(actions[0], Action::Start);
-        assert_eq!(actions[4], Action::LoadProfile("mellum2".into()));
+        assert_eq!(actions[0], Action::Start { selected: None });
+        assert_eq!(actions[1], Action::Stop);
+        assert_eq!(actions[2], Action::Restart { selected: None });
+        assert_eq!(actions[3], Action::Doctor);
+        assert_eq!(actions[4], Action::Setup);
         assert_eq!(actions[5], Action::RunSweep("mellum2".into()));
         assert_eq!(actions[6], Action::SweepAndSave("mellum2".into()));
+        let with_sel = Action::all(&[], Some("qwen"));
+        assert_eq!(
+            with_sel[0],
+            Action::Start {
+                selected: Some("qwen".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn setup_runs_sudo_noninteractive() {
+        let mut cfg = Config::from_env();
+        cfg.repo_root = std::env::temp_dir();
+        let steps = steps_for(&Action::Setup, &cfg);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].program, "sudo");
+        let binding = std::env::temp_dir().join("scripts/vitriol");
+        let cli = binding.to_string_lossy();
+        assert_eq!(steps[0].args, vec!["-n", &cli, "setup"]);
     }
 
     #[test]

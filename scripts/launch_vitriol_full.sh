@@ -111,6 +111,7 @@ apply_vitriol_env() {
                     vitriol:predictive_prefetch)  env_name="VITRIOL_PREDICTIVE_PREFETCH" ;;
                     vitriol:pin_first_n_layers)   env_name="VITRIOL_PIN_FIRST_N_LAYERS" ;;
                     vitriol:prune_experts)        env_name="VITRIOL_PRUNE_EXPERTS" ;;
+                    vitriol:reasoning)             env_name="VITRIOL_REASONING" ;;
                     vitriol:verbose)              env_name="VITRIOL_VERBOSE" ;;
                     vitriol:early_exit)           env_name="VITRIOL_EARLY_EXIT" ;;
                     vitriol:early_exit_threshold) env_name="VITRIOL_EARLY_EXIT_THRESHOLD" ;;
@@ -385,6 +386,12 @@ if [ "$DO_GEN" = "1" ]; then
     export VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}"
     export VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}"
     export VITRIOL_EARLY_EXIT_STAGNATION="${VITRIOL_EARLY_EXIT_STAGNATION:-3}"
+    export VITRIOL_REASONING="${VITRIOL_REASONING:-off}"
+    # 2026-08-08: reasoning is a per-model trait (Qwen3.6 needs `off`). The
+    # old launch forced `--reasoning-format deepseek` unconditionally, which
+    # routed all output into message.reasoning_content and left content empty.
+    # Match vitriol serve (vitriol:2006) — `--reasoning off` for config `off`.
+    [ "$VITRIOL_REASONING" = "off" ] && REASONING_ARGS="--reasoning off" || REASONING_ARGS=""
     if [ ! -x "$SERVER" ]; then
         echo "[vitriol] ERROR: $SERVER not found — build first" >&2
         exit 1
@@ -394,7 +401,7 @@ if [ "$DO_GEN" = "1" ]; then
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
              --no-mmap \
-             --parallel "$PARALLEL" --reasoning-format deepseek --flash-attn on --jinja \
+             --parallel "$PARALLEL" $REASONING_ARGS --flash-attn on --jinja \
              --context-shift --cache-reuse 256 --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then

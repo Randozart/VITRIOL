@@ -87,7 +87,7 @@ fn main() -> io::Result<()> {
                         app::Tab::Logs => handle_logs_key(&mut app, key),
                         app::Tab::Controls => handle_controls_key(&mut app, key, &ctrl_tx),
                         app::Tab::Hermetis => handle_hermetis_key(&mut app, key, &search_tx),
-                        app::Tab::Profiles => handle_profiles_key(&mut app, key),
+                        app::Tab::Profiles => handle_profiles_key(&mut app, key, &ctrl_tx),
                         app::Tab::Guide => handle_guide_key(&mut app, key),
                         app::Tab::Subsystems => handle_subsystems_key(&mut app, key),
                         app::Tab::Officina => handle_officina_key(&mut app, key),
@@ -254,13 +254,17 @@ fn handle_ascensus_edit(app: &mut App, key: crossterm::event::KeyEvent) {
 }
 
 /// PROFILES tab keys: dispatch by mode (prompt / list / config panes).
-fn handle_profiles_key(app: &mut App, key: crossterm::event::KeyEvent) {
+fn handle_profiles_key(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    ctrl: &mpsc::Sender<control::Event>,
+) {
     if app.profile_prompt.is_some() {
         handle_profile_prompt(app, key);
         return;
     }
     match app.profile_focus {
-        app::ProfileFocus::List => handle_profile_list(app, key),
+        app::ProfileFocus::List => handle_profile_list(app, key, ctrl),
         app::ProfileFocus::Config => handle_profile_config(app, key),
     }
 }
@@ -278,14 +282,33 @@ fn handle_profile_prompt(app: &mut App, key: crossterm::event::KeyEvent) {
     }
 }
 
-/// PROFILES list-pane keys: navigate, load, delete, reload.
-fn handle_profile_list(app: &mut App, key: crossterm::event::KeyEvent) {
+/// PROFILES list-pane keys: navigate, load, select-for-start, overwrite, sweep, delete, reload.
+fn handle_profile_list(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    ctrl: &mpsc::Sender<control::Event>,
+) {
     match key.code {
         KeyCode::Char(',') | KeyCode::Char('.') => app.profile_pane_toggle(),
         KeyCode::Char('j') | KeyCode::Down => app.profile_list_move(1),
         KeyCode::Char('k') | KeyCode::Up => app.profile_list_move(-1),
         KeyCode::Enter | KeyCode::Char('l') => {
             let _ = app.profile_load_selected();
+        }
+        KeyCode::Char('t') => {
+            let name = app
+                .profiles
+                .get(app.profile_list_selection)
+                .map(|p| p.name.clone());
+            app.select_profile(name);
+        }
+        KeyCode::Char('w') => {
+            let _ = app.profile_overwrite_selected();
+        }
+        KeyCode::Char('z') => {
+            if let Some(action) = app.profile_sweep_selected() {
+                app.run_action(action, ctrl);
+            }
         }
         KeyCode::Char('d') => {
             let _ = app.profile_delete_selected();

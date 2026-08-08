@@ -31,23 +31,117 @@ source "$VITRIOL_DIR/scripts/vitriol-ports.sh"
 HERM_PORT="$VITRIOL_HERM_PORT"
 EMBED_PORT="$VITRIOL_EMBED_PORT"
 
-# Defaults (Mellum2-Claude-Thinking Q2_K — the opencode agent model. A reasoning
-# distill: --reasoning-format deepseek extracts <think> to reasoning_content; -fa on +
-# --jinja are the model's recommended mode. GQA KV keeps 32768 ctx cheap.)
-GEN_MODEL="${VITRIOL_GEN_MODEL:-/home/randozart/Desktop/Projects/mellum2-claude-Q2_K.gguf}"
-GEN_PORT="${VITRIOL_GEN_PORT:-8279}"
-NGL="${VITRIOL_NGL:-99}"
-CTX="${VITRIOL_CTX:-32768}"
-THREADS="${VITRIOL_THREADS:-4}"
-# Single opencode session = one slot -> --parallel 1 gives the full CTX to that slot
+# Resolve a `key = value` from a named section of ~/.vitriol/config (comments and
+# quotes stripped, whitespace-trimmed). Returns nonzero if section/key missing.
+# Mirrors the extraction in scripts/vitriol:parse_config (vitriol:93-164).
+cfg_value() {
+    local cfg="$HOME/.vitriol/config" sec="" line="" key="" v=""
+    [[ -f "$cfg" ]] || return 1
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%\#*}"
+        [[ -z "$line" ]] && continue
+        if [[ "$line" =~ ^\[([^]]+)\]$ ]]; then
+            sec="${BASH_REMATCH[1]}"
+            continue
+        fi
+        [[ "$sec" != "$1" ]] && continue
+        if [[ "$line" =~ ^"$2"[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            v="${BASH_REMATCH[1]}"
+            v="${v#"${v%%[![:space:]]*}"}"   # strip leading spaces/tabs
+            v="${v%"${v##*[![:space:]]}"}"   # strip trailing spaces/tabs
+            v="${v#\"}"; v="${v%\"}"; v="${v#\'}"; v="${v%\'}"
+            [[ -n "$v" ]] && { echo "$v"; return 0; }
+        fi
+    done < "$cfg"
+    return 1
+}
+
+# Defaults — but the ~/.vitriol/config `[model]`/`[server]` sections are the source
+# of truth, exactly like `vitriol serve` (vitriol:116-125, 1897-1906). Previously
+# the launch hardcoded the Mellum2-Claude-Thinking Q2_K defaults and IGNORED the
+# config model/ctx, so a balanced-profile (Qwen, 136K ctx) launch spun up the
+# wrong model at the wrong context. Caller-set VITRIOL_* env always wins, then
+# config, then the built-in defaults.
+# 2026-08-08: config-dir resolution added to match `vitriol serve` behaviour.
+GEN_MODEL="${VITRIOL_GEN_MODEL:-$(cfg_value model path || true)}"
+GEN_PORT="${VITRIOL_GEN_PORT:-$(cfg_value server port || true)}"
+NGL="${VITRIOL_NGL:-$(cfg_value model ngl || true)}"
+CTX="${VITRIOL_CTX:-$(cfg_value model context || true)}"
+THREADS="${VITRIOL_THREADS:-$(cfg_value model threads || true)}"
+PARALLEL="${VITRIOL_PARALLEL:-$(cfg_value server parallel || true)}"
+GEN_MODEL="${GEN_MODEL:-/home/randozart/Desktop/Projects/mellum2-claude-Q2_K.gguf}"
+GEN_PORT="${GEN_PORT:-8279}"
+NGL="${NGL:-99}"
+CTX="${CTX:-32768}"
+THREADS="${THREADS:-4}"
+# Single opencode session = 1 slot -> --parallel 1 gives the full CTX to that slot
 # (parallel>1 splits it, shrinking effective context). ctx-shift rolls the window.
-PARALLEL="${VITRIOL_PARALLEL:-1}"
+PARALLEL="${PARALLEL:-1}"
+[[ -n "$GEN_MODEL" ]] && [[ ! -f "$GEN_MODEL" ]] && {
+    echo "[vitriol] ERROR: model not found: $GEN_MODEL (set via config [model] path or VITRIOL_GEN_MODEL)" >&2
+    exit 1
+}
 
 DO_SETUP=1
 DO_COPULA=1
 DO_GEN=1
 VERBOSE=0
 DRY_RUN=0
+
+# Wire the ~/.vitriol/config memory-architecture settings into the server env.
+# Mirrors scripts/vitriol's `exec env VITRIOL_*` mapping (~lines 1774-1797) so the
+# launch (TUI) path activates the same RAM-Shot/stream strategy as `vitriol serve`.
+# 2026-08-07: the launch path ignored these, so stream mode defaulted off — 12 GB
+# MoE models attempted a full CUDA alloc and OOM'd (or stalled pre-mlock) instead
+# of streaming experts. Caller-set VITRIOL_* env always wins over config.
+apply_vitriol_env() {
+    local cfg="$HOME/.vitriol/config" sec="" k v env_name=""
+    [[ -f "$cfg" ]] || return 0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+            \[*\]) sec="${line#\[}"; sec="${sec%\]}"; sec="${sec// /}" ;;
+            *=*)
+                k="${line%%=*}"; k="${k// /}"
+                v="${line#*=}"; v="${v%%\#*}"; v="${v// /}"
+                [[ -z "$v" ]] && continue
+                case "$sec:$k" in
+                    vitriol:mode)                 env_name="VITRIOL_MODE" ;;
+                    vitriol:lru_mb)               env_name="VITRIOL_LRU_MB" ;;
+                    vitriol:output_cache)         env_name="VITRIOL_OUTPUT_CACHE" ;;
+                    vitriol:predictive_prefetch)  env_name="VITRIOL_PREDICTIVE_PREFETCH" ;;
+                    vitriol:pin_first_n_layers)   env_name="VITRIOL_PIN_FIRST_N_LAYERS" ;;
+                    vitriol:prune_experts)        env_name="VITRIOL_PRUNE_EXPERTS" ;;
+                    vitriol:verbose)              env_name="VITRIOL_VERBOSE" ;;
+                    vitriol:early_exit)           env_name="VITRIOL_EARLY_EXIT" ;;
+                    vitriol:early_exit_threshold) env_name="VITRIOL_EARLY_EXIT_THRESHOLD" ;;
+                    vitriol:early_exit_stagnation) env_name="VITRIOL_EARLY_EXIT_STAGNATION" ;;
+                    vitriol:early_exit_min_layers) env_name="VITRIOL_EARLY_EXIT_MIN_LAYERS" ;;
+                    memory:mode)                  env_name="VITRIOL_MEMORY_MODE" ;;
+                    memory:semantic_mode)         env_name="VITRIOL_SEMANTIC_MODE" ;;
+                    kv:mode)                      env_name="VITRIOL_KV_MODE" ;;
+                    kv:quant_mode)                env_name="VITRIOL_KV_QUANT" ;;
+                    kv:frozen_prompt)             env_name="VITRIOL_FROZEN_PROMPT" ;;
+                    engine:mode)                  env_name="VITRIOL_ENGINE_MODE" ;;
+                    model:expert_count)           env_name="VITRIOL_EXPERT_COUNT" ;;
+                    model:disk_offload)           env_name="VITRIOL_DISK_OFFLOAD" ;;
+                    chimera:mode)                 env_name="VITRIOL_CHIMERA_MODE" ;;
+                    lookup:tokens)                env_name="VITRIOL_LOOKUP" ;;
+                    *) env_name="" ;;
+                esac
+                [[ -z "$env_name" ]] && continue
+                # Strict-flag booleans: the binary only honours literal "1".
+                case "$env_name" in
+                    VITRIOL_VERBOSE|VITRIOL_PREDICTIVE_PREFETCH|VITRIOL_OUTPUT_CACHE|VITRIOL_EARLY_EXIT|VITRIOL_DISK_OFFLOAD)
+                        case "$v" in on|true|1) v="1" ;; *) continue ;; esac ;;
+                esac
+                if [[ -z "${!env_name:-}" ]]; then
+                    export "$env_name=$v"
+                    [[ "$VERBOSE" = "1" ]] && echo "[vitriol]   $env_name=$v (from $cfg)"
+                fi
+                ;;
+        esac
+    done < "$cfg"
+}
 
 # Find the pid bound to a port. ss -p often cannot attribute the pid (it showed
 # "-" for our own gen server), so fall back to lsof then fuser. Always returns 0 so
@@ -56,15 +150,15 @@ port_pid() {
     local port="$1" p=""
     p=$(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
-    p=$(lsof -ti ":$port" 2>/dev/null | head -1)
-    if [ -n "$p" ]; then echo "$p"; return 0; fi
-    # The socket tools can fail to attribute our own servers' pids; the cmdline
-    # always carries --port, so pgrep is the reliable fallback.
+    # 2026-08-07: ss -ltnp can fail to attribute our servers' pids (observed on
+    # 8279/4779). Never fall back to lsof -ti:/fuser here — those list CLIENT
+    # holders too, so stop() would kill -9 the TUI's keep-alive poller socket.
+    # The cmdline always carries --port, so pgrep by binary+port is precise and
+    # never touches non-server processes. If nothing matches, report no pid.
     p=$(pgrep -f "(llama-server|hermes-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
-    p=$(fuser -n tcp "$port" 2>/dev/null | tr -s ' ' | head -1 | xargs echo)
-    echo "$p"
-    return 0
+    echo ""
+    return 1
 }
 port_up() { [ "$(health_of "$1")" != "down" ]; }
 # Retrying health check: a just-restarted server may answer nothing for a
@@ -101,12 +195,11 @@ stop() {
     if [ -n "$pid" ]; then
         echo "[vitriol] stopping gen server :$GEN_PORT (pid $pid)"
         kill -9 "$pid" 2>/dev/null || true
-    elif port_up "$GEN_PORT"; then
-        echo "[vitriol] gen server on :$GEN_PORT has no visible pid — killing by socket"
-        fuser -k -9 "$GEN_PORT"/tcp 2>/dev/null || true
-        ss -K "dst 127.0.0.1" 2>/dev/null || true
     else
-        echo "[vitriol] no gen server on :$GEN_PORT"
+        # 2026-08-07: never fuser -k / ss -K here — both kill every process
+        # holding a localhost socket (incl. the TUI's poller). A live listener
+        # with no attributed pid is reported, not nuked.
+        echo "[vitriol] no gen server pid found on :$GEN_PORT"
     fi
     if [ -x "$COPULA_SCRIPT" ]; then
         "$COPULA_SCRIPT" stop
@@ -281,6 +374,16 @@ fi
 
 # ── Generation server ─────────────────────────────────────────────────────────
 if [ "$DO_GEN" = "1" ]; then
+    apply_vitriol_env
+    # Serve-parity env: vitriol `serve` exports these defaults unconditionally
+    # (scripts/vitriol ~1776-1799); the launch path must set the same so the server
+    # sees them even when the config lacks the keys. 2026-08-08: added so launch == serve.
+    export VITRIOL_MODEL_PATH="${VITRIOL_MODEL_PATH:-$GEN_MODEL}"
+    export VITRIOL_DISK_OFFLOAD="${VITRIOL_DISK_OFFLOAD:-0}"
+    export VITRIOL_EARLY_EXIT="${VITRIOL_EARLY_EXIT:-0}"
+    export VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}"
+    export VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}"
+    export VITRIOL_EARLY_EXIT_STAGNATION="${VITRIOL_EARLY_EXIT_STAGNATION:-3}"
     if [ ! -x "$SERVER" ]; then
         echo "[vitriol] ERROR: $SERVER not found — build first" >&2
         exit 1

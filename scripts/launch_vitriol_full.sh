@@ -392,6 +392,7 @@ if [ "$DO_GEN" = "1" ]; then
         echo "[vitriol] gen server already on :$GEN_PORT — skipping"
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
+             --no-mmap \
              --parallel "$PARALLEL" --reasoning-format deepseek --flash-attn on --jinja \
              --context-shift --cache-reuse 256 --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"

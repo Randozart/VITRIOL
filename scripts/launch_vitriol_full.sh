@@ -131,6 +131,14 @@ apply_vitriol_env() {
                     model:disk_offload)           env_name="VITRIOL_DISK_OFFLOAD" ;;
                     chimera:mode)                 env_name="VITRIOL_CHIMERA_MODE" ;;
                     lookup:tokens)                env_name="VITRIOL_LOOKUP" ;;
+                    sampling:repeat_penalty)      env_name="VITRIOL_SAMPLING_REPEAT_PENALTY" ;;
+                    sampling:dry_multiplier)      env_name="VITRIOL_SAMPLING_DRY_MULTIPLIER" ;;
+                    sampling:dry_base)            env_name="VITRIOL_SAMPLING_DRY_BASE" ;;
+                    sampling:dry_allowed_length)  env_name="VITRIOL_SAMPLING_DRY_ALLOWED_LENGTH" ;;
+                    sampling:dry_penalty_last_n)  env_name="VITRIOL_SAMPLING_DRY_PENALTY_LAST_N" ;;
+                    sampling:top_k)               env_name="VITRIOL_SAMPLING_TOP_K" ;;
+                    sampling:top_p)               env_name="VITRIOL_SAMPLING_TOP_P" ;;
+                    sampling:min_p)               env_name="VITRIOL_SAMPLING_MIN_P" ;;
                     *) env_name="" ;;
                 esac
                 [[ -z "$env_name" ]] && continue
@@ -396,6 +404,34 @@ if [ "$DO_GEN" = "1" ]; then
     # routed all output into message.reasoning_content and left content empty.
     # Match vitriol serve (vitriol:2006) — `--reasoning off` for config `off`.
     [ "$VITRIOL_REASONING" = "off" ] && REASONING_ARGS="--reasoning off" || REASONING_ARGS=""
+    # 2026-08-08: sampling guards, tunable via [sampling] in ~/.vitriol/config.
+    # IQ2_M-class quants (2.7bpw) fall into a </tool_call> repetition attractor
+    # with no repeat penalty or DRY guard — the "looped again" failure. Defaults
+    # match llama-server's stock (penalty 1.0 = off, DRY 0.0 = off) so the config
+    # is the single source of truth; enable them by setting the values.
+    export VITRIOL_SAMPLING_REPEAT_PENALTY="${VITRIOL_SAMPLING_REPEAT_PENALTY:-1.0}"
+    export VITRIOL_SAMPLING_DRY_MULTIPLIER="${VITRIOL_SAMPLING_DRY_MULTIPLIER:-0.0}"
+    export VITRIOL_SAMPLING_DRY_BASE="${VITRIOL_SAMPLING_DRY_BASE:-1.75}"
+    export VITRIOL_SAMPLING_DRY_ALLOWED_LENGTH="${VITRIOL_SAMPLING_DRY_ALLOWED_LENGTH:-2}"
+    export VITRIOL_SAMPLING_DRY_PENALTY_LAST_N="${VITRIOL_SAMPLING_DRY_PENALTY_LAST_N:--1}"
+    export VITRIOL_SAMPLING_TOP_K="${VITRIOL_SAMPLING_TOP_K:-40}"
+    export VITRIOL_SAMPLING_TOP_P="${VITRIOL_SAMPLING_TOP_P:-0.95}"
+    export VITRIOL_SAMPLING_MIN_P="${VITRIOL_SAMPLING_MIN_P:-0.05}"
+    SAMPLING_ARGS=""
+    for kv in "repeat-penalty:$VITRIOL_SAMPLING_REPEAT_PENALTY" \
+              "dry-multiplier:$VITRIOL_SAMPLING_DRY_MULTIPLIER" \
+              "dry-base:$VITRIOL_SAMPLING_DRY_BASE" \
+              "dry-allowed-length:$VITRIOL_SAMPLING_DRY_ALLOWED_LENGTH" \
+              "dry-penalty-last-n:$VITRIOL_SAMPLING_DRY_PENALTY_LAST_N" \
+              "top-k:$VITRIOL_SAMPLING_TOP_K" \
+              "top-p:$VITRIOL_SAMPLING_TOP_P" \
+              "min-p:$VITRIOL_SAMPLING_MIN_P"; do
+        flag="${kv%%:*}"; val="${kv#*:}"
+        case "$flag:$val" in
+            repeat-penalty:1.0|dry-multiplier:0.0) ;;  # stock = off, skip
+            *) SAMPLING_ARGS="$SAMPLING_ARGS --$flag $val" ;;
+        esac
+    done
     if [ ! -x "$SERVER" ]; then
         echo "[vitriol] ERROR: $SERVER not found — build first" >&2
         exit 1
@@ -405,7 +441,7 @@ if [ "$DO_GEN" = "1" ]; then
     else
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
              --no-mmap \
-             --parallel "$PARALLEL" $REASONING_ARGS --flash-attn on --jinja \
+             --parallel "$PARALLEL" $REASONING_ARGS $SAMPLING_ARGS --flash-attn on --jinja \
              --context-shift --cache-reuse 256 --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then

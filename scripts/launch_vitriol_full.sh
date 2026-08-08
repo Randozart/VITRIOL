@@ -69,6 +69,10 @@ NGL="${VITRIOL_NGL:-$(cfg_value model ngl || true)}"
 CTX="${VITRIOL_CTX:-$(cfg_value model context || true)}"
 THREADS="${VITRIOL_THREADS:-$(cfg_value model threads || true)}"
 PARALLEL="${VITRIOL_PARALLEL:-$(cfg_value server parallel || true)}"
+# 2026-08-08: `parallel` splits the context across N slots (32768/4 = 8192/slot).
+# An agent client (opencode) declares the full model context, so a slot shorter
+# than the client's context causes 400 "exceeds available context size" loops.
+# Exposed here so the config [server] parallel is the single source of truth.
 GEN_MODEL="${GEN_MODEL:-/home/randozart/Desktop/Projects/mellum2-claude-Q2_K.gguf}"
 GEN_PORT="${GEN_PORT:-8279}"
 NGL="${NGL:-99}"

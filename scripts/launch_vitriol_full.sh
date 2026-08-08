@@ -141,6 +141,7 @@ apply_vitriol_env() {
                 ;;
         esac
     done < "$cfg"
+    return 0
 }
 
 # Find the pid bound to a port. ss -p often cannot attribute the pid (it showed

@@ -432,6 +432,31 @@ if [ "$DO_GEN" = "1" ]; then
             *) SAMPLING_ARGS="$SAMPLING_ARGS --$flag $val" ;;
         esac
     done
+    # 2026-08-18: wire the config's [gpu]/[kv]/[spec] settings into server flags.
+    # Before this, the TUI launch ignored tensor_split, KV quant, and MTP spec,
+    # so a 131K ctx Qwen3.8 ran with default f16 KV + no -ts -> context OOM
+    # ("cannot create context"). Mirrors `vitriol serve` (vitriol:1960-2010).
+    TENSOR_SPLIT="${VITRIOL_TENSOR_SPLIT:-$(cfg_value gpu tensor_split || true)}"
+    KV_QUANT_K="${VITRIOL_KV_QUANT_K:-$(cfg_value kv quant_mode || true)}"
+    KV_QUANT_V="${VITRIOL_KV_QUANT_V:-$(cfg_value kv quant_mode_v || true)}"
+    SPEC_TYPE="${VITRIOL_SPEC_TYPE:-$(cfg_value spec type || true)}"
+    SPEC_DRAFT_N_MAX="${VITRIOL_SPEC_DRAFT_N_MAX:-$(cfg_value spec draft_n_max || true)}"
+    # default ubatch: 128 is the tuned optimum for MTP on this 2-GPU pair
+    # (512 makes the MTP pp compute buffer OOM the 1070 Ti).
+    UBATCH="${VITRIOL_UBATCH:-$(cfg_value model ubatch || true)}"
+    UBATCH="${UBATCH:-128}"
+
+    TS_ARGS=()
+    [[ -n "$TENSOR_SPLIT" ]] && TS_ARGS=(-ts "$TENSOR_SPLIT" --main-gpu 0)
+    KV_ARGS=()
+    [[ -n "$KV_QUANT_K" ]] && KV_ARGS+=(--cache-type-k "$KV_QUANT_K")
+    [[ -n "$KV_QUANT_V" ]] && KV_ARGS+=(--cache-type-v "$KV_QUANT_V")
+    SPEC_ARGS=()
+    [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS+=(--spec-type "$SPEC_TYPE")
+    if [[ -n "$SPEC_DRAFT_N_MAX" ]] && [[ "$SPEC_DRAFT_N_MAX" != "0" ]]; then
+        SPEC_ARGS+=(--spec-draft-n-max "$SPEC_DRAFT_N_MAX")
+    fi
+
     if [ ! -x "$SERVER" ]; then
         echo "[vitriol] ERROR: $SERVER not found — build first" >&2
         exit 1
@@ -442,6 +467,7 @@ if [ "$DO_GEN" = "1" ]; then
         CMD=("$SERVER" -m "$GEN_MODEL" -ngl "$NGL" -c "$CTX" -t "$THREADS" \
              --no-mmap \
              --parallel "$PARALLEL" $REASONING_ARGS $SAMPLING_ARGS --flash-attn on --jinja \
+             "${TS_ARGS[@]}" "${KV_ARGS[@]}" "${SPEC_ARGS[@]}" -ub "$UBATCH" \
              --context-shift --cache-reuse 256 --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then

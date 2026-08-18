@@ -34,6 +34,7 @@ DEFAULT_MODE="stream"
 DEFAULT_LRU_MB=0
 DEFAULT_DEVICE=0
 DEFAULT_EXCLUDE_SECONDARY=true
+DEFAULT_TENSOR_SPLIT=""
 DEFAULT_VERBOSE=false
 DEFAULT_MEMORY_MODE="off"
 DEFAULT_KV_MODE="standard"
@@ -57,6 +58,7 @@ DEFAULT_UBATCH=256
 # ── config vars (set by parse_config) ────────────────────────────
 CFG_DEVICE="$DEFAULT_DEVICE"
 CFG_EXCLUDE_SECONDARY="$DEFAULT_EXCLUDE_SECONDARY"
+CFG_TENSOR_SPLIT="$DEFAULT_TENSOR_SPLIT"
 CFG_MODEL="$DEFAULT_MODEL"
 CFG_CTX="$DEFAULT_CTX"
 CFG_THREADS="$DEFAULT_THREADS"
@@ -113,6 +115,7 @@ parse_config() {
             case "${section}.${key}" in
                 gpu.device)            CFG_DEVICE="$val" ;;
                 gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
+                gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
                 model.path)            CFG_MODEL="$val" ;;
                 model.context)         CFG_CTX="$val" ;;
                 model.threads)         CFG_THREADS="$val" ;;
@@ -158,6 +161,8 @@ write_config() {
 device = $CFG_DEVICE
 # Exclude secondary GPU (GTX 960, CC 5.2 lacks kernel images)
 exclude_secondary = $CFG_EXCLUDE_SECONDARY
+# Tensor split across GPUs (e.g. "24,12" for 2 GPUs, empty = auto layer split)
+tensor_split = $CFG_TENSOR_SPLIT
 
 [model]
 # Path to GGUF model file
@@ -1615,6 +1620,7 @@ case "$CMD" in
         CLI_DISK_OFFLOAD=""
             CLI_SPEC_TYPE=""
             CLI_SPEC_DRAFT_N_MAX=""
+            CLI_TENSOR_SPLIT=""
             CLI_PIN_LAYERS=""
             CLI_PRUNE_EXPERTS=""
             CLI_UBATCH=""
@@ -1639,6 +1645,7 @@ case "$CMD" in
                     --engine-mode) CLI_ENGINE_MODE="$2"; shift 2 ;;
                     --spec-type) CLI_SPEC_TYPE="$2"; shift 2 ;;
                     --spec-draft-n-max) CLI_SPEC_DRAFT_N_MAX="$2"; shift 2 ;;
+                    --tensor-split|-ts) CLI_TENSOR_SPLIT="$2"; shift 2 ;;
                     --verbose) CLI_VERBOSE="true"; shift ;;
                     --disk-offload) CLI_DISK_OFFLOAD="1"; shift ;;
                     --pin-layers) CLI_PIN_LAYERS="$2"; shift 2 ;;
@@ -1669,6 +1676,7 @@ case "$CMD" in
 DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
+        TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         REASONING="${CLI_REASONING:-${CFG_REASONING}}"
@@ -1735,6 +1743,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo "  Mode:        $MODE (RAM Shot + LRU cache)"
         [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
         echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
+        [[ -n "${TENSOR_SPLIT:-}" ]] && echo "  Tensor Split: ${TENSOR_SPLIT}"
         echo "  Memory:      $MEMORY_MODE"
         echo "  KV Mode:     $KV_MODE"
         echo "  Frozen:      $FROZEN_PROMPT"
@@ -1801,6 +1810,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             -c "$CTX" \
             -n 128 \
             -t "$THREADS" \
+            ${TENSOR_SPLIT:+-ts $TENSOR_SPLIT} \
             "$@"
         ;;
 
@@ -1825,6 +1835,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         CLI_DISK_OFFLOAD=""
         CLI_SPEC_TYPE=""
         CLI_SPEC_DRAFT_N_MAX=""
+        CLI_TENSOR_SPLIT=""
         CLI_UBATCH=""
         CLI_PIN_LAYERS=""
         CLI_PRUNE_EXPERTS=""
@@ -1851,6 +1862,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                 --engine-mode) CLI_ENGINE_MODE="$2"; shift 2 ;;
                 --spec-type) CLI_SPEC_TYPE="$2"; shift 2 ;;
                 --spec-draft-n-max) CLI_SPEC_DRAFT_N_MAX="$2"; shift 2 ;;
+                --tensor-split|-ts) CLI_TENSOR_SPLIT="$2"; shift 2 ;;
                 --ubatch-size) CLI_UBATCH="$2"; shift 2 ;;
                 --disk-offload) CLI_DISK_OFFLOAD="1"; shift ;;
                 --pin-layers) CLI_PIN_LAYERS="$2"; shift 2 ;;
@@ -1884,6 +1896,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
+        TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
@@ -1942,6 +1955,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo "  Mode:        $MODE (RAM Shot + LRU cache)"
         [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
         echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
+        [[ -n "${TENSOR_SPLIT:-}" ]] && echo "  Tensor Split: ${TENSOR_SPLIT}"
         echo "  Memory:      $MEMORY_MODE"
         echo "  KV Mode:     $KV_MODE"
         echo "  Frozen:      $FROZEN_PROMPT"
@@ -1990,6 +2004,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_ARGS=""
         [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS="--spec-type $SPEC_TYPE"
         [[ "${SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-n-max $SPEC_DRAFT_N_MAX"
+        # Multi-GPU tensor split args
+        TS_ARGS=""
+        [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
@@ -2045,7 +2062,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         --no-mmap \
                          -t "$THREADS" \
-                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                             "$@" &>"${CONFIG_DIR}/llama-server.log" &
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
                 echo "  llama-server PID: $! (internal port $LLAMA_PORT)"
@@ -2099,7 +2116,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         --no-mmap \
                         -t "$THREADS" \
-                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                         "$@" &>"${CONFIG_DIR}/server.log" &
                 echo $! > "${CONFIG_DIR}/server.pid"
                 echo "  Server PID: $!"
@@ -2152,7 +2169,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
                         --no-mmap \
-                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
+                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
                 LLAMA_PID=$!
                 echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
 
@@ -2205,7 +2222,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --parallel "$PARALLEL" \
                     --no-mmap \
                     -t "$THREADS" \
-                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                     "$@"
             fi
         fi

@@ -6,10 +6,12 @@ Related: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`
 
 ## TL;DR
 
-The ~98 ms/decode on the dual-GPU (RTX 3060 + GTX 1070 Ti) layer split is
-**genuine serial layer-chain GPU execution** (~90 ms), plus **inter-decode host
-overhead** (ctx_mtp draft decode + sampling) that drags the GPU's ~20.9 t/s
-ceiling down to ~12 t/s. Everything else was measured and falsified.
+The ~98-108 ms/decode on the dual-GPU (RTX 3060 + GTX 1070 Ti) layer split is
+**genuine serial layer-chain GPU execution** — 81.5% of wall time (54 ms/token),
+context-invariant, weight-streaming-bound. Host overhead is minor (~11%);
+the ctx_mtp draft decode is negligible (1 ms). The only real lever is
+**kernel/bandwidth efficiency** of the serial chain or **more tokens per decode**.
+Everything else was measured and falsified.
 
 ## Instrumentation (what we built to measure)
 
@@ -55,34 +57,42 @@ Output per decode:
    (~11 ms for a 13-MUL_MAT graph, direct-eval `0C/0R`) + sampling, sitting
    serially between main decodes. Drags 20.9 → **12 t/s** (~40% loss).
 
-Throughput accounting (winner config, 400 tok / 33.2 s / 12.1 t/s, draft
-acceptance 100% 199/199):
-- Main verify: 195 × ~98 ms = 19.1 s.
-- Sum of ALL decode types = 29.9 s of the 33.2 s wall.
-- The gap to 12 t/s = serial draft decodes + sampling.
+## CORRECTION (2026-08-19, precise per-graph accounting)
 
-## Measured reference rows
+The earlier "host overhead ~40%" was **wrong**. A clean 500-token run
+(41.45 s / 12.06 t/s) with exact per-pattern classification:
 
-| config | total | build | compute | post | graph | sync | nodes |
-|---|---|---|---|---|---|---|---|
-| MTP n=1 (winner) | 98.0ms | 0.3ms | 87.5ms | 10.0ms | 2C/1R | 1×9.7ms | 189 MUL_MAT |
-| no-MTP | 78.1ms | 0.1ms | 78.0ms | 0.0ms | 1C/1R | 0 | 112 MUL_MAT |
-| ctx_mtp draft (per) | 11.2ms | — | 8.3ms | 2.5ms | 0C/0R | 2.4ms | 13 MUL_MAT |
-| prompt chunk | 109.5ms | — | 73ms | 36ms | 1C/0R | 36ms | — |
+| graph | n | avg | sum | what |
+|---|---|---|---|---|
+| MUL_MAT=189 | 244 | 108.3ms | 26.4s | main verify (2 tok) |
+| MUL_MAT=185 | 68 | 108.5ms | 7.4s | main verify (boundary/1 tok) |
+| MUL_MAT=9 | 249 | **1.0ms** | 0.2s | **ctx_mtp draft — negligible!** |
+| MUL_MAT=558/574 | 9 | 193-545ms | 2.5s | prompt processing |
+| all decode | 572 | — | 36.8s | 88.7% of 41.45s wall |
+
+Corrected split of the 41.45 s wall:
+- **Main decode GPU: 33.8 s (81.5%)** → ~16.4 t/s ceiling (108 ms/2 tok = 54 ms/tok)
+- Prompt processing: ~2.8 s (7%)
+- **True non-decode host overhead (sampling + server): ~4.65 s (~11%) = ~9 ms/token**
+- ctx_mtp draft: **1 ms/token, negligible** (not the 11 ms earlier mis-read)
+
+So the draft decode is NOT a lever. The main decode GPU time is the single
+dominant cost (81.5%). The only real ways forward are **kernel/bandwidth
+efficiency of the serial layer chain** or **more tokens per decode**.
 
 ## What's left (real next directions)
 
-1. **Host-side (most achievable)**: overlap or shrink the per-token ctx_mtp
-   draft decode + sampling that sits serially between main decodes — the
-   20.9 → 12 t/s gap. Measure the draft/sampling split precisely, try overlap.
-2. **Kernel-side**: close the ~90 ms serial GPU time toward the weight-stream
-   floor — Q3_K stream efficiency / layer-split scheduling so the chain isn't
-   purely serial (the two GPUs each idle ~50%).
+1. **Kernel-side (the only real lever)**: close the ~108 ms/2-token serial GPU
+   time toward the weight-stream floor. Q3_K stream efficiency, layer-split
+   scheduling, or batching more tokens per decode.
+2. ~~Host-side draft/sampling overlap~~ — **dropped**: draft is 1 ms, host
+   overhead only ~11%.
 
 ## Actions log
 - [x] build both archs; `sudo vitriol setup`
 - [x] [PERF]/[CUGR] instrumentation; live TUI breakdown
 - [x] re-capture cause isolated (`ne[1]` growing context) — then falsified as cost
-- [x] context-invariance (8K vs 131K), split-mode row, split-ratio 30/6, throughput accounting
-- [ ] (next) draft-decode/sampling split + overlap test
-- [ ] (next) kernel/bandwidth efficiency of the serial layer chain
+- [x] context-invariance (8K vs 131K), split-mode row, split-ratio 30/6
+- [x] precise per-graph accounting (draft=1ms, host=11%, main=81.5%) — draft/host levers dropped
+- [ ] (next) kernel/bandwidth efficiency of the serial layer chain (Q3_K stream, split scheduling)
+- [ ] (next) more tokens per decode (batch / spec depth) to amortize the 108ms

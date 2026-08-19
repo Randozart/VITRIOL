@@ -1,4 +1,3 @@
 name=qwen38-mtp-131k
-description=Qwen3.8-27B Q3_K_M: MTP n1, ts 27,9, ctx 131K, q4k/q4v → 12.89 t/s (measured best)
-created=1787073199
-updated=2026-08-19
+description=Qwen3.8-27B Q3_K_M: MTP n1, ts 27,9, ctx 49K, q4k/q4v (131K OOMs ~45-61K tokens on this dual-GPU pair)
+created=2026-08-19

@@ -9,7 +9,7 @@ tensor_split = 24,12
 
 [model]
 path = /home/randozart/Downloads/Qwen3.8-27B-Q3_K_M.gguf
-context = 131072
+context = 49152
 threads = 4
 ngl = 99
 expert_count = 0

@@ -1,3 +1,3 @@
 name=qwen38-mtp-131k-stable
-description=Qwen3.8-27B Q3_K_M: MTP n1, ts 24,12, ctx 131K → 12.58 t/s (stable fallback)
+description=Qwen3.8-27B Q3_K_M: MTP n1, ts 24,12, ctx 49K, q4k/q4v (stable; 131K OOMs ~45-61K tokens)
 created=2026-08-19

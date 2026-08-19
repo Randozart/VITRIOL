@@ -173,6 +173,30 @@ matmul. **Layer split (default) wins decisively.** So split *mode* is not the
 headroom; the gap is the 3060-vs-1070 Ti speed imbalance (the slower 1070 Ti
 is the serial bottleneck in layer split) + Q3_K stream efficiency.
 
+### Split-ratio probe (2026-08-19) — no VRAM room
+`-ts 30,6` aborts (`failed to fit params`, `tensor_split already set`) + OOM on
+device 0. VRAM is near the limit at 24,12; rebalancing toward the 3060 does not
+fit. Also: with **layer split + single-token decode the two GPUs run serially**
+(layer chain alternates GPUs), so each is ~50% busy by design — the ~90ms is
+the serial sum of layers, not a fixable imbalance. Not the lever.
+
+### Throughput accounting (2026-08-19, winner config, 400 tok / 33.2s / 12.1 t/s)
+- Main verify decode: 195 decodes × ~98ms = 19.1s → **~20.9 t/s GPU ceiling**.
+- Draft acceptance 100% (199/199), all verifies 2 tokens.
+- Sum of ALL decode time (main + ctx_mtp draft + prompt) = 29.9s of 33.2s wall
+  → only ~3.3s true host overhead; the remaining gap to 12 t/s is the **serial
+  ctx_mtp draft decodes (~11ms each) + sampling** between main decodes.
+
+### Final Phase E conclusion
+Bottleneck, ranked:
+1. **Main decode GPU execution ~98ms/2 tok (serial layer chain, context-invariant)** —
+   the ~20.9 t/s ceiling. Close to it only via kernel/bandwidth work or more
+   tokens/decode.
+2. **Inter-decode serial overhead (ctx_mtp draft ~11ms + sampling)** — drags
+   20.9 → 12 t/s. Most actionable: overlap/reduce the per-token draft decode.
+3. Falsified: graph build, re-capture (stable 0C/1R), attention-over-context,
+   split mode, split ratio, delta-net, per-layer PCIe syncs.
+
 ### Actions
 - [x] build llama-server both archs
 - [x] `sudo vitriol setup`

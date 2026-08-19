@@ -1,0 +1,56 @@
+# VITRIOL Configuration — Mellum2-12B-A2.5B-Instruct Q8_0 (dual-GPU, 131K)
+# Measured 2026-08-19: 68.29 t/s @ 131K on 3060 + 1070 Ti (ts 24,12).
+# Tool calling VERIFIED working (single + parallel multi-tool, valid JSON).
+# Q8_0 = best quality for tool calling; ~1.5 t/s slower than Q5_K_M.
+# Full offload (29/29 layers), flash-attn on (model-card recommended).
+
+[gpu]
+device = 0
+exclude_secondary = false
+tensor_split = 24,12
+
+[model]
+path = /home/randozart/Downloads/Mellum2-12B-A2.5B-Instruct-Q8_0.gguf
+context = 131072
+threads = 4
+ngl = 99
+expert_count = 0
+
+[vitriol]
+mode = stream
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8279
+parallel = 1
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+quant_mode = f16
+quant_mode_v = f16
+frozen_prompt = off
+
+[engine]
+mode = vitriol-dma
+flash_attn = on
+
+[lookup]
+tokens = 0
+
+[spec]
+type =
+draft_n_max = 0
+
+[chimera]
+mode = auto

@@ -39,13 +39,13 @@ port_pid() {
     local port="$1" p=""
     p=$(ss -ltnp 2>/dev/null | grep ":$port " | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
-    p=$(lsof -ti ":$port" 2>/dev/null | head -1)
-    if [ -n "$p" ]; then echo "$p"; return 0; fi
+    # 2026-08-07: never lsof -ti:/fuser here — they list CLIENT holders too, so
+    # stop() would kill -9 the TUI's keep-alive poller. pgrep by binary+port is
+    # precise. (Mirrors launch_vitriol_full.sh port_pid.)
     p=$(pgrep -f "(llama-server|hermes-server|hermetis_server).*--port $port" 2>/dev/null | head -1)
     if [ -n "$p" ]; then echo "$p"; return 0; fi
-    p=$(fuser -n tcp "$port" 2>/dev/null | tr -s ' ' | head -1 | xargs echo)
-    echo "$p"
-    return 0
+    echo ""
+    return 1
 }
 
 stop() {

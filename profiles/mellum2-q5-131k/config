@@ -42,7 +42,6 @@ frozen_prompt = off
 
 [engine]
 mode = vitriol-dma
-flash_attn = on
 
 [lookup]
 tokens = 0

@@ -109,6 +109,18 @@ fix the real wall: the 1070 Ti's Q3_K dequant at 28% bandwidth.
 
 Applied: `~/.vitriol/config` tensor_split 24,12 → 27,9.
 
+## Kernel lever 1 — fused mmvq on Pascal (DIDN'T WORK)
+
+Hypothesis: the 1070 Ti's non-fused `mul_mat_vec_q` path (extra
+`quantize_row_q8_1` pass + separate launch) is slow; enable the fused
+`mul_mat_vec_q_direct` path that upstream disables on Pascal
+(`ggml_cuda_should_fuse_mul_mat_vec_q`, cc <= PASCAL). Gated behind
+`VITRIOL_FUSE_MMVQ_PASCAL=1` env.
+
+Result: **regression — 11.04 t/s vs 12.89 (-14%)**. The upstream
+"fusion is not universally faster on Pascal" heuristic is correct for this
+workload. Reverted to the default unfused path (env unset). Dead end.
+
 ## Actions log
 - [x] build both archs; `sudo vitriol setup`
 - [x] [PERF]/[CUGR] instrumentation; live TUI breakdown

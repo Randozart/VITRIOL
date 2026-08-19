@@ -21,6 +21,33 @@ pub struct GenSnapshot {
     /// no slot is actively decoding. Unlike `decode_t_s` (sticky last
     /// completion), this falls to 0.0 as soon as generation stops.
     pub decode_speed: f64,
+    /// Latest `[PERF]` decode breakdown line from the gen log, when present.
+    pub perf: Option<PerfSnapshot>,
+}
+
+/// One decoded `[PERF]` line emitted by the VITRIOL server (`GGML_CUDA_GDN_PROFILE=1`).
+/// Breaks a single `llama_decode` into graph-build / graph-compute / post,
+/// plus the CUDA-graph capture-vs-replay tally and the MTP-hook sync stalls.
+#[derive(Debug, Clone, Default)]
+pub struct PerfSnapshot {
+    /// Whole-decode wall time in ms.
+    pub total_ms: f64,
+    /// Graph build + alloc + set_inputs in ms.
+    pub build_ms: f64,
+    /// `graph_compute` (synchronous CUDA work) in ms.
+    pub compute_ms: f64,
+    /// Extraction + MTP hook (ctx_mtp decode + sync) in ms.
+    pub post_ms: f64,
+    /// CUDA graph captures this decode.
+    pub n_capture: u64,
+    /// CUDA graph replays this decode.
+    pub n_replay: u64,
+    /// Synchronize() stalls in the MTP hook.
+    pub n_sync: u64,
+    /// Accumulated sync stall time in ms.
+    pub sync_ms: f64,
+    /// Top-4 op classes by node count: (op name, count).
+    pub top_ops: Vec<(String, u64)>,
 }
 
 /// One recent episode row from `/hermetis/recent`.

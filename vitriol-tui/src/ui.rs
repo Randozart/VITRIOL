@@ -186,6 +186,36 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
             ),
         ]),
     ];
+
+    // VITRIOL decode breakdown ([PERF] line), when the server emits it.
+    let mut lines = lines;
+    if let Some(p) = &g.perf {
+        lines.push(Line::from(vec![
+            Span::styled("decode  ", theme::muted()),
+            Span::styled(
+                format!(
+                    "{:.1}ms [build {:.1} | compute {:.1} | post {:.1}]",
+                    p.total_ms, p.build_ms, p.compute_ms, p.post_ms
+                ),
+                theme::info(),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("graph   ", theme::muted()),
+            Span::styled(
+                format!(
+                    "{}C/{}R sync {}x({:.1}ms)",
+                    p.n_capture, p.n_replay, p.n_sync, p.sync_ms
+                ),
+                if p.n_capture > p.n_replay {
+                    theme::warn()
+                } else {
+                    theme::info()
+                },
+            ),
+        ]));
+    }
+
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 

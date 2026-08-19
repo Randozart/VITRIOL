@@ -21,7 +21,7 @@ use ureq::{Agent, AgentBuilder};
 
 use crate::config::Config;
 use crate::model::{
-    EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, RecentStore, Snapshot,
+    EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, PerfSnapshot, RecentStore, Snapshot,
 };
 use crate::nvidia;
 
@@ -116,6 +116,7 @@ impl Poller {
             n_parallel: None,
             decode_t_s: parse_decode_t_s(&self.cfg.gen_log()),
             decode_speed: parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset),
+            perf: parse_perf(&self.cfg.gen_log()),
         }
     }
 }
@@ -286,6 +287,95 @@ fn parse_decode_t_s(log_path: &std::path::Path) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Parse the newest VITRIOL `[PERF]` decode-breakdown line from the gen log.
+/// The server writes one such line per outermost `llama_decode` when launched
+/// with `GGML_CUDA_GDN_PROFILE=1`. Format:
+///   `[PERF] total=97.5ms build=12.0ms compute=80.0ms post=5.5ms
+///    graph=1C/57R sync=2(2.0ms) top_ops=FFN=64...`
+/// Returns `None` when no parseable line exists (server not in perf mode).
+fn parse_perf(log_path: &std::path::Path) -> Option<PerfSnapshot> {
+    let content = match std::fs::read_to_string(log_path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    content.lines().filter_map(parse_perf_line).next_back()
+}
+
+/// Parse a single `[PERF]` line into a [`PerfSnapshot`].
+fn parse_perf_line(line: &str) -> Option<PerfSnapshot> {
+    if !line.contains("[PERF] ") {
+        return None;
+    }
+    let mut p = PerfSnapshot::default();
+    // numbers: total, build, compute, post (ms, same order as server emits)
+    let nums: Vec<f64> = ["total=", "build=", "compute=", "post="]
+        .iter()
+        .filter_map(|k| {
+            let i = line.find(k)?;
+            let rest = &line[i + k.len()..];
+            let n: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            n.parse::<f64>().ok()
+        })
+        .collect();
+    if nums.len() == 4 {
+        p.total_ms = nums[0];
+        p.build_ms = nums[1];
+        p.compute_ms = nums[2];
+        p.post_ms = nums[3];
+    }
+    // graph=NC/MR
+    if let Some(i) = line.find("graph=") {
+        let rest = &line[i + 6..];
+        let mut cap = String::new();
+        for c in rest.chars() {
+            if c.is_ascii_digit() { cap.push(c); } else { break; }
+        }
+        p.n_capture = cap.parse().unwrap_or(0);
+        if let Some(c_idx) = rest.find('C') {
+            // tail like `/57R top_ops=...` — scan digits skipping separators.
+            let mut rep = String::new();
+            for c in rest[c_idx + 1..].chars() {
+                if c.is_ascii_digit() {
+                    rep.push(c);
+                } else if !rep.is_empty() && c == 'R' {
+                    break;
+                }
+            }
+            p.n_replay = rep.parse().unwrap_or(0);
+        }
+    }
+    // sync=N(ms)
+    if let Some(i) = line.find("sync=") {
+        let rest = &line[i + 5..];
+        let mut n = String::new();
+        for c in rest.chars() {
+            if c.is_ascii_digit() { n.push(c); } else { break; }
+        }
+        p.n_sync = n.parse().unwrap_or(0);
+        if let Some(j) = rest.find('(') {
+            let tail = &rest[j + 1..];
+            let mut m = String::new();
+            for c in tail.chars() {
+                if c.is_ascii_digit() || c == '.' { m.push(c); } else { break; }
+            }
+            p.sync_ms = m.parse().unwrap_or(0.0);
+        }
+    }
+    // top_ops=NAME=N NAME=N ...
+    if let Some(i) = line.find("top_ops=") {
+        let rest = &line[i + 8..];
+        for tok in rest.split_whitespace() {
+            let mut it = tok.splitn(2, '=');
+            if let (Some(name), Some(cnt)) = (it.next(), it.next()) {
+                if let Ok(c) = cnt.parse::<u64>() {
+                    p.top_ops.push((name.to_string(), c));
+                }
+            }
+        }
+    }
+    Some(p)
+}
+
 /// Incremental reader for a service log.
 ///
 /// On each poll only the bytes appended since the previous read are pulled and
@@ -432,6 +522,35 @@ mod tests {
         ].join("")).unwrap();
         assert_eq!(parse_decode_speed(&p, &mut last), 40.12);
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn perf_line_parses_full_breakdown() {
+        let line = "[PERF] total=97.5ms build=12.0ms compute=80.2ms post=5.3ms \
+            graph=1C/57R sync=2(2.0ms) top_ops=FFN=64 attn=32 MUL_MAT=16";
+        let p = parse_perf_line(line).expect("should parse");
+        assert_eq!(p.total_ms, 97.5);
+        assert_eq!(p.build_ms, 12.0);
+        assert_eq!(p.compute_ms, 80.2);
+        assert_eq!(p.post_ms, 5.3);
+        assert_eq!(p.n_capture, 1);
+        assert_eq!(p.n_replay, 57);
+        assert_eq!(p.n_sync, 2);
+        assert_eq!(p.sync_ms, 2.0);
+        assert_eq!(
+            p.top_ops,
+            vec![
+                ("FFN".to_string(), 64),
+                ("attn".to_string(), 32),
+                ("MUL_MAT".to_string(), 16),
+            ]
+        );
+    }
+
+    #[test]
+    fn perf_line_absent_when_not_perf_mode() {
+        assert!(parse_perf_line("slot test: id 0 | task 1 | ...").is_none());
+        assert!(parse_perf_line("decode heartbeat: 17 tokens,  23.40 t/s (live)").is_none());
     }
 
     #[test]

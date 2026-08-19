@@ -194,6 +194,16 @@ pub fn live() -> Style {
     Style::new().fg(CYAN).bg(BG)
 }
 
+/// Informational emphasis (diagnostics breakdown).
+pub fn info() -> Style {
+    Style::new().fg(LIGHT_YELLOW).bg(BG)
+}
+
+/// Warning emphasis (e.g. per-decode CUDA-graph re-capture).
+pub fn warn() -> Style {
+    Style::new().fg(ORANGE).bg(BG)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

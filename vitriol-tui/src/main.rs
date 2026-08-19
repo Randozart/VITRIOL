@@ -28,7 +28,9 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::init;
 use ratatui::restore;
 
@@ -47,6 +49,7 @@ fn main() -> io::Result<()> {
     let (search_tx, search_rx) = mpsc::channel::<Vec<search::SearchHit>>();
 
     let mut terminal = init();
+    crossterm::execute!(io::stdout(), event::EnableMouseCapture)?;
     let mut app = App::new(cfg, 120);
 
     loop {
@@ -95,6 +98,9 @@ fn main() -> io::Result<()> {
                     },
                 },
                 Event::Resize(_, _) => {}
+                Event::Mouse(mouse) if mouse.kind == MouseEventKind::Down(MouseButton::Left) => {
+                    handle_mouse(&mut app, mouse, &ctrl_tx);
+                }
                 _ => {}
             }
         }
@@ -105,6 +111,7 @@ fn main() -> io::Result<()> {
         }
     }
 
+    crossterm::execute!(io::stdout(), event::DisableMouseCapture)?;
     restore();
     Ok(())
 }
@@ -275,7 +282,11 @@ fn handle_profile_prompt(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char(c) => app.profile_save_type(c),
         KeyCode::Backspace => app.profile_save_backspace(),
         KeyCode::Enter => {
-            let _ = app.profile_save_commit();
+            if app.profile_dup_source.is_some() {
+                let _ = app.profile_duplicate_commit();
+            } else {
+                let _ = app.profile_save_commit();
+            }
         }
         KeyCode::Esc => app.profile_save_cancel(),
         _ => {}
@@ -289,12 +300,15 @@ fn handle_profile_list(
     ctrl: &mpsc::Sender<control::Event>,
 ) {
     match key.code {
-        KeyCode::Char(',') | KeyCode::Char('.') => app.profile_pane_toggle(),
+        KeyCode::Char(',') | KeyCode::Char('.') | KeyCode::Left | KeyCode::Right => {
+            app.profile_pane_toggle()
+        }
         KeyCode::Char('j') | KeyCode::Down => app.profile_list_move(1),
         KeyCode::Char('k') | KeyCode::Up => app.profile_list_move(-1),
         KeyCode::Enter | KeyCode::Char('l') => {
             let _ = app.profile_load_selected();
         }
+        KeyCode::Char('c') => app.profile_duplicate_start(),
         KeyCode::Char('t') => {
             let name = app
                 .profiles
@@ -321,7 +335,9 @@ fn handle_profile_list(
 /// PROFILES config-pane keys: the form-style entry editor.
 fn handle_profile_config(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
-        KeyCode::Char(',') | KeyCode::Char('.') => app.profile_pane_toggle(),
+        KeyCode::Char(',') | KeyCode::Char('.') | KeyCode::Left | KeyCode::Right => {
+            app.profile_pane_toggle()
+        }
         KeyCode::Char('j') | KeyCode::Down => app.profile_move(1),
         KeyCode::Char('k') | KeyCode::Up => app.profile_move(-1),
         KeyCode::Enter => {
@@ -340,6 +356,66 @@ fn handle_profile_config(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Backspace => app.profile_backspace(),
         KeyCode::Char(c) => app.profile_type(c),
         _ => {}
+    }
+}
+
+/// Route a mouse event. Header tabs are clickable on every tab; the PROFILES
+/// footer buttons dispatch only while the PROFILES tab is shown (and no save/
+/// duplicate prompt is swallowing the click).
+fn handle_mouse(app: &mut App, mouse: MouseEvent, ctrl: &mpsc::Sender<control::Event>) {
+    if let Some(tab) = app.tab_click(mouse.column, mouse.row) {
+        app.set_tab(tab);
+        return;
+    }
+    if app.tab == app::Tab::Profiles && app.profile_prompt.is_none() {
+        if let Some(action) = app.profile_click(mouse.column, mouse.row) {
+            run_profile_action(app, action, ctrl);
+        }
+    }
+}
+
+/// Map a clicked PROFILES footer button to its app mutator. Sweep is the only
+/// action that needs the control channel.
+fn run_profile_action(
+    app: &mut App,
+    action: app::ProfileAction,
+    ctrl: &mpsc::Sender<control::Event>,
+) {
+    use app::ProfileAction::*;
+    match action {
+        SwitchPane => app.profile_pane_toggle(),
+        Add => app.profile_save_start(),
+        Duplicate => app.profile_duplicate_start(),
+        Delete => match app.profile_focus {
+            app::ProfileFocus::List => {
+                let _ = app.profile_delete_selected();
+            }
+            app::ProfileFocus::Config => {
+                let _ = app.profile_remove_selected();
+            }
+        },
+        Reload => match app.profile_focus {
+            app::ProfileFocus::List => app.profile_reload_list(),
+            app::ProfileFocus::Config => app.profile_reload(),
+        },
+        Load => {
+            let _ = app.profile_load_selected();
+        }
+        Start => {
+            let name = app
+                .profiles
+                .get(app.profile_list_selection)
+                .map(|p| p.name.clone());
+            app.select_profile(name);
+        }
+        Overwrite => {
+            let _ = app.profile_overwrite_selected();
+        }
+        Sweep => {
+            if let Some(action) = app.profile_sweep_selected() {
+                app.run_action(action, ctrl);
+            }
+        }
     }
 }
 

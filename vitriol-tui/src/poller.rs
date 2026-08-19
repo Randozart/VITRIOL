@@ -38,6 +38,11 @@ struct Poller {
     hermetis_tail: LogTail,
     /// Tail of the embed log.
     embed_tail: LogTail,
+    /// Byte offset of the newest `decode heartbeat` line seen last poll, or
+    /// None before the first sighting. Lets the poller tell "still generating"
+    /// (offset advanced) from "went idle" (offset unchanged since the previous
+    /// poll).
+    decode_beat_offset: Option<u64>,
 }
 
 /// Spawn the poller thread. `refresh_flag` is raised by the UI to force an
@@ -51,6 +56,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
                 hermetis_tail: LogTail::new(LOG_TAIL_CAP),
                 embed_tail: LogTail::new(LOG_TAIL_CAP),
+                decode_beat_offset: None,
                 cfg,
             };
             loop {
@@ -71,7 +77,7 @@ impl Poller {
         self.hermetis_tail.poll(&self.cfg.hermetis_log());
         self.embed_tail.poll(&self.cfg.embed_log());
         let snap = Snapshot {
-            gen: poll_gen(agent, &self.cfg),
+            gen: self.poll_gen(agent),
             hermetis: poll_hermetis(agent, &self.cfg),
             embed: poll_embed(agent, &self.cfg),
             gpu: nvidia::query_gpu(),
@@ -83,32 +89,34 @@ impl Poller {
         };
         let _ = tx.send(snap);
     }
-}
 
-/// Poll the gen server: `/health`, `/v1/models`, and the log-derived decode t/s.
-fn poll_gen(agent: &Agent, cfg: &Config) -> GenSnapshot {
-    let up = get_json(agent, &format!("{}/health", cfg.gen_base()))
-        .map(|v| v.get("status").is_some())
-        .unwrap_or(false);
-    let mut model = None;
-    let mut n_ctx = None;
-    if let Some(models) = get_json(agent, &format!("{}/v1/models", cfg.gen_base())) {
-        let first = models
-            .get("data")
-            .and_then(|d| d.as_array())
-            .and_then(|a| a.first());
-        model = first
-            .and_then(|m| m.get("id"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
-        n_ctx = first.and_then(first_model_size);
-    }
-    GenSnapshot {
-        up,
-        model,
-        n_ctx,
-        n_parallel: None,
-        decode_t_s: parse_decode_t_s(&cfg.gen_log()),
+    /// Poll the gen server: `/health`, `/v1/models`, and the log-derived decode
+    /// state (sticky last-completion throughput plus the live heartbeat rate).
+    fn poll_gen(&mut self, agent: &Agent) -> GenSnapshot {
+        let up = get_json(agent, &format!("{}/health", self.cfg.gen_base()))
+            .map(|v| v.get("status").is_some())
+            .unwrap_or(false);
+        let mut model = None;
+        let mut n_ctx = None;
+        if let Some(models) = get_json(agent, &format!("{}/v1/models", self.cfg.gen_base())) {
+            let first = models
+                .get("data")
+                .and_then(|d| d.as_array())
+                .and_then(|a| a.first());
+            model = first
+                .and_then(|m| m.get("id"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned);
+            n_ctx = first.and_then(first_model_size);
+        }
+        GenSnapshot {
+            up,
+            model,
+            n_ctx,
+            n_parallel: None,
+            decode_t_s: parse_decode_t_s(&self.cfg.gen_log()),
+            decode_speed: parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset),
+        }
     }
 }
 
@@ -173,6 +181,64 @@ fn poll_embed(agent: &Agent, cfg: &Config) -> EmbedSnapshot {
 fn get_json(agent: &Agent, url: &str) -> Option<Value> {
     let resp = agent.get(url).call().ok()?;
     resp.into_json::<Value>().ok()
+}
+
+/// Parse the live decode heartbeat from the gen log and report whether a slot
+/// is still generating.
+///
+/// The VITRIOL server writes one `decode heartbeat: N tokens, X.XX tokens per
+/// second (live)` line per second while any slot is decoding. The newest such
+/// line is parsed for its throughput; freshness is derived by comparing the
+/// byte offset of that line to the offset seen on the previous poll — the line
+/// must have moved forward since, or the slot went idle. Returns 0.0 when no
+/// beat arrived since the last poll (including when the server predates the
+/// heartbeat).
+fn parse_decode_speed(log_path: &std::path::Path, last_offset: &mut Option<u64>) -> f64 {
+    let content = match std::fs::read_to_string(log_path) {
+        Ok(c) => c,
+        Err(_) => return 0.0,
+    };
+    let marker = " tokens per second (live)";
+    let mut beat_offset = 0u64;
+    let mut t_s = 0.0f64;
+    let mut offset = 0usize;
+    for line in content.split_inclusive('\n') {
+        if let Some(pos) = line.find(marker) {
+            beat_offset = offset as u64;
+            let before = &line[..pos];
+            let num = before.split_whitespace().last().unwrap_or("");
+            if let Ok(v) = num.trim_end_matches(',').parse::<f64>() {
+                if v.is_finite() && v > 0.0 {
+                    t_s = v;
+                }
+            }
+        }
+        offset += line.len();
+    }
+    if t_s <= 0.0 {
+        return 0.0;
+    }
+    match *last_offset {
+        // First beat ever seen this session: always fresh.
+        None => {
+            *last_offset = Some(beat_offset);
+            t_s
+        }
+        Some(prev) => {
+            // Log rotation/truncation shrinks the file: accept the beat even if
+            // its absolute offset is small.
+            if content.len() < prev as usize {
+                *last_offset = Some(beat_offset);
+                return t_s;
+            }
+            // A beat moved forward inside an un-rotated log: still generating.
+            if beat_offset > prev {
+                *last_offset = Some(beat_offset);
+                return t_s;
+            }
+            0.0
+        }
+    }
 }
 
 /// Extract the first model's reported context size, tolerating the differing
@@ -338,6 +404,49 @@ mod tests {
             parse_decode_t_s(&std::path::PathBuf::from("/nonexistent/log")),
             0.0
         );
+    }
+
+    #[test]
+    fn decode_speed_live_only_when_new_beat() {
+        let p = temp_log(
+            "beat1",
+            "       eval time = 1000.00 ms / 42 tokens (23.81 ms per token, 42.00 tokens per second)\n"
+        );
+        let mut last = None;
+        // No heartbeat line yet: nothing decoding.
+        assert_eq!(parse_decode_speed(&p, &mut last), 0.0);
+        std::fs::write(&p, [
+            "slot test: id 0 | task 1 | ...\n",
+            "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
+        ].join("")).unwrap();
+        // First appearance is fresh → 23.40.
+        assert_eq!(parse_decode_speed(&p, &mut last), 23.40);
+        assert!(last.is_some());
+        // No new bytes appended → idle again.
+        assert_eq!(parse_decode_speed(&p, &mut last), 0.0);
+        // A second, later beat advances past the first.
+        std::fs::write(&p, [
+            "slot test: id 0 | task 1 | ...\n",
+            "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
+            "decode heartbeat: 42 tokens,  40.12 tokens per second (live)\n",
+        ].join("")).unwrap();
+        assert_eq!(parse_decode_speed(&p, &mut last), 40.12);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn decode_speed_resets_on_rotation() {
+        let filler = "x".repeat(200);
+        let p = temp_log(
+            "beatrot",
+            &format!("{filler}\ndecode heartbeat: 10 tokens,  30.00 tokens per second (live)\n"),
+        );
+        let mut last = None;
+        assert_eq!(parse_decode_speed(&p, &mut last), 30.00);
+        // Log rotated to a shorter file (no filler) with a fresh beat.
+        std::fs::write(&p, "decode heartbeat: 5 tokens,  25.00 tokens per second (live)\n").unwrap();
+        assert_eq!(parse_decode_speed(&p, &mut last), 25.00);
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

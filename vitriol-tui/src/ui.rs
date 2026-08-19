@@ -2,13 +2,13 @@
 //!
 //! V1 ships the DASHBOARD tab only. Layout: a VITRIOL banner + active tab, a
 //! row of three service cards (GEN / HERMETIS / EMBED), a GPU card with
-//! btop-style gauges, and a decode-t/s sparkline card. All rendering is
+//! btop-style gauges, and a live decode-velocity braille card. All rendering is
 //! snapshot-driven and never panics on a down service.
 
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Sparkline, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, LogSource, Tab};
@@ -41,22 +41,47 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     render_footer(frame, rows[2], app);
 }
 
-/// Top banner: gold VITRIOL title + tab bar + project id.
-fn render_header(frame: &mut Frame, area: Rect, app: &App) {
-    let mut spans = vec![Span::styled(" VITRIOL ", theme::banner())];
-    for tab in Tab::ALL {
-        let style = if tab == app.tab {
+/// Top banner: gold VITRIOL title + clickable tab bar + project id. Each tab
+/// label is drawn into its own rect and recorded in `app.tab_hits` so a mouse
+/// click switches straight to it.
+fn render_header(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.reset_tab_hits();
+    let tab_labels: Vec<(Tab, String)> = Tab::ALL.iter().map(|t| (*t, format!(" {} ", t.label()))).collect();
+    let mut constraints = vec![Constraint::Length((" VITRIOL ".len()) as u16)];
+    for (_, label) in &tab_labels {
+        constraints.push(Constraint::Length(label.chars().count() as u16));
+    }
+    constraints.push(Constraint::Min(0));
+    let segs = Layout::horizontal(constraints).split(area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            " VITRIOL ",
+            theme::banner(),
+        )])),
+        segs[0],
+    );
+
+    for ((tab, label), seg) in tab_labels.iter().zip(segs.iter().skip(1)) {
+        app.tab_hits.push((*seg, *tab));
+        let style = if *tab == app.tab {
             theme::title().add_modifier(Modifier::UNDERLINED)
         } else {
             theme::muted()
         };
-        spans.push(Span::styled(format!(" {} ", tab.label()), style));
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(label.clone(), style)])),
+            *seg,
+        );
     }
-    spans.push(Span::styled(
-        format!("   {}", app.cfg.project_id),
-        theme::muted(),
-    ));
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!("   {}", app.cfg.project_id),
+            theme::muted(),
+        )])),
+        segs[segs.len() - 1],
+    );
 }
 
 /// Bottom keybinding bar.
@@ -323,40 +348,51 @@ fn render_braille_bar(frame: &mut Frame, area: Rect, ratio: f64, ramp: theme::Br
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// DECODE card: sparkline of recent t/s plus the latest value.
+/// DECODE card: a braille-dot velocity gauge that lights only while a slot is
+/// actively decoding, plus the live rate and session peak. While idle the card
+/// collapses to a dim status line so the panel really stops when the stack
+/// does.
 fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel_neutral(" DECODE ");
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(inner);
+    let speed = app.snapshot.gen.decode_speed;
+    let peak = app.decode_history.iter().copied().fold(0.0f64, f64::max);
 
-    let last = app.snapshot.gen.decode_t_s;
-    let max = app.decode_history.iter().copied().fold(0.0f64, f64::max);
+    if speed <= 0.0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![Span::styled(
+                if peak > 0.0 {
+                    format!("idle   (session peak {peak:.1} t/s)")
+                } else {
+                    "idle — no decode yet".to_string()
+                },
+                theme::muted(),
+            )])),
+            inner,
+        );
+        return;
+    }
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+    let bar_area = rows[1];
+
     frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            format!("{last:.1} t/s   peak {max:.1}"),
-            if last > 0.0 {
-                theme::live()
-            } else {
-                theme::muted()
-            },
-        )])),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("{speed:.1} t/s   "),
+                theme::live().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("peak {peak:.1}"), theme::muted()),
+        ])),
         rows[0],
     );
 
-    let data: Vec<u64> = app
-        .decode_history
-        .iter()
-        .map(|v| (*v).max(0.0) as u64)
-        .collect();
-    frame.render_widget(
-        Sparkline::default()
-            .data(&data)
-            .style(theme::sparkline())
-            .max(data.iter().copied().max().unwrap_or(1)),
-        rows[1],
-    );
+    // Fill and color the gauge against the session peak: slow fills red, a
+    // full bar toward the peak glows green.
+    let ratio = if peak > 0.0 { speed / peak } else { 0.0 };
+    render_braille_bar(frame, bar_area, ratio, theme::BrailleRamp::Velocity);
 }
 
 /// Full btop-style GPU panel: metric gauges on top, process table below.
@@ -941,7 +977,11 @@ fn render_ascensus_editor(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// PROFILES tab: editable active-config rows. Enter edits inline, d removes,
 /// r reloads from disk; the edit buffer is shown in place of the value.
+/// PROFILES footer height: two rows of key-badge buttons.
+const PROFILE_FOOTER_ROWS: u16 = 2;
+
 fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
+    app.reset_profile_buttons();
     if app.profile_prompt.is_some() {
         let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(area);
         render_profile_panes(frame, rows[0], app);
@@ -954,7 +994,69 @@ fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
             rows[1],
         );
     } else {
-        render_profile_panes(frame, area, app);
+        let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(PROFILE_FOOTER_ROWS)])
+            .split(area);
+        render_profile_panes(frame, rows[0], app);
+        render_profile_footer(frame, rows[1], app);
+    }
+}
+
+/// PROFILES footer: two rows of mouse-clickable key-badge buttons. Row 1 is
+/// pane-agnostic (switch, add, duplicate, delete, reload); row 2 is profile
+/// list actions (load, start, overwrite, sweep). Each button records its rect
+/// into `app.profile_buttons` so clicks hit-test reliably.
+fn render_profile_footer(frame: &mut Frame, area: Rect, app: &mut App) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+    let list_focused = app.profile_focus == crate::app::ProfileFocus::List;
+    let delete_label = if list_focused { "delete profile" } else { "remove entry" };
+    render_button_row(
+        frame,
+        rows[0],
+        app,
+        &[
+            ("←→", "switch pane", crate::app::ProfileAction::SwitchPane),
+            ("s", "add profile", crate::app::ProfileAction::Add),
+            ("c", "duplicate", crate::app::ProfileAction::Duplicate),
+            ("d", delete_label, crate::app::ProfileAction::Delete),
+            ("r", "reload", crate::app::ProfileAction::Reload),
+        ],
+    );
+    render_button_row(
+        frame,
+        rows[1],
+        app,
+        &[
+            ("l", "load", crate::app::ProfileAction::Load),
+            ("t", "start target", crate::app::ProfileAction::Start),
+            ("w", "overwrite", crate::app::ProfileAction::Overwrite),
+            ("z", "sweep", crate::app::ProfileAction::Sweep),
+        ],
+    );
+}
+
+/// Draw one row of footer buttons, recording each hit-box.
+fn render_button_row(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut App,
+    buttons: &[(&'static str, &'static str, crate::app::ProfileAction)],
+) {
+    let mut constraints = Vec::with_capacity(buttons.len());
+    for (key, label, _) in buttons {
+        constraints.push(Constraint::Length((key.chars().count() + label.chars().count() + 5) as u16));
+    }
+    let segs = Layout::horizontal(constraints).split(area);
+    for ((key, label, action), seg) in buttons.iter().zip(segs.iter()) {
+        app.profile_buttons
+            .push(crate::app::ProfileButton {
+                action: *action,
+                area: *seg,
+            });
+        let line = Line::from(vec![
+            Span::styled(format!("[{key}] "), theme::gold_muted()),
+            Span::styled(format!("{label} "), theme::muted()),
+        ]);
+        frame.render_widget(Paragraph::new(line), *seg);
     }
 }
 

@@ -257,3 +257,32 @@ No performance baseline to preserve; the dashboard is additive.
   repo-map entries; headings renumbered. Verified: `./scripts/vitriol tui`
   launches the dashboard in tmux with the correct project id.
   **All phases V1–V5 complete.**
+
+- **V6 — DONE (2026-08-10)**: PROFILES tab — clickable footer buttons + duplicate
+  profile. Mouse capture enabled (EnableMouseCapture/DisableMouseCapture around the
+  ratatui loop); every render records button hit-boxes (`app.profile_buttons`) and
+  `Event::Mouse(Left)` dispatch in `main.rs` maps clicks to pane actions. Footer:
+  row1 switch-pane/add/duplicate/delete/reload; row2 load/start-target/overwrite/
+  sweep. New `ProfileAction` enum (`app.rs`) + `run_profile_action()` in main.
+  Pane movement now accepts plain Left/Right arrows (plus the existing `,`/`.`
+  toggle) so the right pane is trivially reachable. Duplicate (`c` / mouse):
+  prompt prefilled `<name>-copy`, copies config + meta description into a new
+  installed profile, auto-selects the copy as the Start target; bundled sources
+  allowed, existing names rejected. Keys: `c` duplicate, `d` delete (list) / remove
+  entry (config). Gates: 132 tests, clippy clean. Update (same session): header TABS also
+  clickable — render_header lays each label into its own rect, records
+  `app.tab_hits`, and `Event::Mouse` resolves to `set_tab` before the profile-footer
+  check (works on every tab). Gates: 134 tests, clippy clean.
+- **V7 — DONE (2026-08-10)**: DECODE gauge goes live + idle-aware. The llama-server
+  fork now emits a rate-limited (~1 Hz) heartbeat during generation
+  (`server-context.cpp` sampling loop: `decode heartbeat: N tokens, X t/s (live)`),
+  because generation-end `eval time` lines cannot distinguish a busy slot from an
+  idle one. The TUI poller parses the newest heartbeat and tracks its byte offset:
+  the gauge is lit only while the offset advances between polls (rotation resets),
+  else DECODE collapses to a dim `idle — (session peak N t/s)` line. The sparkline
+  is replaced by a braille-dot velocity gauge (`BrailleRamp::Velocity`: red slow →
+  gold → green fast) filled against the session peak via the existing
+  `render_braille_bar`. Live rate now comes from `decode_speed` (heartbeat) instead
+  of the sticky `decode_t_s`. Old servers (no heartbeat) simply show idle — no
+  regression. Gates: 137 tests, clippy clean, llama-server builds. NOTE: needs
+  `sudo vitriol setup` + server restart for the heartbeat to reach the log.

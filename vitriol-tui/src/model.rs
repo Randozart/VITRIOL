@@ -17,6 +17,10 @@ pub struct GenSnapshot {
     pub n_parallel: Option<u64>,
     /// Latest decode throughput parsed from the gen log (`eval time` line).
     pub decode_t_s: f64,
+    /// Live decode throughput from the in-progress heartbeat line, or 0.0 when
+    /// no slot is actively decoding. Unlike `decode_t_s` (sticky last
+    /// completion), this falls to 0.0 as soon as generation stops.
+    pub decode_speed: f64,
 }
 
 /// One recent episode row from `/hermetis/recent`.

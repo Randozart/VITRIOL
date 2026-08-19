@@ -95,6 +95,8 @@ pub enum BrailleRamp {
     Pulse,
     /// Power draw: green → gold → over-limit red.
     Power,
+    /// Decode velocity: red (slow) → gold → green (fast).
+    Velocity,
 }
 
 impl BrailleRamp {
@@ -112,6 +114,7 @@ impl BrailleRamp {
             BrailleRamp::Heat => &[COLD_BLUE, CYAN, GOLD, ORANGE, RED],
             BrailleRamp::Pulse => &[MERCURY, CYAN],
             BrailleRamp::Power => &[GREEN, GOLD, RED],
+            BrailleRamp::Velocity => &[RED, GOLD, GREEN],
         }
     }
 
@@ -186,11 +189,6 @@ pub fn gauge_label_style(ramp: BrailleRamp, ratio: f64) -> Style {
     }
 }
 
-/// Style for a decode sparkline.
-pub fn sparkline() -> Style {
-    Style::new().fg(GREEN).bg(BG)
-}
-
 /// Style for a live/streaming value (solvent cyan).
 pub fn live() -> Style {
     Style::new().fg(CYAN).bg(BG)
@@ -208,6 +206,7 @@ mod tests {
             BrailleRamp::Heat,
             BrailleRamp::Pulse,
             BrailleRamp::Power,
+            BrailleRamp::Velocity,
         ] {
             assert!(!ramp.stops().is_empty());
         }
@@ -222,6 +221,13 @@ mod tests {
         assert_eq!(BrailleRamp::Capacity.color(1.0), DEEP_RED);
         assert_eq!(BrailleRamp::Power.color(0.0), GREEN);
         assert_eq!(BrailleRamp::Power.color(1.0), RED);
+    }
+
+    #[test]
+    fn velocity_ramp_low_red_high_green() {
+        assert_eq!(BrailleRamp::Velocity.color(0.0), RED);
+        assert_eq!(BrailleRamp::Velocity.color(1.0), GREEN);
+        assert!(!BrailleRamp::Velocity.signals_danger());
     }
 
     #[test]

@@ -5,13 +5,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use ratatui::layout::{Position, Rect};
+
 use crate::config::Config;
 use crate::control::{self, Action, Event};
 use crate::model::Snapshot;
 use crate::profile::{self, Profile};
 use crate::search::{self, SearchHit};
 
-/// Maximum number of decode-t/s samples kept for the sparkline.
+/// Maximum number of decode speed samples kept for the velocity gauge.
 const SPARKLINE_CAP: usize = 120;
 
 /// Top-level UI tabs.
@@ -76,6 +78,37 @@ pub enum ProfileFocus {
     List,
 }
 
+/// PROFILES footer actions: mouse-clickable, each with a matching key badge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileAction {
+    /// Toggle between the config rows and the profile list.
+    SwitchPane,
+    /// Save the active config as a new profile.
+    Add,
+    /// Duplicate the selected profile under a new name.
+    Duplicate,
+    /// Delete the selected profile (list) or the selected config entry (config).
+    Delete,
+    /// Reload the current focus pane from disk.
+    Reload,
+    /// Load the selected profile's config into the active config.
+    Load,
+    /// Select the profile at the cursor as the Start target.
+    Start,
+    /// Overwrite the selected installed profile with the active config.
+    Overwrite,
+    /// Run the Spagyric sweep on the selected profile.
+    Sweep,
+}
+
+/// One clickable button drawn in the PROFILES footer this frame.
+#[derive(Debug, Clone, Copy)]
+pub struct ProfileButton {
+    pub action: ProfileAction,
+    /// On-screen rect for mouse hit-testing.
+    pub area: Rect,
+}
+
 /// Which service log the LOGS tab is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogSource {
@@ -104,7 +137,7 @@ pub struct App {
     pub cfg: Config,
     /// Latest telemetry snapshot from the poller.
     pub snapshot: Snapshot,
-    /// Decode t/s history for the sparkline, newest last.
+    /// Decode speed history for the velocity gauge, newest last.
     pub decode_history: VecDeque<f64>,
     /// Active tab.
     pub tab: Tab,
@@ -145,6 +178,13 @@ pub struct App {
     pub profile_list_selection: usize,
     /// Save-as profile name input buffer (Some = prompt active).
     pub profile_prompt: Option<String>,
+    /// While the prompt is open for a DUPLICATE, the source profile name;
+    /// None for the plain save-as flow.
+    pub profile_dup_source: Option<String>,
+    /// Clickable buttons drawn in the PROFILES footer this frame.
+    pub profile_buttons: Vec<ProfileButton>,
+    /// Tab hit-boxes drawn in the header this frame (mouse-clickable tabs).
+    pub tab_hits: Vec<(Rect, Tab)>,
     /// PROFILES-tab selected profile: Start/Restart apply its knobs as CLI
     /// overrides (flags-only — the active config file is left untouched).
     /// 2026-08-08: Start no longer auto-launches a loaded profile; the selected
@@ -213,6 +253,9 @@ impl App {
             profile_focus: ProfileFocus::Config,
             profile_list_selection: 0,
             profile_prompt: None,
+            profile_dup_source: None,
+            profile_buttons: Vec::new(),
+            tab_hits: Vec::new(),
             selected_profile: None,
             guide_docs,
             guide_selection: 0,
@@ -381,9 +424,10 @@ impl App {
         }
     }
 
-    /// Abort the save-as prompt.
+    /// Abort the save-as/duplicate prompt.
     pub fn profile_save_cancel(&mut self) {
         self.profile_prompt = None;
+        self.profile_dup_source = None;
     }
 
     /// Commit the save-as prompt: write the active config as a new profile.
@@ -419,7 +463,76 @@ impl App {
         Ok(())
     }
 
-    /// Load the selected profile's config into the active config (no restart).
+    /// Begin duplicating the selected profile: prompt prefilled with
+    /// `<name>-copy`. Works for bundled sources too — the copy always lands in
+    /// the installed dir.
+    pub fn profile_duplicate_start(&mut self) {
+        let Some(profile) = self.profiles.get(self.profile_list_selection) else {
+            return;
+        };
+        self.profile_dup_source = Some(profile.name.clone());
+        self.profile_prompt = Some(format!("{}-copy", profile.name));
+    }
+
+    /// Commit the duplicate prompt: copy the source profile's config (and its
+    /// meta description) into a new installed profile.
+    pub fn profile_duplicate_commit(&mut self) -> Result<(), String> {
+        let Some(buf) = self.profile_prompt.clone() else {
+            return Ok(());
+        };
+        let name = buf.trim().to_string();
+        if !valid_profile_name(&name) {
+            return Err(format!(
+                "invalid profile name '{name}' (letters, numbers, hyphens, underscores)"
+            ));
+        }
+        if self.profiles.iter().any(|p| p.name == name) {
+            return Err(format!("profile '{name}' already exists"));
+        }
+        let Some(src_name) = self.profile_dup_source.take() else {
+            return Ok(());
+        };
+        self.profile_prompt = None;
+        let Some(src) = self.profiles.iter().find(|p| p.name == src_name).cloned() else {
+            return Err(format!("source profile '{src_name}' gone"));
+        };
+        let src_dir = match src.source {
+            crate::profile::ProfileSource::Installed => {
+                self.cfg.installed_profiles_dir().join(&src.name)
+            }
+            crate::profile::ProfileSource::Bundled => {
+                self.cfg.bundled_profiles_dir().join(&src.name)
+            }
+        };
+        let config_text = std::fs::read_to_string(src_dir.join("config"))
+            .map_err(|e| format!("read {}: {e}", src_dir.join("config").display()))?;
+        let meta_text = std::fs::read_to_string(src_dir.join("meta")).unwrap_or_default();
+        let description = meta_text
+            .lines()
+            .find_map(|l| l.strip_prefix("description="))
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let dst = self.cfg.installed_profiles_dir().join(&name);
+        std::fs::create_dir_all(&dst).map_err(|e| format!("mkdir {}: {e}", dst.display()))?;
+        crate::config_edit::atomic_write_path(&dst.join("config"), &config_text)?;
+        let meta = format!(
+            "name={name}\ndescription={description}\ncreated={}\n",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        );
+        std::fs::write(dst.join("meta"), meta).map_err(|e| format!("write meta: {e}"))?;
+        self.profile_reload_list();
+        if let Some(idx) = self.profiles.iter().position(|p| p.name == name) {
+            self.profile_list_selection = idx;
+            self.profile_focus = ProfileFocus::List;
+            self.select_profile(Some(name.clone()));
+            self.push_control_line(format!("✓ duplicated '{src_name}' -> '{name}'"));
+        }
+        Ok(())
+    }
     pub fn profile_load_selected(&mut self) -> Result<(), String> {
         let Some(profile) = self.profiles.get(self.profile_list_selection) else {
             return Ok(());
@@ -464,6 +577,20 @@ impl App {
     /// Re-discover the profile list after a save/delete.
     pub fn profile_reload_list(&mut self) {
         self.profiles = crate::profile::discover(&self.cfg);
+    }
+
+    /// Clear the PROFILES footer buttons (called at the top of each render so
+    /// stale hit-boxes never survive a resize).
+    pub fn reset_profile_buttons(&mut self) {
+        self.profile_buttons.clear();
+    }
+
+    /// Map a mouse click to a PROFILES footer action, or None if it missed.
+    pub fn profile_click(&self, x: u16, y: u16) -> Option<ProfileAction> {
+        self.profile_buttons
+            .iter()
+            .find(|b| b.area.contains(Position::new(x, y)))
+            .map(|b| b.action)
     }
 
     /// Select the profile at the cursor as the Start target (flags-only — no
@@ -739,9 +866,11 @@ impl App {
         self.control_log.push_back(line);
     }
 
-    /// Fold a fresh snapshot into app state, updating the decode history.
+    /// Fold a fresh snapshot into app state, updating the decode history. The
+    /// history tracks the live heartbeat speed (0.0 while idle) so the peak and
+    /// gauge reflect only real generation, never a sticky last-completion value.
     pub fn apply_snapshot(&mut self, snap: Snapshot) {
-        let t_s = snap.gen.decode_t_s;
+        let t_s = snap.gen.decode_speed;
         self.decode_history.push_back(t_s);
         if self.decode_history.len() > SPARKLINE_CAP {
             self.decode_history.pop_front();
@@ -753,6 +882,24 @@ impl App {
     pub fn next_tab(&mut self) {
         let idx = Tab::ALL.iter().position(|t| *t == self.tab).unwrap_or(0);
         self.tab = Tab::ALL[(idx + 1) % Tab::ALL.len()];
+    }
+
+    /// Switch straight to `tab` (mouse click on a header tab).
+    pub fn set_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+    }
+
+    /// Clear the header tab hit-boxes (called at the top of each render).
+    pub fn reset_tab_hits(&mut self) {
+        self.tab_hits.clear();
+    }
+
+    /// Map a mouse click to the header tab under the cursor, or None.
+    pub fn tab_click(&self, x: u16, y: u16) -> Option<Tab> {
+        self.tab_hits
+            .iter()
+            .find(|(area, _)| area.contains(Position::new(x, y)))
+            .map(|&(_, tab)| tab)
     }
 
     /// Step back to the previous tab, wrapping.
@@ -871,6 +1018,101 @@ mod tests {
         app.profile_prompt = Some("bad name".into());
         assert!(app.profile_save_commit().is_err());
         assert!(app.profile_prompt.is_some());
+    }
+
+    #[test]
+    fn profile_duplicate_copy_lands_in_installed() {
+        let tmp = std::env::temp_dir().join("vitriol_profile_dup_copy_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut cfg = Config::from_env();
+        cfg.home_dir = tmp.clone();
+        let mut app = App::new(cfg, 120);
+
+        app.profile_prompt = Some("dup_src_tmp".into());
+        app.profile_save_commit().unwrap();
+        app.profile_list_selection = app
+            .profiles
+            .iter()
+            .position(|p| p.name == "dup_src_tmp")
+            .unwrap();
+        assert!(app.profiles.iter().any(|p| p.name == "dup_src_tmp"));
+
+        app.profile_duplicate_start();
+        assert_eq!(app.profile_prompt.as_deref(), Some("dup_src_tmp-copy"));
+        assert_eq!(app.profile_dup_source.as_deref(), Some("dup_src_tmp"));
+        app.profile_duplicate_commit().unwrap();
+
+        let base = app.cfg.installed_profiles_dir();
+        assert!(base.join("dup_src_tmp-copy").join("config").is_file());
+        assert!(base.join("dup_src_tmp-copy").join("meta").is_file());
+        assert!(app.profiles.iter().any(|p| p.name == "dup_src_tmp-copy"));
+        assert!(app.profile_prompt.is_none());
+        assert!(app.profile_dup_source.is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn profile_duplicate_rejects_existing_name() {
+        let tmp = std::env::temp_dir().join("vitriol_profile_dup_reject_test");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let mut cfg = Config::from_env();
+        cfg.home_dir = tmp.clone();
+        let mut app = App::new(cfg, 120);
+
+        app.profile_prompt = Some("x".into());
+        app.profile_save_commit().unwrap();
+        app.profile_duplicate_start();
+        app.profile_prompt = Some("x".into());
+        assert!(app.profile_duplicate_commit().is_err());
+        assert!(app.profile_dup_source.is_some());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn profile_cancel_clears_dup_source() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        app.profile_prompt = Some("source-copy".into());
+        app.profile_dup_source = Some("source".into());
+        app.profile_save_cancel();
+        assert!(app.profile_prompt.is_none());
+        assert!(app.profile_dup_source.is_none());
+    }
+
+    #[test]
+    fn profile_click_hits_none_outside_buttons() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        assert_eq!(app.profile_click(0, 0), None);
+        app.profile_buttons.push(ProfileButton {
+            action: ProfileAction::Add,
+            area: Rect::new(10, 10, 5, 1),
+        });
+        assert_eq!(app.profile_click(12, 10), Some(ProfileAction::Add));
+        assert_eq!(app.profile_click(30, 10), None);
+        assert_eq!(app.profile_click(12, 30), None);
+    }
+
+    #[test]
+    fn tab_click_resolves_to_tab() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        assert_eq!(app.tab_click(0, 0), None);
+        app.tab_hits.push((Rect::new(9, 0, 6, 1), Tab::Profiles));
+        app.tab_hits.push((Rect::new(15, 0, 4, 1), Tab::Guide));
+        assert_eq!(app.tab_click(11, 0), Some(Tab::Profiles));
+        assert_eq!(app.tab_click(16, 0), Some(Tab::Guide));
+        assert_eq!(app.tab_click(30, 0), None);
+        app.reset_tab_hits();
+        assert_eq!(app.tab_click(11, 0), None);
+    }
+
+    #[test]
+    fn set_tab_switches_directly() {
+        let cfg = Config::from_env();
+        let mut app = App::new(cfg, 120);
+        app.set_tab(Tab::Profiles);
+        assert_eq!(app.tab, Tab::Profiles);
     }
 
     #[test]

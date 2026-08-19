@@ -16,7 +16,7 @@ ngl = 99
 expert_count = 0
 
 [vitriol]
-mode = stream
+mode = off
 lru_mb = 0
 verbose = false
 output_cache = off

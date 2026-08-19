@@ -1,208 +1,88 @@
-# Qwen3.8-27B Phase E — decode diagnostics instrumentation
+# Qwen3.8-27B Phase E — decode diagnostics: what worked / what didn't
 
-Status: instrumentation implemented, build in progress, measurement pending
+Status: complete — bottleneck fully characterized
 Date: 2026-08-19
 Related: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`
 
-## Goal
+## TL;DR
 
-Pin down, per decode, exactly where the ~80 ms of wrapper overhead lives
-(Phase D conclusion: graph build + CUDA-graph capture/replay + host syncs +
-scheduling, hitting both non-MTP 11.03 and MTP 14.37 t/s baselines). Expose it
-live in the TUI so config A/B tests can be read off the screen.
+The ~98 ms/decode on the dual-GPU (RTX 3060 + GTX 1070 Ti) layer split is
+**genuine serial layer-chain GPU execution** (~90 ms), plus **inter-decode host
+overhead** (ctx_mtp draft decode + sampling) that drags the GPU's ~20.9 t/s
+ceiling down to ~12 t/s. Everything else was measured and falsified.
 
-## Instrumentation (env-gated by `GGML_CUDA_GDN_PROFILE=1`, same toggle as the
-existing `[GDN]`/`[DEC]` timers)
+## Instrumentation (what we built to measure)
 
-### llama-context.cpp — decode split (E1)
-- `process_ubatch`: times **build** (graph build + alloc + `set_inputs`) vs
-  **compute** (`graph_compute`, the synchronous CUDA work) per ubatch.
-- `llama_decode`: times **total**, and derives **post** =
-  total − build − compute. `post` includes logits/embd extraction plus the MTP
-  hook — i.e. the nested `ctx_mtp` decode and its `synchronize()`.
-- Reentrancy: a thread-local depth counter makes the nested `ctx_mtp` decode
-  accumulate into the outer decode's `post` instead of emitting its own line.
+Env-gated by `GGML_CUDA_GDN_PROFILE=1` (same toggle as the existing `[GDN]`/
+`[DEC]` timers). Committed.
 
-### ggml-cuda.cu — graph mode + op census (E2)
-- `ggml_cuda_graph_evaluate_and_capture`: counts **capture** (only when
-  `use_cuda_graph && cuda_graph_update_required`) vs **replay** (graph launch
-  with no re-capture) per decode.
-- The node loop counts per-`op` node totals (capture/eval path only) for a
-  top-4 op-class breakdown.
-- New `GGML_BACKEND_API`: `ggml_cuda_perf_reset()`, `ggml_cuda_perf_get()`.
+- **llama-context.cpp** — per-decode split of `build` (graph build+alloc+
+  `set_inputs`) vs `compute` (`graph_compute`) vs `post` (extraction + MTP
+  hook). Thread-local reentrancy depth guard so the nested `ctx_mtp` decode
+  folds into the outer decode's `post` instead of emitting its own line.
+- **ggml-cuda.cu** — CUDA-graph capture-vs-replay tallies + per-op node census;
+  new `ggml_cuda_perf_reset/get` `GGML_BACKEND_API`; field-level diff logging
+  in `ggml_cuda_graph_update_required` (`[CUGR]` lines) to name the exact
+  node property that flips each decode.
+- **MTP hook** — sync-stall census (the `synchronize()` in the ctx_mtp path).
+- **TUI** — parses `[PERF]` and renders the breakdown live in the GEN card
+  (build/compute/post + graph C/R + sync). 2 parser unit tests.
 
-### MTP hook — sync census (E3)
-- `handle_mtp_for_ubatch`: times each `synchronize()` (the `ctx_mtp` pipeline
-  stall) and counts them.
-
-## Output
-
-One `[PERF]` line per outermost `llama_decode`:
-
+Output per decode:
 ```
-[PERF] total=97.5ms build=12.0ms compute=80.2ms post=5.3ms graph=1C/57R sync=2(2.0ms) top_ops=FFN=64 attn=32 MUL_MAT=16
+[PERF] total=98.0ms build=0.3ms compute=87.5ms post=10.0ms graph=2C/1R sync=1(9.7ms) top_ops=MUL_MAT=189 ADD=57 GET_ROWS=32 CPY=31
 ```
 
-- `graph=1C/57R` — 1 capture, 57 replays this decode. If verify re-captures
-  every decode, C ≫ R and that is the smoking gun for the MTP overhead.
-- `sync=2(2.0ms)` — MTP-hook synchronize stalls.
-- `top_ops=` — most numerous op classes by node count (graph composition).
+## What DIDN'T work (hypotheses measured and falsified)
 
-### TUI surfacing
-- `poller.rs`: `parse_perf()` / `parse_perf_line()` parse the newest `[PERF]`
-  line; `model.rs` gains `PerfSnapshot` on `GenSnapshot`.
-- `ui.rs`: the GEN card renders a breakdown line
-  (`total Xms [build | compute | post]`) and a graph/sync line, colored warn
-  when captures outnumber replays.
-- 2 unit tests lock the parser.
-
-## How to run
-
-```sh
-# kill stale server, then start the winner config with perf mode on
-killall -9 llama-server
-cd ~/Downloads
-GGML_CUDA_GDN_PROFILE=1 ~/Desktop/Projects/VITRIOL/llama.cpp/build/bin/llama-server \
-    -m Qwen3.8-27B-Q3_K_M.gguf -c 131072 -ts 24,12 --main-gpu 0 -ub 128 \
-    --cache-type-k q4_0 --cache-type-v q4_0 --spec-type mtp --spec-draft-n-max 1 \
-    --port 8090 &> ~/.vitriol/logs/vitriol_gen.log &
-```
-
-Generate, then grep `[PERF]` from the log, and watch the GEN card in the TUI.
-
-## Interpreting
-
-| observation | conclusion | candidate fix |
+| hypothesis | result | evidence |
 |---|---|---|
-| `graph=1C/0R` repeated | verify re-captures every decode | stabilise graph (fix `n_tokens` drift / seed handling) |
-| `compute` ≈ total, `build`+`post` tiny | CUDA graph launch is the cost | graph-stability, replay reuse |
-| `build` large | graph rebuild per decode | cache graph across identical `gparams` |
-| `post` large (MTP hook sync) | `ctx_mtp` decode stalls the main GPU | overlap / reduce sync |
-| `top_ops` shows many `FFN`/`MUL_MAT` | weight-streaming compute floor | split-mode / quant / kernel work |
+| graph *build* is the overhead | **no** — 0.3 ms | `build=` field |
+| CUDA-graph *re-capture* per decode | **no** — reaches `0C/1R` stable replay | graph counter; total **invariant** to capture vs replay |
+| *attention over 131K context* (16 full-attn layers) | **no** — `-c 8192` vs `-c 131072` identical ~98ms | [PERF] |
+| `--split-mode row` rebalances GPUs | **regression** — 189→561 MUL_MAT, prompt 655ms, decode 178ms | A/B |
+| `--tensor-split 30,6` rebalances toward 3060 | **no room** — `failed to fit params` + OOM device 0 | probe |
+| delta-net (GDN) kernels | **no** | earlier Phase C |
+| per-layer PCIe syncs | **no** — layer split = 2-3 graph splits | Phase D |
 
-## Results (measured 2026-08-19, GTX 1070 Ti + RTX 3060)
+## What DID work (the measured bottleneck)
 
-Run with `GGML_CUDA_GDN_PROFILE=1`, winner config (131072, ts 24,12, q4_0 kv,
-MTP n=1) vs same minus MTP. Stable generation-phase rows:
+1. **Main verify decode ~98 ms / 2 tokens** — the serial layer chain alternates
+   GPUs, so each is ~50% busy *by design*; the time is the serial sum of layers,
+   context-invariant (weight-streaming ~153 GB/s over 13.8 GiB Q3_K, vs ~300+
+   GB/s theoretical → kernel/bandwidth headroom exists). ~**20.9 t/s ceiling**.
+2. **Inter-decode serial overhead** — the per-token ctx_mtp draft decode
+   (~11 ms for a 13-MUL_MAT graph, direct-eval `0C/0R`) + sampling, sitting
+   serially between main decodes. Drags 20.9 → **12 t/s** (~40% loss).
 
-| config | total | build | compute | post | graph | sync | nodes (top) |
+Throughput accounting (winner config, 400 tok / 33.2 s / 12.1 t/s, draft
+acceptance 100% 199/199):
+- Main verify: 195 × ~98 ms = 19.1 s.
+- Sum of ALL decode types = 29.9 s of the 33.2 s wall.
+- The gap to 12 t/s = serial draft decodes + sampling.
+
+## Measured reference rows
+
+| config | total | build | compute | post | graph | sync | nodes |
 |---|---|---|---|---|---|---|---|
-| MTP n=1 (winner) | 98.0ms | 0.3ms | 87.5ms | 10.0ms | **2C/1R** | 1×9.7ms | 189 MUL_MAT |
-| no-MTP | 78.1ms | 0.1ms | 78.0ms | 0.0ms | **1C/1R** | 0 | 112 MUL_MAT |
+| MTP n=1 (winner) | 98.0ms | 0.3ms | 87.5ms | 10.0ms | 2C/1R | 1×9.7ms | 189 MUL_MAT |
+| no-MTP | 78.1ms | 0.1ms | 78.0ms | 0.0ms | 1C/1R | 0 | 112 MUL_MAT |
+| ctx_mtp draft (per) | 11.2ms | — | 8.3ms | 2.5ms | 0C/0R | 2.4ms | 13 MUL_MAT |
+| prompt chunk | 109.5ms | — | 73ms | 36ms | 1C/0R | 36ms | — |
 
-### Findings
-1. **`compute` = 78–87 ms is 90–99% of the decode.** build is tiny (0.1–0.3 ms),
-   so the Phase D "graph rebuild" guess is falsified.
-2. **The CUDA graph re-captures every decode, MTP or not** (`1C/1R` no-MTP,
-   `2C/1R` MTP). It never reaches stable replay. Root cause:
-   `ggml_cuda_graph_update_required` (ggml-cuda.cu:3340) compares each node's
-   full `ggml_tensor` copy + every `src->data` pointer; some pointer/layout
-   changes every decode → returns true → warmup reset → re-capture.
-3. MTP adds vs no-MTP: ~9.5 ms compute (189 vs 112 MUL_MAT = the head) + 9.7 ms
-   sync stall = ~20 ms, but verifies 2 tokens/decode → still ~14 vs ~11 t/s.
-4. MTP-hook `synchronize()` stall = 9.7 ms (the whole `post`). A clean, isolated
-   10% overhead.
+## What's left (real next directions)
 
-### Next: why props change every decode
-Need to determine WHICH node property flips (data pointer vs ne/nb vs src ptrs).
-Likely the scheduler rotates/relocates an input buffer (or dual-GPU split
-buffers) so addresses differ each decode. If stable, replay-only compute should
-be well under 78 ms (Phase D weight-stream floor ~19–40 ms) → big win.
+1. **Host-side (most achievable)**: overlap or shrink the per-token ctx_mtp
+   draft decode + sampling that sits serially between main decodes — the
+   20.9 → 12 t/s gap. Measure the draft/sampling split precisely, try overlap.
+2. **Kernel-side**: close the ~90 ms serial GPU time toward the weight-stream
+   floor — Q3_K stream efficiency / layer-split scheduling so the chain isn't
+   purely serial (the two GPUs each idle ~50%).
 
-### CORRECTION (2026-08-19, after adding [CUGR] field-diff diagnostics)
-
-The re-capture theory was a **red herring**. Full measured picture:
-
-`[CUGR]` field-diff showed the only generation-phase flip is **`ne[1]` = the
-growing attention/KV context length** in the 16 full-attention layers — never
-data pointers. When the graph is stable (long generation, drafts consistently
-accepted → `n_tokens` stable), it reaches **`0C/1R` pure replay**.
-
-Per-graph-type breakdown (winner config, steady state):
-
-| graph | n | total | compute | post | sync | what |
-|---|---|---|---|---|---|---|
-| 0C/0R | 328 | 11.2ms | 8.3ms | 2.5ms | 2.4ms | ctx_mtp MTP-head draft |
-| 0C/1R | 412 | 98.1ms | 52ms | 46ms | 45.6ms | **main verify (2 tok)** |
-| 1C/0R | 6 | 109.5ms | 73ms | 36ms | 36ms | prompt processing |
-
-**The main verify decode is ~98 ms wall and its total is INVARIANT** whether the
-graph captures (run 1: `2C/1R`, compute=87 ms, sync=10 ms) or replays (run 2:
-`0C/1R`, compute=52 ms + sync=46 ms). The re-capture merely re-attributes the
-time between `compute` and `post`; the ~90 ms of **genuine GPU execution** is
-unchanged.
-
-GPU util during generation samples **40–67%** on both GPUs — consistent with
-~90 ms GPU work per ~142 ms of wall per 2 tokens (not 100%, but the decode
-itself is GPU-bound at ~98 ms).
-
-### Corrected bottleneck ranking
-1. **Main decode GPU execution ~98 ms / 2 tokens (~49 ms/token)** — dominant.
-   27B Q3_K = 13.8 GiB → ~140 GB/s effective, well under the ~300+ GB/s
-   achievable floor → headroom in kernel/attention/split efficiency.
-2. **Inter-decode host overhead ~22 ms/token** — ctx_mtp draft decode (~11 ms,
-   0C/0R rows) + sampling/KV ops between main decodes. Brought 20.4 t/s
-   (2 tok/98 ms) down to the measured 14 t/s.
-3. **NOT** graph build (0.3 ms), **NOT** re-capture (stable replay reached),
-   **NOT** per-layer PCIe syncs, **NOT** delta-net.
-
-### Recommended attacks (next)
-- **Attention over 131K context** in the 16 full-attn layers is the prime
-  suspect for the 2× floor gap — grows per token, expensive at long ctx.
-- **Tensor-split 24/12 imbalance** (3060 vs 1070 Ti) may under-utilize the 3060.
-- **Q3_K kernel / stream efficiency** to close toward the ~47 ms floor.
-
-### Context-length isolation test (2026-08-19) — attention is NOT the cost
-Ran the same winner config at `-c 8192` vs `-c 131072`. Main verify decode is
-**invariant**: 98.7ms vs 98.0ms (compute 88.6/sync 9.7 vs 52/46 — total the
-same). So the ~90ms/decode does NOT depend on KV/context length → the 16
-full-attention layers are **not** the driver. The cost is **context-invariant
-weight streaming** over the fixed 13.8 GiB Q3_K → ~153 GB/s effective
-(theoretical 3060 360 + 1070 Ti 256, PCIe-limited).
-
-### Corrected priority
-1. **Weight-streaming / bandwidth + tensor-split efficiency** — the real gap
-   to ~47 ms floor. Test `--split-mode row`, `--tensor-split` ratios, Q3_K kernels.
-2. Inter-decode host overhead (~22 ms/token): draft + sampling.
-3. Attention-over-context: falsified as the driver in the 8K–131K range.
-
-### `--split-mode row` A/B (2026-08-19) — REGRESSION, layer split is optimal
-Row split: main decode MUL_MAT 189→561 nodes, one 177.9ms decode, prompt chunk
-655ms (vs ~110ms layer). Row-parallel forces per-op cross-device sync on every
-matmul. **Layer split (default) wins decisively.** So split *mode* is not the
-headroom; the gap is the 3060-vs-1070 Ti speed imbalance (the slower 1070 Ti
-is the serial bottleneck in layer split) + Q3_K stream efficiency.
-
-### Split-ratio probe (2026-08-19) — no VRAM room
-`-ts 30,6` aborts (`failed to fit params`, `tensor_split already set`) + OOM on
-device 0. VRAM is near the limit at 24,12; rebalancing toward the 3060 does not
-fit. Also: with **layer split + single-token decode the two GPUs run serially**
-(layer chain alternates GPUs), so each is ~50% busy by design — the ~90ms is
-the serial sum of layers, not a fixable imbalance. Not the lever.
-
-### Throughput accounting (2026-08-19, winner config, 400 tok / 33.2s / 12.1 t/s)
-- Main verify decode: 195 decodes × ~98ms = 19.1s → **~20.9 t/s GPU ceiling**.
-- Draft acceptance 100% (199/199), all verifies 2 tokens.
-- Sum of ALL decode time (main + ctx_mtp draft + prompt) = 29.9s of 33.2s wall
-  → only ~3.3s true host overhead; the remaining gap to 12 t/s is the **serial
-  ctx_mtp draft decodes (~11ms each) + sampling** between main decodes.
-
-### Final Phase E conclusion
-Bottleneck, ranked:
-1. **Main decode GPU execution ~98ms/2 tok (serial layer chain, context-invariant)** —
-   the ~20.9 t/s ceiling. Close to it only via kernel/bandwidth work or more
-   tokens/decode.
-2. **Inter-decode serial overhead (ctx_mtp draft ~11ms + sampling)** — drags
-   20.9 → 12 t/s. Most actionable: overlap/reduce the per-token draft decode.
-3. Falsified: graph build, re-capture (stable 0C/1R), attention-over-context,
-   split mode, split ratio, delta-net, per-layer PCIe syncs.
-
-### Actions
-- [x] build llama-server both archs
-- [x] `sudo vitriol setup`
-- [x] run winner config with `GGML_CUDA_GDN_PROFILE=1`
-- [x] capture `[PERF]` rows, fill table
-- [x] isolate which node prop flips (answer: `ne[1]` growing context length)
-- [x] determine if re-capture matters (answer: no — total invariant, GPU-bound)
-- [ ] measure attention cost at large ctx vs short ctx (isolate the 16 full-attn layers)
-- [ ] try `--split-mode row` to rebalance 3060 vs 1070 Ti
+## Actions log
+- [x] build both archs; `sudo vitriol setup`
+- [x] [PERF]/[CUGR] instrumentation; live TUI breakdown
+- [x] re-capture cause isolated (`ne[1]` growing context) — then falsified as cost
+- [x] context-invariance (8K vs 131K), split-mode row, split-ratio 30/6, throughput accounting
+- [ ] (next) draft-decode/sampling split + overlap test
+- [ ] (next) kernel/bandwidth efficiency of the serial layer chain

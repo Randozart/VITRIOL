@@ -48,6 +48,7 @@ class SweepConfig:
     mtp: int = 0
     ubatch: int = DEFAULT_UBATCH
     ctx: int = DEFAULT_CTX
+    ts: str = ""
 
 
 @dataclass
@@ -68,8 +69,19 @@ def parse_args():
     parser.add_argument("--ubatch", type=int, default=DEFAULT_UBATCH, help="Ubatch size")
     parser.add_argument("--ctx", type=int, default=DEFAULT_CTX, help="Context size")
     parser.add_argument("--quick", action="store_true", help="Only test calibration optimal + neighbors")
+    parser.add_argument("--devices", type=int, nargs="*", default=None,
+                        help="CUDA device indices to use (multi-GPU layer split, e.g. '0 1'). "
+                             "Omit to use whatever CUDA_VISIBLE_DEVICES the environment allows.")
+    parser.add_argument("--ts", type=str, nargs="*", default=[],
+                        help="Tensor split values to sweep (e.g. '26,10' '22,14'). Empty = auto.")
     parser.add_argument("--output", "-o", default=None, help="Output CSV path")
-    return parser.parse_args()
+    args = parser.parse_args()
+    global _sweep_devices
+    _sweep_devices = args.devices
+    return args
+
+
+_sweep_devices = None
 
 
 def stop_server():
@@ -127,6 +139,8 @@ def start_server(model_path: str, cfg: SweepConfig, port: int = 8280) -> subproc
     host = "127.0.0.1"
 
     env = os.environ.copy()
+    if _sweep_devices is not None and len(_sweep_devices) > 0:
+        env["CUDA_VISIBLE_DEVICES"] = ",".join(str(d) for d in _sweep_devices)
     env.update({
         "VITRIOL_MODE": "stream",
         "VITRIOL_PIN_FIRST_N_LAYERS": str(cfg.pin),
@@ -153,6 +167,8 @@ def start_server(model_path: str, cfg: SweepConfig, port: int = 8280) -> subproc
         "--parallel", "1",
         "--no-mmap",
         "-t", "4",
+        *(["-sm", "layer"] if _sweep_devices is not None and len(_sweep_devices) > 1 else []),
+        *(["-ts", cfg.ts] if cfg.ts else []),
         *kv_cache_args,
         *spec_args,
         "-fa", "on",
@@ -163,7 +179,7 @@ def start_server(model_path: str, cfg: SweepConfig, port: int = 8280) -> subproc
 
     SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
     log_f = open(SERVER_LOG, "w")
-    print(f"  Starting server: pin={cfg.pin} mtp={cfg.mtp} ubatch={cfg.ubatch} ctx={cfg.ctx}")
+    print(f"  Starting server: pin={cfg.pin} mtp={cfg.mtp} ubatch={cfg.ubatch} ctx={cfg.ctx} ts='{cfg.ts}'")
     try:
         proc = subprocess.Popen(cmd, env=env, stdout=log_f, stderr=subprocess.STDOUT,
                                 preexec_fn=os.setsid)
@@ -243,9 +259,11 @@ def _send_completion(url: str, prompt: str, n_tokens: int) -> dict:
 def build_sweep_space(args) -> list[SweepConfig]:
     """Build the list of configs to sweep."""
     configs = []
+    ts_vals = args.ts if args.ts else [""]
     for pin in args.pin:
         for mtp in args.mtp:
-            configs.append(SweepConfig(pin=pin, mtp=mtp, ubatch=args.ubatch, ctx=args.ctx))
+            for ts in ts_vals:
+                configs.append(SweepConfig(pin=pin, mtp=mtp, ubatch=args.ubatch, ctx=args.ctx, ts=ts))
     return configs
 
 
@@ -266,7 +284,7 @@ def main():
         # Pin around calibration optimal (16), MTP around 5
         configs = [c for c in configs if c.pin in (12, 14, 16, 18) and c.mtp in (3, 4, 5, 6)]
     print(f"Sweep space: {len(configs)} configs")
-    print(f"  pins={sorted(set(c.pin for c in configs))} mtps={sorted(set(c.mtp for c in configs))}")
+    print(f"  pins={sorted(set(c.pin for c in configs))} mtps={sorted(set(c.mtp for c in configs))} ts={sorted(set(c.ts for c in configs))}")
 
     # Ensure server is stopped
     print("Stopping any running server...")
@@ -276,7 +294,7 @@ def main():
     total = len(configs)
 
     for idx, cfg in enumerate(configs):
-        print(f"\n[{idx + 1}/{total}] Testing pin={cfg.pin} mtp={cfg.mtp}...")
+        print(f"\n[{idx + 1}/{total}] Testing pin={cfg.pin} mtp={cfg.mtp} ts='{cfg.ts}'...")
 
         # Start server with this config
         proc = start_server(model_path, cfg)

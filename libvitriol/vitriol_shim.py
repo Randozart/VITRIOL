@@ -95,16 +95,18 @@ class RectificationStats:
 def get_gpu_temp() -> int:
     """
     Guardrail 4: Thermal Polling via nvidia-smi
-    Returns GPU temperature in Celsius, 0 on error
+    Returns the hottest GPU's temperature in Celsius, 0 on error.
+    Queries every GPU (multi-GPU layer split: each card contributes heat).
     """
     try:
         result = subprocess.run(
-            ['nvidia-smi', '--id=0', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'],
+            ['nvidia-smi', '--query-gpu=temperature.gpu', '--format=csv,noheader,nounits'],
             capture_output=True,
             text=True,
             timeout=1
         )
-        return int(result.stdout.strip().split('\n')[0])
+        temps = [int(v) for v in result.stdout.strip().split() if v.isdigit()]
+        return max(temps) if temps else 0
     except Exception as e:
         logger.warning(f"Thermal poll failed: {e}")
         return 0

@@ -18,6 +18,7 @@ pub struct OptimalConfig {
     pub draft_n_max: u32,
     pub k_quant: String,
     pub v_quant: String,
+    pub tensor_split: String,
     pub estimated_vram_mib: f64,
     pub estimated_vram_pct: f64,
 }
@@ -36,8 +37,30 @@ fn gpu_overhead(cc: &str) -> f64 {
     }
 }
 
+/* Compute-aware relative per-device throughput heuristic for --tensor-split.
+ * Pure VRAM balance is a poor split when the GPU pair has wildly different
+ * per-layer latency (Pascal: no FlashAttention + 1/64 fp16; Ampere: FA + fast
+ * fp16). These weights bias the llama.cpp split towards the fast card. The
+ * real autotune (measured per-card layer timing) lands once the second GPU is
+ * present. */
+fn gpu_perf_weight(cc: &str) -> u32 {
+    if cc.starts_with("6.") {
+        10
+    } else if cc.starts_with("7.") {
+        16
+    } else if cc.starts_with("8.") {
+        26
+    } else if cc.starts_with("9.") {
+        36
+    } else {
+        10
+    }
+}
+
 pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, OptimalConfig) {
-    let vram_total = hw.gpus.first().map(|g| g.vram_mib as f64).unwrap_or(8192.0);
+    /* Unified VRAM pool: sum across every device. For a single-GPU system
+     * this reduces to the old per-device math, so nothing regresses. */
+    let vram_total: f64 = hw.gpus.iter().map(|g| g.vram_mib as f64).sum();
     let usable = vram_total * 0.9;
     let bc = model.block_count.max(1) as f64;
 
@@ -48,11 +71,15 @@ pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, Opt
     let hd = model.embedding_length as f64 / model.head_count.max(1) as f64;
     let kvt = hd * model.head_count_kv.max(1) as f64 * 2.5 / 1_048_576.0;
 
-    let oh = hw
-        .gpus
-        .first()
-        .map(|g| gpu_overhead(&g.compute_cap))
-        .unwrap_or(2000.0);
+    /* CUDA context overhead is per-device — each GPU pays its own. */
+    let oh: f64 = if hw.gpus.is_empty() {
+        2000.0
+    } else {
+        hw.gpus
+            .iter()
+            .map(|g| gpu_overhead(&g.compute_cap))
+            .sum()
+    };
     let max_block = model.block_count.min(24) as u32;
 
     let mut best_score = i64::MIN;
@@ -91,6 +118,17 @@ pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, Opt
     }
     let draft = (model.block_count / 8).clamp(1, 5) as u32;
 
+    /* Compute-aware --tensor-split hint (only meaningful with 2+ GPUs). */
+    let tensor_split: String = if hw.gpus.len() >= 2 {
+        hw.gpus
+            .iter()
+            .map(|g| gpu_perf_weight(&g.compute_cap).to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        String::new()
+    };
+
     (
         VramEstimate {
             base_model_mib: base_mib,
@@ -108,6 +146,7 @@ pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, Opt
             draft_n_max: draft,
             k_quant: "q4_0".into(),
             v_quant: "f16".into(),
+            tensor_split,
             estimated_vram_mib: (bv * 10.0f64).round() / 10.0,
             estimated_vram_pct: ((bv / vram_total * 100.0f64) * 10.0).round() / 10.0,
         },

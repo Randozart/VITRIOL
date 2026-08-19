@@ -19,9 +19,14 @@ fn main() -> anyhow::Result<()> {
 
             println!("Probing hardware...");
             let hw = vitriol_calibrate::probe::probe_hardware()?;
-            if let Some(gpu) = hw.gpus.first() {
-                println!("  -> {} {} MiB", gpu.name, gpu.vram_mib);
+            for gpu in &hw.gpus {
+                println!(
+                    "  -> [{}] {} {} MiB (cc {}, pcie gen {} x{})",
+                    gpu.index, gpu.name, gpu.vram_mib, gpu.compute_cap,
+                    gpu.pcie_gen, gpu.pcie_width
+                );
             }
+            println!("  -> {} GPU(s) total", hw.gpu_count);
 
             println!("Analyzing model...");
             let mi = vitriol_calibrate::gguf::read_gguf(path)?;
@@ -66,6 +71,12 @@ fn main() -> anyhow::Result<()> {
                 est.vram_usable_mib,
                 est.vram_safety_margin * 100.0
             );
+            if !opt.tensor_split.is_empty() {
+                println!(
+                    "Split hint (compute-aware): llama-server -sm layer --tensor-split {} --main-gpu <fastest>",
+                    opt.tensor_split
+                );
+            }
         }
         _ => {
             eprintln!("Usage: vitriol-calibrate calibrate --quick --model PATH");

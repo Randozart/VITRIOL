@@ -72,3 +72,29 @@ Every algorithm-bearing module carries a `PROVENANCE` header:
 `// PROVENANCE: inspiration — <repo> (<license>), what was learned, not copied`.
 `inspiration` entries must name the repo, its license, and what was learned (not what was
 borrowed). See `docs/provenance/`.
+
+## Qwen3.8-27B Dual-GPU Config (RTX 3060 + GTX 1070 Ti)
+
+Model: `~/Downloads/Qwen3.8-27B-Q3_K_M.gguf` (unsloth, qwen35 arch, embedded MTP head).
+
+Saved VITRIOL profiles (load with `vitriol config load <name>`):
+
+| profile | ctx | MTP | t/s | notes |
+|---|---|---|---|---|
+| `qwen38-mtp-131k` | 131072 | n=1 | ~14.1 | **default/winner**, ts 24,12, q4k/q4v |
+| `qwen38-262k` | 262144 | off | ~11.0 | max native ctx, ts 24,12, q4k/q4v |
+
+Required flags (all wired into `scripts/vitriol` config now):
+`-ngl 99 -ts 24,12 --main-gpu 0 -ub 128 --cache-type-k q4_0 --cache-type-v q4_0 --spec-type mtp --spec-draft-n-max 1`
+
+MTP draft depth: n_max must be **1**. A 2026-08-19 fix (`res->t_mtp_out` in `qwen35-mtp.cpp`)
+enabled chained drafts, but depth>=2 regresses (n=5 → 9.0 t/s, n=3 → 11.3, n=2 → 12.9) because
+chained MTP-head drafts drift (acceptance decays) and each costs ~8 ms. Trunk-seeded depth-1 is
+100% accepted. Sweep: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`.
+
+Key facts:
+- Build must target BOTH archs: `cmake -B build -DCMAKE_CUDA_ARCHITECTURES="61;86"` (native-only default misses sm_86 → "no kernel image" crash).
+- `VITRIOL_KV_QUANT` env does NOT apply; must pass `--cache-type-k/v` explicitly.
+- MTP only works if `qwen35_mtp` arch string exists in `src/llama-arch.cpp` (fixed 2026-08-18). Symptom when broken: `unknown override architecture: 'qwen35_mtp'` + `speculative=none`.
+- 262K + MTP does NOT fit (Pascal compute buffers). Drop MTP for 262K.
+- opencode provider: models `qwen38-mtp` (131K) and `qwen38-262k` in `~/.config/opencode/opencode.jsonc`.

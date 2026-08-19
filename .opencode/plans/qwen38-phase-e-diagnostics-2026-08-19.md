@@ -88,6 +88,27 @@ efficiency of the serial layer chain** or **more tokens per decode**.
 2. ~~Host-side draft/sampling overlap~~ — **dropped**: draft is 1 ms, host
    overhead only ~11%.
 
+## Top-level config A/B (2026-08-19) — exhausting the config space
+
+Ran the cheap config/flag probes before kernel work. Measured with [PERF] +
+300-token wall benchmark (temperature 0.8, same prompt).
+
+| probe | config | t/s | vs baseline | verdict |
+|---|---|---|---|---|
+| baseline | ts 24,12, KV q4_0 | 12.58 | — | main decode 98.4ms (compute 88.2, sync 9.7) |
+| **ts rebalance** | ts 27,9, KV q4_0 | **12.89** | **+2.5%** | 3060 holds 8768 MiB (was 7876), 1070 Ti 3658 (was 4550) — shifted ~1GB off the slow GPU |
+| ts 28,8 | — | OOM | — | 3060 can't hold 28/36 + KV + compute |
+| KV q8_0 | ts 24,12 | OOM | — | larger KV doesn't fit; q4_0 forced |
+| KV f16 | — | (would OOM, larger) | — | not run, VRAM-bound |
+
+Top-level conclusion: **config space is essentially exhausted.** The rebalance
+(27,9) is the only win and it's **+2.5%** (matches the modeled ~9% ceiling
+partially, VRAM-capped at 27,9). Flash attention already on, split-mode
+tensor not implemented for qwen35, KV type VRAM-locked to q4_0. Config cannot
+fix the real wall: the 1070 Ti's Q3_K dequant at 28% bandwidth.
+
+Applied: `~/.vitriol/config` tensor_split 24,12 → 27,9.
+
 ## Actions log
 - [x] build both archs; `sudo vitriol setup`
 - [x] [PERF]/[CUGR] instrumentation; live TUI breakdown

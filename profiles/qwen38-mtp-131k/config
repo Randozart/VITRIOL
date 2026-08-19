@@ -1,0 +1,55 @@
+# VITRIOL Configuration — Qwen3.8-27B Q3_K_M, MTP n1, ts 27,9 (speed)
+# Measured best 2026-08-19: 12.89 t/s @ 131K (vs 12.58 at ts 24,12).
+# draft_n_max MUST be 1 (depth>1 regresses ~9 t/s, chained MTP drafts drift).
+# VRAM is tight at ctx 131072 on the 3060 with ts 27,9 — kill other GPU
+# processes before load, or drop context to 65536 if OOM.
+
+[gpu]
+device = 0
+exclude_secondary = false
+tensor_split = 27,9
+
+[model]
+path = /home/randozart/Downloads/Qwen3.8-27B-Q3_K_M.gguf
+context = 131072
+threads = 4
+ngl = 99
+expert_count = 0
+
+[vitriol]
+mode = stream
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8279
+parallel = 1
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+quant_mode = q4_0
+quant_mode_v = q4_0
+frozen_prompt = off
+
+[engine]
+mode = vitriol-dma
+
+[lookup]
+tokens = 0
+
+[spec]
+type = mtp
+draft_n_max = 1
+
+[chimera]
+mode = auto

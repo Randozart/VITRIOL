@@ -152,6 +152,27 @@ itself is GPU-bound at ~98 ms).
 - **Tensor-split 24/12 imbalance** (3060 vs 1070 Ti) may under-utilize the 3060.
 - **Q3_K kernel / stream efficiency** to close toward the ~47 ms floor.
 
+### Context-length isolation test (2026-08-19) — attention is NOT the cost
+Ran the same winner config at `-c 8192` vs `-c 131072`. Main verify decode is
+**invariant**: 98.7ms vs 98.0ms (compute 88.6/sync 9.7 vs 52/46 — total the
+same). So the ~90ms/decode does NOT depend on KV/context length → the 16
+full-attention layers are **not** the driver. The cost is **context-invariant
+weight streaming** over the fixed 13.8 GiB Q3_K → ~153 GB/s effective
+(theoretical 3060 360 + 1070 Ti 256, PCIe-limited).
+
+### Corrected priority
+1. **Weight-streaming / bandwidth + tensor-split efficiency** — the real gap
+   to ~47 ms floor. Test `--split-mode row`, `--tensor-split` ratios, Q3_K kernels.
+2. Inter-decode host overhead (~22 ms/token): draft + sampling.
+3. Attention-over-context: falsified as the driver in the 8K–131K range.
+
+### `--split-mode row` A/B (2026-08-19) — REGRESSION, layer split is optimal
+Row split: main decode MUL_MAT 189→561 nodes, one 177.9ms decode, prompt chunk
+655ms (vs ~110ms layer). Row-parallel forces per-op cross-device sync on every
+matmul. **Layer split (default) wins decisively.** So split *mode* is not the
+headroom; the gap is the 3060-vs-1070 Ti speed imbalance (the slower 1070 Ti
+is the serial bottleneck in layer split) + Q3_K stream efficiency.
+
 ### Actions
 - [x] build llama-server both archs
 - [x] `sudo vitriol setup`

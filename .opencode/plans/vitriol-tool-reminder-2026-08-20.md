@@ -119,3 +119,50 @@ reminder now shows the newline. Envelope hint env-gated with
   the tool_calls.
 
 Committed as follow-up on `vitriol-mellum2` branch.
+## v3 fix — derailment + schema accuracy (2026-08-20)
+
+User reported the reminder was being read as the current instruction: the
+model quoted the tool list back as "the user's prompt" and responded to it
+instead of the real task. Two follow-on issues surfaced in the same session:
+memory-tool schema hallucination and AGENTS.md truncation.
+
+### v3a — relocate reminder before the last user message (VITRIOL)
+
+A reminder injected immediately before the generation marker was interpreted
+as a directive for the current turn ("I need to parse the user's prompt:
+Available tools: ..."). Moved injection to **before the last `<|im_start|>user`
+message** so it reads as ambient context: `[system: tools][user: request][assistant]`.
+The last user message is still within SWA reach, so tool awareness is preserved.
+
+Verified: model reads briev-lang AGENTS.md correctly (correct home path, no
+derailment); plain questions produce no tool calls; explicit tool requests
+produce proper structured calls.
+
+### v3b — get_tool_capabilities tool (hermes-agent)
+
+Reminder restores tool *awareness* (names) but not *schema accuracy*: the
+model could not attend to full arg-schemas (out of SWA) and hallucinated
+`memory`'s args as `{"key":..., "text":...}` instead of the real
+`action`/`target`/`content` — failing twice with "Unknown action 'None'".
+
+Added `tools/capability_tool.py` → `get_tool_capabilities` (toolset `coding`):
+on demand, returns the exact current JSON schema for a named tool, a whole
+toolset, or a compact index of all tools. Hint added to the VITRIOL reminder:
+"if you need a tool's exact arguments, call get_tool_capabilities(name) first."
+
+Verified: memory now called as
+`{"target":"user","action":"add","content":"..."}` → `success: true, Entry added`.
+No "Unknown action 'None'" errors.
+
+### v3c — AGENTS.md truncation (hermes config)
+
+`context_file_max_chars` dynamic cap = context_length × 4 chars/token × 0.06
+= 131072 × 4 × 0.06 = **31,457 chars**, truncating the 85KB briev AGENTS.md.
+Set `context_file_max_chars: 200000` in `~/.hermes/config.yaml`. Verified:
+21KB AGENTS.md read in full, no TRUNCATED warning.
+
+Files:
+- VITRIOL: `common/chat.cpp` (reminder wording + capability hint),
+  `tools/server/server-common.cpp` (inject before last user message)
+- hermes: `tools/capability_tool.py` (new), `toolsets.py` (coding += tool),
+  `~/.hermes/config.yaml` (context_file_max_chars)

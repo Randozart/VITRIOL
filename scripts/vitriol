@@ -46,6 +46,9 @@ DEFAULT_LOOKUP=0
 DEFAULT_ENGINE_MODE="vitriol-dma"
 DEFAULT_SPEC_TYPE=""
 DEFAULT_SPEC_DRAFT_N_MAX=0
+DEFAULT_SPEC_DRAFT_MODEL=""
+DEFAULT_SPEC_DRAFT_DEVICE=""
+DEFAULT_SPEC_DRAFT_NGL="all"
 DEFAULT_CHIMERA_MODE="auto"
 DEFAULT_EXPERT_COUNT=0
 DEFAULT_OUTPUT_CACHE="off"
@@ -79,6 +82,9 @@ CFG_LOOKUP="$DEFAULT_LOOKUP"
 CFG_ENGINE_MODE="$DEFAULT_ENGINE_MODE"
 CFG_SPEC_TYPE="$DEFAULT_SPEC_TYPE"
 CFG_SPEC_DRAFT_N_MAX="$DEFAULT_SPEC_DRAFT_N_MAX"
+CFG_SPEC_DRAFT_MODEL="$DEFAULT_SPEC_DRAFT_MODEL"
+CFG_SPEC_DRAFT_DEVICE="$DEFAULT_SPEC_DRAFT_DEVICE"
+CFG_SPEC_DRAFT_NGL="$DEFAULT_SPEC_DRAFT_NGL"
 CFG_EXPERT_COUNT="$DEFAULT_EXPERT_COUNT"
 CFG_OUTPUT_CACHE="$DEFAULT_OUTPUT_CACHE"
 CFG_PREDICTIVE_PREFETCH="$DEFAULT_PREDICTIVE_PREFETCH"
@@ -137,6 +143,9 @@ parse_config() {
                 engine.mode)             CFG_ENGINE_MODE="$val" ;;
                 spec.type)             CFG_SPEC_TYPE="$val" ;;
                 spec.draft_n_max)      CFG_SPEC_DRAFT_N_MAX="$val" ;;
+                spec.draft_model)      CFG_SPEC_DRAFT_MODEL="$val" ;;
+                spec.draft_device)     CFG_SPEC_DRAFT_DEVICE="$val" ;;
+                spec.draft_ngl)        CFG_SPEC_DRAFT_NGL="$val" ;;
                 model.expert_count)    CFG_EXPERT_COUNT="$val" ;;
                 vitriol.output_cache)  CFG_OUTPUT_CACHE="$val" ;;
                  vitriol.predictive_prefetch) CFG_PREDICTIVE_PREFETCH="$val" ;;
@@ -239,6 +248,12 @@ tokens = $CFG_LOOKUP
 type = $CFG_SPEC_TYPE
 # Draft tokens to generate for speculative decoding (e.g. 2 for MTP)
 draft_n_max = $CFG_SPEC_DRAFT_N_MAX
+# Separate draft model file (e.g. an MTP head GGUF). Empty = use embedded/type default.
+draft_model = $CFG_SPEC_DRAFT_MODEL
+# Device index to run the draft model on (e.g. 1 = second GPU). Empty = main devices.
+draft_device = $CFG_SPEC_DRAFT_DEVICE
+# Draft model layers to keep in VRAM (all | auto | N)
+draft_ngl = $CFG_SPEC_DRAFT_NGL
 
 [chimera]
 # Backend routing: auto | cuda | vulkan | off
@@ -307,6 +322,9 @@ config_show() {
         model_has_mtp "$CFG_MODEL" && mtp_ok=" (MTP detected)"
         print_row "Spec Type:             " "${CFG_SPEC_TYPE}${mtp_ok}"
         [[ "${CFG_SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && print_row "Spec Draft N-Max:      " "${CFG_SPEC_DRAFT_N_MAX}"
+        [[ -n "$CFG_SPEC_DRAFT_MODEL" ]] && print_row "Spec Draft Model:      " "$(basename "$CFG_SPEC_DRAFT_MODEL")"
+        [[ -n "$CFG_SPEC_DRAFT_DEVICE" ]] && print_row "Spec Draft Device:     " "${CFG_SPEC_DRAFT_DEVICE}"
+        [[ -n "$CFG_SPEC_DRAFT_NGL" ]] && print_row "Spec Draft NGL:        " "${CFG_SPEC_DRAFT_NGL}"
     fi
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     print_row "Engine Mode:           " "${CFG_ENGINE_MODE}"
@@ -344,6 +362,7 @@ config_set() {
     case "$key" in
         gpu.device)            CFG_DEVICE="$val" ;;
         gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
+        gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
         model.path)            CFG_MODEL="$val" ;;
         model.context)         CFG_CTX="$val" ;;
         model.threads)         CFG_THREADS="$val" ;;
@@ -370,6 +389,9 @@ config_set() {
         engine.mode)           CFG_ENGINE_MODE="$val" ;;
         spec.type)             CFG_SPEC_TYPE="$val" ;;
         spec.draft_n_max)      CFG_SPEC_DRAFT_N_MAX="$val" ;;
+        spec.draft_model)      CFG_SPEC_DRAFT_MODEL="$val" ;;
+        spec.draft_device)     CFG_SPEC_DRAFT_DEVICE="$val" ;;
+        spec.draft_ngl)        CFG_SPEC_DRAFT_NGL="$val" ;;
         frozen_prompt)         CFG_FROZEN_PROMPT="$val" ;;
         *) echo "Unknown key: $key"; return 1 ;;
     esac
@@ -1322,6 +1344,9 @@ Serve options:
   --detach             run server in background
   --spec-type TYPE     speculative decoding type (mtp, draft, etc.)
   --spec-draft-n-max N number of tokens to draft (e.g. 2 for MTP)
+  --spec-draft-model F separate draft model GGUF (e.g. MTP head)
+  --spec-draft-device D device index for draft model (e.g. 1 = second GPU)
+  --spec-draft-ngl N   draft model GPU layers (all | auto | N)
   --pin-layers N       pin first N layers' expert tensors in VRAM
   --prune-experts N    drop bottom N of 8 active experts (0-7, experimental)
   --verbose          enable debug logging
@@ -1620,6 +1645,9 @@ case "$CMD" in
         CLI_DISK_OFFLOAD=""
             CLI_SPEC_TYPE=""
             CLI_SPEC_DRAFT_N_MAX=""
+            CLI_SPEC_DRAFT_MODEL=""
+            CLI_SPEC_DRAFT_DEVICE=""
+            CLI_SPEC_DRAFT_NGL=""
             CLI_TENSOR_SPLIT=""
             CLI_PIN_LAYERS=""
             CLI_PRUNE_EXPERTS=""
@@ -1645,6 +1673,9 @@ case "$CMD" in
                     --engine-mode) CLI_ENGINE_MODE="$2"; shift 2 ;;
                     --spec-type) CLI_SPEC_TYPE="$2"; shift 2 ;;
                     --spec-draft-n-max) CLI_SPEC_DRAFT_N_MAX="$2"; shift 2 ;;
+                    --spec-draft-model) CLI_SPEC_DRAFT_MODEL="$2"; shift 2 ;;
+                    --spec-draft-device) CLI_SPEC_DRAFT_DEVICE="$2"; shift 2 ;;
+                    --spec-draft-ngl) CLI_SPEC_DRAFT_NGL="$2"; shift 2 ;;
                     --tensor-split|-ts) CLI_TENSOR_SPLIT="$2"; shift 2 ;;
                     --verbose) CLI_VERBOSE="true"; shift ;;
                     --disk-offload) CLI_DISK_OFFLOAD="1"; shift ;;
@@ -1672,10 +1703,13 @@ case "$CMD" in
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
         LOOKUP="${CLI_LOOKUP:-${CFG_LOOKUP}}"
         ENGINE_MODE="${CLI_ENGINE_MODE:-${CLI_ENGINE_MODE:-${CFG_ENGINE_MODE}}}"
-        KV_QUANT_V="${CLI_KV_QUANT_V:-${CFG_KV_QUANT_V}}"
+        KV_QUANT_V="${CLI_KV_QUANT_V:-${CFG_KV_QUANT_V}}}"
 DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
+        SPEC_DRAFT_MODEL="${CLI_SPEC_DRAFT_MODEL:-${CFG_SPEC_DRAFT_MODEL}}"
+        SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
+        SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
@@ -1754,6 +1788,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo "  Engine:      $ENGINE_MODE"
         [[ -n "$SPEC_TYPE" ]] && echo "  Spec Type:   $SPEC_TYPE"
         [[ "${SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && echo "  Draft N-Max: $SPEC_DRAFT_N_MAX"
+        [[ -n "$SPEC_DRAFT_MODEL" ]] && echo "  Draft Model: $(basename "$SPEC_DRAFT_MODEL")"
+        [[ -n "$SPEC_DRAFT_DEVICE" ]] && echo "  Draft Device:$SPEC_DRAFT_DEVICE"
         echo "  Chimera:     ${CHIMERA_MODE:-auto}"
         [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && echo "  Pin Layers:  $PIN_FIRST_N_LAYERS (expert tensors in VRAM)"
         if [[ "${PRUNE_EXPERTS:-0}" -gt 0 ]]; then
@@ -1835,6 +1871,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         CLI_DISK_OFFLOAD=""
         CLI_SPEC_TYPE=""
         CLI_SPEC_DRAFT_N_MAX=""
+        CLI_SPEC_DRAFT_MODEL=""
+        CLI_SPEC_DRAFT_DEVICE=""
+        CLI_SPEC_DRAFT_NGL=""
         CLI_TENSOR_SPLIT=""
         CLI_UBATCH=""
         CLI_PIN_LAYERS=""
@@ -1862,6 +1901,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                 --engine-mode) CLI_ENGINE_MODE="$2"; shift 2 ;;
                 --spec-type) CLI_SPEC_TYPE="$2"; shift 2 ;;
                 --spec-draft-n-max) CLI_SPEC_DRAFT_N_MAX="$2"; shift 2 ;;
+                --spec-draft-model) CLI_SPEC_DRAFT_MODEL="$2"; shift 2 ;;
+                --spec-draft-device) CLI_SPEC_DRAFT_DEVICE="$2"; shift 2 ;;
+                --spec-draft-ngl) CLI_SPEC_DRAFT_NGL="$2"; shift 2 ;;
                 --tensor-split|-ts) CLI_TENSOR_SPLIT="$2"; shift 2 ;;
                 --ubatch-size) CLI_UBATCH="$2"; shift 2 ;;
                 --disk-offload) CLI_DISK_OFFLOAD="1"; shift ;;
@@ -1896,6 +1938,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
+        SPEC_DRAFT_MODEL="${CLI_SPEC_DRAFT_MODEL:-${CFG_SPEC_DRAFT_MODEL}}"
+        SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
+        SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
@@ -1966,6 +2011,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo "  Engine:      $ENGINE_MODE"
         [[ -n "$SPEC_TYPE" ]] && echo "  Spec Type:   $SPEC_TYPE"
         [[ "${SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && echo "  Draft N-Max: $SPEC_DRAFT_N_MAX"
+        [[ -n "$SPEC_DRAFT_MODEL" ]] && echo "  Draft Model: $(basename "$SPEC_DRAFT_MODEL")"
+        [[ -n "$SPEC_DRAFT_DEVICE" ]] && echo "  Draft Device:$SPEC_DRAFT_DEVICE"
         echo "  Chimera:     ${CHIMERA_MODE:-auto}"
         [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && echo "  Pin Layers:  $PIN_FIRST_N_LAYERS (expert tensors in VRAM)"
         if [[ "${PRUNE_EXPERTS:-0}" -gt 0 ]]; then
@@ -2004,8 +2051,11 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_ARGS=""
         [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS="--spec-type $SPEC_TYPE"
         [[ "${SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-n-max $SPEC_DRAFT_N_MAX"
-        # Multi-GPU tensor split args
-        TS_ARGS=""
+        [[ -n "$SPEC_DRAFT_MODEL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-model $SPEC_DRAFT_MODEL"
+        [[ -n "$SPEC_DRAFT_DEVICE" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-device $SPEC_DRAFT_DEVICE"
+         [[ -n "$SPEC_DRAFT_NGL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-ngl $SPEC_DRAFT_NGL"
+         # Multi-GPU tensor split args
+         TS_ARGS=""
         [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures

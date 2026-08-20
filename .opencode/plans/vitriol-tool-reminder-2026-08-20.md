@@ -1,6 +1,6 @@
 # VITRIOL Tool Reminder Injection — keep tools in SWA reach for Mellum2
 
-Status: complete (verification passed 2026-08-20)
+Status: complete (v2: over-triggering fixed 2026-08-20)
 Date: 2026-08-20
 
 ## Problem
@@ -81,3 +81,41 @@ The reminder converts the "writes JSON as content instead of triggering the
 tool-call grammar" stall into proper structured `tool_calls`. Hermes now keeps
 tool awareness across long sessions. Capability tool deferred — the reminder
 (awareness + envelope) proved sufficient in the real hermes flow.
+
+## v2 fix — over-triggering (2026-08-20)
+
+Initial reminder ("To call a tool, emit <tool_call>...") made the model believe
+it was being asked to call tools on every turn — it over-called. Reworded to a
+**permission** framing that restores balance:
+
+```
+Tools registered in this session: name1, name2, ...
+Call one only when the user's request needs it, or when the user explicitly
+asks you to use a tool. Otherwise answer directly.
+If calling, format it as <tool_call>\n{"name": "<tool>", "arguments": {...}}.
+```
+
+Key wording changes:
+- "use only when the user's request requires one" → optional, not mandatory
+- "Otherwise answer directly" → explicit permission to skip
+- Explicit tool requests still honored ("or when the user explicitly asks")
+
+Also fixed the envelope format: the lazy-grammar trigger is `<tool_call>\n`
+(with trailing newline), but the first version taught `<tool_call>{` without it —
+so the model emitted the JSON as content and the grammar never engaged. The
+reminder now shows the newline. Envelope hint env-gated with
+`VITRIOL_TOOL_REMINDER_ENVELOPE=0`.
+
+### v2 verification
+
+- Plain questions ("What is 2+2?", "capital of France", "sqrt of 144"): direct
+  answer, **0 tool calls** (session DB confirms).
+- Explicit tool requests: proper structured `read_file {"path":"/etc/hostname"}`
+  (returned `1|Randy-PC`) and `search_files` (found 50 .md files). Every
+  explicit request called the tool.
+- Note: hermes's final *summary* message after a tool loop often reads like
+  "What would you like me to do?" — this is the closing text, not a failure to
+  call. Verify via the session DB (`hermes sessions export <id>`), which shows
+  the tool_calls.
+
+Committed as follow-up on `vitriol-mellum2` branch.

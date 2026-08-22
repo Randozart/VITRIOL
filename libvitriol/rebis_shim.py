@@ -227,6 +227,79 @@ def sse_from_response(data: dict) -> bytes:
     return body.encode()
 
 
+# ── Gateway compaction (day-long sessions) ───────────────────────────
+
+COMPACT_THRESHOLD_TOKENS = 48000   # ~75% of the 65536 window
+KEEP_RECENT_TOKENS = 10000         # active work never summarized
+DIGEST_MARKER = "[SESSION MEMORY — compacted history]"
+
+
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
+
+def messages_tokens(messages: list[dict]) -> int:
+    return sum(estimate_tokens(m.get("content") or "") for m in messages)
+
+
+def needs_compaction(messages: list[dict],
+                     threshold: int = COMPACT_THRESHOLD_TOKENS) -> bool:
+    return messages_tokens(messages) > threshold
+
+
+def split_for_compaction(messages: list[dict], keep_recent_tokens: int,
+                         system_count: int):
+    """Split into (head_system, old_to_summarize, recent_verbatim).
+
+    head_system = leading system messages (never touched); recent span is
+    filled back-to-front until KEEP_RECENT_TOKENS is exhausted.
+    """
+    if len(messages) <= system_count + 1:
+        return messages[:system_count], [], messages[system_count:]
+    head = messages[:system_count]
+    body = messages[system_count:]
+    keep: list[dict] = []
+    budget = keep_recent_tokens
+    i = len(body) - 1
+    while i >= 0 and budget > 0:
+        t = estimate_tokens(body[i].get("content") or "")
+        keep.append(body[i])
+        budget -= t
+        i -= 1
+    keep.reverse()
+    old = body[:i + 1]
+    return head, old, keep
+
+
+COMPACT_INSTR = (
+    "Summarize the following conversation fragment into a compact SESSION "
+    "MEMORY digest for an engineering agent. Preserve: every file path "
+    "mentioned, edit outcomes, command exit codes, decisions made, open "
+    "questions, invariants stated. Compress prose aggressively. Output ONLY "
+    "the digest as bullet lines.")
+
+
+def sol_compact(up, messages_old: list[dict], prior_digest: str | None) -> str | None:
+    """Sol writes/extends the session-memory digest. None on failure."""
+    frag = "\n".join(
+        f"[{m.get('role')}] {(m.get('content') or '')[:800]}"
+        for m in messages_old[-40:])
+    prior = (f"{DIGEST_MARKER} (previous):\n{prior_digest}\n\n"
+             if prior_digest else "")
+    payload = {
+        "messages": [{"role": "user", "content":
+                      f"{COMPACT_INSTR}\n\n{prior}"
+                      f"# FRAGMENT TO ABSORB\n{frag}"}],
+        "max_tokens": 2048, "temperature": 0.2,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    try:
+        data, _u = up.chat(up.sol, payload)
+        text = (data["choices"][0]["message"].get("content") or "").strip()
+        return text or None
+    except Exception:  # noqa: BLE001 - compaction best-effort
+        return None
+
 # ── Gateway v2: routing + draft-audit pipeline ───────────────────────
 
 DESIGN_MARKERS = ("why ", "how ", "architecture", "design", "explain",
@@ -353,6 +426,7 @@ class Shim(BaseHTTPRequestHandler):
     steer_mode: str = "nudge"  # nudge | override
     luna_model: str = ""
     sol_model: str = ""
+    compact: bool = True
     verbose: bool = True
 
     def log_message(self, format, *args):  # noqa: A002 - stdlib signature
@@ -535,8 +609,38 @@ class Shim(BaseHTTPRequestHandler):
             # nothing to send; keep the worker alive for the next request.
             self._note("client disconnected before response")
 
+    def system_count(self, messages: list[dict]) -> int:
+        n = 0
+        for m in messages:
+            if m.get("role") == "system":
+                n += 1
+            else:
+                break
+        return n
+
     def gateway_turn(self, payload: dict, key: str, wants_stream: bool):
         """REBIS gateway: route to a head or run the draft-audit pipeline."""
+        messages = payload.get("messages") or []
+        # Day-long sessions: compact before routing when history outgrows window.
+        if self.compact and needs_compaction(messages):
+            head, old_msgs, recent = split_for_compaction(
+                messages, KEEP_RECENT_TOKENS, self.system_count(messages))
+            prior = next((m.get("content", "") for m in reversed(head)
+                          if DIGEST_MARKER in (m.get("content") or "")), None)
+            digest = sol_compact(self.upstream, old_msgs, prior)
+            if digest and old_msgs:
+                digest_msg = {"role": "system",
+                              "content": f"{DIGEST_MARKER}\n{digest}"}
+                messages = head + [digest_msg] + recent
+                payload["messages"] = messages
+                shim_emit(self.distill_dir, {
+                    "type": "compaction", "session": key,
+                    "summarized_turns": len(old_msgs),
+                    "summarized_tokens": messages_tokens(old_msgs),
+                    "kept_recent": len(recent),
+                })
+                self._note(f"session {key}: compacted "
+                           f"{len(old_msgs)} turns -> digest")
         up = self.upstream
         model_id = (payload.get("model") or "").strip()
         forced = model_id if model_id.startswith("rebis-") else None
@@ -844,6 +948,19 @@ def selftest() -> int:
     ]))
     assert msg["content"] == "hello"
     assert msg["finish_reason"] == "stop" and _u["total_tokens"] == 9
+
+    # Compaction split: head preserved, old summarized, recent verbatim
+    msgs = ([{"role": "system", "content": "sys"}] +
+            [{"role": "user" if i % 2 == 0 else "assistant",
+              "content": "x" * 2000} for i in range(10)])
+    head, oldm, keep = split_for_compaction(msgs, 1200, 1)
+    assert len(head) == 1 and head[0]["role"] == "system"
+    assert len(oldm) > 0 and len(keep) > 0
+    assert oldm + keep == msgs[1:] or (oldm + keep) == msgs[1:]
+    assert messages_tokens(keep) <= 1200 + max(
+        estimate_tokens(m["content"]) for m in keep)
+    assert needs_compaction(msgs, threshold=1000)
+    assert not needs_compaction(msgs, threshold=10**9)
 
     print("selftest: all assertions passed")
     return 0

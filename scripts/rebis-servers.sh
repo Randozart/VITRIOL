@@ -7,7 +7,7 @@
 #
 # Day-long readiness encoded here:
 #   --context-shift --cache-reuse 256   rolling windows (safe post-H1 gate)
-#   --ctx-checkpoints 12                bound checkpoint RAM (default 32)
+#   ---ctx-checkpoints 12                bound checkpoint RAM (default 32)
 #   --checkpoint-every-n-tokens 8192    fewer, larger checkpoints
 #   --cache-ram 2048/1024               bounded prompt cache (OOM vector otherwise)
 #   mmap weights                        no staging collisions on 15 GB RAM
@@ -24,7 +24,7 @@ WHICH="${1:-both}"
 
 COMMON=(--cache-type-k q4_0 --cache-type-v q4_0 -fa on --jinja
         --context-shift --cache-reuse 256
-        -ctx-checkpoints 12 --checkpoint-every-n-tokens 8192
+        --ctx-checkpoints 12 --checkpoint-every-n-tokens 8192
         --host 127.0.0.1 --slots --metrics)
 
 start_sol() {
@@ -41,10 +41,24 @@ start_luna() {
   echo "Luna launching :8247"
 }
 
+supervise() { # supervise <start_fn> <name>
+  while true; do
+    "$1"
+    echo "$(date +%H:%M:%S) $2 exited — respawning in 15s" >> /tmp/rebis-supervise.log
+    sleep 15
+  done
+}
+
 case "$WHICH" in
   sol)  start_sol ;;
   luna) start_luna ;;
   both) killall -9 llama-server 2>/dev/null; sleep 2
         start_luna; sleep 20; start_sol ;;
-  *) echo "usage: $0 [sol|luna|both]"; exit 1 ;;
+  sol-sup)  supervise start_sol  Sol  ;;
+  luna-sup) supervise start_luna Luna ;;
+  both-sup)
+        killall -9 llama-server 2>/dev/null
+        supervise start_sol  Sol  &
+        supervise start_luna Luna & ;;
+  *) echo "usage: $0 [sol|luna|both|sol-sup|luna-sup|both-sup]"; exit 1 ;;
 esac

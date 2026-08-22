@@ -14,6 +14,12 @@ with synthesized SSE from the buffered response.
 
 import argparse
 import hashlib
+import sys
+
+_here = str(__import__("pathlib").Path(__file__).resolve().parent)
+if _here not in sys.path:
+    sys.path.insert(0, _here)
+from rebis import shim_emit  # noqa: E402
 import json
 import sys
 import threading
@@ -214,6 +220,8 @@ def sse_from_response(data: dict) -> bytes:
     return body.encode()
 
 
+DISTILL_DIR = "/home/randozart/.vitriol/distill"
+
 STATS = {"requests": 0, "steered_nudge": 0, "steered_override": 0,
          "passed_through": 0, "judged_complete": 0}
 
@@ -221,7 +229,8 @@ STATS = {"requests": 0, "steered_nudge": 0, "steered_override": 0,
 # ── Handler ──────────────────────────────────────────────────────────
 
 class Shim(BaseHTTPRequestHandler):
-    upstream: Upstream = Upstream("", "")  # replaced at server build
+    upstream: Upstream = Upstream("", "")
+    distill_dir: str = "/home/randozart/.vitriol/distill"  # replaced at server build
     mode: str = "steer"        # steer | passthrough
     steer_mode: str = "nudge"  # nudge | override
     verbose: bool = True
@@ -272,6 +281,14 @@ class Shim(BaseHTTPRequestHandler):
             self._note(f"session {key}: flags={flags} — judging")
             verdict = steer_verdict(up, messages, message)
             STATS["judged_complete"] += verdict is not None
+            if verdict is not None:
+                shim_emit(self.distill_dir, {
+                    "type": "shim_judged", "session": key,
+                    "flags": flags,
+                    "complete": bool(verdict.get("complete")),
+                    "missing_actions": verdict.get("missing_actions") or [],
+                    "draft_content": (message.get("content") or "")[:4000],
+                })
         if verdict is None or verdict.get("complete"):
             update_state(state, message)
             self._respond(data, wants_stream)
@@ -297,6 +314,11 @@ class Shim(BaseHTTPRequestHandler):
 
         if data2 and (verdict2 is None or verdict2.get("complete")):
             STATS["steered_nudge"] += 1
+            shim_emit(self.distill_dir, {
+                "type": "steer_nudge", "session": key,
+                "original_response": (message.get("content") or "")[:4000],
+                "final_response": (msg2.get("content") or "")[:4000],
+            })
             update_state(state, msg2)
             self._respond(data2, wants_stream)
             return
@@ -339,6 +361,10 @@ class Shim(BaseHTTPRequestHandler):
                                 "model": data.get("model", ""),
                                 "usage": usage}
                         STATS["steered_override"] += 1
+                        shim_emit(self.distill_dir, {
+                            "type": "steer_override", "session": key,
+                            "override_calls": calls,
+                        })
                         update_state(state, over["choices"][0]["message"])
                         self._note(f"session {key}: OVERRIDE with {len(calls)} tool call(s)")
                         self._respond(over, wants_stream)
@@ -352,12 +378,17 @@ class Shim(BaseHTTPRequestHandler):
 
     def _respond(self, data: dict, wants_stream: bool):
         body = sse_from_response(data) if wants_stream else json.dumps(data).encode()
-        self.send_response(200)
-        self.send_header("Content-Type",
-                         "text/event-stream" if wants_stream else "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "text/event-stream" if wants_stream else "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Client gave up (steering latency can exceed its timeout) —
+            # nothing to send; keep the worker alive for the next request.
+            self._note("client disconnected before response")
 
     def _proxy_raw(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -386,6 +417,7 @@ def main() -> int:
     p.add_argument("--port", type=int, default=8090)
     p.add_argument("--mellum-url", default="http://127.0.0.1:8287")
     p.add_argument("--qwen-url", default="http://127.0.0.1:8279")
+    p.add_argument("--distill-dir", default=DISTILL_DIR)
     p.add_argument("--mode", choices=["steer", "passthrough"], default="steer")
     p.add_argument("--steer-mode", choices=["nudge", "override"], default="nudge")
     p.add_argument("--selftest", action="store_true")
@@ -395,6 +427,7 @@ def main() -> int:
         return selftest()
 
     Shim.upstream = Upstream(args.mellum_url, args.qwen_url)
+    Shim.distill_dir = args.distill_dir
     Shim.mode = args.mode
     Shim.steer_mode = args.steer_mode
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Shim)

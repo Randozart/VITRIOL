@@ -32,6 +32,61 @@ REQUEST_TIMEOUT = 600
 CHAT_RETRIES = 1
 SERVER_START_TIMEOUT = 900
 DEFAULT_JOURNAL_DIR = "/tmp/opencode/rebis-journal"
+DEFAULT_DISTILL_DIR = str(Path.home() / ".vitriol" / "distill")
+
+
+# ── Distillation capture ─────────────────────────────────────────────
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class DistillRecorder:
+    """Append-per-event training-data capture for one Rebis run.
+
+    Records embed repo code by design — the distill directory is local-only
+    and must never be committed or synced. Poked/rejected iterations are kept
+    with the same fidelity as accepted ones: they are the rejected side of
+    preference pairs.
+    """
+
+    def __init__(self, distill_dir: str, task_id: str, enabled: bool = True):
+        self.enabled = enabled
+        self.path = Path(distill_dir) / f"{task_id}.jsonl"
+
+    def emit(self, etype: str, payload: dict | None = None) -> None:
+        if not self.enabled:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            record = {"ts": _now_iso(), "type": etype, **(payload or {})}
+            with open(self.path, "a") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError as e:
+            print(f"[rebis] distill write failed: {e}", file=sys.stderr)
+
+    def snapshot_paths(self, workdir: str, paths) -> dict:
+        """files_before/files_after helper: {rel: content} for existing paths."""
+        out = {}
+        for rel in paths:
+            p = Path(workdir) / rel
+            if p.exists():
+                try:
+                    out[rel] = p.read_text()
+                except OSError:
+                    pass
+        return out
+
+
+def shim_emit(distill_dir: str, record: dict) -> None:
+    """Shim-side capture into the shared distill store."""
+    try:
+        d = Path(distill_dir)
+        d.mkdir(parents=True, exist_ok=True)
+        with open(d / "shim-events.jsonl", "a") as f:
+            f.write(json.dumps({"ts": _now_iso(), **record}) + "\n")
+    except OSError:
+        pass
 
 
 # ── Mandatum packet ──────────────────────────────────────────────────
@@ -865,6 +920,8 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                budget_s: float | None = None,
                drafter_spawn: str | None = None,
                verifier_spawn: str | None = None,
+               distill_dir: str = DEFAULT_DISTILL_DIR,
+               distill: bool = True,
                log=print) -> dict:
     """Bounded poke-and-refine loop. Returns the run report dict."""
     jpath = journal_path(journal_dir, mandatum.task_id)
@@ -872,6 +929,22 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
     drafter_acc, verifier_acc = empty_usage(), empty_usage()
     history: list[TurnRecord] = []
     t_start = time.time()
+    drec = DistillRecorder(distill_dir, mandatum.task_id, enabled=distill)
+    slice_paths = [fs.path for fs in mandatum.file_slices]
+    drec.emit("run_open", {
+        "objective": mandatum.objective,
+        "invariants": mandatum.invariants,
+        "constraints": mandatum.constraints,
+        "output_contract": mandatum.output_contract,
+        "slice_paths": slice_paths,
+        "draft_mode": mandatum.draft_mode,
+        "verify_mode": mandatum.verify_mode,
+        "max_iterations": mandatum.max_iterations,
+        "compile_cmd": mandatum.compile_cmd,
+    })
+
+    def distill_files(paths) -> dict:
+        return drec.snapshot_paths(mandatum.workdir, paths)
 
     def out_of_budget() -> bool:
         return deadline is not None and time.time() > deadline
@@ -934,11 +1007,17 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
             pause_reason = f"drafter down: {e}"
             break
         add_usage(drafter_acc, d_usage)
+        drec.emit("draft", {"iteration": iteration,
+                            "text": message_text(raw_msg),
+                            "usage": dict(d_usage),
+                            "elapsed_s": round(dt, 2)})
 
         if mandatum.draft_mode == "patch":
             applied, preport, touched = apply_patch(mandatum,
                                                     message_text(raw_msg), log=log)
             if not applied:
+                drec.emit("patch_failed", {"iteration": iteration,
+                                           "report": preport[-600:]})
                 log(f"[rebis] iteration {iteration}: PATCH FAILED")
                 history.append(TurnRecord(iteration, round(dt, 2), [],
                                           False, False, True, 1,
@@ -951,19 +1030,28 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                                        "patch_failed": True,
                                        "apply_report": preport[-600:]})
                 continue
+            drec.emit("files_before", {"iteration": iteration,
+                                       "files": distill_files(slice_paths)})
             written = touched
             files = {rel: (Path(mandatum.workdir) / rel).read_text()
                      for rel in written
                      if (Path(mandatum.workdir) / rel).exists()}
+            drec.emit("files_after", {"iteration": iteration,
+                                      "files": distill_files(written)})
             log(f"[rebis] iteration {iteration}: patch applied to {len(written)} file(s)")
         elif mandatum.draft_mode == "replace":
             sections = split_sections(message_text(raw_msg))
+            if not sections:
+                drec.emit("replace_failed", {"iteration": iteration,
+                                             "report": "no ### sections found"})
             if not sections and not extract_code(message_text(raw_msg)):
                 log(f"[rebis] iteration {iteration}: EMPTY draft")
                 journal_append(jpath, {"event": "turn", "iteration": iteration,
                                        "empty": True})
                 continue
             written, failed = [], []
+            drec.emit("files_before", {"iteration": iteration,
+                                       "files": distill_files(sections.keys())})
             for rel, body in sections.items():
                 target = (Path(mandatum.workdir) / rel).resolve()
                 if not target.exists():
@@ -976,6 +1064,8 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                     failed.append(f"{rel}: {rep}")
             if not written:
                 msg = "; ".join(failed) or "no ### sections found"
+                drec.emit("replace_failed", {"iteration": iteration,
+                                             "report": msg[:600]})
                 log(f"[rebis] iteration {iteration}: REPLACE FAILED — {msg[:200]}")
                 history.append(TurnRecord(iteration, round(dt, 2), [],
                                           False, False, True, 1,
@@ -990,6 +1080,8 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
             files = {rel: (Path(mandatum.workdir) / rel).read_text()
                      for rel in sections
                      if (Path(mandatum.workdir) / rel).exists()}
+            drec.emit("files_after", {"iteration": iteration,
+                                      "files": distill_files(sections.keys())})
             log(f"[rebis] iteration {iteration}: replace applied to {len(written)} file(s)")
         else:
             files = extract_files(message_text(raw_msg))
@@ -1000,7 +1092,12 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                 journal_append(jpath, {"event": "turn", "iteration": iteration,
                                        "empty": True})
                 continue
+            drec.emit("files_before", {"iteration": iteration,
+                                       "files": distill_files(slice_paths)})
             written, rejected = apply_draft(mandatum, files, single, log=log)
+            if rejected:
+                drec.emit("fragment_rejected",
+                          {"iteration": iteration, "paths": rejected})
             if rejected:
                 journal_append(jpath, {"event": "turn", "iteration": iteration,
                                        "rejected_fragments": rejected})
@@ -1014,6 +1111,9 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                                               "contents in fenced blocks"],
                                           dict(d_usage), {}))
                 continue
+            if written:
+                drec.emit("files_after", {"iteration": iteration,
+                                          "files": distill_files(slice_paths)})
             log(f"[rebis] iteration {iteration}: wrote {len(written)} file(s)")
 
         # 2. Compiler gate
@@ -1021,6 +1121,8 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
             compile_ok, report = compiler_gate(mandatum.compile_cmd, mandatum.workdir)
         else:
             compile_ok, report = True, ""
+        drec.emit("gate", {"iteration": iteration, "compile_ok": compile_ok,
+                           "report": report[-600:]})
 
         # 3. Verifier audits every draft — compilers cannot see semantic
         #    invariants ("the buffer must be freed", not merely nulled).
@@ -1035,6 +1137,9 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                                       True, True, True, 0, [],
                                       dict(d_usage), {}))
             wall = round(time.time() - t_start, 2)
+            drec.emit("run_close", {"accepted": True, "wall_s": wall,
+                                    "totals": {"drafter": drafter_acc,
+                                               "verifier": verifier_acc}})
             report = build_report(mandatum.task_id, True, history,
                                   drafter_acc, verifier_acc, wall)
             journal_append(jpath, {"event": "result", "accepted": True,
@@ -1085,6 +1190,10 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                 break
             verdict = parse_verdict(vtext, mandatum.invariants)
         add_usage(verifier_acc, v_usage)
+        drec.emit("verdict", {"iteration": iteration,
+                              "pass": verdict.passed,
+                              "wellformed": verdict.wellformed,
+                              "delta": verdict.delta})
 
         rec = TurnRecord(iteration, round(dt, 2), written, compile_ok,
                          verdict.passed, verdict.wellformed,
@@ -1100,6 +1209,9 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
 
         if compile_ok and verdict.passed:
             wall = round(time.time() - t_start, 2)
+            drec.emit("run_close", {"accepted": True, "wall_s": wall,
+                                    "totals": {"drafter": drafter_acc,
+                                               "verifier": verifier_acc}})
             log(f"[rebis] iteration {iteration}: ACCEPTED "
                 f"(compile green, verifier pass)")
             report = build_report(mandatum.task_id, True, history,
@@ -1113,6 +1225,10 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
         log(f"[rebis] iteration {iteration}: poke — {len(delta)} correction order(s)")
 
     wall = round(time.time() - t_start, 2)
+    drec.emit("run_close", {"accepted": False, "paused": pause_reason is not None,
+                            "pause_reason": pause_reason, "wall_s": wall,
+                            "totals": {"drafter": drafter_acc,
+                                       "verifier": verifier_acc}})
     report = build_report(mandatum.task_id, False, history,
                           drafter_acc, verifier_acc, wall)
     if pause_reason:
@@ -1140,8 +1256,18 @@ def build_report(task_id: str, accepted: bool, history: list[TurnRecord],
     }
 
 
-def baseline_run(mandatum: Mandatum, verifier_url: str, log=print) -> dict:
+def baseline_run(mandatum: Mandatum, verifier_url: str,
+                 distill_dir: str = DEFAULT_DISTILL_DIR,
+                 distill: bool = True, log=print) -> dict:
     """A/B control: whole task straight to the big model, no loop."""
+    drec = DistillRecorder(distill_dir, f"{mandatum.task_id}-baseline",
+                           enabled=distill)
+    slice_paths = [fs.path for fs in mandatum.file_slices]
+    drec.emit("run_open", {"objective": mandatum.objective,
+                           "invariants": mandatum.invariants,
+                           "constraints": mandatum.constraints,
+                           "slice_paths": slice_paths,
+                           "mode": "baseline"})
     acc = empty_usage()
     msgs = [{"role": "user", "content":
              f"{mandatum.stable_prefix()}\n\n{mandatum.volatile_body()}\n\n"
@@ -1151,14 +1277,22 @@ def baseline_run(mandatum: Mandatum, verifier_url: str, log=print) -> dict:
     t0 = time.time()
     raw_msg, usage, _dt = chat(verifier_url, msgs, max_tokens=4096)
     add_usage(acc, usage)
+    drec.emit("draft", {"text": message_text(raw_msg), "usage": dict(usage)})
+    drec.emit("files_before", {"files": drec.snapshot_paths(mandatum.workdir,
+                                                            slice_paths)})
     files = extract_files(message_text(raw_msg))
     single = extract_code(message_text(raw_msg))
     written, _rejected = apply_draft(mandatum, files, single, log=log)
+    drec.emit("files_after", {"files": drec.snapshot_paths(mandatum.workdir,
+                                                           slice_paths)})
     if mandatum.compile_cmd:
-        ok, _report = compiler_gate(mandatum.compile_cmd, mandatum.workdir)
+        ok, gate_report = compiler_gate(mandatum.compile_cmd, mandatum.workdir)
     else:
-        ok = True
+        ok, gate_report = True, ""
+    drec.emit("gate", {"compile_ok": ok, "report": gate_report[-600:]})
     wall = round(time.time() - t0, 2)
+    drec.emit("run_close", {"accepted": bool(ok), "wall_s": wall,
+                            "totals": {"drafter": acc}})
     log(f"[baseline] single-shot {'GREEN' if ok else 'RED'} ({wall}s, "
         f"{len(written)} file(s))")
     return build_report(f"{mandatum.task_id}-baseline", ok, [], acc,
@@ -1368,6 +1502,10 @@ def main() -> int:
                    help="command to spawn drafter server when down")
     p.add_argument("--verifier-spawn", default=None,
                    help="command to spawn verifier server when down")
+    p.add_argument("--distill-dir", default=DEFAULT_DISTILL_DIR,
+                   help=f"training-data capture directory (default: {DEFAULT_DISTILL_DIR})")
+    p.add_argument("--no-distill", action="store_true",
+                   help="disable training-data capture")
     args = p.parse_args()
 
     if args.selftest:
@@ -1398,7 +1536,9 @@ def main() -> int:
             print(f"[rebis] WARNING: {name} not answering at {url}")
 
     if args.mode == "baseline":
-        report = baseline_run(mandatum, args.verifier_url)
+        report = baseline_run(mandatum, args.verifier_url,
+                              distill_dir=args.distill_dir,
+                              distill=not args.no_distill)
     else:
         report = rebis_loop(
             mandatum, args.drafter_url, args.verifier_url,
@@ -1406,7 +1546,9 @@ def main() -> int:
             start_iteration=start_iter, start_delta=start_delta,
             budget_s=args.budget_s,
             drafter_spawn=args.drafter_spawn,
-            verifier_spawn=args.verifier_spawn)
+            verifier_spawn=args.verifier_spawn,
+            distill_dir=args.distill_dir,
+            distill=not args.no_distill)
 
     print(json.dumps({"task_id": report["task_id"],
                       "accepted": report["accepted"],

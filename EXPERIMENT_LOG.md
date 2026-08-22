@@ -1085,3 +1085,85 @@ Qwen = modifications to real files; deterministic tooling = mechanical ops.
 
 Battery state: S1 cell validated end-to-end (arm B variant with Qwen drafter).
 Remaining: arms A/C formal timing runs, S2/H1 packets, full report.
+
+## 2026-08-22 03:30 — S1 cell closed: arms A/B'/C results
+
+Task: implement `push` txn (scratch crate, cargo test gate). Baselines restored
+via snapshot between runs.
+
+| arm | path | result |
+|---|---|---|
+| A | hermes → Qwen direct | 18m23s, correct incl. new test (E1 measurement) |
+| B | rebis loop, Qwen drafter, replace+compiler_only | **130s, ACCEPTED iter 1, 152/152** |
+| B' | rebis loop, Mellum drafter | fails on modify-tasks in all 6 delta configs (bake-off) |
+| C | hermes → shim → Mellum, steer mode | FAIL ×2, diagnosed |
+
+Arm C findings:
+- Run 1: Mellum made real tool calls mid-loop (push method landed, cargo green)
+  but skipped test-extension; final turn degenerated to ungrounded prose.
+- Run 2: hallucinated a nonexistent `session_search` tool, narrated instead of
+  called, file untouched.
+- Steering layer FIRED both times (flags caught premature finals); run 1 exposed
+  BrokenPipeError crash when hermes timed out during judge+nudge latency — fixed
+  (graceful client-gone handling). Run 2: same latency exceeded client patience;
+  steered recovery never landed despite clean handling.
+
+VERDICT: Mellum-direct under an agentic harness is not viable on this rig — not
+because steering fails, but because the drafter cannot reliably emit valid tool
+calls for a harness toolset at all. Shim remains useful as instrumentation;
+daily-driver shape stays hermes(Qwen brain) + rebis.py delegation.
+
+Process notes: `pkill -f` self-match killed our own shell twice (use `[x]` bracket
+trick); mid-experiment baseline resets must use snapshots, never git checkout.
+
+## 2026-08-22 05:30 — H1 hard task: prompt-cache min-LCP gate (ACCEPTED)
+
+H1 = fix cross-session bleed at source (llama.cpp server). Loop ran with Qwen
+drafter, replace mode, compiler_only, gate = cmake target build; 40-min tool
+timeout killed the loop mid-build AFTER all 5 files patched cleanly — manual
+gate finish + one-line drafter error fixed by hand (`common_arg` has no float
+lambda overload; house pattern is string+std::stof).
+
+Change (commit 025291f6e on vitriol-mellum2): --prompt-cache-min-lcp (default
+0.5) gates candidate states in server_prompt_cache::load; states <=64 tokens
+always eligible. Root cause was metric bias: sim = lcp/tokens_new gives short
+prompts inflated similarity against long cached states.
+
+Functional validation (cache-ram 4096, cache ENABLED):
+- A: 8.8k ledger session → correct answer, state saved (26.9s)
+- B: tiny "2+3" probe with that state resident → clean "5" in 1.5s (no bleed)
+- C: same-prefix follow-up → 1.2s, only 8 tokens evaluated (real cache hit)
+
+REOPENS E3: Anticipatio failed earlier because restore machinery fed wrong
+states; with gating, same-prefix turns drop 26.9s → 1.2s (22×). Shadow prefill
+is back on the table for the daily driver.
+
+Loop-vs-hard-task verdict: drafter produced a spec-exact multi-file C++ patch
+on first apply (Qwen/replace/verbatim-context); the loop's remaining weakness
+was infrastructural (tool timeout killing process group mid-build), not
+cognitive. Long-gate tasks need detached execution or budget ≥ gate duration.
+
+## 2026-08-22 08:45 — Anticipatio re-validation + shared-endpoint contention
+
+E3r probe post-H1-gate, three configurations against :8279 (Qwen):
+1. similarity disabled: no reuse (-3.8%) — slot affinity was OFF
+2. similarity default (0.1): still cache_n=0 — OTHER ML EXPERIMENT interleave
+   cleared slots between probes; one restore DID succeed per logs
+   ("found better prompt, sim = 1.000")
+3. id_slot=3 pinned, endpoint idle: STILL full re-prefill — then discovered the
+   Qwen server had been killed by the other tenant's lifecycle management
+   mid-experiment; final probe ran against a dead-then-restarted instance.
+
+DECISIVE CONTROL on Mellum :8287 (same gated binary, quiet endpoint):
+COLD 19801 tok / 46.95s → WARM **cache_n=19800, 28ms prompt, 0.06s wall**.
+99.9% reduction. H1 gate validated for BOTH safety (no bleed) and reuse.
+
+OPERATIONAL FINDING (daily-driver critical): multiple clients sharing one
+llama-server endpoint thrash each other's prefix caches (interleaved
+conversations evict states), and tenants that run `killall llama-server`
+between their own runs nuke everyone else's servers. Role-dedicated endpoints
+or slot-partition discipline is required infrastructure for concurrent use.
+
+Anticipatio wired as opt-in: rebis.py --anticipatio fires a daemon-thread
+shadow prefill of the stable prefix after each Mandatum send. Live A/B deferred
+until Qwen endpoint ownership is coordinated; Mellum-side reuse already proven.

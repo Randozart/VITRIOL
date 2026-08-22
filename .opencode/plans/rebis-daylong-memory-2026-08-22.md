@@ -97,3 +97,25 @@ during the long-session simulation.
   warm of the NEW compacted history before shipping the next real turn.
 - Interaction bugs between shift and compaction firing together. Shift should
   never fire if compaction thresholds are correct; simulator must verify.
+
+## Progress log
+
+- 2026-08-22 10:30 — **M1 + M3 COMPLETE, M2 VALIDATED.**
+  - scripts/rebis-servers.sh: canonical launcher — rolling windows restored,
+    checkpoint spacing (12 cap / every-8192 tokens), supervised modes with
+    auto-respawn (backoff 15s after bind-race 502s).
+  - Heads run from PRIVATE build (llama.cpp/build-rebis, PIC=ON): co-tenant
+    pipelines manage llama.cpp/build and delete shared binaries (root cause of
+    repeated server vanishings).
+  - Gateway compaction live: threshold 48k, keep-recent 10k, Sol-written
+    digests preserving verbatim paths/outcomes/exit-codes, recursion-guarded,
+    distill events per compaction.
+  - Simulator: pre-compaction 22/24 turns clean (2× supervisor bind-race
+    502s, self-healed); latency creep +0.25s/turn confirmed no-reuse under
+    gateway traffic; post-M2 run 22/22 clean with three compaction events
+    (40–45k tok digested each), ~47s compaction stall then stable operation.
+  - Residual: elevated per-turn latency under co-tenant traffic (cache
+    eviction by interleaved conversations) — role-dedicated endpoints or
+    quiet-window use remains the structural fix.
+- Next: route-tuning from distill data; Hermetis cross-session wiring
+  deferred until compaction proves out in real week-long use.

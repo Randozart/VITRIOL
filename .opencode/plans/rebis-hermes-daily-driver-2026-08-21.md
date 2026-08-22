@@ -89,6 +89,20 @@ Experimental servers gain `--context-shift --cache-reuse 256`; keep bounded
   152/152 tests, 130s wall. Incident + full matrix in EXPERIMENT_LOG.md.
 - Remaining battery: formal timing arms A/C on S1, S2 (vitriol-tui small task),
   H1 (hard task) packets, phase4 report.
+- 2026-08-22 03:45 — **S1 cell CLOSED** (arms A/B/B'/C all measured; verdicts in
+  EXPERIMENT_LOG.md: Mellum-direct not viable under agentic harness, steering
+  layer works but can't beat client timeouts, BrokenPipe crash fixed).
+  opencode `mellum-think` provider wired (:8287 direct). Shim graceful-disconnect
+  fix landed.
+- Next: H1 hard task — candidate: llama.cpp server prompt-cache min-LCP gating
+  (fixes cross-session bleed at source instead of --cache-ram 0 sledgehammer;
+  compile gate = cmake target build). Then Phase 4 report.
+- 2026-08-22 05:40 — **H1 ACCEPTED** (llama.cpp commit 025291f6e): --prompt-cache-min-lcp
+  gate, functional validation passed (bleed dead; same-prefix reuse 26.9s → 1.2s).
+  REOPENS E3/Anticipatio with working cache machinery. Loop handled multi-file C++
+  patch first-apply; infra weakness = tool timeout vs long gates (needs detached runs).
+  Commits this session: 8c75d44 (tui), 4d7176d (rebis), 7449cb6 (docs), 025291f6e (H1).
+- Remaining: Phase 4 report; Anticipatio revisit now viable; S2 optional.
 - 2026-08-22 01:20 — **Phase 4 scoped** (user-selected): THREE arms — A: Qwen-direct
   via hermes, B: hermes→rebis loop, C: Mellum-direct + steering shim (requires
   building `libvitriol/rebis_shim.py` first). Tasks: 2 safe + 1 genuinely hard.

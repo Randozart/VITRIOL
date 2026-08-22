@@ -19,6 +19,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -914,6 +915,33 @@ def apply_patch(mandatum: Mandatum, text: str, log=print) -> tuple[bool, str, li
     return False, f"all apply strategies failed: {last_report[-1500:]}", []
 
 
+def anticipatio_warm(verifier_url: str, mandatum: Mandatum) -> None:
+    """Fire-and-forget shadow prefill of the packet's stable prefix.
+
+    Daemon thread; silently ignored on any failure. Post-H1 the gated prompt
+    cache turns a warm follow-up turn from ~47s prefill into ~30ms (measured
+    2026-08-22, Mellum2 i1-IQ4_XS). Only worth firing when the verifier
+    endpoint is not concurrently used by other clients — interleaved
+    conversations evict each other's cached states.
+    """
+    def _warm():
+        try:
+            msgs = [{"role": "user", "content": mandatum.stable_prefix()}]
+            tmpl = apply_template(verifier_url, msgs)
+            if not tmpl:
+                return
+            body = json.dumps({"prompt": tmpl, "n_predict": 1,
+                               "temperature": 0.0,
+                               "cache_prompt": True}).encode()
+            req = urllib.request.Request(
+                f"{verifier_url}/completion", data=body,
+                headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=300).read()
+        except Exception:  # noqa: BLE001 - warm is best-effort by design
+            pass
+    threading.Thread(target=_warm, daemon=True).start()
+
+
 def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                journal_dir: str = DEFAULT_JOURNAL_DIR,
                start_iteration: int = 1, start_delta: list[str] | None = None,
@@ -922,6 +950,7 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
                verifier_spawn: str | None = None,
                distill_dir: str = DEFAULT_DISTILL_DIR,
                distill: bool = True,
+               anticipatio: bool = False,
                log=print) -> dict:
     """Bounded poke-and-refine loop. Returns the run report dict."""
     jpath = journal_path(journal_dir, mandatum.task_id)
@@ -1007,6 +1036,8 @@ def rebis_loop(mandatum: Mandatum, drafter_url: str, verifier_url: str,
             pause_reason = f"drafter down: {e}"
             break
         add_usage(drafter_acc, d_usage)
+        if anticipatio:
+            anticipatio_warm(verifier_url, mandatum)
         drec.emit("draft", {"iteration": iteration,
                             "text": message_text(raw_msg),
                             "usage": dict(d_usage),
@@ -1506,6 +1537,9 @@ def main() -> int:
                    help=f"training-data capture directory (default: {DEFAULT_DISTILL_DIR})")
     p.add_argument("--no-distill", action="store_true",
                    help="disable training-data capture")
+    p.add_argument("--anticipatio", action="store_true",
+                   help="shadow-prefill the verifier's stable prefix after "
+                        "each Mandatum (single-client endpoints only)")
     args = p.parse_args()
 
     if args.selftest:
@@ -1548,7 +1582,8 @@ def main() -> int:
             drafter_spawn=args.drafter_spawn,
             verifier_spawn=args.verifier_spawn,
             distill_dir=args.distill_dir,
-            distill=not args.no_distill)
+            distill=not args.no_distill,
+            anticipatio=args.anticipatio)
 
     print(json.dumps({"task_id": report["task_id"],
                       "accepted": report["accepted"],

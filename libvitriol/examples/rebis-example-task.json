@@ -1,0 +1,25 @@
+{
+  "objective": "Add a `reset` transaction to the Ledger that clears the item list and the committed flag. Output the COMPLETE new contents of src/ledger.rs.",
+  "invariants": [
+    "after reset returns, self.items.items is empty",
+    "after reset returns, self.items.committed == false",
+    "the Vec allocation is reused: capacity must be preserved (no reassignment that drops the buffer)",
+    "no unsafe code anywhere in the file"
+  ],
+  "constraints": [
+    "keep the existing MyList and Ledger struct definitions and the commit method unchanged",
+    "no new dependencies"
+  ],
+  "output_contract": "One fenced rust block containing the complete new src/ledger.rs file contents.",
+  "file_slices": [
+    {
+      "path": "src/ledger.rs",
+      "start": 1,
+      "end": 18,
+      "content": "#[derive(Debug, Default)]\npub struct MyList {\n    items: Vec<u64>,\n    committed: bool,\n}\n\npub struct Ledger {\n    items: MyList,\n}\n\nimpl Ledger {\n    pub fn commit(&mut self) {\n        self.items.committed = true;\n    }\n}"
+    }
+  ],
+  "workdir": "/tmp/opencode/rebis-scratch",
+  "compile_cmd": "cargo check",
+  "max_iterations": 3
+}

@@ -30,6 +30,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # ── Steering verdict schema (Qwen-constrained) ───────────────────────
 
+REQUEST_TIMEOUT = 600
+
 STEER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -121,8 +123,11 @@ OVERRIDE_SCHEMA = {
 
 class Upstream:
     def __init__(self, mellum_url: str, qwen_url: str):
-        self.mellum = mellum_url.rstrip("/")
-        self.qwen = qwen_url.rstrip("/")
+        self.mellum = mellum_url.rstrip("/")   # Luna
+        self.qwen = qwen_url.rstrip("/")       # Sol
+        # head aliases used by gateway routing
+        self.luna = self.mellum
+        self.sol = self.qwen
 
     def chat(self, base: str, payload: dict, timeout: int = 600) -> tuple[dict, dict]:
         body = json.dumps(payload).encode()
@@ -146,10 +151,12 @@ class Upstream:
             return None
 
     def completion_constrained(self, prompt: str, schema: dict,
-                               max_tokens: int = 512) -> str | None:
+                               max_tokens: int = 512,
+                               temperature: float = 0.0) -> str | None:
         body = json.dumps({
             "prompt": prompt, "json_schema": schema,
-            "n_predict": max_tokens, "temperature": 0.0, "cache_prompt": True,
+            "n_predict": max_tokens, "temperature": temperature,
+            "cache_prompt": True,
         }).encode()
         req = urllib.request.Request(
             f"{self.qwen}/completion", data=body,
@@ -220,6 +227,117 @@ def sse_from_response(data: dict) -> bytes:
     return body.encode()
 
 
+# ── Gateway v2: routing + draft-audit pipeline ───────────────────────
+
+DESIGN_MARKERS = ("why ", "how ", "architecture", "design", "explain",
+                  "review", "plan", "tradeoff", "compare", "should we")
+
+def estimate_reason_need(text) -> bool:
+    low = (text or "").lower()
+    if len(low) > 1500:
+        return True
+    head = low[:600]
+    return any(mk in head for mk in DESIGN_MARKERS)
+
+
+def classify_turn(messages: list[dict], tools_attached: bool,
+                  forced: str | None = None) -> str:
+    """Route decision: 'reason' (Sol/Qwen) | 'draft' (Luna/Mellum)
+    | 'pipeline' (Luna drafts, Sol audits).
+
+    Ladder (documented in plans/rebis-gateway-v2):
+      1. explicit escape hatch wins
+      2. kickoff: tools attached, no assistant tool activity yet -> reason
+         (planner authors the first calls; catches E2's failure class)
+      3. last message is a tool result -> draft (executor continuation)
+      4. assistant history has tool calls (finalizing) -> pipeline
+      5. no-tools chat: complexity heuristic -> reason/draft
+      6. fallback -> reason (safe default: quality over speed)
+    """
+    if forced in ("rebis-qwen",):
+        return "reason"
+    if forced in ("rebis-mellum",):
+        return "draft"
+    if not messages:
+        return "reason"
+    has_calls = any(m.get("tool_calls") for m in messages
+                    if m.get("role") == "assistant")
+    last_role = messages[-1].get("role")
+    if tools_attached and not has_calls:
+        return "reason"
+    if last_role == "tool":
+        return "draft"
+    if has_calls:
+        return "pipeline"
+    last_user = next((m for m in reversed(messages)
+                      if m.get("role") == "user"), None)
+    if last_user is None:
+        return "reason"  # unknown shape: quality-first
+    if estimate_reason_need(last_user.get("content")):
+        return "reason"
+    return "draft"
+
+
+def synthesize_models(gateway_id: str = "rebis") -> dict:
+    """OpenAI-shaped /v1/models advertising the trenchcoat + heads."""
+    def entry(mid, name):
+        return {"id": mid, "object": "model", "owned_by": "rebis",
+                "name": name}
+    return {"object": "list", "data": [
+        entry(gateway_id, "REBIS — Sol+Luna unified"),
+        entry("rebis-qwen", "Sol head (Qwen3.8, reasoning)"),
+        entry("rebis-mellum", "Luna head (Mellum2, drafting)"),
+    ]}
+
+
+def parse_sse_stream(resp) -> tuple[dict, dict]:
+    """Consume an OpenAI-compatible SSE body into one assistant message.
+
+    Returns (message, usage). Tool-call deltas are stitched minimally
+    (index-keyed accumulation of name/arguments fragments).
+    """
+    content_parts: list[str] = []
+    calls: dict[int, dict] = {}
+    usage: dict = {}
+    finish = None
+    for raw in resp:
+        line = raw.decode(errors="ignore").strip() if isinstance(raw, bytes)             else raw.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        try:
+            obj = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("usage"):
+            usage = obj["usage"]
+        for ch in obj.get("choices") or []:
+            if ch.get("finish_reason"):
+                finish = ch["finish_reason"]
+            delta = ch.get("delta") or {}
+            if delta.get("content"):
+                content_parts.append(delta["content"])
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                slot = calls.setdefault(idx, {"id": "", "type": "function",
+                                              "function": {"name": "",
+                                                           "arguments": ""}})
+                if tc.get("id"):
+                    slot["id"] = tc["id"]
+                fn = tc.get("function") or {}
+                if fn.get("name"):
+                    slot["function"]["name"] += fn["name"]
+                if fn.get("arguments"):
+                    slot["function"]["arguments"] += fn["arguments"]
+    message: dict = {"role": "assistant", "content": "".join(content_parts)}
+    if calls:
+        message["tool_calls"] = [calls[i] for i in sorted(calls)]
+    if finish:
+        message["finish_reason"] = finish
+    return message, usage
+
 DISTILL_DIR = "/home/randozart/.vitriol/distill"
 
 STATS = {"requests": 0, "steered_nudge": 0, "steered_override": 0,
@@ -231,8 +349,10 @@ STATS = {"requests": 0, "steered_nudge": 0, "steered_override": 0,
 class Shim(BaseHTTPRequestHandler):
     upstream: Upstream = Upstream("", "")
     distill_dir: str = "/home/randozart/.vitriol/distill"  # replaced at server build
-    mode: str = "steer"        # steer | passthrough
+    mode: str = "steer"        # gateway | steer | passthrough
     steer_mode: str = "nudge"  # nudge | override
+    luna_model: str = ""
+    sol_model: str = ""
     verbose: bool = True
 
     def log_message(self, format, *args):  # noqa: A002 - stdlib signature
@@ -243,7 +363,14 @@ class Shim(BaseHTTPRequestHandler):
             print(f"[shim] {msg}", flush=True)
 
     def do_GET(self):
-        if self.path.startswith(("/v1/models", "/health")):
+        if self.mode == "gateway" and self.path.startswith("/v1/models"):
+            body = json.dumps(synthesize_models()).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.path.startswith(("/v1/models", "/health")):
             self._proxy_raw()
         else:
             self.send_error(404)
@@ -251,6 +378,24 @@ class Shim(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.path.startswith("/v1/chat/completions"):
             self._proxy_raw()
+            return
+        if self.mode == "gateway":
+            length = int(self.headers.get("Content-Length", 0))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            wants_stream = bool(payload.get("stream"))
+            messages = payload.get("messages") or []
+            key = session_key(messages)
+            STATS["requests"] += 1
+            try:
+                self.gateway_turn(payload, key, wants_stream)
+            except (BrokenPipeError, ConnectionResetError):
+                self._note("client disconnected mid-turn")
+            except (urllib.error.URLError, ServerDown if False else OSError) as e:
+                self._note(f"gateway upstream error: {e}")
+                try:
+                    self.send_error(502, str(e)[:200])
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
             return
         up = self.upstream
         length = int(self.headers.get("Content-Length", 0))
@@ -390,6 +535,191 @@ class Shim(BaseHTTPRequestHandler):
             # nothing to send; keep the worker alive for the next request.
             self._note("client disconnected before response")
 
+    def gateway_turn(self, payload: dict, key: str, wants_stream: bool):
+        """REBIS gateway: route to a head or run the draft-audit pipeline."""
+        up = self.upstream
+        model_id = (payload.get("model") or "").strip()
+        forced = model_id if model_id.startswith("rebis-") else None
+        tools_attached = bool(payload.get("tools"))
+        messages = payload.get("messages") or []
+        route = classify_turn(messages, tools_attached, forced)
+        self._note(f"session {key}: route={route}"
+                   + (f" (forced={forced})" if forced else ""))
+
+        def ship(data: dict):
+            drec = {"type": "gateway_turn", "session": key,
+                    "route": route, "model": model_id,
+                    "usage": data.get("usage") or {}}
+            shim_emit(self.distill_dir, drec)
+            self._respond(data, wants_stream)
+
+        if route == "draft":
+            # Luna fast path — no ceremony.
+            luna_payload = dict(payload)
+            luna_payload["model"] = self.luna_model
+            data, _u = up.chat(up.mellum, luna_payload)
+            message = merge_reasoning(data["choices"][0]["message"])
+            update_state(SESSIONS.setdefault(key, {}), message)
+            ship(data)
+            return
+
+        if route == "reason":
+            # Sol untouched — full depth reasoning.
+            sol_payload = dict(payload)
+            sol_payload["model"] = self.sol_model
+            sol_payload.setdefault("chat_template_kwargs",
+                                   {"enable_thinking": True})
+            data, _u = up.chat(up.sol, sol_payload)
+            message = merge_reasoning(data["choices"][0]["message"])
+            update_state(SESSIONS.setdefault(key, {}), message)
+            ship(data)
+            return
+
+        # ── pipeline: Luna drafts while Sol ingests; Sol audits ──
+        luna_payload = dict(payload)
+        luna_payload["model"] = self.luna_model
+        luna_payload["stream"] = True  # incremental consumption
+        luna_payload["max_tokens"] = max(luna_payload.get("max_tokens") or 0,
+                                         4096)
+        luna_payload.setdefault("temperature", 0.6)
+        luna_payload.setdefault("top_p", 0.95)
+        luna_payload.setdefault("top_k", 20)
+        luna_payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+        body = json.dumps(luna_payload).encode()
+        req = urllib.request.Request(
+            f"{up.mellum}/v1/chat/completions", data=body,
+            headers={"Content-Type": "application/json"}, method="POST")
+        t0 = time.time()
+        warm_len = 0
+        buf_text: list[str] = []
+        last_warm = [0.0]
+        audit_tail_msgs = messages[-4:]
+
+        def build_audit_prompt(candidate: str) -> str:
+            return json.dumps({
+                "conversation_tail": [
+                    {"role": m.get("role"),
+                     "content": (m.get("content") or "")[:1200],
+                     "tool_calls": bool(m.get("tool_calls"))}
+                    for m in audit_tail_msgs],
+                "candidate_response": candidate[:6000],
+            }, indent=1)
+
+        def warm_sol(candidate_so_far: str):
+            prompt = ("PREFILL WARMING for an upcoming audit. Reply with "
+                      "only the word ok.\n\n" + build_audit_prompt(candidate_so_far))
+            try:
+                b2 = json.dumps({"prompt": prompt, "n_predict": 1,
+                                 "temperature": 0.0,
+                                 "cache_prompt": True}).encode()
+                r2 = urllib.request.Request(
+                    f"{up.sol}/completion", data=b2,
+                    headers={"Content-Type": "application/json"},
+                    method="POST")
+                urllib.request.urlopen(r2, timeout=120).read()
+            except (urllib.error.URLError, OSError):
+                pass
+
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
+            # parse_sse_stream stitches content AND tool_calls; tool-call
+            # turns are Luna acting (valid mid-flight work), not finals.
+            parsed_msg, parsed_usage = parse_sse_stream(resp)
+            buf_text.append(parsed_msg.get("content") or "")
+        grown = sum(len(t) for t in buf_text)
+        if grown - warm_len >= 1024:
+            warm_sol("".join(buf_text))
+        draft_message = dict(parsed_msg)
+        if not draft_message.get("content"):
+            draft_message["content"] = ""
+        draft_time = round(time.time() - t0, 2)
+
+        flags = flag_turn(draft_message, state := SESSIONS.setdefault(key, {}))
+        needs_audit = (not has_tool_calls(draft_message)) or bool(flags)
+        if not needs_audit:
+            update_state(state, draft_message)
+            shim_emit(self.distill_dir, {
+                "type": "pipeline_pass", "session": key,
+                "audited": False, "draft": draft_message.get("content", "")[:4000]})
+            self._respond({"choices": [{"index": 0, "finish_reason":
+                                        draft_message.get("finish_reason", "stop"),
+                                        "message": draft_message}],
+                           "model": "rebis"}, wants_stream)
+            return
+
+        # Sol ingested the growing draft already — final warm covers the tail.
+        warm_sol(draft_message.get("content") or "")
+        candidate = build_audit_prompt(draft_message.get("content") or "")
+        audit_prompt = (
+            "You are the steering judge inside REBIS, a dual-model agent. "
+            "Luna (fast drafter) produced the CANDIDATE RESPONSE for the "
+            "conversation tail. Decide whether it adequately serves the "
+            "task: correct tool usage, no hallucinated tools or APIs, task "
+            "actually advanced. Reply ONLY with JSON:\n"
+            '{"complete": <bool>, "reasoning": "<brief>", '
+            '"missing_actions": ["..."], '
+            '"corrected_response": "<full replacement text if incomplete>" }\n\n'
+            + candidate)
+        out = up.completion_constrained(audit_prompt, STEER_SCHEMA,
+                                        max_tokens=2048, temperature=0.0)
+        verdict = None
+        if out:
+            try:
+                vj = json.loads(out)
+                if isinstance(vj.get("complete"), bool):
+                    verdict = vj
+            except json.JSONDecodeError:
+                pass
+        STATS["judged_complete"] += verdict is not None
+        shim_emit(self.distill_dir, {
+            "type": "pipeline_audited", "session": key, "flags": flags,
+            "complete": bool(verdict and verdict.get("complete")),
+            "missing_actions": (verdict or {}).get("missing_actions") or [],
+            "draft_content": (draft_message.get("content") or "")[:4000],
+        })
+
+        if verdict is None or verdict.get("complete"):
+            update_state(state, draft_message)
+            self._respond({"choices": [{"index": 0, "finish_reason":
+                                        draft_message.get("finish_reason", "stop"),
+                                        "message": draft_message}],
+                           "model": "rebis"}, wants_stream)
+            return
+
+        missing = verdict.get("missing_actions") or []
+        corrected = (verdict.get("corrected_response") or "").strip()
+        self._note(f"session {key}: AUDIT FAILED — {len(missing)} missing; "
+                   f"correcting via Sol")
+
+        # Sol authors the correction natively (proper tool_calls format).
+        corr_msgs = list(messages) + [
+            {"role": "assistant", "content": draft_message.get("content") or ""},
+            {"role": "user", "content":
+             "Your previous reply was judged INCOMPLETE/INCORRECT by review.\n"
+             "Missing actions:\n" +
+             "\n".join(f"- {a}" for a in missing) +
+             "\nProduce the corrected full reply now, using the available "
+             "tools properly."}]
+        corr_payload = dict(payload)
+        corr_payload["messages"] = corr_msgs
+        corr_payload["model"] = self.sol_model
+        corr_payload.setdefault("chat_template_kwargs",
+                                {"enable_thinking": False})
+        corr_data, _u3 = up.chat(up.sol, corr_payload)
+        final_msg = merge_reasoning(corr_data["choices"][0]["message"])
+        STATS["steered_nudge"] += 1
+        shim_emit(self.distill_dir, {
+            "type": "steer_correct", "session": key,
+            "original_response": (draft_message.get("content") or "")[:4000],
+            "final_response": (final_msg.get("content") or "")[:4000],
+            "missing_actions": missing,
+        })
+        update_state(state, final_msg)
+        self._respond({"choices": [{"index": 0, "finish_reason":
+                                    final_msg.get("finish_reason", "stop"),
+                                    "message": final_msg}],
+                       "model": "rebis"}, wants_stream)
+
     def _proxy_raw(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
@@ -414,11 +744,18 @@ SESSIONS: dict[str, dict] = {}
 
 def main() -> int:
     p = argparse.ArgumentParser(description="REBIS steering shim")
-    p.add_argument("--port", type=int, default=8090)
-    p.add_argument("--mellum-url", default="http://127.0.0.1:8287")
-    p.add_argument("--qwen-url", default="http://127.0.0.1:8279")
+    p.add_argument("--port", type=int, default=8280)  # Mercury, Hg=80
+    p.add_argument("--mellum-url", "--luna-url",
+                   dest="mellum_url", default="http://127.0.0.1:8247")
+    p.add_argument("--qwen-url", "--sol-url",
+                   dest="qwen_url", default="http://127.0.0.1:8279")
+    p.add_argument("--luna-model",
+                   default="Mellum2-12B-A2.5B-Thinking.i1-IQ4_XS.gguf")
+    p.add_argument("--sol-model",
+                   default="Qwen3.8-27B-UD-IQ2_S.gguf")
     p.add_argument("--distill-dir", default=DISTILL_DIR)
-    p.add_argument("--mode", choices=["steer", "passthrough"], default="steer")
+    p.add_argument("--mode", choices=["gateway", "steer", "passthrough"],
+                   default="gateway")
     p.add_argument("--steer-mode", choices=["nudge", "override"], default="nudge")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args()
@@ -428,6 +765,8 @@ def main() -> int:
 
     Shim.upstream = Upstream(args.mellum_url, args.qwen_url)
     Shim.distill_dir = args.distill_dir
+    Shim.luna_model = args.luna_model
+    Shim.sol_model = args.sol_model
     Shim.mode = args.mode
     Shim.steer_mode = args.steer_mode
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Shim)
@@ -465,6 +804,46 @@ def selftest() -> int:
 
     body = sse_from_response({"choices": [{"message": {"content": "abc"}}], "model": "m"})
     assert b"data: [DONE]" in body and b"abc" in body
+
+    # Gateway routing ladder
+    kickoff = [{"role": "user", "content": "implement X using the tools"}]
+    assert classify_turn(kickoff, True) == "reason"
+    exec_hist = kickoff + [
+        {"role": "assistant", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "result"},
+    ]
+    assert classify_turn(exec_hist, True) == "draft"
+    finalizing = kickoff + [
+        {"role": "assistant", "tool_calls": [{"id": "1"}]},
+        {"role": "tool", "content": "result"},
+        {"role": "assistant", "content": "All done, here is the summary."},
+    ]
+    assert classify_turn(finalizing, True) == "pipeline"
+    plain_short = [{"role": "user", "content": "fix typo in README"}]
+    assert classify_turn(plain_short, False) == "draft"
+    plain_deep = [{"role": "user",
+                   "content": "Explain the architecture tradeoffs of "
+                              "hybrid attention for our agent loop. " * 5}]
+    assert classify_turn(plain_deep, False) == "reason"
+    assert classify_turn([{"role": "user", "content": "?"}],
+                         True, forced="rebis-qwen") == "reason"
+    assert classify_turn([{"role": "user", "content": "?"}],
+                         True, forced="rebis-mellum") == "draft"
+
+    models = synthesize_models()
+    ids = [m["id"] for m in models["data"]]
+    assert ids == ["rebis", "rebis-qwen", "rebis-mellum"]
+
+    msg, _u = parse_sse_stream(iter([
+        b'data: {"choices":[{"delta":{"role":"assistant"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"he"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"llo"}}]}\n',
+        b'data: {"choices":[{"finish_reason":"stop","delta":{}}],'
+        b'"usage":{"total_tokens":9}}\n',
+        b"data: [DONE]\n",
+    ]))
+    assert msg["content"] == "hello"
+    assert msg["finish_reason"] == "stop" and _u["total_tokens"] == 9
 
     print("selftest: all assertions passed")
     return 0

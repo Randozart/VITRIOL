@@ -21,7 +21,8 @@ use ureq::{Agent, AgentBuilder};
 
 use crate::config::Config;
 use crate::model::{
-    EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, PerfSnapshot, RecentStore, Snapshot,
+    DraftSnapshot, EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, MetricsTotals,
+    PerfSnapshot, RecentStore, SlotSnapshot, Snapshot,
 };
 use crate::nvidia;
 
@@ -43,6 +44,15 @@ struct Poller {
     /// (offset advanced) from "went idle" (offset unchanged since the previous
     /// poll).
     decode_beat_offset: Option<u64>,
+    /// Last sane live-decode rate seen in a heartbeat. Replayed while
+    /// `/slots` reports a busy slot but the log has gone quiet — the server's
+    /// stdout is block-buffered under nohup, so heartbeat lines arrive in
+    /// multi-second bursts even at ~1 Hz emission.
+    last_live_t_s: f64,
+    /// Gen port adopted via `/proc` discovery after the configured port failed
+    /// (`vitriol serve` on a non-default port). Cleared when it stops answering
+    /// so discovery can re-run.
+    gen_port_override: Option<u16>,
 }
 
 /// Spawn the poller thread. `refresh_flag` is raised by the UI to force an
@@ -57,6 +67,8 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
                 hermetis_tail: LogTail::new(LOG_TAIL_CAP),
                 embed_tail: LogTail::new(LOG_TAIL_CAP),
                 decode_beat_offset: None,
+                last_live_t_s: 0.0,
+                gen_port_override: None,
                 cfg,
             };
             loop {
@@ -76,11 +88,14 @@ impl Poller {
         self.gen_tail.poll(&self.cfg.gen_log());
         self.hermetis_tail.poll(&self.cfg.hermetis_log());
         self.embed_tail.poll(&self.cfg.embed_log());
+        let gpus = nvidia::query_gpus();
+        let gpu_processes = nvidia::query_processes(&gpus);
         let snap = Snapshot {
             gen: self.poll_gen(agent),
             hermetis: poll_hermetis(agent, &self.cfg),
             embed: poll_embed(agent, &self.cfg),
-            gpu: nvidia::query_gpu(),
+            gpus,
+            gpu_processes,
             logs: LogsSnapshot {
                 gen: self.gen_tail.snapshot(),
                 hermetis: self.hermetis_tail.snapshot(),
@@ -90,24 +105,62 @@ impl Poller {
         let _ = tx.send(snap);
     }
 
-    /// Poll the gen server: `/health`, `/v1/models`, and the log-derived decode
-    /// state (sticky last-completion throughput plus the live heartbeat rate).
+    /// Poll the gen server: `/health`, `/v1/models`, `/slots`, `/props`,
+    /// `/metrics`, and the log-derived decode state (sticky last-completion
+    /// throughput plus the live heartbeat rate).
+    ///
+    /// When `/health` fails on the configured port, llama-server processes are
+    /// discovered via `/proc` and their `--port` adopted (covers
+    /// `vitriol serve` on a non-default port and the memory-mode internal
+    /// server on PORT−1).
     fn poll_gen(&mut self, agent: &Agent) -> GenSnapshot {
-        let up = get_json(agent, &format!("{}/health", self.cfg.gen_base()))
-            .map(|v| v.get("status").is_some())
-            .unwrap_or(false);
+        let mut effective_port = self.gen_port_override.unwrap_or(self.cfg.gen_port);
+        let mut up = health_up(agent, effective_port);
+        if !up {
+            // Configured/override port dead: re-discover.
+            for port in discover_llama_ports() {
+                if port == self.cfg.gen_port {
+                    continue;
+                }
+                if health_up(agent, port) {
+                    effective_port = port;
+                    up = true;
+                    break;
+                }
+            }
+        }
+        self.gen_port_override = if up && effective_port != self.cfg.gen_port {
+            Some(effective_port)
+        } else {
+            None
+        };
+        let base = format!("http://127.0.0.1:{effective_port}");
         let mut model = None;
         let mut n_ctx = None;
-        if let Some(models) = get_json(agent, &format!("{}/v1/models", self.cfg.gen_base())) {
-            let first = models
-                .get("data")
-                .and_then(|d| d.as_array())
-                .and_then(|a| a.first());
-            model = first
-                .and_then(|m| m.get("id"))
-                .and_then(|v| v.as_str())
-                .map(str::to_owned);
-            n_ctx = first.and_then(first_model_size);
+        if up {
+            if let Some(models) = get_json(agent, &format!("{base}/v1/models")) {
+                let first = models
+                    .get("data")
+                    .and_then(|d| d.as_array())
+                    .and_then(|a| a.first());
+                model = first
+                    .and_then(|m| m.get("id"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                n_ctx = first.and_then(first_model_size);
+            }
+        }
+        let slots = poll_slots(agent, &base);
+        let busy = slots.iter().any(|s| s.is_processing);
+        // Heartbeat rate, replayed while a slot is busy but the block-buffered
+        // log has not flushed a fresh beat yet.
+        let mut live = parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset);
+        if live > 0.0 {
+            self.last_live_t_s = live;
+        } else if busy {
+            live = self.last_live_t_s;
+        } else {
+            self.last_live_t_s = 0.0;
         }
         GenSnapshot {
             up,
@@ -115,10 +168,173 @@ impl Poller {
             n_ctx,
             n_parallel: None,
             decode_t_s: parse_decode_t_s(&self.cfg.gen_log()),
-            decode_speed: parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset),
+            decode_speed: live,
             perf: parse_perf(&self.cfg.gen_log()),
+            slots,
+            draft: poll_draft(agent, &base),
+            totals: poll_metrics_totals(agent, &base),
+            effective_port: if effective_port != self.cfg.gen_port {
+                Some(effective_port)
+            } else {
+                None
+            },
         }
     }
+}
+
+/// Whether `/health` answers on `port`.
+fn health_up(agent: &Agent, port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/health");
+    get_json(agent, &url)
+        .map(|v| v.get("status").is_some())
+        .unwrap_or(false)
+}
+
+/// Scan `/proc` for running `llama-server` processes and return the distinct
+/// ports from their `--port N` arguments, ascending.
+fn discover_llama_ports() -> Vec<u16> {
+    let mut ports = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return ports;
+    };
+    for entry in entries.flatten() {
+        let Ok(pid_text) = entry.file_name().into_string() else {
+            continue;
+        };
+        if pid_text.parse::<u32>().is_err() {
+            continue; // numeric-only dirs are processes
+        }
+        let Ok(cmd) = std::fs::read_to_string(format!("/proc/{pid_text}/cmdline")) else {
+            continue; // vanished or not ours
+        };
+        let args: Vec<&str> = cmd.split('\0').filter(|a| !a.is_empty()).collect();
+        let is_llama_server = args
+            .first()
+            .map(|bin| bin.ends_with("/llama-server") || *bin == "llama-server")
+            .unwrap_or(false);
+        if !is_llama_server {
+            continue;
+        }
+        if let Some(i) = args.iter().position(|a| *a == "--port") {
+            if let Some(p) = args.get(i + 1).and_then(|v| v.parse::<u16>().ok()) {
+                ports.push(p);
+            }
+        }
+    }
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
+
+/// Poll `GET /slots` into per-slot snapshots; empty when disabled or down.
+fn poll_slots(agent: &Agent, base: &str) -> Vec<SlotSnapshot> {
+    get_json(agent, &format!("{base}/slots"))
+        .map(parse_slots)
+        .unwrap_or_default()
+}
+
+/// Parse the `/slots` response body (bare array or `{slots: [...]}`).
+fn parse_slots(body: Value) -> Vec<SlotSnapshot> {
+    let Some(slots) = body
+        .as_array()
+        .cloned()
+        .or_else(|| body.get("slots").and_then(|s| s.as_array()).cloned())
+    else {
+        return Vec::new();
+    };
+    slots
+        .iter()
+        .map(|s| {
+            // `next_token` serializes as a one-element array in this fork
+            // ({ [{...}] } in C++), but tolerate the plain-object form too.
+            let next_token = s.get("next_token").and_then(|n| {
+                if let Some(arr) = n.as_array() {
+                    arr.first().cloned()
+                } else {
+                    Some(n.clone())
+                }
+            });
+            SlotSnapshot {
+                id: s.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                id_task: s.get("id_task").and_then(|v| v.as_u64()),
+                is_processing: s
+                    .get("is_processing")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                n_decoded: next_token
+                    .as_ref()
+                    .and_then(|n| n.get("n_decoded"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                n_remain: next_token
+                    .as_ref()
+                    .and_then(|n| n.get("n_remain"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            }
+        })
+        .collect()
+}
+
+/// Poll `GET /props` for speculative-draft aggregates; `None` when absent.
+fn poll_draft(agent: &Agent, base: &str) -> Option<DraftSnapshot> {
+    get_json(agent, &format!("{base}/props")).and_then(parse_draft)
+}
+
+/// Parse the `/props` draft object.
+fn parse_draft(props: Value) -> Option<DraftSnapshot> {
+    let draft = props.get("draft")?;
+    Some(DraftSnapshot {
+        n_total: draft.get("n_total").and_then(|v| v.as_u64()).unwrap_or(0),
+        n_accepted: draft
+            .get("n_accepted")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    })
+}
+
+/// Poll `GET /metrics` (prometheus text) and extract the counters/gauges the
+/// dashboard shows; defaults when the endpoint is disabled.
+fn poll_metrics_totals(agent: &Agent, base: &str) -> MetricsTotals {
+    let text = match agent.get(&format!("{base}/metrics")).call() {
+        Ok(resp) => match resp.into_string() {
+            Ok(t) => t,
+            Err(_) => return MetricsTotals::default(),
+        },
+        Err(_) => return MetricsTotals::default(),
+    };
+    parse_metrics_text(&text)
+}
+
+/// Parse the prometheus exposition text into dashboard totals.
+fn parse_metrics_text(text: &str) -> MetricsTotals {
+    let mut t = MetricsTotals::default();
+    for line in text.lines() {
+        let (name, value) = match line.rsplit_once(' ') {
+            Some(pair) if line.starts_with("llamacpp:") => pair,
+            _ => continue,
+        };
+        let name = name.trim_start_matches("llamacpp:");
+        match name {
+            "prompt_tokens_total" => t.prompt_tokens_total = parse_metric_u64(value),
+            "tokens_predicted_total" => t.tokens_predicted_total = parse_metric_u64(value),
+            "predicted_tokens_seconds" => t.predicted_tokens_seconds = parse_metric_f64(value),
+            "prompt_tokens_seconds" => t.prompt_tokens_seconds = parse_metric_f64(value),
+            "requests_processing" => t.requests_processing = parse_metric_u64(value),
+            _ => {}
+        }
+    }
+    t
+}
+
+/// Parse an unsigned prometheus sample value, tolerating junk.
+fn parse_metric_u64(value: &str) -> u64 {
+    value.trim().parse::<f64>().map(|v| v as u64).unwrap_or(0)
+}
+
+/// Parse a float prometheus sample value, tolerating junk.
+fn parse_metric_f64(value: &str) -> f64 {
+    value.trim().parse::<f64>().unwrap_or(0.0)
 }
 
 /// Poll the Hermetis server: `/health`, `/hermetis/stats?project_id=`, and
@@ -184,6 +400,10 @@ fn get_json(agent: &Agent, url: &str) -> Option<Value> {
     resp.into_json::<Value>().ok()
 }
 
+/// Live-decode rates at or above this are server rounding artifacts (a 1-token
+/// decode inside one millisecond reports 1e6 t/s) and are ignored.
+const DECODE_SPEED_SANITY_CAP: f64 = 1000.0;
+
 /// Parse the live decode heartbeat from the gen log and report whether a slot
 /// is still generating.
 ///
@@ -209,7 +429,7 @@ fn parse_decode_speed(log_path: &std::path::Path, last_offset: &mut Option<u64>)
             let before = &line[..pos];
             let num = before.split_whitespace().last().unwrap_or("");
             if let Ok(v) = num.trim_end_matches(',').parse::<f64>() {
-                if v.is_finite() && v > 0.0 {
+                if v.is_finite() && v > 0.0 && v < DECODE_SPEED_SANITY_CAP {
                     t_s = v;
                 }
             }
@@ -443,6 +663,103 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[test]
+    fn slots_body_parses_processing_and_idle() {
+        // `next_token` as one-element array — the shape this fork emits.
+        let body = serde_json::json!([
+            {
+                "id": 0, "n_ctx": 8192, "is_processing": true, "id_task": 42,
+                "next_token": [{"n_decoded": 123, "n_remain": 389}]
+            },
+            {
+                "id": 1, "n_ctx": 8192, "is_processing": false,
+                "next_token": [{"n_decoded": 0, "n_remain": 0}]
+            }
+        ]);
+        let slots = parse_slots(body);
+        assert_eq!(slots.len(), 2);
+        assert_eq!(slots[0].id, 0);
+        assert_eq!(slots[0].id_task, Some(42));
+        assert!(slots[0].is_processing);
+        assert_eq!(slots[0].n_decoded, 123);
+        assert_eq!(slots[0].n_remain, 389);
+        assert!((slots[0].progress().unwrap() - 0.24).abs() < 0.01);
+        assert!(!slots[1].is_processing);
+        assert!(slots[1].progress().is_none());
+    }
+
+    #[test]
+    fn slots_next_token_object_form_parses() {
+        let body = serde_json::json!([
+            {"id": 0, "is_processing": true,
+             "next_token": {"n_decoded": 5, "n_remain": 15}}
+        ]);
+        let slots = parse_slots(body);
+        assert_eq!(slots[0].n_decoded, 5);
+        assert_eq!(slots[0].n_remain, 15);
+    }
+
+    #[test]
+    fn slots_wrapped_object_parses() {
+        let body = serde_json::json!({"slots": [
+            {"id": 2, "is_processing": false}
+        ]});
+        let slots = parse_slots(body);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].id, 2);
+        assert!(!slots[0].is_processing);
+    }
+
+    #[test]
+    fn draft_metrics_parse_with_rate() {
+        let props = serde_json::json!({"draft": {"n_total": 100, "n_accepted": 87}});
+        let d = parse_draft(props).expect("draft present");
+        assert_eq!(d.n_total, 100);
+        assert_eq!(d.n_accepted, 87);
+        assert!((d.acceptance_rate().unwrap() - 0.87).abs() < 1e-9);
+    }
+
+    #[test]
+    fn draft_absent_is_none_and_zero_total_has_no_rate() {
+        assert!(parse_draft(serde_json::json!({})).is_none());
+        let d = parse_draft(serde_json::json!({"draft": {"n_total": 0, "n_accepted": 0}})).unwrap();
+        assert!(d.acceptance_rate().is_none());
+    }
+
+    #[test]
+    fn metrics_text_extracts_counters_and_gauges() {
+        let text = [
+            "# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.",
+            "# TYPE llamacpp:prompt_tokens_total counter",
+            "llamacpp:prompt_tokens_total 1204",
+            "# HELP llamacpp:tokens_predicted_total Predicted tokens.",
+            "# TYPE llamacpp:tokens_predicted_total counter",
+            "llamacpp:tokens_predicted_total 567",
+            "# HELP llamacpp:predicted_tokens_seconds Average generation t/s.",
+            "# TYPE llamacpp:predicted_tokens_seconds gauge",
+            "llamacpp:predicted_tokens_seconds 9.98",
+            "# HELP llamacpp:prompt_tokens_seconds Average prompt t/s.",
+            "# TYPE llamacpp:prompt_tokens_seconds gauge",
+            "llamacpp:prompt_tokens_seconds 210.5",
+            "# HELP llamacpp:requests_processing Requests processing.",
+            "# TYPE llamacpp:requests_processing gauge",
+            "llamacpp:requests_processing 1",
+        ]
+        .join("\n");
+        let t = parse_metrics_text(&text);
+        assert_eq!(t.prompt_tokens_total, 1204);
+        assert_eq!(t.tokens_predicted_total, 567);
+        assert!((t.predicted_tokens_seconds - 9.98).abs() < 1e-9);
+        assert!((t.prompt_tokens_seconds - 210.5).abs() < 1e-9);
+        assert_eq!(t.requests_processing, 1);
+    }
+
+    #[test]
+    fn metrics_text_ignores_help_lines_and_junk() {
+        let t = parse_metrics_text("# HELP llamacpp:tokens_predicted_total x\nnot a metric\n");
+        assert_eq!(t.tokens_predicted_total, 0);
+    }
+
     /// Write a temp log file and return its path. `tag` keeps parallel tests
     /// from colliding on the same file.
     fn temp_log(tag: &str, content: &str) -> std::path::PathBuf {
@@ -521,6 +838,22 @@ mod tests {
             "decode heartbeat: 42 tokens,  40.12 tokens per second (live)\n",
         ].join("")).unwrap();
         assert_eq!(parse_decode_speed(&p, &mut last), 40.12);
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn decode_speed_ignores_sub_millisecond_artifacts() {
+        let p = temp_log(
+            "beatcap",
+            &[
+                "decode heartbeat: 1 tokens,  1000000.00 tokens per second (live)\n",
+                "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
+            ]
+            .join(""),
+        );
+        let mut last = None;
+        // The 1e6 beat is bogus; the newest sane beat wins.
+        assert_eq!(parse_decode_speed(&p, &mut last), 23.40);
         let _ = std::fs::remove_file(&p);
     }
 

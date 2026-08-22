@@ -468,7 +468,7 @@ if [ "$DO_GEN" = "1" ]; then
              --no-mmap \
              --parallel "$PARALLEL" $REASONING_ARGS $SAMPLING_ARGS --flash-attn on --jinja \
              "${TS_ARGS[@]}" "${KV_ARGS[@]}" "${SPEC_ARGS[@]}" -ub "$UBATCH" \
-             --context-shift --cache-reuse 256 --port "$GEN_PORT")
+             --context-shift --cache-reuse 256 --slots --metrics --port "$GEN_PORT")
         echo "[vitriol] starting gen server on :$GEN_PORT ($(basename "$GEN_MODEL"), ngl=$NGL ctx=$CTX t=$THREADS p=$PARALLEL)"
         if [ "$VERBOSE" = "1" ] || [ "$DRY_RUN" = "1" ]; then
             echo "[vitriol]   cmd: ${CMD[*]}"

@@ -23,6 +23,93 @@ pub struct GenSnapshot {
     pub decode_speed: f64,
     /// Latest `[PERF]` decode breakdown line from the gen log, when present.
     pub perf: Option<PerfSnapshot>,
+    /// Per-slot state from `/slots` (empty when the endpoint is disabled).
+    pub slots: Vec<SlotSnapshot>,
+    /// Speculative-draft aggregates from `/props`, when reported.
+    pub draft: Option<DraftSnapshot>,
+    /// Server-wide counters from `/metrics` (prometheus text), when enabled.
+    pub totals: MetricsTotals,
+    /// Port the poller actually talks to (differs from config when the port
+    /// was auto-discovered via `/proc`).
+    pub effective_port: Option<u16>,
+}
+
+/// One slot row from `GET /slots`.
+#[derive(Debug, Clone, Default)]
+pub struct SlotSnapshot {
+    /// Slot index.
+    pub id: u64,
+    /// Task id currently assigned to the slot.
+    pub id_task: Option<u64>,
+    /// Whether the slot is mid-generation.
+    pub is_processing: bool,
+    /// Tokens decoded for the current task.
+    pub n_decoded: u64,
+    /// Tokens remaining until the current task finishes.
+    pub n_remain: u64,
+}
+
+impl SlotSnapshot {
+    /// Decode progress fraction 0..1; `None` when nothing to show.
+    pub fn progress(&self) -> Option<f64> {
+        if !self.is_processing {
+            return None;
+        }
+        let total = self.n_decoded + self.n_remain;
+        if total == 0 {
+            return None;
+        }
+        Some(self.n_decoded as f64 / total as f64)
+    }
+
+    pub fn total_tokens(&self) -> u64 {
+        self.n_decoded + self.n_remain
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn total_tokens_sums() {
+        let snap = SlotSnapshot { n_decoded: 123, n_remain: 389, ..Default::default() };
+        assert_eq!(snap.total_tokens(), 512);
+    }
+}
+
+/// Speculative-decoding counters from `/props` (`draft` object).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DraftSnapshot {
+    /// Draft tokens generated (server-wide).
+    pub n_total: u64,
+    /// Draft tokens accepted (server-wide).
+    pub n_accepted: u64,
+}
+
+impl DraftSnapshot {
+    /// Acceptance rate 0..1, or `None` before any draft token.
+    pub fn acceptance_rate(&self) -> Option<f64> {
+        if self.n_total == 0 {
+            return None;
+        }
+        Some(self.n_accepted as f64 / self.n_total as f64)
+    }
+}
+
+/// Server-wide counters parsed from the `/metrics` prometheus text.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MetricsTotals {
+    /// Total prompt tokens processed since start.
+    pub prompt_tokens_total: u64,
+    /// Total predicted tokens since start.
+    pub tokens_predicted_total: u64,
+    /// Average generation t/s gauge (current window).
+    pub predicted_tokens_seconds: f64,
+    /// Average prompt t/s gauge (current window).
+    pub prompt_tokens_seconds: f64,
+    /// Slots currently processing.
+    pub requests_processing: u64,
 }
 
 /// One decoded `[PERF]` line emitted by the VITRIOL server (`GGML_CUDA_GDN_PROFILE=1`).
@@ -92,13 +179,15 @@ pub struct GpuProcess {
     pub name: String,
     /// GPU memory in MiB.
     pub vram_mib: u64,
+    /// GPU index the process runs on, when attributable via uuid.
+    pub gpu_index: Option<u8>,
 }
 
-/// GPU telemetry from `nvidia-smi`.
+/// GPU telemetry from `nvidia-smi` (one entry per physical GPU).
 #[derive(Debug, Clone, Default)]
 pub struct GpuSnapshot {
-    /// Whether `nvidia-smi` answered with a usable GPU line.
-    pub present: bool,
+    /// Zero-based GPU index (`--query-gpu=index`).
+    pub index: u8,
     /// GPU product name.
     pub name: String,
     /// Used GPU memory in MiB.
@@ -117,8 +206,8 @@ pub struct GpuSnapshot {
     pub sm_clock_mhz: u16,
     /// Memory clock in MHz.
     pub mem_clock_mhz: u16,
-    /// Compute processes using the GPU.
-    pub processes: Vec<GpuProcess>,
+    /// GPU uuid, used to attribute compute processes.
+    pub uuid: String,
 }
 
 /// Live tail of a service log, newest last, capped at [`LOG_TAIL_CAP`] lines.
@@ -142,16 +231,27 @@ pub struct Snapshot {
     pub hermetis: HermetisSnapshot,
     /// Embed state.
     pub embed: EmbedSnapshot,
-    /// GPU state; `None` when `nvidia-smi` is unavailable.
-    pub gpu: Option<GpuSnapshot>,
+    /// GPU state, one entry per physical GPU; empty when `nvidia-smi` is
+    /// unavailable.
+    pub gpus: Vec<GpuSnapshot>,
+    /// Compute processes across all GPUs (uuid-attributed).
+    pub gpu_processes: Vec<GpuProcess>,
     /// Live log tails for each service.
     pub logs: LogsSnapshot,
 }
 
 impl Snapshot {
+    /// Summed VRAM across all GPUs: (used MiB, total MiB).
+    pub fn vram_totals(&self) -> (u64, u64) {
+        (
+            self.gpus.iter().map(|g| g.vram_used_mib).sum(),
+            self.gpus.iter().map(|g| g.vram_total_mib).sum(),
+        )
+    }
+
     /// Whether at least one service or the GPU reported anything. Used by the
     /// UI to hint that the stack is not reachable.
     pub fn is_empty(&self) -> bool {
-        !self.gen.up && !self.hermetis.up && !self.embed.up && self.gpu.is_none()
+        !self.gen.up && !self.hermetis.up && !self.embed.up && self.gpus.is_empty()
     }
 }

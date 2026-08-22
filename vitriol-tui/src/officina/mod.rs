@@ -1426,9 +1426,9 @@ struct MemInfo {
     available_mib: u64,
 }
 
-/// A GPU field value, or 0 when the GPU snapshot is absent.
+/// A GPU field value summed across all GPUs, or 0 when none reported.
 fn gpu_mib(snap: &Snapshot, pick: impl Fn(&crate::model::GpuSnapshot) -> u64) -> u64 {
-    snap.gpu.as_ref().map(pick).unwrap_or(0)
+    snap.gpus.iter().map(pick).sum()
 }
 
 /// Render the mask census for `DESCRIBE > model <mask>`.

@@ -18,6 +18,9 @@ SERVER_BINARY="${LLAMA_DIR}/build/bin/llama-server"
 HEADER_FILE="${PROJECT_DIR}/assets/vitriol-header.txt"
 CONFIG_DIR="${HOME}/.vitriol"
 CONFIG_FILE="${CONFIG_DIR}/config"
+# Telemetry log dir shared with vitriol-tui (same var the launch script honours)
+TELEMETRY_LOG_DIR="${COPULA_LOG_DIR:-/tmp/opencode}"
+GEN_LOG="$TELEMETRY_LOG_DIR/vitriol_gen.log"
 PROFILES_DIR="${CONFIG_DIR}/profiles"
 BUNDLED_PROFILES_DIR="${PROJECT_DIR}/profiles"
 CALIBRATION_DIR="${CONFIG_DIR}/calibration"
@@ -2074,7 +2077,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
 
         if $DETACH; then
             echo "Starting server in background..."
-            mkdir -p "$CONFIG_DIR"
+            mkdir -p "$CONFIG_DIR" "$TELEMETRY_LOG_DIR"
             SHIM_DIR="$(dirname "$SCRIPT_DIR")/libvitriol"
             export LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
@@ -2110,10 +2113,11 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --host "$HOST" \
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
+                        --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
                             $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
-                            "$@" &>"${CONFIG_DIR}/llama-server.log" &
+                            "$@" &>"$GEN_LOG" &
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
                 echo "  llama-server PID: $! (internal port $LLAMA_PORT)"
 
@@ -2164,15 +2168,16 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --host "$HOST" \
                         --port "$PORT" \
                         --parallel "$PARALLEL" \
+                        --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
                         $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
-                        "$@" &>"${CONFIG_DIR}/server.log" &
+                        "$@" &>"$GEN_LOG" &
                 echo $! > "${CONFIG_DIR}/server.pid"
                 echo "  Server PID: $!"
             fi
 
-            echo "  Log dir:   ${CONFIG_DIR}"
+            echo "  Log:       $GEN_LOG"
             echo ""
             echo "  curl http://${HOST}:${PORT}/v1/chat/completions \\"
             echo "    -H \"Content-Type: application/json\" \\"
@@ -2218,6 +2223,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --host "$HOST" \
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
+                        --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
                 LLAMA_PID=$!
@@ -2270,6 +2276,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --host "$HOST" \
                     --port "$PORT" \
                     --parallel "$PARALLEL" \
+                    --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \
                     $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \

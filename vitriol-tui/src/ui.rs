@@ -101,6 +101,19 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         ));
     }
     spans.push(Span::styled("  ·  vitriol-tui v0.1.0", theme::muted()));
+    // Slot occupancy from /slots, when the endpoint answers.
+    let slots = &app.snapshot.gen.slots;
+    if !slots.is_empty() {
+        let busy = slots.iter().filter(|s| s.is_processing).count();
+        spans.push(Span::styled(
+            format!("  ·  slots {}/{}", busy, slots.len()),
+            if busy > 0 {
+                theme::gold_muted()
+            } else {
+                theme::muted()
+            },
+        ));
+    }
     if app.snapshot.is_empty() {
         spans.push(Span::styled(
             "  ·  stack unreachable — nothing on :8279/:7980/:4779",
@@ -187,8 +200,29 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
         ]),
     ];
 
-    // VITRIOL decode breakdown ([PERF] line), when the server emits it.
+    // Port hint when the poller adopted a discovered llama-server port.
     let mut lines = lines;
+    if let Some(port) = g.effective_port {
+        lines.push(Line::from(vec![
+            Span::styled("port    ", theme::muted()),
+            Span::styled(format!(":{port} (discovered)"), theme::gold_muted()),
+        ]));
+    }
+
+    // Speculative-draft acceptance from /props, when the server reports it.
+    if let Some(d) = &g.draft {
+        let acc = d.acceptance_rate();
+        let value = match acc {
+            Some(rate) => format!("{:.0}% ({}k drafts)", rate * 100.0, d.n_total / 1000),
+            None => "—".to_string(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("mtp acc ", theme::muted()),
+            Span::styled(value, theme::info()),
+        ]));
+    }
+
+    // VITRIOL decode breakdown ([PERF] line), when the server emits it.
     if let Some(p) = &g.perf {
         lines.push(Line::from(vec![
             Span::styled("decode  ", theme::muted()),
@@ -252,15 +286,16 @@ fn render_embed_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-/// GPU card: btop-style gauges for VRAM + utilisation, temp/power, processes.
+/// GPU card: one compact btop-style block per GPU (VRAM + UTIL gauges), then
+/// the compute-process table.
 fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
-    let up = snap.gpu.as_ref().map(|g| g.present).unwrap_or(false);
+    let up = !snap.gpus.is_empty();
     let title = format!(" {} GPU ", theme::GLYPH_GPU);
     let block = panel(&title, up);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let Some(gpu) = &snap.gpu else {
+    if snap.gpus.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "nvidia-smi unavailable",
@@ -269,74 +304,91 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
             inner,
         );
         return;
-    };
+    }
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .split(inner);
+    // Three rows per GPU (header/VRAM/UTIL), then a process table filling
+    // whatever remains.
+    let mut constraints = Vec::new();
+    for _ in &snap.gpus {
+        constraints.push(Constraint::Length(3));
+    }
+    constraints.push(Constraint::Min(0));
+    let rows = Layout::vertical(constraints).split(inner);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(&gpu.name, theme::text()),
-            Span::styled(
-                format!("  {:.0}W  {}°C", gpu.power_w, gpu.temp_c),
-                theme::muted(),
-            ),
-        ])),
-        rows[0],
-    );
-
-    let vram_ratio = if gpu.vram_total_mib > 0 {
-        gpu.vram_used_mib as f64 / gpu.vram_total_mib as f64
-    } else {
-        0.0
-    };
-    render_gauge_row(
-        frame,
-        rows[1],
-        &format!(
-            "VRAM  {:.2}/{:.2} GiB  {:.0}%",
-            gpu.vram_used_mib as f64 / 1024.0,
-            gpu.vram_total_mib as f64 / 1024.0,
-            vram_ratio * 100.0
-        ),
-        vram_ratio,
-        theme::BrailleRamp::Capacity,
-    );
-    render_gauge_row(
-        frame,
-        rows[2],
-        &format!("UTIL  {}%", gpu.util_pct),
-        gpu.util_pct as f64 / 100.0,
-        theme::BrailleRamp::Activity,
-    );
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("PROCESSES", theme::muted()))),
-        rows[3],
-    );
-
-    let proc_lines: Vec<Line> = gpu
-        .processes
-        .iter()
-        .take(3)
-        .map(|p| {
-            Line::from(vec![
-                Span::styled(format!("  {:<6} ", p.pid), theme::muted()),
-                Span::styled(format!("{:<28}", short_name(&p.name)), theme::text()),
+    for (i, gpu) in snap.gpus.iter().enumerate() {
+        let g_rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(rows[i]);
+        let short = short_name(&gpu.name)
+            .replace("NVIDIA GeForce ", "")
+            .replace("NVIDIA ", "");
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("[{}] {}", gpu.index, short), theme::text()),
                 Span::styled(
-                    format!("{:.1} GiB", p.vram_mib as f64 / 1024.0),
-                    theme::live(),
+                    format!("  {:.0}W  {}°C", gpu.power_w, gpu.temp_c),
+                    theme::muted(),
                 ),
-            ])
-        })
-        .collect();
-    frame.render_widget(Paragraph::new(proc_lines), rows[4]);
+            ])),
+            g_rows[0],
+        );
+        let vram_ratio = if gpu.vram_total_mib > 0 {
+            gpu.vram_used_mib as f64 / gpu.vram_total_mib as f64
+        } else {
+            0.0
+        };
+        render_gauge_row(
+            frame,
+            g_rows[1],
+            &format!(
+                "VRAM  {:.2}/{:.2} GiB  {:.0}%",
+                gpu.vram_used_mib as f64 / 1024.0,
+                gpu.vram_total_mib as f64 / 1024.0,
+                vram_ratio * 100.0
+            ),
+            vram_ratio,
+            theme::BrailleRamp::Capacity,
+        );
+        render_gauge_row(
+            frame,
+            g_rows[2],
+            &format!("UTIL  {}%", gpu.util_pct),
+            gpu.util_pct as f64 / 100.0,
+            theme::BrailleRamp::Activity,
+        );
+    }
+
+    let proc_area = rows[snap.gpus.len()];
+    let mut proc_lines = vec![Line::from(Span::styled("PROCESSES", theme::muted()))];
+    proc_lines.extend(
+        snap.gpu_processes
+            .iter()
+            .take(proc_area.height.saturating_sub(1) as usize)
+            .map(process_line),
+    );
+    frame.render_widget(Paragraph::new(proc_lines), proc_area);
+}
+
+/// One compact process-table row: pid, name, GPU index, VRAM.
+fn process_line(p: &crate::model::GpuProcess) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("  {:<6} ", p.pid), theme::muted()),
+        Span::styled(format!("{:<24}", short_name(&p.name)), theme::text()),
+        Span::styled(
+            format!(
+                "GPU{} ",
+                p.gpu_index.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+            ),
+            theme::muted(),
+        ),
+        Span::styled(
+            format!("{:.1} GiB", p.vram_mib as f64 / 1024.0),
+            theme::live(),
+        ),
+    ])
 }
 
 /// One btop-style gauge row: a muted label line above a braille-dot fill bar.
@@ -379,9 +431,10 @@ fn render_braille_bar(frame: &mut Frame, area: Rect, ratio: f64, ramp: theme::Br
 }
 
 /// DECODE card: a braille-dot velocity gauge that lights only while a slot is
-/// actively decoding, plus the live rate and session peak. While idle the card
-/// collapses to a dim status line so the panel really stops when the stack
-/// does.
+/// actively decoding, plus the live rate and session peak. Each active slot
+/// also gets a per-request progress bar (`task N · decoded/total tok`). While
+/// idle the card collapses to a dim status line so the panel really stops when
+/// the stack does.
 fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
     let block = panel_neutral(" DECODE ");
     let inner = block.inner(area);
@@ -389,8 +442,15 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
 
     let speed = app.snapshot.gen.decode_speed;
     let peak = app.decode_history.iter().copied().fold(0.0f64, f64::max);
+    let active: Vec<&crate::model::SlotSnapshot> = app
+        .snapshot
+        .gen
+        .slots
+        .iter()
+        .filter(|s| s.is_processing)
+        .collect();
 
-    if speed <= 0.0 {
+    if speed <= 0.0 && active.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(vec![Span::styled(
                 if peak > 0.0 {
@@ -405,8 +465,21 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
         return;
     }
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
-    let bar_area = rows[1];
+    // One row per active slot, then the velocity line + gauge.
+    let mut constraints = Vec::with_capacity(active.len() + 2);
+    for _ in &active {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Min(1));
+    let rows = Layout::vertical(constraints).split(inner);
+
+    for (i, slot) in active.iter().enumerate() {
+        render_slot_progress_row(frame, rows[i], slot);
+    }
+
+    let vel_line = rows[active.len()];
+    let bar_area = rows[active.len() + 1];
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -416,7 +489,7 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
             ),
             Span::styled(format!("peak {peak:.1}"), theme::muted()),
         ])),
-        rows[0],
+        vel_line,
     );
 
     // Fill and color the gauge against the session peak: slow fills red, a
@@ -425,9 +498,35 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
     render_braille_bar(frame, bar_area, ratio, theme::BrailleRamp::Velocity);
 }
 
-/// Full btop-style GPU panel: metric gauges on top, process table below.
+/// One active-slot progress row: task id, braille fill of decoded/total, and
+/// the token counts.
+fn render_slot_progress_row(frame: &mut Frame, area: Rect, slot: &crate::model::SlotSnapshot) {
+    let total = slot.n_decoded + slot.n_remain;
+    let progress = slot.progress().unwrap_or(0.0);
+    let cols =
+        Layout::horizontal([Constraint::Length(12), Constraint::Min(0), Constraint::Length(14)])
+            .split(area);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("task {:<7}", slot.id_task.unwrap_or(slot.id).to_string()),
+            theme::muted(),
+        ))),
+        cols[0],
+    );
+    render_braille_bar(frame, cols[1], progress, theme::BrailleRamp::Velocity);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("{}/{} tok", slot.n_decoded, total),
+            theme::gauge_value_style(theme::BrailleRamp::Velocity, progress),
+        ))),
+        cols[2],
+    );
+}
+
+/// Full btop-style GPU panel: one gauge section per GPU on top, merged process
+/// table (with GPU column) below.
 fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
-    let Some(gpu) = &app.snapshot.gpu else {
+    if app.snapshot.gpus.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "nvidia-smi unavailable",
@@ -436,107 +535,121 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
             area,
         );
         return;
-    };
+    }
 
-    let rows = Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).split(area);
+    // 8 rows per GPU section (header + 6 metrics + spacer), plus borders.
+    let gauges_height = (app.snapshot.gpus.len() as u16) * 8 + 2;
+    let rows = Layout::vertical([Constraint::Length(gauges_height), Constraint::Min(0)]).split(area);
 
     let g_title = format!(" {} GAUGES ", theme::GLYPH_GPU);
     let gauge_panel = panel_neutral(&g_title);
     let g_inner = gauge_panel.inner(rows[0]);
     frame.render_widget(gauge_panel, rows[0]);
 
-    let g_rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(g_inner);
+    let mut sections = Vec::new();
+    for _ in &app.snapshot.gpus {
+        sections.push(Constraint::Length(8));
+    }
+    sections.push(Constraint::Min(0));
+    let sections = Layout::vertical(sections).split(g_inner);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(&gpu.name, theme::text()),
-            Span::styled(
-                format!(
-                    "    {:.0}W   {}°C   SM {} MHz   MEM {} MHz",
-                    gpu.power_w, gpu.temp_c, gpu.sm_clock_mhz, gpu.mem_clock_mhz
+    for (i, gpu) in app.snapshot.gpus.iter().enumerate() {
+        let g_rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(sections[i]);
+
+        let short = short_name(&gpu.name)
+            .replace("NVIDIA GeForce ", "")
+            .replace("NVIDIA ", "");
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(format!("[{}] {}", gpu.index, short), theme::title()),
+                Span::styled(
+                    format!(
+                        "    {:.0}W   {}°C   SM {} MHz   MEM {} MHz",
+                        gpu.power_w, gpu.temp_c, gpu.sm_clock_mhz, gpu.mem_clock_mhz
+                    ),
+                    theme::muted(),
                 ),
-                theme::muted(),
-            ),
-        ])),
-        g_rows[0],
-    );
+            ])),
+            g_rows[0],
+        );
 
-    let vram_ratio = ratio(gpu.vram_used_mib as f64, gpu.vram_total_mib as f64);
-    render_metric_row(
-        frame,
-        g_rows[1],
-        MetricRow {
-            label: "VRAM",
-            ratio: vram_ratio,
-            value: format!(
-                "{:.2}/{:.2} GiB {:.0}%",
-                gpu.vram_used_mib as f64 / 1024.0,
-                gpu.vram_total_mib as f64 / 1024.0,
-                vram_ratio * 100.0
-            ),
-            ramp: theme::BrailleRamp::Capacity,
-        },
-    );
-    render_metric_row(
-        frame,
-        g_rows[2],
-        MetricRow {
-            label: "UTIL",
-            ratio: gpu.util_pct as f64 / 100.0,
-            value: format!("{}%", gpu.util_pct),
-            ramp: theme::BrailleRamp::Activity,
-        },
-    );
-    render_metric_row(
-        frame,
-        g_rows[3],
-        MetricRow {
-            label: "TEMP",
-            ratio: gpu.temp_c as f64 / 100.0,
-            value: format!("{}°C", gpu.temp_c),
-            ramp: theme::BrailleRamp::Heat,
-        },
-    );
-    render_metric_row(
-        frame,
-        g_rows[4],
-        MetricRow {
-            label: "SM CLK",
-            ratio: gpu.sm_clock_mhz as f64 / 2000.0,
-            value: format!("{} MHz", gpu.sm_clock_mhz),
-            ramp: theme::BrailleRamp::Pulse,
-        },
-    );
-    render_metric_row(
-        frame,
-        g_rows[5],
-        MetricRow {
-            label: "MEM CLK",
-            ratio: gpu.mem_clock_mhz as f64 / 8000.0,
-            value: format!("{} MHz", gpu.mem_clock_mhz),
-            ramp: theme::BrailleRamp::Pulse,
-        },
-    );
-    let power_ratio = ratio(gpu.power_w, gpu.power_limit_w);
-    render_metric_row(
-        frame,
-        g_rows[6],
-        MetricRow {
-            label: "POWER",
-            ratio: power_ratio,
-            value: format!("{:.0}W / {:.0}W", gpu.power_w, gpu.power_limit_w),
-            ramp: theme::BrailleRamp::Power,
-        },
-    );
+        let vram_ratio = ratio(gpu.vram_used_mib as f64, gpu.vram_total_mib as f64);
+        render_metric_row(
+            frame,
+            g_rows[1],
+            MetricRow {
+                label: "VRAM",
+                ratio: vram_ratio,
+                value: format!(
+                    "{:.2}/{:.2} GiB {:.0}%",
+                    gpu.vram_used_mib as f64 / 1024.0,
+                    gpu.vram_total_mib as f64 / 1024.0,
+                    vram_ratio * 100.0
+                ),
+                ramp: theme::BrailleRamp::Capacity,
+            },
+        );
+        render_metric_row(
+            frame,
+            g_rows[2],
+            MetricRow {
+                label: "UTIL",
+                ratio: gpu.util_pct as f64 / 100.0,
+                value: format!("{}%", gpu.util_pct),
+                ramp: theme::BrailleRamp::Activity,
+            },
+        );
+        render_metric_row(
+            frame,
+            g_rows[3],
+            MetricRow {
+                label: "TEMP",
+                ratio: gpu.temp_c as f64 / 100.0,
+                value: format!("{}°C", gpu.temp_c),
+                ramp: theme::BrailleRamp::Heat,
+            },
+        );
+        render_metric_row(
+            frame,
+            g_rows[4],
+            MetricRow {
+                label: "SM CLK",
+                ratio: gpu.sm_clock_mhz as f64 / 2000.0,
+                value: format!("{} MHz", gpu.sm_clock_mhz),
+                ramp: theme::BrailleRamp::Pulse,
+            },
+        );
+        render_metric_row(
+            frame,
+            g_rows[5],
+            MetricRow {
+                label: "MEM CLK",
+                ratio: gpu.mem_clock_mhz as f64 / 8000.0,
+                value: format!("{} MHz", gpu.mem_clock_mhz),
+                ramp: theme::BrailleRamp::Pulse,
+            },
+        );
+        let power_ratio = ratio(gpu.power_w, gpu.power_limit_w);
+        render_metric_row(
+            frame,
+            g_rows[6],
+            MetricRow {
+                label: "POWER",
+                ratio: power_ratio,
+                value: format!("{:.0}W / {:.0}W", gpu.power_w, gpu.power_limit_w),
+                ramp: theme::BrailleRamp::Power,
+            },
+        );
+    }
 
     let proc_panel = panel_neutral(" PROCESSES ");
     let p_inner = proc_panel.inner(rows[1]);
@@ -545,12 +658,20 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = vec![Line::from(vec![
         Span::styled("  PID      ", theme::muted()),
         Span::styled(format!("{:<24}", "NAME"), theme::muted()),
+        Span::styled(format!("{:<5}", "GPU"), theme::muted()),
         Span::styled("VRAM", theme::muted()),
     ])];
-    lines.extend(gpu.processes.iter().map(|p| {
+    lines.extend(app.snapshot.gpu_processes.iter().map(|p| {
         Line::from(vec![
             Span::styled(format!("  {:<8} ", p.pid), theme::text()),
             Span::styled(format!("{:<24}", short_name(&p.name)), theme::text()),
+            Span::styled(
+                format!(
+                    "{:<5}",
+                    p.gpu_index.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+                ),
+                theme::muted(),
+            ),
             Span::styled(
                 format!("{:.1} GiB", p.vram_mib as f64 / 1024.0),
                 theme::live(),
@@ -1411,20 +1532,9 @@ fn render_officina_journal(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(" MEM ARENAS", theme::gold_muted())));
-    let used = app
-        .snapshot
-        .gpu
-        .as_ref()
-        .map(|g| g.vram_used_mib)
-        .unwrap_or(0) as f64
-        / 1024.0;
-    let total = app
-        .snapshot
-        .gpu
-        .as_ref()
-        .map(|g| g.vram_total_mib)
-        .unwrap_or(0) as f64
-        / 1024.0;
+    let (used_raw, total_raw) = app.snapshot.vram_totals();
+    let used = used_raw as f64 / 1024.0;
+    let total = total_raw as f64 / 1024.0;
     lines.push(Line::from(Span::styled(
         format!("  VRAM: {used:.1}/{total:.1} GiB"),
         theme::muted(),

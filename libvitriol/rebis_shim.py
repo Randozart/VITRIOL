@@ -342,13 +342,9 @@ def classify_turn(messages: list[dict], tools_attached: bool,
         return "draft"
     if has_calls:
         return "pipeline"
-    last_user = next((m for m in reversed(messages)
-                      if m.get("role") == "user"), None)
-    if last_user is None:
-        return "reason"  # unknown shape: quality-first
-    if estimate_reason_need(last_user.get("content")):
-        return "reason"
-    return "draft"
+    # No toolset => not an agentic execution turn. Quality-first: Sol.
+    # (Bare-chat Luna drafts degenerate without harness structure.)
+    return "reason"
 
 
 def synthesize_models(gateway_id: str = "rebis") -> dict:
@@ -671,6 +667,8 @@ class Shim(BaseHTTPRequestHandler):
             # Sol untouched — full depth reasoning.
             sol_payload = dict(payload)
             sol_payload["model"] = self.sol_model
+            sol_payload["max_tokens"] = max(sol_payload.get("max_tokens") or 0,
+                                            4096)
             sol_payload.setdefault("chat_template_kwargs",
                                    {"enable_thinking": True})
             data, _u = up.chat(up.sol, sol_payload)
@@ -923,12 +921,12 @@ def selftest() -> int:
         {"role": "assistant", "content": "All done, here is the summary."},
     ]
     assert classify_turn(finalizing, True) == "pipeline"
-    plain_short = [{"role": "user", "content": "fix typo in README"}]
-    assert classify_turn(plain_short, False) == "draft"
-    plain_deep = [{"role": "user",
-                   "content": "Explain the architecture tradeoffs of "
-                              "hybrid attention for our agent loop. " * 5}]
-    assert classify_turn(plain_deep, False) == "reason"
+    # No-tools turns are quality-first: always Sol.
+    assert classify_turn([{"role": "user",
+                           "content": "fix typo in README"}], False) == "reason"
+    assert classify_turn([{"role": "user",
+                           "content": "Explain architecture tradeoffs. " * 5}],
+                          False) == "reason"
     assert classify_turn([{"role": "user", "content": "?"}],
                          True, forced="rebis-qwen") == "reason"
     assert classify_turn([{"role": "user", "content": "?"}],

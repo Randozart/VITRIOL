@@ -1,5 +1,7 @@
 # REBIS Mandatum authoring guide
 
+*System documentation: `docs/REBIS.md`. This file covers only how to write task packets.*
+
 How to write task packets the Rebis loop can actually converge on. Every rule
 here was earned by a failed run.
 

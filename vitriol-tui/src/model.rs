@@ -210,6 +210,45 @@ pub struct GpuSnapshot {
     pub uuid: String,
 }
 
+/// One captured REBIS gateway/shim event (from the distill store).
+#[derive(Debug, Clone, Default)]
+pub struct RebisEvent {
+    /// ISO timestamp of the event.
+    pub ts: String,
+    /// Event kind: gateway_turn / pipeline_audited / steer_correct /
+    /// compaction / shim_judged ...
+    pub kind: String,
+    /// Session key it belonged to.
+    pub session: String,
+    /// One-line human summary.
+    pub detail: String,
+}
+
+/// Aggregated REBIS layer state for the dashboard tab.
+#[derive(Debug, Clone, Default)]
+pub struct RebisSnapshot {
+    /// Mercury gateway answering on its port.
+    pub mercury_up: bool,
+    /// Sol head answering.
+    pub sol_up: bool,
+    /// Luna head answering.
+    pub luna_up: bool,
+    /// Luna model id when reported.
+    pub luna_model: Option<String>,
+    /// Luna live decode tok/s from her heartbeat log.
+    pub luna_decode_t_s: f64,
+    /// Route counters: [reason, draft, pipeline].
+    pub routes: [u32; 3],
+    /// Audited turns that passed.
+    pub audits_pass: u32,
+    /// Audited turns that failed (corrected or escalated).
+    pub audits_fail: u32,
+    /// Compaction events.
+    pub compactions: u32,
+    /// Newest events, capped, oldest first.
+    pub recent: Vec<RebisEvent>,
+}
+
 /// Live tail of a service log, newest last, capped at [`LOG_TAIL_CAP`] lines.
 #[derive(Debug, Clone, Default)]
 pub struct LogsSnapshot {
@@ -236,6 +275,8 @@ pub struct Snapshot {
     pub gpus: Vec<GpuSnapshot>,
     /// Compute processes across all GPUs (uuid-attributed).
     pub gpu_processes: Vec<GpuProcess>,
+    /// REBIS gateway/head state + event stream aggregates.
+    pub rebis: RebisSnapshot,
     /// Live log tails for each service.
     pub logs: LogsSnapshot,
 }

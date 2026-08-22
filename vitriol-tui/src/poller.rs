@@ -22,7 +22,7 @@ use ureq::{Agent, AgentBuilder};
 use crate::config::Config;
 use crate::model::{
     DraftSnapshot, EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, MetricsTotals,
-    PerfSnapshot, RecentStore, SlotSnapshot, Snapshot,
+    PerfSnapshot, RebisEvent, RebisSnapshot, RecentStore, SlotSnapshot, Snapshot,
 };
 use crate::nvidia;
 
@@ -35,6 +35,7 @@ struct Poller {
     cfg: Config,
     /// Tail of the gen log.
     gen_tail: LogTail,
+    luna_beat_offset: Option<u64>,
     /// Tail of the Hermetis log.
     hermetis_tail: LogTail,
     /// Tail of the embed log.
@@ -64,6 +65,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
             let agent = AgentBuilder::new().timeout(Duration::from_secs(3)).build();
             let mut poller = Poller {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
+                luna_beat_offset: None,
                 hermetis_tail: LogTail::new(LOG_TAIL_CAP),
                 embed_tail: LogTail::new(LOG_TAIL_CAP),
                 decode_beat_offset: None,
@@ -90,12 +92,14 @@ impl Poller {
         self.embed_tail.poll(&self.cfg.embed_log());
         let gpus = nvidia::query_gpus();
         let gpu_processes = nvidia::query_processes(&gpus);
+        let rebis = self.poll_rebis(agent);
         let snap = Snapshot {
             gen: self.poll_gen(agent),
             hermetis: poll_hermetis(agent, &self.cfg),
             embed: poll_embed(agent, &self.cfg),
             gpus,
             gpu_processes,
+            rebis,
             logs: LogsSnapshot {
                 gen: self.gen_tail.snapshot(),
                 hermetis: self.hermetis_tail.snapshot(),
@@ -103,6 +107,106 @@ impl Poller {
             },
         };
         let _ = tx.send(snap);
+    }
+
+    /// Poll the REBIS layer: Mercury gateway + Sol/Luna head health,
+    /// Luna velocity, and the shim event stream from the distill store.
+    fn poll_rebis(&mut self, agent: &Agent) -> RebisSnapshot {
+        let mut snap = RebisSnapshot::default();
+        snap.sol_up = health_up(agent, self.cfg.gen_port);
+        snap.luna_up = health_up(agent, self.cfg.luna_port);
+        snap.mercury_up = health_up(agent, self.cfg.gateway_port);
+
+        if snap.luna_up {
+            if let Some(models) = get_json(
+                agent, &format!("http://127.0.0.1:{}/v1/models", self.cfg.luna_port))
+            {
+                snap.luna_model = models["models"]
+                    .as_array()
+                    .and_then(|a| a.first())
+                    .and_then(|m| m.get("model"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned)
+                    .or_else(|| models["data"].as_array()
+                        .and_then(|a| a.first())
+                        .and_then(|m| m.get("id"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned));
+            }
+        }
+        // Luna heartbeat lives in her log (same format as Sol's).
+        snap.luna_decode_t_s = parse_decode_speed(
+            &std::path::PathBuf::from("/tmp/mellum.log"),
+            &mut self.luna_beat_offset);
+
+        // Shim/distill event stream: aggregate + recent tail.
+        const MAX_LINES: usize = 400;
+        let path = self.cfg.distill_dir.join("shim-events.jsonl");
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return snap;
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        for line in lines.iter().rev().take(MAX_LINES).rev() {
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let session = v.get("session").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let session_c = session.clone();
+            match kind.as_str() {
+                "gateway_turn" => {
+                    let route = v.get("route").and_then(|x| x.as_str()).unwrap_or("");
+                    match route {
+                        "reason" => snap.routes[0] += 1,
+                        "draft" => snap.routes[1] += 1,
+                        "pipeline" => snap.routes[2] += 1,
+                        _ => {}
+                    }
+                    snap.recent.push(RebisEvent {
+                        ts: v.get("ts").cloned().unwrap_or_default().to_string(),
+                        kind: kind.clone(),
+                        session: session.clone(),
+                        detail: format!("route {route}"),
+                    });
+                }
+                "pipeline_audited" => {
+                    let complete = v.get("complete").and_then(|x| x.as_bool()).unwrap_or(false);
+                    if complete { snap.audits_pass += 1 } else { snap.audits_fail += 1 }
+                    snap.recent.push(RebisEvent {
+                        ts: v.get("ts").cloned().unwrap_or_default().to_string(),
+                        kind: kind.clone(),
+                        session: session.clone(),
+                        detail: format!("audit {}",
+                            if complete { "PASS" } else { "FAIL" }),
+                    });
+                }
+                _ => {}
+            }
+            // other kinds folded into recent below via generic push
+            if matches!(kind.as_str(), "steer_correct" | "compaction") {
+                snap.recent.push(RebisEvent {
+                    ts: v.get("ts").cloned().unwrap_or_default().to_string(),
+                    kind: kind.clone(),
+                    session,
+                    detail: match kind.as_str() {
+                        "steer_correct" => format!("corrected: {}",
+                            v.get("missing_actions").and_then(|x| x.as_array())
+                                .map(|a| a.len()).unwrap_or(0)),
+                        "compaction" => format!("digested {} turns",
+                            v.get("summarized_turns").and_then(|x| x.as_u64()).unwrap_or(0)),
+                        _ => String::new(),
+                    },
+                });
+                if kind == "compaction" { snap.compactions += 1; }
+            }
+        }
+        // de-dup: pipeline_audited pushed once above already handled; trim
+        for ev in snap.recent.iter_mut() { if ev.ts.is_empty() { ev.ts = "-".into(); } }
+        if snap.recent.len() > 60 {
+            let cut = snap.recent.len() - 60;
+            snap.recent.drain(0..cut);
+        }
+        snap
     }
 
     /// Poll the gen server: `/health`, `/v1/models`, `/slots`, `/props`,

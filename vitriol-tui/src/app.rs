@@ -37,11 +37,13 @@ pub enum Tab {
     Guide,
     /// Officina: the model-surgery workshop REPL (Alka / SPQL).
     Officina,
+    /// REBIS: gateway routes, draft-audit ledger, head status, event stream.
+    Rebis,
 }
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
@@ -51,6 +53,7 @@ impl Tab {
         Tab::Profiles,
         Tab::Guide,
         Tab::Officina,
+        Tab::Rebis,
     ];
 
     /// Short label used in the tab bar.
@@ -65,6 +68,7 @@ impl Tab {
             Tab::Profiles => "PROFILES",
             Tab::Guide => "GUIDE",
             Tab::Officina => "OFFICINA",
+            Tab::Rebis => "REBIS",
         }
     }
 }
@@ -988,12 +992,12 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 9);
+        assert_eq!(Tab::ALL.len(), 10);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
-        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Officina);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Rebis);
     }
 
     #[test]

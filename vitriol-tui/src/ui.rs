@@ -37,6 +37,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Profiles => render_profiles_tab(frame, rows[1], app),
         Tab::Guide => render_guide_tab(frame, rows[1], app),
         Tab::Officina => render_officina_tab(frame, rows[1], app),
+        Tab::Rebis => render_rebis_tab(frame, rows[1], app),
     }
     render_footer(frame, rows[2], app);
 }
@@ -1628,4 +1629,146 @@ mod tests {
         assert_eq!(short_name("python3"), "python3");
         assert_eq!(short_name(""), "");
     }
+}
+
+/// REBIS dashboard: head status, route distribution, audit ledger, and the
+/// live gateway event stream. The trenchcoat, visible.
+fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
+    let r = &app.snapshot.rebis;
+
+    let rows = Layout::vertical([
+        Constraint::Length(4),  // head status cells
+        Constraint::Length(6),  // routes + audit ledger
+        Constraint::Min(1),     // event stream
+    ])
+    .split(area);
+
+    // ── Head status ──
+    let heads = panel_neutral(" HEADS ");
+    let h_inner = heads.inner(rows[0]);
+    frame.render_widget(heads, rows[0]);
+    let cols = Layout::horizontal([
+        Constraint::Percentage(33),
+        Constraint::Percentage(33),
+        Constraint::Percentage(34),
+    ])
+    .split(h_inner);
+
+    let head_cell = |f: &mut Frame, area: Rect, name: &str, up: bool,
+                     line2: String| {
+        let color = if up { theme::live() } else { theme::muted() };
+        let cell_rows =
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+                .split(area);
+        let title_line = Line::from(Span::styled(
+            format!("{name} {}", if up { "●" } else { "·" }),
+            color.add_modifier(Modifier::BOLD),
+        ));
+        f.render_widget(Paragraph::new(title_line), cell_rows[0]);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(line2, theme::muted()))),
+            cell_rows[1],
+        );
+    };
+    let sol_line = if app.snapshot.gen.up {
+        format!("{} · {} tok/s", app.snapshot.gen.model.as_deref().unwrap_or("-"),
+                app.snapshot.gen.decode_t_s)
+    } else { "down".into() };
+    let luna_line = if r.luna_up {
+        format!("{} · {:.1} tok/s",
+                r.luna_model.as_deref().unwrap_or("-"), r.luna_decode_t_s)
+    } else { "down".into() };
+    head_cell(frame, cols[0], "MERCURY :8280", r.mercury_up, "gateway".into());
+    head_cell(frame, cols[1], "SOL :8279", r.sol_up || app.snapshot.gen.up, sol_line);
+    head_cell(frame, cols[2], "LUNA :8247", r.luna_up, luna_line);
+
+    // ── Routes + audit ledger ──
+    let mid = panel_neutral(" ROUTES / AUDIT LEDGER ");
+    let m_inner = mid.inner(rows[1]);
+    frame.render_widget(mid, rows[1]);
+
+    let [routes_area, audit_area] = Layout::horizontal([
+        Constraint::Percentage(50), Constraint::Percentage(50)]).areas(m_inner);
+
+    let total_routes: u32 = r.routes.iter().sum();
+    let route_lines = vec![
+        Line::from(vec![
+            Span::styled("reason   ", theme::muted()),
+            Span::styled(format!("{}", r.routes[0]), theme::text()),
+            Span::styled("  → Sol", theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled("draft    ", theme::muted()),
+            Span::styled(format!("{}", r.routes[1]), theme::text()),
+            Span::styled("  → Luna", theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled("pipeline ", theme::muted()),
+            Span::styled(format!("{}", r.routes[2]), theme::text()),
+            Span::styled("  → Luna∥Sol", theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled("total    ", theme::muted()),
+            Span::styled(format!("{total_routes}"), theme::gold_muted()),
+        ]),
+    ];
+    frame.render_widget(
+        Paragraph::new(route_lines).block(Block::default()
+            .borders(Borders::RIGHT)), routes_area);
+
+    let pct = |n: u32| {
+        if total_routes > 0 {
+            format!("{:>3}", (n * 100 / total_routes.max(1)) as u8)
+        } else { "  0".to_string() }
+    };
+    let audit_lines = vec![
+        Line::from(vec![
+            Span::styled("audits PASS      ", theme::muted()),
+            Span::styled(format!("{:>4}", r.audits_pass),
+                         theme::live().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}%", pct(r.audits_pass)), theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled("audits FAIL      ", theme::muted()),
+            Span::styled(format!("{:>4}", r.audits_fail),
+                         theme::warn().add_modifier(Modifier::BOLD)),
+            Span::styled(format!("  {}%", pct(r.audits_fail)), theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled("corrections      ", theme::muted()),
+            Span::styled(format!("{:>4}", r.audits_fail), theme::gold_muted()),
+        ]),
+        Line::from(vec![
+            Span::styled("compactions      ", theme::muted()),
+            Span::styled(format!("{:>4}", r.compactions), theme::info()),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(audit_lines), audit_area);
+
+    // ── Event stream ──
+    let ev_panel = panel_neutral(" EVENT STREAM ");
+    let e_inner = ev_panel.inner(rows[2]);
+    frame.render_widget(ev_panel, rows[2]);
+
+    let lines: Vec<Line> = if r.recent.is_empty() {
+        vec![Line::from(Span::styled(
+            "no gateway events yet — route traffic through :8280",
+            theme::muted()))]
+    } else {
+        r.recent.iter().rev().map(|e| {
+            let kind_style = match e.kind.as_str() {
+                "pipeline_audited" => theme::gold_muted(),
+                "steer_correct" => theme::warn(),
+                "compaction" => theme::info(),
+                _ => theme::muted(),
+            };
+            Line::from(vec![
+                Span::styled(format!("{} ", &e.ts.get(11..19).unwrap_or("")),
+                             theme::muted()),
+                Span::styled(format!("{:<18}", e.kind), kind_style),
+                Span::styled(e.detail.clone(), theme::text()),
+            ])
+        }).collect()
+    };
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), e_inner);
 }

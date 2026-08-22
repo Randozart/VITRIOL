@@ -18,6 +18,12 @@ pub struct Config {
     pub hermetis_port: u16,
     /// Embed (bge) server port. Env `VITRIOL_EMBED_PORT`.
     pub embed_port: u16,
+    /// Luna head port (Mellum2). Env `VITRIOL_LUNA_PORT`.
+    pub luna_port: u16,
+    /// Mercury gateway port (REBIS). Env `VITRIOL_GATEWAY_PORT`.
+    pub gateway_port: u16,
+    /// Distillation store directory. Env `VITRIOL_DISTILL_DIR`.
+    pub distill_dir: PathBuf,
     /// Directory holding the service log files. Env `COPULA_LOG_DIR`.
     pub log_dir: PathBuf,
     /// Hermetis project id for `/hermetis/stats`. Env `VITRIOL_PROJECT_ID`,
@@ -46,6 +52,20 @@ impl Config {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(4779);
+        let luna_port = env::var("VITRIOL_LUNA_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8247);
+        let gateway_port = env::var("VITRIOL_GATEWAY_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8280);
+        let distill_dir = env::var_os("VITRIOL_DISTILL_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env::var("HOME").unwrap_or_default())
+                    .join(".vitriol/distill")
+            });
         let log_dir = env::var_os("COPULA_LOG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp/opencode"));
@@ -64,6 +84,9 @@ impl Config {
             gen_port,
             hermetis_port,
             embed_port,
+            luna_port,
+            gateway_port,
+            distill_dir,
             log_dir,
             project_id,
             repo_root,

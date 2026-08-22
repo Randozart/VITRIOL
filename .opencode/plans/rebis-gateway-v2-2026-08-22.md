@@ -78,3 +78,16 @@ Misroute safety: uncertain ⇒ Qwen.
   (audit layer compensates); incremental stream-warming deferred to follow-up
   (one-shot warm per audited turn today).
 - Next: hermes end-to-end run against :8280; route-tuning from distill data.
+
+## Progress log (cont.)
+
+- 2026-08-22 11:30 — **TUI REBIS tab live** (commit e0bffb8): head status
+  cells (Mercury/Sol/Luna + model + velocity), route distribution, audit
+  ledger (PASS/FAIL/corrections/compactions), scrolling event stream from
+  shim-events.jsonl. Luna first-class in config/poller (VITRIOL_LUNA_PORT,
+  heartbeat tok/s). Verified live: event stream advancing with real traffic.
+- Known wart found while navigating: Officina REPL input focus blocks forward
+  Tab cycling past OFFICINA — BTab wrap-around reaches REBIS. Keymap fix
+  deferred.
+- Boot convenience still pending: scripts/rebis-gateway.sh exists;
+  `rebis` one-command mode in rebis-servers.sh sketched but not finalized.

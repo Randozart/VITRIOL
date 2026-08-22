@@ -49,16 +49,32 @@ supervise() { # supervise <start_fn> <name>
   done
 }
 
+start_mercury() {
+  setsid nohup ./scripts/rebis-gateway.sh >> /tmp/shim.log 2>&1 < /dev/null &
+  echo "Mercury launching :${REBIS_PORT:-8280}"
+}
+
 case "$WHICH" in
   sol)  start_sol ;;
   luna) start_luna ;;
+  mercury) start_mercury ;;
   both) killall -9 llama-server 2>/dev/null; sleep 2
         start_luna; sleep 20; start_sol ;;
   sol-sup)  supervise start_sol  Sol  ;;
   luna-sup) supervise start_luna Luna ;;
+  mercury-sup) supervise start_mercury Mercury ;;
   both-sup)
         killall -9 llama-server 2>/dev/null
         supervise start_sol  Sol  &
         supervise start_luna Luna & ;;
-  *) echo "usage: $0 [sol|luna|both|sol-sup|luna-sup|both-sup]"; exit 1 ;;
+  rebis)
+        # THE boot command: whole trenchcoat, supervised.
+        killall -9 llama-server 2>/dev/null
+        pkill -f '[r]ebis_shim.py' 2>/dev/null
+        start_luna; start_sol; sleep 20; start_mercury
+        supervise start_sol     Sol      &
+        supervise start_luna    Luna     &
+        supervise start_mercury Mercury  & ;;
+  *) echo "usage: $0 [sol|luna|mercury|both|rebis|sol-sup|luna-sup|mercury-sup|both-sup]"
+     exit 1 ;;
 esac

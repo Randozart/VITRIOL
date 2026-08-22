@@ -903,3 +903,185 @@ fill. PROVENANCE header inline. Built clean.
   flag name.
 - Verify pending (GPU): /v1/models n_ctx=32768, long session no compaction, injected
   context survives shifts.
+
+## 2026-08-21 20:40 — REBIS Phase 0: dual-model co-residency (PASSED)
+
+Plan: `.opencode/plans/rebis-phase0-plan-2026-08-21.md`. Raw JSON: `/tmp/opencode/t{0,1,3}_*.json`.
+
+Setup: Mellum2-12B-A2.5B-Thinking i1-IQ4_XS (6.2 GiB) pinned GPU1 (1070 Ti), ctx 16k,
+q4_0 KV, -fa on; Qwen3.8-27B UD-IQ2_S resident GPU0 (3060), ctx 32k, q4_0 KV, -fa on.
+Both `--no-mmap -ngl 99`, separate llama-server processes, ports 8287/8279.
+
+| metric | Qwen IQ3_S baseline (ts 24,12 stream) | Qwen IQ2_S @32k resident GPU0 | Mellum IQ4_XS GPU1 |
+|---|---|---|---|
+| prefill 1k / 4k / 16k tok/s | 264 / 262 / 239 | 428 / 438 / 417 | 559 / 513 / 442 |
+| decode t/s | 20.4 | 19.6 | 69.8 solo, 70.2 co-resident |
+| VRAM used/total | both GPUs (streaming) | 9.83/12 GiB (2.4 slack) | 6.68/8 GiB (1.5 slack) |
+
+Concurrent load (both servers active): no measurable penalty — Qwen prefill 431 t/s
+@8k, Mellum decode 69.8 t/s simultaneously.
+
+Gates: G1 PASS (70 ≥ 25) · G2 PASS (1.5+2.4 GiB slack ≥ 0.5) · G3 PASS (19.6 ≥ 8 @32k)
+· G4 pending maintainer eyeball of IQ2_S output quality.
+
+Key finding: IQ2_S fully-resident on the Ampere card beats the IQ3_S dual-GPU DMA-stream
+profile on BOTH axes — prefill 1.7× faster (no PCIe expert fetch), decode equal within
+noise. The Pascal penalty for Qwen disappears; 1070 Ti freed entirely for the drafter.
+16k-token context ingestion: 78 s → 31 s.
+
+T4 (Strand-Rust-Coder control) deferred — low information value now that drafter gate
+passed by wide margin.
+
+## 2026-08-21 21:05 — REBIS Phase 1 smoke test (PASSED, after 2 protocol fixes)
+
+First live loop: rebis.py, drafter = Mellum i1-IQ4_XS :8287, verifier = Qwen UD-IQ2_S
+:8279, task = implement `reset` txn on a scratch Ledger crate, gate = cargo check.
+
+Bug 1 (false GREEN): Mellum Thinking puts output in `reasoning_content` when the think
+budget exhausts max_tokens; content was empty, empty file compiled clean, loop declared
+success on a 0-byte draft. Fix: chat() returns full message dict; message_text() merges
+content+reasoning; empty-draft guard skips gate and retries.
+
+Bug 2 (design): compiler-green was terminal — verifier never consulted. Iteration-1
+draft nulled the pointer WITHOUT freeing (leak), cargo check blind to it, loop exited.
+Fix: verifier reviews EVERY draft; success requires compile_ok AND verdict pass.
+
+Post-fix run: iteration 1 ACCEPTED — draft frees via Box::from_raw, nulls pointer before
+size write, single documented unsafe block, keeps existing API. 26.8 s draft wall time.
+Doubles as G4 evidence: IQ2_S verifier judgment usable on this task class.
+
+Known caveat: Box::from_raw correct only if allocation originated from Box::into_raw —
+verifier prompt should require provenance justification next. Scratch crate:
+/tmp/opencode/rebis-scratch. Task packet: libvitriol/examples/rebis-example-task.json.
+
+## 2026-08-21 22:30 — REBIS Phase 2a: agentic hardening (COMPLETE)
+
+`libvitriol/rebis.py` v2. New: strict verdict schema (`checks[]` with per-invariant
+evidence; missing coverage coerced to fail), grammar-constrained verdicts
+(`/apply-template` + `/completion` + top-level `json_schema`, legacy chat fallback),
+multi-file Mandatum (`file_slices[]`, `### <path>` section extraction), JSONL journal +
+`--resume`, retry/respawn/wall-clock-budget semantics, token accounting + `--report`.
+
+Bugs found and fixed during live drills:
+1. Verifier rambling: unconstrained IQ2_S verdicts hit the 8192-token cap (462 s each).
+   Fix: json_schema-constrained `/completion` at temp 0.0 → verdicts now ~150–570 tokens,
+   parseable by construction.
+2. Raw `/completion` returns `content`+`timings`, not OAI `choices`/`usage` — mapped.
+3. Budget only gated between iterations; single call could overrun. Fix: every attempt
+   derives its timeout from the wall-clock deadline.
+4. Budget/server aborts journaled as terminal `result` — resume refused them. Fix:
+   resumable `paused` events; only iteration-cap writes terminal result.
+5. Host-RAM OOM killed Qwen server (dmesg: anon-rss 7 GB): fork prompt-cache unbounded
+   (`server_prompt_cache`, default --cache-ram 8192 MiB) × long sessions. Fix: servers
+   relaunched with `--cache-ram 2048` (Qwen) / `1024` (Mellum). AGENTIC USE REQUIRES
+   THIS FLAG.
+
+Drill results (scratch crate):
+- Budget-cut run paused cleanly at wall clock; `--resume` continued and finished.
+- Unsound pointer task (free untracked `*mut u64`): verifier correctly REFUSED all 3
+  iterations, catching real bugs each round (Vec::from_raw_parts arity, null vs
+  null_mut, unnecessary unsafe). Spec was unsound, not the loop — replaced with a
+  sound task carrying a capacity-retention trap.
+- Sound task: ACCEPTED iteration 1 (26 s wall, drafter 283p/1095c tok, verifier
+  439p/152c tok); hand-written runtime test confirms empty + committed-clear +
+  capacity preserved.
+
+Phase 2b (Anticipatio) next: slot topology measurement, async shadow prefill, TTFT
+cold-vs-warm probe.
+
+## 2026-08-21 23:59 — REBIS hermes experiments E1–E4
+
+Config note: hermes-agent enforces a ≥64k context floor → both servers relaunched at
+-c 65536. Qwen IQ2_S @64k q4_0 KV fits GPU0 (10.2/12 GiB); Mellum pinned CANNOT reach
+64k (KV+weights >8 GiB) → --n-cpu-moe 16 hybrid = 3.6/8 GiB but decode drops to
+4.98 t/s (from 70 pinned).
+
+| exp | path | result |
+|---|---|---|
+| E1 | hermes→Qwen direct | task CORRECT (2 tests pass), 18m23s wall — ingestion tax quantified |
+| E2 | hermes→Mellum direct | FAILURE MODE CONFIRMED LIVE: zero tool calls, hallucinated API (Ledger::new()), file untouched, 12m17s at 5 t/s |
+| E3 | Anticipatio probe | FAILED GATE: cold 43.6s vs warm 42.6s prefill = 2.3% reduction (need ≥40%). Fork LCP-slot-selection + checkpoint save/load overhead (~48s wall vs 43s prefill) defeats prefix reuse. Deprioritized. |
+| E4 | hermes→Qwen brain→rebis.py via bash tool | **PASSED**: brain authored Mandatum JSON itself, loop accepted iteration 1 (drafter 498p/1413c, verifier 804p/242c, 97s), hermes independently verified total() == iter().sum(), cargo test green |
+
+Second OOM root cause: 15 GB system RAM total; dual-server with --no-mmap staging
+collides during loads (Mellum stages 6.2 GiB through host RAM). Fix: mmap weights
+(both models fully VRAM-resident anyway → host pages stay evictable page-cache),
+stagger server startups, --cache-ram 512/1024. Post-fix: 12 Gi available with both up.
+
+ARCHITECTURE VERDICT: "Mellum as hermes brain" is dead on this hardware either way
+(pinned <64k window; hybrid 5 t/s). Daily-driver shape is hermes(Qwen brain) +
+rebis.py as an orchestrated tool — no proxy required for v1. Shim steering layer
+(flagged/finals) becomes an optimization, not a prerequisite.
+
+Design note from the run (keep): verdict evidence is inspection-based; add
+test-emitting invariants ("add a test asserting X") so the compiler gate arbitrates
+semantic claims instead of trusting drafter prose.
+
+## 2026-08-22 00:45 — F1/F2: Mellum speed ladder + test-emitting invariants
+
+F2 — Mellum i1-IQ4_XS @64k ctx, decode t/s by --n-cpu-moe (GPU1 8 GiB):
+  moe16 3.6 GiB → 4.98 | moe8 5.28 → 33.3 | moe4 6.09 → 44.0 | moe0 PINNED 6.87 → 70.2
+Earlier "can't pin at 64k" estimate was WRONG — SWA(3:1) + 4 KV heads + q4_0 KV keep
+64k KV ≈0.7 GiB. Mellum CAN serve hermes' 64k floor at full speed. E2's blocker was
+purely agency (tool-call initiation), never throughput.
+
+F1 — test-emitting invariants (compiler gate = cargo test executes semantics):
+- Positive run f1-v7: ACCEPTED iteration 3 after two precise compile-RED pokes
+  (140 s wall; drafter 1431p/5930c, verifier 2357p/766c).
+- Negative control: poisoned total() with .skip(1) + spec-correct test asserting 10:
+  execution caught it (test FAILED) AND constrained inspection caught it (I2 fail,
+  delta "remove .skip(1)"). Redundant layers confirmed.
+
+Loop defects found & fixed this round (all in rebis.py):
+1. Verdict JSON with raw newlines inside evidence strings → unparseable; added
+   string-state sanitizer retry (_sanitize_json_candidate).
+2. Compiler report kept rustc TAIL only — first error drowned by summary. Added
+   ERROR DIGEST of all `error` lines leading the report.
+3. Correction turns showed the ORIGINAL skeleton, so the drafter regenerated from
+   scratch each poke and lost converged progress (whack-a-mole across iterations).
+   Fix: drafter_messages(current_files=...) feeds the LAST DRAFT on correction turns.
+4. Verdict coverage required verbatim invariant strings; paraphrase ⇒ spurious
+   "unaddressed". Fix: id-based checks in schema (model echoes I-number) +
+   hybrid fuzzy fallback (sequence similarity OR token containment ≥0.7).
+5. TASK-SPEC lesson (twice now): invariants must be JOINTLY SATISFIABLE. Both the
+   pointer task and "definitions unchanged" vs tests-needing-construction were
+   contradictory specs the verifier rightly refused forever. Planner guidance must
+   include a satisfiability self-check.
+
+## 2026-08-22 02:30 — Phase 4 prep: S1 battery cell + delta-protocol bake-off
+
+INCIDENT: battery run S1-armB wrote a 24-line drafter fragment over the real
+230-line model.rs and a 5-line fragment over 1600-line ui.rs (whole-file regen
+exceeds any drafter budget → truncation). Recovery: git checkout to HEAD +
+replayed all session edits from transcript. Post-incident rails in rebis.py:
+FRAGMENT GUARD (draft <25% of existing >400B file ⇒ rejected), .rebis-bak
+snapshot on first overwrite, patch-failure reports journaled.
+
+DELTA-PROTOCOL BAKE-OFF on real task (S1: SlotSnapshot::total_tokens, cargo-gated):
+| protocol | Mellum-Thinking IQ4_XS | verdict |
+|---|---|---|
+| file-whole @4096 | truncated fragments every iter | dead: 242-line file ≈ 5k tok > budget |
+| file-whole @12288 | emits only 1.2KB region anyway | model refuses whole-file re-emission |
+| unified diff, thinking on | burns budget pre-diff; hallucinated hunk context ("// ... existing tests ...") | dead |
+| unified diff, thinking off | malformed pseudo-diffs (`@@` empty, no headers) then `# FINAL` repetition loops | dead |
+| SEARCH/REPLACE + few-shot example | perfect FORMAT, hallucinated CONTENT (invented duplicate impls) | fidelity beyond its grade |
+| SEARCH/REPLACE, Qwen as drafter | **ACCEPTED iteration 1, 152/152 tests green, 130s wall** | ✓ |
+
+Plus one process self-inflicted wound found: mid-experiment `git checkout` of the
+baseline file reverted restored session state under three runs before detection.
+Rule added to guide: snapshot, never checkout, during experiments.
+
+Also landed in rebis.py this round:
+- verify_mode "compiler_only" (skip LLM auditor when gate covers invariants) —
+  motivated by IQ2_S auditor hallucinating fixes for already-present code at 17k
+  prompt tokens
+- enable_thinking:false passthrough (chat_template_kwargs) — thinking OFF kills
+  Mellum's delta ability entirely; ON burns 40-70% of budget. Documented per-mode.
+- split_sections/SR_BLOCK_RE/apply_replace_blocks (exact + whitespace-tolerant
+  line-span matching, atomic multi-block application)
+
+DRAFTER SELECTION MATRIX (guide §0): Mellum = new/small-file generation;
+Qwen = modifications to real files; deterministic tooling = mechanical ops.
+
+Battery state: S1 cell validated end-to-end (arm B variant with Qwen drafter).
+Remaining: arms A/C formal timing runs, S2/H1 packets, full report.

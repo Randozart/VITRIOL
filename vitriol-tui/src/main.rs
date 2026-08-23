@@ -66,6 +66,8 @@ fn main() -> io::Result<()> {
                         if key.kind == KeyEventKind::Press
                             && app.tab == app::Tab::Sweep
                             && !app.control_running
+                            && key.code != KeyCode::Tab
+                            && key.code != KeyCode::BackTab
                     => match key.code {
                             KeyCode::Up => app.sweep.focus_up(),
                             KeyCode::Down => app.sweep.focus_down(),

@@ -34,11 +34,20 @@ fn rebis_docs_dir(cfg: &Config) -> PathBuf {
     cfg.repo_root.join("docs/rebis")
 }
 
+/// Tertiary feed: full flag reference articles.
+fn reference_docs_dir(cfg: &Config) -> PathBuf {
+    cfg.repo_root.join("docs/reference")
+}
+
 /// Discover every optimization doc, sorted by title. Missing directory yields
 /// an empty list (never errors).
 pub fn discover(cfg: &Config) -> Vec<Doc> {
     let mut out = Vec::new();
-    for dir in [optimizations_dir(cfg), rebis_docs_dir(cfg)] {
+    for dir in [
+        optimizations_dir(cfg),
+        rebis_docs_dir(cfg),
+        reference_docs_dir(cfg),
+    ] {
         let Ok(entries) = fs::read_dir(dir) else {
             continue;
         };

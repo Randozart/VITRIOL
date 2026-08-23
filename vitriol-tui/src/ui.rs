@@ -1781,9 +1781,9 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let r = &app.snapshot.rebis;
 
     let rows = Layout::vertical([
-        Constraint::Length(6),  // head status cells + host RAM guardrail
-        Constraint::Length(6),  // routes + audit ledger
-        Constraint::Min(1),     // event stream
+        Constraint::Length(6),   // head status cells + host RAM guardrail
+        Constraint::Length(7),   // routes + audit ledger | CONFIG
+        Constraint::Min(1),      // event stream
     ])
     .split(area);
 
@@ -1868,8 +1868,10 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let m_inner = mid.inner(rows[1]);
     frame.render_widget(mid, rows[1]);
 
-    let [routes_area, audit_area] = Layout::horizontal([
-        Constraint::Percentage(50), Constraint::Percentage(50)]).areas(m_inner);
+    let [routes_area, audit_area, cfg_area] = Layout::horizontal([
+        Constraint::Percentage(34), Constraint::Percentage(33),
+        Constraint::Percentage(33)])
+        .areas(m_inner);
 
     let total_routes: u32 = r.routes.iter().sum();
     let route_lines = vec![
@@ -1925,6 +1927,46 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
         ]),
     ];
     frame.render_widget(Paragraph::new(audit_lines), audit_area);
+
+    // ── CONFIG pane (persisted to ~/.vitriol/rebis.env; applies next launch) ──
+    let cfg_panel = panel_neutral(" CONFIG (◄ ► edit) ");
+    let c_inner = cfg_panel.inner(cfg_area);
+    frame.render_widget(cfg_panel, cfg_area);
+    let rc = &app.rebis_cfg;
+    let mark = |i: usize| if app.rebis_cfg_focus == i { "▸ " } else { "  " };
+    let dirty_tag = if app.rebis_cfg_dirty { " *" } else { "" };
+    let cfg_lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{}think cap ", mark(0)), theme::muted()),
+            Span::styled(format!("{} tok", rc.reasoning_budget),
+                         if app.rebis_cfg_focus == 0 { theme::text() } else { theme::muted() }),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{}sol ram  ", mark(1)), theme::muted()),
+            Span::styled(format!("{} MiB", rc.sol_cache_ram),
+                         if app.rebis_cfg_focus == 1 { theme::text() } else { theme::muted() }),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{}luna ram ", mark(2)), theme::muted()),
+            Span::styled(format!("{} MiB", rc.luna_cache_ram),
+                         if app.rebis_cfg_focus == 2 { theme::text() } else { theme::muted() }),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{}backoff  ", mark(3)), theme::muted()),
+            Span::styled(format!("{} s", rc.backoff_s),
+                         if app.rebis_cfg_focus == 3 { theme::text() } else { theme::muted() }),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("{}compact ", mark(4)), theme::muted()),
+            Span::styled(format!("{} tok", rc.compact_threshold),
+                         if app.rebis_cfg_focus == 4 { theme::text() } else { theme::muted() }),
+        ]),
+        Line::from(Span::styled(
+            format!("  applies on launch{dirty_tag}"),
+            theme::muted(),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(cfg_lines), c_inner);
 
     // ── Event stream ──
     let ev_panel = panel_neutral(" EVENT STREAM ");

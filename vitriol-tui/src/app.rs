@@ -256,6 +256,61 @@ impl SweepState {
     }
 }
 
+/// REBIS tunables persisted to ~/.vitriol/rebis.env (KEY=VALUE), sourced by
+/// the launcher and gateway on start. Changes apply on next launch.
+#[derive(Debug, Clone)]
+pub struct RebisConfig {
+    pub reasoning_budget: u32,
+    pub sol_cache_ram: u32,
+    pub luna_cache_ram: u32,
+    pub backoff_s: u32,
+    pub compact_threshold: u32,
+}
+
+impl Default for RebisConfig {
+    fn default() -> Self {
+        Self { reasoning_budget: 2048, sol_cache_ram: 1024,
+               luna_cache_ram: 512, backoff_s: 15,
+               compact_threshold: 48000 }
+    }
+}
+
+pub const REBIS_ENV_PATH: &str = ".vitriol/rebis.env";
+
+impl RebisConfig {
+    pub fn load(home: &std::path::Path) -> Self {
+        let mut cfg = Self::default();
+        let path = home.join(REBIS_ENV_PATH);
+        let Ok(text) = std::fs::read_to_string(path) else { return cfg };
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            let v: u32 = v.trim().parse().unwrap_or(0);
+            if v == 0 { continue; }
+            match k.trim() {
+                "REBIS_REASONING_BUDGET" => cfg.reasoning_budget = v,
+                "REBIS_SOL_CACHE_RAM" => cfg.sol_cache_ram = v,
+                "REBIS_LUNA_CACHE_RAM" => cfg.luna_cache_ram = v,
+                "REBIS_BACKOFF" => cfg.backoff_s = v,
+                "REBIS_COMPACT_THRESHOLD" => cfg.compact_threshold = v,
+                _ => {}
+            }
+        }
+        cfg
+    }
+
+    pub fn save(&self, home: &std::path::Path) -> std::io::Result<()> {
+        let path = home.join(REBIS_ENV_PATH);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let body = format!(
+            "REBIS_REASONING_BUDGET={}\nREBIS_SOL_CACHE_RAM={}\nREBIS_LUNA_CACHE_RAM={}\nREBIS_BACKOFF={}\nREBIS_COMPACT_THRESHOLD={}\n",
+            self.reasoning_budget, self.sol_cache_ram,
+            self.luna_cache_ram, self.backoff_s, self.compact_threshold);
+        std::fs::write(path, body)
+    }
+}
+
 pub struct App {
     /// Endpoint/log config.
     pub cfg: Config,
@@ -281,6 +336,9 @@ pub struct App {
     pub control_step: String,
     /// Control output log ring, newest last.
     pub sweep: SweepState,
+    pub rebis_cfg: RebisConfig,
+    pub rebis_cfg_focus: usize,
+    pub rebis_cfg_dirty: bool,
     pub control_log: VecDeque<String>,
     /// Shared abort flag for the control executor.
     pub control_abort: Arc<AtomicBool>,
@@ -352,6 +410,7 @@ pub struct AscensusEdit {
 impl App {
     /// Create empty app state. `history_cap` bounds the sparkline sample ring.
     pub fn new(cfg: Config, history_cap: usize) -> Self {
+        let home_dir = cfg.home_dir.clone();
         let profiles = profile::discover(&cfg);
         let config_file = crate::config_edit::ConfigFile::load(&cfg);
         let guide_docs = crate::guide::discover(&cfg);
@@ -370,6 +429,9 @@ impl App {
             control_action: String::new(),
             control_step: String::new(),
             sweep: SweepState::default(),
+            rebis_cfg: RebisConfig::load(&home_dir),
+            rebis_cfg_focus: 0,
+            rebis_cfg_dirty: false,
             control_log: VecDeque::with_capacity(200),
             control_abort: Arc::new(AtomicBool::new(false)),
             finished_action: None,
@@ -901,6 +963,40 @@ impl App {
     /// The CONTROLS action list.
     pub fn actions(&self) -> Vec<Action> {
         Action::all(&self.profiles, self.selected_profile.as_deref())
+    }
+
+    pub fn rebis_cfg_focus_up(&mut self) {
+        self.rebis_cfg_focus = (self.rebis_cfg_focus + 4) % 5;
+    }
+
+    pub fn rebis_cfg_focus_down(&mut self) {
+        self.rebis_cfg_focus = (self.rebis_cfg_focus + 1) % 5;
+    }
+
+    pub fn rebis_cfg_adjust(&mut self, dir: i32) {
+        let step = |v: u32, d: i32, lo: u32, hi: u32, sz: u32| {
+            (v as i32 + d * sz as i32).clamp(lo as i32, hi as i32) as u32
+        };
+        let changed = match self.rebis_cfg_focus {
+            0 => { self.rebis_cfg.reasoning_budget =
+                       step(self.rebis_cfg.reasoning_budget, dir, 256, 8192, 256); true }
+            1 => { self.rebis_cfg.sol_cache_ram =
+                       step(self.rebis_cfg.sol_cache_ram, dir, 256, 8192, 256); true }
+            2 => { self.rebis_cfg.luna_cache_ram =
+                       step(self.rebis_cfg.luna_cache_ram, dir, 128, 4096, 128); true }
+            3 => { self.rebis_cfg.backoff_s =
+                       step(self.rebis_cfg.backoff_s, dir, 5, 120, 5); true }
+            4 => { self.rebis_cfg.compact_threshold =
+                       step(self.rebis_cfg.compact_threshold, dir, 8000, 120000, 4000); true }
+            _ => false,
+        };
+        if changed {
+            match self.rebis_cfg.save(&self.cfg.home_dir) {
+                Ok(()) => self.rebis_cfg_dirty = false,
+                Err(e) => self.push_control_line(format!(
+                    "rebis config save failed: {e}")),
+            }
+        }
     }
 
     /// The sweep action for the current form state.

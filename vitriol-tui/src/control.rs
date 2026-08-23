@@ -32,6 +32,8 @@ pub enum Action {
     Setup,
     /// Boot the whole REBIS trenchcoat: Sol + Luna + Mercury, supervised.
     LaunchRebis,
+    /// Tear down the entire REBIS stack.
+    StopRebis,
     /// Run a placement sweep (pin/mtp/ts grid) via sweep_controller for an
     /// explicit model + device target, benchmarking tok/s per config.
     RunSweepConfig {
@@ -58,6 +60,7 @@ impl Action {
             Action::Doctor => "run doctor".into(),
             Action::Setup => "vitriol setup (CAP_IPC_LOCK)".into(),
             Action::LaunchRebis => "launch rebis (Sol+Luna+Mercury)".into(),
+            Action::StopRebis => "stop rebis (tear down all)".into(),
             Action::RunSweepConfig { model, devices, ctx, .. } => {
                 let file = std::path::Path::new(model)
                     .file_name()
@@ -82,6 +85,7 @@ impl Action {
             Action::Doctor,
             Action::Setup,
             Action::LaunchRebis,
+            Action::StopRebis,
         ];
         // Sweeps moved to the dedicated SWEEP tab (profile-independent).
         let _ = profiles;
@@ -148,6 +152,12 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
             program: cfg.repo_root.join("scripts/rebis-servers.sh")
                 .to_string_lossy().into_owned(),
             args: vec!["rebis".into()],
+        }],
+        Action::StopRebis => vec![Step {
+            label: action.label(),
+            program: cfg.repo_root.join("scripts/rebis-servers.sh")
+                .to_string_lossy().into_owned(),
+            args: vec!["stop".into()],
         }],
         Action::Setup => {
             // 2026-08-07: `sudo -n` keeps the no-tty control thread honest — a
@@ -352,7 +362,7 @@ mod tests {
             parallel: None,
         };
         let actions = Action::all(&[p], None);
-        assert_eq!(actions.len(), 6);
+        assert_eq!(actions.len(), 7);
         assert_eq!(actions[0], Action::Start { selected: None });
         assert_eq!(actions[1], Action::Stop);
         assert_eq!(actions[2], Action::Restart { selected: None });

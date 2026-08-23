@@ -27,6 +27,9 @@ CTX=65536
 WHICH="${1:-both}"
 BACKOFF="${REBIS_BACKOFF:-15}"
 
+# user overrides from the TUI config pane persist here
+[ -f "${HOME}/.vitriol/rebis.env" ] && . "${HOME}/.vitriol/rebis.env"
+
 COMMON=(--cache-type-k q4_0 --cache-type-v q4_0 -fa on --jinja
         --context-shift --cache-reuse 256
         --ctx-checkpoints 8 --checkpoint-every-n-tokens 16384
@@ -36,7 +39,7 @@ port_healthy() { curl -s -m1 "http://127.0.0.1:$1/health" 2>/dev/null | grep -q 
 
 # Foreground runners — these BLOCK until the server dies.
 run_sol() {
-  local BUDGET="${REBIS_REASONING_BUDGET:-1024}"
+  local BUDGET="${REBIS_REASONING_BUDGET:-2048}"
   CUDA_VISIBLE_DEVICES=0 "$BIN_SOL" \
     -m "$SOL_MODEL" -ngl 99 -c "$CTX" "${COMMON[@]}" \
     --cache-ram 1024 --port 8279 \

@@ -1,6 +1,7 @@
 #!/bin/bash
 # REBIS Mercury gateway launcher (:8280) — supervised by callers.
 cd "$(dirname "$0")/.."
+[ -f "${HOME}/.vitriol/rebis.env" ] && . "${HOME}/.vitriol/rebis.env"
 exec python3 libvitriol/rebis_shim.py \
   --port "${REBIS_PORT:-8280}" \
   --luna-url "${REBIS_LUNA_URL:-http://127.0.0.1:8247}" \

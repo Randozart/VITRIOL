@@ -291,7 +291,8 @@ def sse_from_response(data: dict) -> bytes:
 
 # ── Gateway compaction (day-long sessions) ───────────────────────────
 
-COMPACT_THRESHOLD_TOKENS = 48000   # ~75% of the 65536 window
+COMPACT_THRESHOLD_TOKENS = int(__import__("os").environ.get(
+    "REBIS_COMPACT_THRESHOLD", "48000"))  # ~75% of the 65536 window
 KEEP_RECENT_TOKENS = 10000         # active work never summarized
 DIGEST_MARKER = "[SESSION MEMORY — compacted history]"
 

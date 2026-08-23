@@ -104,6 +104,10 @@ fn main() -> io::Result<()> {
                     KeyCode::Tab if app.tab != app::Tab::Officina => app.next_tab(),
                     KeyCode::Left if app.tab == app::Tab::Logs => app.cycle_log_source(-1),
                     KeyCode::Right if app.tab == app::Tab::Logs => app.cycle_log_source(1),
+                    KeyCode::Up if app.tab == app::Tab::Rebis => app.rebis_cfg_focus_up(),
+                    KeyCode::Down if app.tab == app::Tab::Rebis => app.rebis_cfg_focus_down(),
+                    KeyCode::Left if app.tab == app::Tab::Rebis => app.rebis_cfg_adjust(-1),
+                    KeyCode::Right if app.tab == app::Tab::Rebis => app.rebis_cfg_adjust(1),
                     KeyCode::BackTab => app.prev_tab(),
                     // Shift+arrows cycle tabs so plain arrows stay free for
                     // in-screen navigation.

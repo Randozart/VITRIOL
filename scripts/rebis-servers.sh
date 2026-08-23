@@ -28,10 +28,12 @@ COMMON=(--cache-type-k q4_0 --cache-type-v q4_0 -fa on --jinja
         --host 127.0.0.1 --slots --metrics)
 
 start_sol() {
+  local BUDGET="${REBIS_REASONING_BUDGET:-1024}"
   CUDA_VISIBLE_DEVICES=0 setsid nohup "$BIN_SOL" \
     -m "$SOL_MODEL" -ngl 99 -c "$CTX" "${COMMON[@]}" \
-    --cache-ram 2048 --port 8279 > /tmp/qwen.log 2>&1 < /dev/null &
-  echo "Sol launching :8279"
+    --cache-ram 2048 --port 8279 \
+    --reasoning-budget "$BUDGET" > /tmp/qwen.log 2>&1 < /dev/null &
+  echo "Sol launching :8279 (reasoning budget $BUDGET)"
 }
 
 start_luna() {

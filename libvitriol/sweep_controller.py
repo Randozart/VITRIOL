@@ -20,7 +20,9 @@ from dataclasses import dataclass, field, asdict
 # Paths
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 LLAMA_DIR = PROJECT_DIR / "llama.cpp"
-SERVER_BINARY = LLAMA_DIR / "build" / "bin" / "llama-server"
+SERVER_BINARY = LLAMA_DIR / "build-rebis" / "bin" / "llama-server"
+SWEEP_PORT = int(__import__("os").environ.get("REBIS_SWEEP_PORT", "8290"))
+SKIP_STOP = __import__("os").environ.get("REBIS_SWEEP_SKIP_STOP", "") == "1"
 CONFIG_DIR = Path.home() / ".vitriol"
 SERVER_LOG = CONFIG_DIR / "sweep-server.log"
 RESULTS_DIR = CONFIG_DIR / "sweep-results"
@@ -133,7 +135,7 @@ def wait_for_server(url: str, timeout: int = SERVER_START_TIMEOUT) -> bool:
     return False
 
 
-def start_server(model_path: str, cfg: SweepConfig, port: int = 8280) -> subprocess.Popen | None:
+def start_server(model_path: str, cfg: SweepConfig, port: int = SWEEP_PORT) -> subprocess.Popen | None:
     """Start llama-server with the given config. Returns Popen or None."""
     model_path = str(Path(model_path).resolve())
     host = "127.0.0.1"
@@ -286,9 +288,11 @@ def main():
     print(f"Sweep space: {len(configs)} configs")
     print(f"  pins={sorted(set(c.pin for c in configs))} mtps={sorted(set(c.mtp for c in configs))} ts={sorted(set(c.ts for c in configs))}")
 
-    # Ensure server is stopped
-    print("Stopping any running server...")
-    stop_server()
+    if not SKIP_STOP:
+        print("Stopping any running server (heads will need relaunch)...")
+        stop_server()
+    else:
+        print("REBIS_SWEEP_SKIP_STOP set — leaving running servers alone")
 
     results = []
     total = len(configs)

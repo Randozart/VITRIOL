@@ -32,10 +32,14 @@ pub enum Action {
     Setup,
     /// Boot the whole REBIS trenchcoat: Sol + Luna + Mercury, supervised.
     LaunchRebis,
-    /// Run a Spagyric decode-knob sweep for a profile's model.
-    RunSweep(String),
-    /// Run the sweep AND write the per-knob winner as `<name>-swept` profile.
-    SweepAndSave(String),
+    /// Run a placement sweep (pin/mtp/ts grid) via sweep_controller for an
+    /// explicit model + device target, benchmarking tok/s per config.
+    RunSweepConfig {
+        model: String,
+        devices: String,
+        ts: Option<String>,
+        ctx: u32,
+    },
 }
 
 impl Action {
@@ -54,8 +58,13 @@ impl Action {
             Action::Doctor => "run doctor".into(),
             Action::Setup => "vitriol setup (CAP_IPC_LOCK)".into(),
             Action::LaunchRebis => "launch rebis (Sol+Luna+Mercury)".into(),
-            Action::RunSweep(name) => format!("sweep: {name}"),
-            Action::SweepAndSave(name) => format!("sweep+save: {name}"),
+            Action::RunSweepConfig { model, devices, ctx, .. } => {
+                let file = std::path::Path::new(model)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| model.clone());
+                format!("sweep {file} @ {devices}, ctx {ctx}")
+            }
         }
     }
 
@@ -74,10 +83,8 @@ impl Action {
             Action::Setup,
             Action::LaunchRebis,
         ];
-        for p in profiles {
-            actions.push(Action::RunSweep(p.name.clone()));
-            actions.push(Action::SweepAndSave(p.name.clone()));
-        }
+        // Sweeps moved to the dedicated SWEEP tab (profile-independent).
+        let _ = profiles;
         actions
     }
 }
@@ -153,8 +160,31 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
                 args: vec!["-n".into(), cli, "setup".into()],
             }]
         }
-        Action::RunSweep(name) => sweep_steps(cfg, name, false),
-        Action::SweepAndSave(name) => sweep_steps(cfg, name, true),
+        Action::RunSweepConfig { model, devices, ts, ctx } => {
+            let mut args = vec![
+                "libvitriol/sweep_controller.py".to_string(),
+                "-m".to_string(),
+                model.clone(),
+                "--ctx".to_string(),
+                ctx.to_string(),
+                "-o".to_string(),
+                "/tmp/rebis-sweep.csv".to_string(),
+            ];
+            if devices == "split" {
+                if let Some(ratio) = ts {
+                    args.push("--ts".to_string());
+                    args.push(ratio.clone());
+                }
+            } else {
+                args.push("--devices".to_string());
+                args.push(devices.clone());
+            }
+            vec![Step {
+                label: action.label(),
+                program: "python3".to_string(),
+                args,
+            }]
+        }
     }
 }
 
@@ -176,50 +206,6 @@ fn launch_args(cfg: &Config, selected: Option<&str>) -> Vec<String> {
 
 /// Sweep steps for a profile: run `spagyric_sweep.py`; when `save` is set, also
 /// pass `--build-profile <name>` so the per-knob winner is written as a profile.
-fn sweep_steps(cfg: &Config, name: &str, save: bool) -> Vec<Step> {
-    let sweep_script = cfg.repo_root.join("libvitriol/spagyric_sweep.py");
-    let Some(profile) = find_profile(cfg, name) else {
-        return vec![noop(format!("profile {name} not found"))];
-    };
-    let Some(model) = profile.model.clone() else {
-        return vec![noop(format!(
-            "profile {name} has no model.path — set it, then sweep"
-        ))];
-    };
-    let ngl = profile.ngl.unwrap_or(99);
-    let ctx = profile.ctx.unwrap_or(4096);
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let output = format!("/tmp/opencode/sweep_{name}_{stamp}.csv");
-    let mut args = vec![
-        sweep_script.to_string_lossy().into_owned(),
-        "--model".into(),
-        model,
-        "--ngl".into(),
-        ngl.to_string(),
-        "--ctx".into(),
-        ctx.to_string(),
-        "--output".into(),
-        output,
-    ];
-    if save {
-        args.push("--build-profile".into());
-        args.push(name.to_string());
-    }
-    let label = if save {
-        format!("spagyric sweep + save: {name}")
-    } else {
-        format!("spagyric sweep: {name}")
-    };
-    vec![Step {
-        label,
-        program: "python3".into(),
-        args,
-    }]
-}
-
 /// A no-op step that just reports a message and exits cleanly.
 fn noop(message: String) -> Step {
     Step {
@@ -366,15 +352,15 @@ mod tests {
             parallel: None,
         };
         let actions = Action::all(&[p], None);
-        assert_eq!(actions.len(), 8);
+        assert_eq!(actions.len(), 6);
         assert_eq!(actions[0], Action::Start { selected: None });
         assert_eq!(actions[1], Action::Stop);
         assert_eq!(actions[2], Action::Restart { selected: None });
         assert_eq!(actions[3], Action::Doctor);
         assert_eq!(actions[4], Action::Setup);
         assert_eq!(actions[5], Action::LaunchRebis);
-        assert_eq!(actions[6], Action::RunSweep("mellum2".into()));
-        assert_eq!(actions[7], Action::SweepAndSave("mellum2".into()));
+        assert!(!actions.iter().any(|a| matches!(
+            a, Action::RunSweepConfig { .. })));
         let with_sel = Action::all(&[], Some("qwen"));
         assert_eq!(
             with_sel[0],
@@ -397,20 +383,34 @@ mod tests {
     }
 
     #[test]
-    fn sweep_and_save_passes_build_profile_flag() {
+    fn sweep_config_builds_controller_invocation() {
         let mut cfg = Config::from_env();
-        cfg.repo_root = std::env::temp_dir();
-        let steps = steps_for(&Action::SweepAndSave("ghost".into()), &cfg);
+        cfg.repo_root = std::env::temp_dir().join("rebis-test-root");
+        let steps = steps_for(
+            &Action::RunSweepConfig {
+                model: "test.gguf".into(),
+                devices: "1".into(),
+                ts: None,
+                ctx: 32768,
+            },
+            &cfg,
+        );
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].program, "echo");
-    }
+        assert_eq!(steps[0].program, "python3");
+        assert!(steps[0].args.contains(&"--devices".to_string()));
+        assert!(steps[0].args.contains(&"1".to_string()));
 
-    #[test]
-    fn sweep_without_model_is_a_noop() {
-        let mut cfg = Config::from_env();
-        cfg.repo_root = std::env::temp_dir();
-        let steps = steps_for(&Action::RunSweep("ghost".into()), &cfg);
-        assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].program, "echo");
+        // split target routes through --ts instead
+        let steps2 = steps_for(
+            &Action::RunSweepConfig {
+                model: "test.gguf".into(),
+                devices: "split".into(),
+                ts: Some("3,1".into()),
+                ctx: 16384,
+            },
+            &cfg,
+        );
+        assert!(steps2[0].args.contains(&"--ts".to_string()));
+        assert!(steps2[0].args.contains(&"3,1".to_string()));
     }
 }

@@ -27,6 +27,8 @@ pub enum Tab {
     Logs,
     /// Stack control: start/stop/restart, doctor, profile load.
     Controls,
+    /// Sweep workshop: model/GPU/memory selection, tok/s search.
+    Sweep,
     /// Hermetis memory: stats, recent stores, search.
     Hermetis,
     /// Subsystem diagnostics: Tria Prima services + alchemical layers.
@@ -43,11 +45,12 @@ pub enum Tab {
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
         Tab::Controls,
+        Tab::Sweep,
         Tab::Hermetis,
         Tab::Subsystems,
         Tab::Profiles,
@@ -64,6 +67,7 @@ impl Tab {
             Tab::Gpu => "GPU",
             Tab::Logs => "LOGS",
             Tab::Controls => "CONTROLS",
+            Tab::Sweep => "SWEEP",
             Tab::Hermetis => "HERMETIS",
             Tab::Subsystems => "SUBSYSTEMS",
             Tab::Profiles => "PROFILES",
@@ -137,6 +141,94 @@ impl LogSource {
 }
 
 /// Application state held across the event loop.
+pub const SWEEP_GPU_OPTS: [&str; 3] =
+    ["GPU0 — Sol card (12 GiB)", "GPU1 — Luna card (8 GiB)", "split across both"];
+pub const SWEEP_CTX_PRESETS: [u32; 4] = [8192, 16384, 32768, 65536];
+pub const SWEEP_MINFREE_PRESETS: [u32; 3] = [1024, 2048, 4096];
+const SWEEP_HEAD_VRAM_MIB: [u32; 2] = [12042, 8113];
+
+/// Form state for the SWEEP tab.
+#[derive(Debug, Clone)]
+pub struct SweepState {
+    pub model_path: String,
+    pub focus: usize, // 0=model 1=gpu 2=ctx 3=minfree
+    pub gpu_sel: usize,
+    pub ctx_idx: usize,
+    pub min_free_idx: usize,
+}
+
+impl Default for SweepState {
+    fn default() -> Self {
+        Self {
+            model_path: String::new(),
+            focus: 0,
+            gpu_sel: 1,
+            ctx_idx: 2,
+            min_free_idx: 1,
+        }
+    }
+}
+
+impl SweepState {
+    pub fn focus_down(&mut self) { self.focus = (self.focus + 1) % 4; }
+    pub fn focus_up(&mut self) { self.focus = (self.focus + 3) % 4; }
+
+    pub fn adjust(&mut self, dir: i32) {
+        match self.focus {
+            1 => {
+                self.gpu_sel = (self.gpu_sel as i32 + dir).rem_euclid(3) as usize;
+            }
+            2 => {
+                self.ctx_idx = (self.ctx_idx as i32 + dir)
+                    .rem_euclid(SWEEP_CTX_PRESETS.len() as i32)
+                    as usize;
+            }
+            3 => {
+                self.min_free_idx = (self.min_free_idx as i32 + dir)
+                    .rem_euclid(SWEEP_MINFREE_PRESETS.len() as i32)
+                    as usize;
+            }
+            _ => {}
+        }
+    }
+
+    pub fn type_char(&mut self, c: char) {
+        if self.focus == 0 {
+            self.model_path.push(c);
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.focus == 0 {
+            self.model_path.pop();
+        }
+    }
+
+    /// (fits, used_mib, vram_mib) for the selected target.
+    pub fn feasibility(&self) -> (bool, u32, u32) {
+        let vram = if self.gpu_sel == 2 {
+            SWEEP_HEAD_VRAM_MIB[0] + SWEEP_HEAD_VRAM_MIB[1]
+        } else {
+            SWEEP_HEAD_VRAM_MIB[self.gpu_sel]
+        };
+        let min_free = SWEEP_MINFREE_PRESETS[self.min_free_idx];
+        let weights = std::fs::metadata(&self.model_path)
+            .map(|m| (m.len() / 1024 / 1024) as u32)
+            .unwrap_or(0);
+        let kv = SWEEP_CTX_PRESETS[self.ctx_idx] * 32 / 1024; // ~32 KiB/tok conservative
+        let used = weights + kv;
+        (weights > 0 && used <= vram.saturating_sub(min_free), used, vram - min_free)
+    }
+
+    pub fn devices_arg(&self) -> (String, Option<String>) {
+        match self.gpu_sel {
+            0 => ("0".into(), None),
+            1 => ("1".into(), None),
+            _ => ("split".into(), Some("3,1".into())),
+        }
+    }
+}
+
 pub struct App {
     /// Endpoint/log config.
     pub cfg: Config,
@@ -159,6 +251,7 @@ pub struct App {
     /// Label of the running step.
     pub control_step: String,
     /// Control output log ring, newest last.
+    pub sweep: SweepState,
     pub control_log: VecDeque<String>,
     /// Shared abort flag for the control executor.
     pub control_abort: Arc<AtomicBool>,
@@ -246,6 +339,7 @@ impl App {
             control_running: false,
             control_action: String::new(),
             control_step: String::new(),
+            sweep: SweepState::default(),
             control_log: VecDeque::with_capacity(200),
             control_abort: Arc::new(AtomicBool::new(false)),
             finished_action: None,
@@ -620,12 +714,6 @@ impl App {
         Ok(())
     }
 
-    /// Run the Spagyric sweep with save on the selected profile.
-    pub fn profile_sweep_selected(&self) -> Option<Action> {
-        let profile = self.profiles.get(self.profile_list_selection)?;
-        Some(Action::SweepAndSave(profile.name.clone()))
-    }
-
     /// After a successful sweep+save, the winner lives at `<name>-swept`.
     /// Reload the list and make it the selected Start target.
     pub fn profile_select_sweep_winner(&mut self, name: &str) {
@@ -785,6 +873,17 @@ impl App {
         Action::all(&self.profiles, self.selected_profile.as_deref())
     }
 
+    /// The sweep action for the current form state.
+    pub fn sweep_action(&self) -> Action {
+        let (devices, ts) = self.sweep.devices_arg();
+        Action::RunSweepConfig {
+            model: self.sweep.model_path.clone(),
+            devices,
+            ts,
+            ctx: SWEEP_CTX_PRESETS[self.sweep.ctx_idx],
+        }
+    }
+
     /// Run a specific control action (from CONTROLS Enter or a PROFILES key).
     pub fn run_action(&mut self, action: Action, ctrl_tx: &std::sync::mpsc::Sender<Event>) {
         if self.control_running {
@@ -849,16 +948,7 @@ impl App {
                 self.control_abort.store(false, Ordering::Relaxed);
                 let verdict = if ok { "✓ done" } else { "✗ failed" };
                 self.push_control_line(format!("{verdict}: {}", self.control_action));
-                let sweep_name = self.finished_action.clone().and_then(|a| match a {
-                    Action::SweepAndSave(name) => Some(name),
-                    _ => None,
-                });
                 self.finished_action = None;
-                if ok {
-                    if let Some(name) = sweep_name {
-                        self.profile_select_sweep_winner(&name);
-                    }
-                }
             }
         }
     }
@@ -993,7 +1083,7 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 9);
+        assert_eq!(Tab::ALL.len(), 10);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }

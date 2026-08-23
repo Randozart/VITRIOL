@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 REQUEST_TIMEOUT = 600
 
+REQUEST_TIMEOUT = 600
+
 STEER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -664,13 +666,67 @@ class Shim(BaseHTTPRequestHandler):
             return
 
         if route == "reason":
-            # Sol untouched — full depth reasoning.
+            # Sol untouched — full depth reasoning (budget-capped server-side).
             sol_payload = dict(payload)
             sol_payload["model"] = self.sol_model
             sol_payload["max_tokens"] = max(sol_payload.get("max_tokens") or 0,
                                             4096)
             sol_payload.setdefault("chat_template_kwargs",
                                    {"enable_thinking": True})
+
+            if wants_stream:
+                # LIVE RELAY: stream Sol's tokens straight through so the
+                # connection never idles — long thinking turns cannot hit
+                # client timeouts.
+                sol_payload["stream"] = True
+                sbody = json.dumps(sol_payload).encode()
+                sreq = urllib.request.Request(
+                    f"{up.sol}/v1/chat/completions", data=sbody,
+                    headers={"Content-Type": "application/json"},
+                    method="POST")
+                try:
+                    sresp = urllib.request.urlopen(sreq, timeout=REQUEST_TIMEOUT)
+                except (urllib.error.URLError, OSError) as e:
+                    self._note(f"sol stream error: {e}")
+                    self.send_error(502, str(e)[:200])
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                content_parts: list[str] = []
+                try:
+                    for raw in sresp:
+                        line = raw.decode(errors="ignore").strip()
+                        if not line.startswith("data:"):
+                            continue
+                        chunk = line[5:].strip()
+                        if chunk == "[DONE]":
+                            self.wfile.write(b"data: [DONE]\n\n")
+                            break
+                        try:
+                            obj = json.loads(chunk)
+                        except json.JSONDecodeError:
+                            continue
+                        for ch in obj.get("choices") or []:
+                            piece = (ch.get("delta") or {}).get("content")
+                            if piece:
+                                content_parts.append(piece)
+                        self.wfile.write(f"data: {chunk}\n\n".encode())
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                final = {"role": "assistant",
+                         "content": "".join(content_parts)}
+                update_state(SESSIONS.setdefault(key, {}),
+                             merge_reasoning(final))
+                shim_emit(self.distill_dir, {
+                    "type": "gateway_turn", "session": key,
+                    "route": "reason-streamed",
+                    "content_len": len("".join(content_parts)),
+                })
+                return
+
             data, _u = up.chat(up.sol, sol_payload)
             message = merge_reasoning(data["choices"][0]["message"])
             update_state(SESSIONS.setdefault(key, {}), message)

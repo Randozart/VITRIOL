@@ -61,7 +61,28 @@ fn main() -> io::Result<()> {
 
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    // SWEEP tab consumes navigation/typing keys itself.
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Press
+                            && app.tab == app::Tab::Sweep
+                            && !app.control_running
+                    => match key.code {
+                            KeyCode::Up => app.sweep.focus_up(),
+                            KeyCode::Down => app.sweep.focus_down(),
+                            KeyCode::Left => app.sweep.adjust(-1),
+                            KeyCode::Right => app.sweep.adjust(1),
+                            KeyCode::Enter => {
+                                let action = app.sweep_action();
+                                app.run_action(action, &ctrl_tx);
+                            }
+                            KeyCode::Backspace => app.sweep.backspace(),
+                            KeyCode::Char(c) => {
+                                if c == 'q' { break; }
+                                app.sweep.type_char(c);
+                            }
+                            _ => {}
+                        }
+                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Char('Q')
                         if app.tab != app::Tab::Officina
                             && (app.tab != app::Tab::Hermetis || app.search_query.is_empty()) =>
@@ -319,11 +340,6 @@ fn handle_profile_list(
         KeyCode::Char('w') => {
             let _ = app.profile_overwrite_selected();
         }
-        KeyCode::Char('z') => {
-            if let Some(action) = app.profile_sweep_selected() {
-                app.run_action(action, ctrl);
-            }
-        }
         KeyCode::Char('d') => {
             let _ = app.profile_delete_selected();
         }
@@ -411,11 +427,7 @@ fn run_profile_action(
         Overwrite => {
             let _ = app.profile_overwrite_selected();
         }
-        Sweep => {
-            if let Some(action) = app.profile_sweep_selected() {
-                app.run_action(action, ctrl);
-            }
-        }
+        Sweep => { /* moved to the SWEEP tab (profile-independent) */ }
     }
 }
 

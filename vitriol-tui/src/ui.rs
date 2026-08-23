@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, LogSource, Tab};
+use crate::app::{App, LogSource, Tab, SWEEP_CTX_PRESETS, SWEEP_GPU_OPTS, SWEEP_MINFREE_PRESETS, SweepState};
 use crate::control::Action;
 use crate::model::Snapshot;
 use crate::{braille, subsystems, theme};
@@ -32,6 +32,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Gpu => render_gpu_tab(frame, rows[1], app),
         Tab::Logs => render_logs_tab(frame, rows[1], app),
         Tab::Controls => render_controls_tab(frame, rows[1], app),
+        Tab::Sweep => render_sweep_tab(frame, rows[1], app),
         Tab::Hermetis => render_hermetis_tab(frame, rows[1], app),
         Tab::Subsystems => render_subsystems_tab(frame, rows[1], app),
         Tab::Profiles => render_profiles_tab(frame, rows[1], app),
@@ -854,7 +855,6 @@ fn action_label(action: &Action, profiles: &[crate::profile::Profile]) -> String
         Action::Start {
             selected: Some(name),
         } => Some(name.as_str()),
-        Action::RunSweep(name) | Action::SweepAndSave(name) => Some(name.as_str()),
         _ => None,
     };
     let Some(name) = name else {
@@ -1636,6 +1636,102 @@ fn fmt_tokens(n: u64) -> String {
     if n >= 1_000_000 { format!("{:.2}M", n as f64 / 1e6) }
     else if n >= 1_000 { format!("{:.1}k", n as f64 / 1e3) }
     else { format!("{n}") }
+}
+
+/// SWEEP tab: form on the left (model/GPU/ctx/min-free + feasibility),
+/// live controller output on the right.
+fn render_sweep_tab(frame: &mut Frame, area: Rect, app: &App) {
+    let cols =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(area);
+
+    // ── FORM ──
+    let form_panel = panel_neutral(" SWEEP CONFIG ");
+    let f_inner = form_panel.inner(cols[0]);
+    frame.render_widget(form_panel, cols[0]);
+
+    let sw = &app.sweep;
+    let cursor_mark = |focus_idx: usize| {
+        if sw.focus == focus_idx { "▸ " } else { "  " }
+    };
+    let (fits, used, budget) = sw.feasibility();
+    let feas_line = if sw.model_path.is_empty() {
+        Line::from(Span::styled("  (set a model path)", theme::muted()))
+    } else if fits {
+        Line::from(Span::styled(
+            format!("  ✓ fits: {used}/{budget} MiB"),
+            theme::live(),
+        ))
+    } else {
+        Line::from(Span::styled(
+            format!("  ✗ REFUSED: {used}/{budget} MiB — lower ctx or min-free"),
+            theme::warn(),
+        ))
+    };
+
+    let model_disp = if sw.model_path.is_empty() {
+        "(type path)".to_string()
+    } else {
+        let mut shown = sw.model_path.clone();
+        if sw.focus == 0 { shown.push('▏'); }
+        shown
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(cursor_mark(0), theme::gold_muted()),
+            Span::styled("MODEL  ", theme::muted()),
+            Span::styled(model_disp, theme::text()),
+        ]),
+        Line::from(vec![
+            Span::styled(cursor_mark(1), theme::gold_muted()),
+            Span::styled("GPU    ", theme::muted()),
+            Span::styled(
+                SWEEP_GPU_OPTS[sw.gpu_sel].to_string(),
+                if sw.focus == 1 { theme::text() } else { theme::muted() },
+            ),
+            Span::styled("  ◄ ►", theme::muted()),
+        ]),
+        Line::from(vec![
+            Span::styled(cursor_mark(2), theme::gold_muted()),
+            Span::styled("CTX    ", theme::muted()),
+            Span::styled(
+                format!("{}  ◄ ►", SWEEP_CTX_PRESETS[sw.ctx_idx]),
+                if sw.focus == 2 { theme::text() } else { theme::muted() },
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(cursor_mark(3), theme::gold_muted()),
+            Span::styled("MIN FREE ", theme::muted()),
+            Span::styled(
+                format!("{} MiB  ◄ ►", SWEEP_MINFREE_PRESETS[sw.min_free_idx]),
+                if sw.focus == 3 { theme::text() } else { theme::muted() },
+            ),
+        ]),
+    ];
+    lines.push(Line::from(""));
+    lines.push(feas_line);
+    lines.push(Line::from(Span::styled(
+        "ENTER starts the sweep — heads will be stopped.",
+        theme::warn(),
+    )));
+    frame.render_widget(Paragraph::new(lines), f_inner);
+
+    // ── OUTPUT ──
+    let out_panel = panel_neutral(" CONTROLLER OUTPUT ");
+    let o_inner = out_panel.inner(cols[1]);
+    frame.render_widget(out_panel, cols[1]);
+    let mut o_lines: Vec<Line> = Vec::new();
+    for l in app.control_log.iter().rev().take(o_inner.height as usize) {
+        let style = if l.starts_with("BEST:") {
+            theme::live().add_modifier(Modifier::BOLD)
+        } else if l.contains("ERR") || l.contains("ERROR") {
+            theme::warn()
+        } else {
+            theme::muted()
+        };
+        o_lines.push(Line::from(Span::styled(l.clone(), style)));
+    }
+    o_lines.reverse();
+    frame.render_widget(Paragraph::new(o_lines), o_inner);
 }
 
 /// REBIS dashboard: head status, route distribution, audit ledger, and the

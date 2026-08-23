@@ -150,6 +150,8 @@ impl Poller {
             }
         }
 
+        snap.host_avail_mib = read_mem_available_mib();
+
         // map head -> its GPU utilisation (Sol=GPU0, Luna=GPU1)
         if let Some(g0) = self.last_gpus.iter().find(|g| g.index == 0) {
             snap.sol_util_pct = g0.util_pct;
@@ -328,6 +330,20 @@ impl Poller {
 }
 
 /// Whether `/health` answers on `port`.
+/// Host MemAvailable in MiB from /proc/meminfo.
+fn read_mem_available_mib() -> u32 {
+    for line in std::fs::read_to_string("/proc/meminfo")
+        .unwrap_or_default()
+        .lines()
+    {
+        if let Some(v) = line.strip_prefix("MemAvailable:") {
+            let kib = v.split_whitespace().next().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+            return (kib / 1024) as u32;
+        }
+    }
+    0
+}
+
 /// Plain GET returning the body as String (for /metrics text endpoints).
 fn req_text(agent: &Agent, url: &str) -> Option<String> {
     match agent.get(url).call() {

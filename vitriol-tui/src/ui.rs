@@ -1781,7 +1781,7 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let r = &app.snapshot.rebis;
 
     let rows = Layout::vertical([
-        Constraint::Length(5),  // head status cells
+        Constraint::Length(6),  // head status cells + host RAM guardrail
         Constraint::Length(6),  // routes + audit ledger
         Constraint::Min(1),     // event stream
     ])
@@ -1840,6 +1840,28 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     head_cell(frame, cols[1], "SOL :8279", r.sol_up || app.snapshot.gen.up,
               sol_line, sol_load);
     head_cell(frame, cols[2], "LUNA :8247", r.luna_up, luna_line, luna_load);
+
+    // Host RAM guardrail line under the heads.
+    let avail = r.host_avail_mib;
+    let (ram_style, ram_word) = if avail < 800 {
+        (theme::warn().add_modifier(Modifier::BOLD), "FREEZE RISK")
+    } else if avail < 1500 {
+        (theme::warn(), "low")
+    } else {
+        (theme::muted(), "ok")
+    };
+    let ram_row = Layout::vertical([
+        Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(h_inner)[3];
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("HOST RAM available {avail} MiB — {ram_word}"),
+            ram_style,
+        ))),
+        ram_row,
+    );
 
     // ── Routes + audit ledger ──
     let mid = panel_neutral(" ROUTES / AUDIT LEDGER ");

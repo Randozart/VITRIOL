@@ -257,6 +257,8 @@ pub struct RebisSnapshot {
     /// GPU utilisation of each head's card.
     pub sol_util_pct: u8,
     pub luna_util_pct: u8,
+    /// Host MemAvailable in MiB (freeze guardrail).
+    pub host_avail_mib: u32,
 }
 
 /// Live tail of a service log, newest last, capped at [`LOG_TAIL_CAP`] lines.

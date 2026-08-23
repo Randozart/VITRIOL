@@ -29,7 +29,7 @@ BACKOFF="${REBIS_BACKOFF:-15}"
 
 COMMON=(--cache-type-k q4_0 --cache-type-v q4_0 -fa on --jinja
         --context-shift --cache-reuse 256
-        --ctx-checkpoints 12 --checkpoint-every-n-tokens 8192
+        --ctx-checkpoints 8 --checkpoint-every-n-tokens 16384
         --host 127.0.0.1 --slots --metrics)
 
 port_healthy() { curl -s -m1 "http://127.0.0.1:$1/health" 2>/dev/null | grep -q '"ok"'; }
@@ -39,14 +39,14 @@ run_sol() {
   local BUDGET="${REBIS_REASONING_BUDGET:-1024}"
   CUDA_VISIBLE_DEVICES=0 "$BIN_SOL" \
     -m "$SOL_MODEL" -ngl 99 -c "$CTX" "${COMMON[@]}" \
-    --cache-ram 2048 --port 8279 \
+    --cache-ram 1024 --port 8279 \
     --reasoning-budget "$BUDGET" >> /tmp/qwen.log 2>&1
 }
 
 run_luna() {
   CUDA_VISIBLE_DEVICES=1 "$BIN_LUNA" \
     -m "$LUNA_MODEL" -ngl 99 -c "$CTX" "${COMMON[@]}" \
-    --cache-ram 1024 --port 8247 >> /tmp/mellum.log 2>&1
+    --cache-ram 512 --port 8247 >> /tmp/mellum.log 2>&1
 }
 
 run_mercury() {

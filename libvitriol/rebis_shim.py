@@ -201,6 +201,16 @@ def steer_verdict(up: Upstream, messages: list[dict], draft_message: dict) -> di
     return None
 
 
+def mem_available_mib() -> int:
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 1 << 30  # unknown: assume plenty
+
+
 def health_up(url: str) -> bool:
     try:
         with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=2) as r:
@@ -491,6 +501,25 @@ class Shim(BaseHTTPRequestHandler):
             messages = payload.get("messages") or []
             key = session_key(messages)
             STATS["requests"] += 1
+            # Memory guardrail: refuse to route when the box is starving —
+            # a hard freeze takes everything down, this takes down one turn.
+            if mem_available_mib() < 1200:
+                body = json.dumps({"error": {
+                    "message": "REBIS: host memory pressure (MemAvailable "
+                               "< 1200 MiB). Close builds/other workloads "
+                               "or wait — protective backpressure.",
+                    "type": "memory_pressure"}}).encode()
+                self._note(f"memory guardrail: {mem_available_mib()} MiB free — 503")
+                try:
+                    self.send_response(503)
+                    self.send_header("Retry-After", "60")
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
             for attempt in (1, 2):
                 try:
                     self.gateway_turn(payload, key, wants_stream)

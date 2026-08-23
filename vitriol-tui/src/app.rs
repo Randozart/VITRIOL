@@ -43,7 +43,7 @@ pub enum Tab {
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 10] = [
+    pub const ALL: [Tab; 9] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
@@ -52,7 +52,8 @@ impl Tab {
         Tab::Subsystems,
         Tab::Profiles,
         Tab::Guide,
-        Tab::Officina,
+        // Tab::Officina — disabled: model-surgery REPL not ready for use.
+        // Variant + renderer retained; re-add here to restore.
         Tab::Rebis,
     ];
 
@@ -992,12 +993,13 @@ mod tests {
     /// Tab registry stays consistent with the labels rendered in the tab bar.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 10);
+        assert_eq!(Tab::ALL.len(), 9);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
         assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Rebis);
+        assert!(!Tab::ALL.contains(&Tab::Officina));
     }
 
     #[test]

@@ -95,6 +95,16 @@ case "$WHICH" in
         start_sol
         supervise run_sol  8279 Sol  &
         supervise run_luna 8247 Luna & ;;
-  *) echo "usage: $0 [sol|luna|mercury|both|rebis|sol-sup|luna-sup|mercury-sup|both-sup]"
+  stop)
+        # Tear down the entire REBIS: supervisors, heads, gateway.
+        # Patterns avoid self-match (this script's argv contains
+        # "rebis-servers.sh stop" — no -sup, no gateway, no shim).
+        pkill -f 'rebis-servers.sh .*-sup' 2>/dev/null
+        pkill -f '[r]ebis-gateway' 2>/dev/null
+        pkill -f '[r]ebis_shim' 2>/dev/null
+        sleep 1
+        killall -9 llama-server 2>/dev/null
+        echo "REBIS torn down (heads + gateway + supervisors)" ;;
+  *) echo "usage: $0 [sol|luna|mercury|both|rebis|stop|sol-sup|luna-sup|mercury-sup|both-sup]"
      exit 1 ;;
 esac

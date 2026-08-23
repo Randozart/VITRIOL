@@ -34,6 +34,11 @@ REQUEST_TIMEOUT = 600
 
 REQUEST_TIMEOUT = 600
 
+
+class UpstreamBadResponse(Exception):
+    """Backend answered 200 with a body we cannot parse."""
+
+
 STEER_SCHEMA = {
     "type": "object",
     "properties": {
@@ -47,9 +52,11 @@ STEER_SCHEMA = {
 
 # ── Pure heuristics (unit-tested) ────────────────────────────────────
 
-def session_key(messages: list[dict]) -> str:
+def session_key(messages: list) -> str:
     """Conversation identity = hash of the first user message."""
     for m in messages:
+        if not isinstance(m, dict):
+            continue
         if m.get("role") == "user":
             content = m.get("content") or ""
             if isinstance(content, list):  # multimodal parts
@@ -137,7 +144,14 @@ class Upstream:
             f"{base}/v1/chat/completions", data=body,
             headers={"Content-Type": "application/json"}, method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read())
+            raw = resp.read()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            # Backends under memory pressure can emit empty/garbage 200
+            # bodies — treat as an upstream failure, not a crash.
+            raise UpstreamBadResponse(
+                f"{base} returned non-JSON body ({len(raw)}B)") from e
         usage = data.get("usage") or {}
         return data, usage
 
@@ -380,9 +394,11 @@ def classify_turn(messages: list[dict], tools_attached: bool,
         return "draft"
     if not messages:
         return "reason"
-    has_calls = any(m.get("tool_calls") for m in messages
-                    if m.get("role") == "assistant")
-    last_role = messages[-1].get("role")
+    has_calls = any(isinstance(m, dict) and m.get("tool_calls")
+                    for m in messages
+                    if isinstance(m, dict) and m.get("role") == "assistant")
+    last = messages[-1] if isinstance(messages[-1], dict) else {}
+    last_role = last.get("role")
     # Luna-first: ALL agentic turns draft on Luna; Sol verifies via the
     # pipeline's audit layer (intensity scales by turn position).
     if tools_attached:
@@ -496,9 +512,20 @@ class Shim(BaseHTTPRequestHandler):
             return
         if self.mode == "gateway":
             length = int(self.headers.get("Content-Length", 0))
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            try:
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError as e:
+                self._note(f"unparseable request body: {e}")
+                self.send_error(400, "invalid JSON body")
+                return
+            if not isinstance(payload, dict):
+                self.send_error(400, "request body must be a JSON object")
+                return
             wants_stream = bool(payload.get("stream"))
-            messages = payload.get("messages") or []
+            messages = payload.get("messages")
+            if not isinstance(messages, list):
+                self.send_error(400, "messages must be a list")
+                return
             key = session_key(messages)
             STATS["requests"] += 1
             # Memory guardrail: refuse to route when the box is starving —
@@ -527,12 +554,28 @@ class Shim(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     self._note("client disconnected mid-turn")
                     return
-                except (urllib.error.URLError, ServerDown if False else OSError) as e:
-                    refused = "Connection refused" in str(e) or "Errno 111" in str(e)
-                    self._note(f"backend error (attempt {attempt}): {e}")
-                    if attempt == 1 and refused:
+                except Exception as e:
+                    # Catch-all: ANY handler crash must become a clean 503,
+                    # never a silent connection close (hermes reads that as
+                    # a timeout and drops the session).
+                    refused = isinstance(e, (urllib.error.URLError, OSError))
+                    self._note(f"gateway error (attempt {attempt}): {type(e).__name__}: {e}")
+                    if refused and attempt == 1:
                         time.sleep(3)
                         continue
+                    body = json.dumps({"error": {
+                        "message": f"REBIS gateway error: {type(e).__name__}: "
+                                   f"{str(e)[:200]}. Retry shortly.",
+                        "type": "gateway_error"}}).encode()
+                    try:
+                        self.send_response(502)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        self._note("client gone during 502")
+                    return
                     body = json.dumps({"error": {
                         "message": "REBIS heads are respawning — retry in "
                                    "~30s; the supervisor restores them.",
@@ -750,19 +793,21 @@ class Shim(BaseHTTPRequestHandler):
             luna_payload["model"] = self.luna_model
             try:
                 data, _u = up.chat(up.mellum, luna_payload)
-            except urllib.error.HTTPError as e:
-                if e.code < 500:
-                    raise
-                # Luna's known failure: broken JSON in tool-call arguments.
-                self._note("luna 5xx — retrying with JSON-format nudge")
+            except (urllib.error.HTTPError, UpstreamBadResponse) as e:
+                # Luna's known failures: malformed tool-call JSON (5xx) or
+                # garbage 200 bodies under memory pressure. One corrective
+                # retry, then Sol covers the turn.
+                self._note(f"luna draft failed ({type(e).__name__}) — "
+                           "retrying, then Sol fallback")
                 retry_payload = dict(luna_payload)
                 retry_payload["messages"] = list(luna_payload["messages"]) + [
                     {"role": "assistant",
-                     "content": "[my previous tool call had malformed JSON "
-                                "arguments]"},
+                     "content": "[my previous reply failed to format "
+                                "properly]"},
                     {"role": "user",
-                     "content": "Re-issue that exact tool call with VALID "
-                                "JSON arguments. Output only the tool call."},
+                     "content": "Re-issue your last reply correctly. If it "
+                                "contained a tool call, use VALID JSON "
+                                "arguments per the schema."},
                 ]
                 data, _u = up.chat(up.mellum, retry_payload)
             message = merge_reasoning(data["choices"][0]["message"])

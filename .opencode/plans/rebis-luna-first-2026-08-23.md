@@ -58,3 +58,21 @@ audits wait (503 path handles gracefully).
 ## Progress log
 
 - 2026-08-23 12:50 — plan written; implementing.
+
+## Progress log (cont.)
+
+- 2026-08-23 13:20 — **Inversion implemented + live-validated.**
+  - Kickoff: Luna draft → full audit → audit FAILED (2 missing) → Sol
+    corrected → shipped with valid tool_calls. 162.8s (vs 228-260s Sol-
+    authored; quality gate fired and held).
+  - Executor turn exposed Luna's variance: draft alternates between valid
+    tool_calls and prose narration. Schema gate + audit handled both safely.
+    56-93s observed.
+  - Malformed-args nudge removed (capability limit; escalation to Sol
+    correction is the recovery).
+  - Sol-down → ship-unaudited + distill marker implemented (availability-
+    first per plan).
+- Known residual: Luna executor-turn consistency is THE quality variable.
+  Distill now records correction-rate per route — a week of traffic
+  quantifies it, and the harvested corrections are exactly the SFT data
+  that would train it out (D2 closure of the loop).

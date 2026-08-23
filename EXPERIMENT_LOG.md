@@ -1167,3 +1167,17 @@ or slot-partition discipline is required infrastructure for concurrent use.
 Anticipatio wired as opt-in: rebis.py --anticipatio fires a daemon-thread
 shadow prefill of the stable prefix after each Mandatum send. Live A/B deferred
 until Qwen endpoint ownership is coordinated; Mellum-side reuse already proven.
+
+## 2026-08-23 19:05 — Incident: hard freeze under memory pressure (hardened)
+
+User's first live hermes session ended in a box-wide hard lock. Journal cut
+mid-memory-pressure with no OOM-kill: swap thrash (zram fill → 8G swapfile on
+root) starved the OOM killer before it could act. Contributors: Sol+Luna
+serving, hermes workers, two opencode instances, an 8-core cargo build.
+
+Hardened (commit 090aa60): gateway memory guardrail (503 below 1200 MiB
+MemAvailable), head caps lowered (cache-ram 1024/512, checkpoints 8 @ 16384),
+TUI HOST RAM gauge with FREEZE RISK threshold at 800 MiB. User applied
+vm.swappiness=10 persisted via /etc/sysctl.d/99-rebis.conf (verified runtime).
+
+Full report: docs/rebis/incident-freeze-2026-08-23.md

@@ -63,3 +63,24 @@ Results also appended to the distill store.
     pane streaming sweep_controller.py on :8290.
 - Tests: 152 pass. Commits: 3b9055f (routing fix), fea5aa3+e78ce34 (earlier),
   plus this session's shim/sweep commits.
+
+## Live-session incident fixes (2026-08-23, user's first hermes shakedown)
+
+Access logs + hermes screenshots decoded the drop chain:
+1. hermes aux title-gen (tiny no-tool request) routed to Sol full-depth,
+   queued 160-260s behind the streamed main generation → client timeout.
+2. Co-tenant killall killed Sol mid-retry → 55s connection-refused window
+   (15s supervisor backoff + ~40s model load) → APIConnectionError ×3 → drop.
+3. hermes session-only /model switch assumed a 256k context (config entry
+   advertised the Mellum GGUF id, not `rebis`) → window mirage.
+
+Fixes shipped:
+- hermes config: REBIS-GATEWAY advertises model `rebis` (+ per-head ids) at
+  65536 — window truth restored.
+- Gateway aux fast-path: no-tools + max_tokens ≤400 + short prompt → Luna.
+  Title-class turns: 160-260s → 9.4s (validated).
+- Gateway resilience: connection-refused → one 3s retry → clean
+  **503 + Retry-After: 30** with human-readable body (validated: 3.2s to
+  clean 503 with Sol killed; post-respawn turn 4.6s).
+- Reason route respects client max_tokens (removed the 4096 floor that
+  turned agent turns into marathons).

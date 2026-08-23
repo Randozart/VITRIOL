@@ -474,17 +474,33 @@ class Shim(BaseHTTPRequestHandler):
             messages = payload.get("messages") or []
             key = session_key(messages)
             STATS["requests"] += 1
-            try:
-                self.gateway_turn(payload, key, wants_stream)
-            except (BrokenPipeError, ConnectionResetError):
-                self._note("client disconnected mid-turn")
-            except (urllib.error.URLError, ServerDown if False else OSError) as e:
-                self._note(f"gateway upstream error: {e}")
+            for attempt in (1, 2):
                 try:
-                    self.send_error(502, str(e)[:200])
+                    self.gateway_turn(payload, key, wants_stream)
+                    return
                 except (BrokenPipeError, ConnectionResetError):
-                    pass
-            return
+                    self._note("client disconnected mid-turn")
+                    return
+                except (urllib.error.URLError, ServerDown if False else OSError) as e:
+                    refused = "Connection refused" in str(e) or "Errno 111" in str(e)
+                    self._note(f"backend error (attempt {attempt}): {e}")
+                    if attempt == 1 and refused:
+                        time.sleep(3)
+                        continue
+                    body = json.dumps({"error": {
+                        "message": "REBIS heads are respawning — retry in "
+                                   "~30s; the supervisor restores them.",
+                        "type": "backend_unavailable"}}).encode()
+                    try:
+                        self.send_response(503)
+                        self.send_header("Retry-After", "30")
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    except (BrokenPipeError, ConnectionResetError):
+                        self._note("client gone during 503")
+                    return
         up = self.upstream
         length = int(self.headers.get("Content-Length", 0))
         payload = json.loads(self.rfile.read(length) or b"{}")
@@ -664,6 +680,14 @@ class Shim(BaseHTTPRequestHandler):
         tools_attached = bool(payload.get("tools"))
         messages = payload.get("messages") or []
         route = classify_turn(messages, tools_attached, forced)
+        mt_req = payload.get("max_tokens") or 0
+        last_user = next((m for m in reversed(messages)
+                          if m.get("role") == "user"), None)
+        if (route == "reason" and not tools_attached and 0 < mt_req <= 400
+                and last_user is not None
+                and len(last_user.get("content") or "") <= 600):
+            route = "draft"
+            self._note(f"session {key}: aux fast-path (max_tokens {mt_req})")
         self._note(f"session {key}: route={route}"
                    + (f" (forced={forced})" if forced else ""))
 

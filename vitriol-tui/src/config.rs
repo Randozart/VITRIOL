@@ -24,6 +24,12 @@ pub struct Config {
     pub gateway_port: u16,
     /// Distillation store directory. Env `VITRIOL_DISTILL_DIR`.
     pub distill_dir: PathBuf,
+    /// Luna head log. Env `VITRIOL_LUNA_LOG`.
+    pub luna_log: PathBuf,
+    /// Mercury gateway log. Env `VITRIOL_MERCURY_LOG`.
+    pub mercury_log: PathBuf,
+    /// Supervisor log. Env `VITRIOL_SUPERVISE_LOG`.
+    pub supervise_log: PathBuf,
     /// Directory holding the service log files. Env `COPULA_LOG_DIR`.
     pub log_dir: PathBuf,
     /// Hermetis project id for `/hermetis/stats`. Env `VITRIOL_PROJECT_ID`,
@@ -60,6 +66,15 @@ impl Config {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(8280);
+        let luna_log = env::var_os("VITRIOL_LUNA_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/mellum.log"));
+        let mercury_log = env::var_os("VITRIOL_MERCURY_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/shim.log"));
+        let supervise_log = env::var_os("VITRIOL_SUPERVISE_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp/rebis-supervise.log"));
         let distill_dir = env::var_os("VITRIOL_DISTILL_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -87,6 +102,9 @@ impl Config {
             luna_port,
             gateway_port,
             distill_dir,
+            luna_log,
+            mercury_log,
+            supervise_log,
             log_dir,
             project_id,
             repo_root,

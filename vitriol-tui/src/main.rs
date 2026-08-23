@@ -102,6 +102,8 @@ fn main() -> io::Result<()> {
                         refresh_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                     KeyCode::Tab if app.tab != app::Tab::Officina => app.next_tab(),
+                    KeyCode::Left if app.tab == app::Tab::Logs => app.cycle_log_source(-1),
+                    KeyCode::Right if app.tab == app::Tab::Logs => app.cycle_log_source(1),
                     KeyCode::BackTab => app.prev_tab(),
                     // Shift+arrows cycle tabs so plain arrows stay free for
                     // in-screen navigation.
@@ -145,6 +147,12 @@ fn handle_logs_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('1') => app.log_source = app::LogSource::Gen,
         KeyCode::Char('2') => app.log_source = app::LogSource::Hermetis,
         KeyCode::Char('3') => app.log_source = app::LogSource::Embed,
+        KeyCode::Char('4') => app.log_source = app::LogSource::Luna,
+        KeyCode::Char('5') => app.log_source = app::LogSource::Mercury,
+        KeyCode::Char('6') => app.log_source = app::LogSource::Supervise,
+        KeyCode::Char('v') if app.tab == app::Tab::Logs => {
+            app.logs_verbose = !app.logs_verbose;
+        }
         _ => {}
     }
 }

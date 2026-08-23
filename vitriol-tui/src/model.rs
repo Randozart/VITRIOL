@@ -268,6 +268,12 @@ pub struct LogsSnapshot {
     pub hermetis: Vec<String>,
     /// Tail of the embed (`copula_embed.log`) log.
     pub embed: Vec<String>,
+    /// Tail of the Luna (Mellum2) log.
+    pub luna: Vec<String>,
+    /// Tail of the Mercury gateway log.
+    pub mercury: Vec<String>,
+    /// Tail of the supervisor log.
+    pub supervise: Vec<String>,
 }
 
 /// One full poll result. All services are optional; a down service simply

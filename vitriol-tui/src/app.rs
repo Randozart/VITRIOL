@@ -127,16 +127,43 @@ pub enum LogSource {
     Hermetis,
     /// Embed (bge) server log.
     Embed,
+    /// Luna head (Mellum2) log.
+    Luna,
+    /// Mercury gateway log.
+    Mercury,
+    /// Supervisor log (head respawns).
+    Supervise,
 }
 
 impl LogSource {
     /// Short label for the LOGS panel title.
     pub fn label(self) -> &'static str {
         match self {
+            LogSource::Luna => "LUNA",
+            LogSource::Mercury => "MERCURY",
+            LogSource::Supervise => "SUPERVISE",
             LogSource::Gen => "GEN",
             LogSource::Hermetis => "HERMETIS",
             LogSource::Embed => "EMBED",
         }
+    }
+
+    /// Display order for the LOGS source chips.
+    pub const LOG_ORDER: [LogSource; 6] = [
+        LogSource::Gen,
+        LogSource::Luna,
+        LogSource::Mercury,
+        LogSource::Supervise,
+        LogSource::Hermetis,
+        LogSource::Embed,
+    ];
+
+    /// Cycle the active log source (LOGS tab ◄ ►).
+    pub fn cycle(self, dir: i32) -> LogSource {
+        let order = Self::LOG_ORDER;
+        let idx = order.iter().position(|s| *s == self).unwrap_or(0);
+        let next = (idx as i32 + dir).rem_euclid(order.len() as i32) as usize;
+        order[next]
     }
 }
 
@@ -240,6 +267,8 @@ pub struct App {
     pub tab: Tab,
     /// Service log selected in the LOGS tab.
     pub log_source: LogSource,
+    /// LOGS detail toggle: false hides heartbeat noise + truncates lines.
+    pub logs_verbose: bool,
     /// Discovered launch profiles for the CONTROLS tab.
     pub profiles: Vec<Profile>,
     /// Cursor into the CONTROLS action list.
@@ -334,6 +363,7 @@ impl App {
             decode_history: VecDeque::with_capacity(history_cap),
             tab: Tab::Dashboard,
             log_source: LogSource::Gen,
+            logs_verbose: false,
             profiles,
             selected_action: 0,
             control_running: false,
@@ -1004,11 +1034,18 @@ impl App {
     }
 
     /// Lines of the currently selected service log, oldest first.
+    pub fn cycle_log_source(&mut self, dir: i32) {
+        self.log_source = self.log_source.cycle(dir);
+    }
+
     pub fn current_log_lines(&self) -> &[String] {
         match self.log_source {
             LogSource::Gen => &self.snapshot.logs.gen,
             LogSource::Hermetis => &self.snapshot.logs.hermetis,
             LogSource::Embed => &self.snapshot.logs.embed,
+            LogSource::Luna => &self.snapshot.logs.luna,
+            LogSource::Mercury => &self.snapshot.logs.mercury,
+            LogSource::Supervise => &self.snapshot.logs.supervise,
         }
     }
 

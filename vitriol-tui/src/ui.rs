@@ -721,19 +721,60 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
         LogSource::Gen => app.snapshot.gen.up,
         LogSource::Hermetis => app.snapshot.hermetis.up,
         LogSource::Embed => app.snapshot.embed.up,
+        LogSource::Luna => app.snapshot.rebis.luna_up,
+        LogSource::Mercury => app.snapshot.rebis.mercury_up,
+        LogSource::Supervise => true,
     };
     let block = panel(&title, up);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Source chips: every available target, active highlighted.
+    let chip_span = |src: LogSource| {
+        let active = app.log_source == src;
+        Span::styled(
+            format!(" {} ", src.label()),
+            if active {
+                theme::live().add_modifier(Modifier::BOLD)
+            } else {
+                theme::muted()
+            },
+        )
+    };
+    let chips = Line::from({
+        let mut v = vec![Span::styled(" SOURCES ▸", theme::muted())];
+        v.extend(LogSource::LOG_ORDER.iter().map(|src| chip_span(*src)));
+        v.push(Span::styled("   [◄ ► switch · v detail]", theme::muted()));
+        v
+    });
 
     let lines = app.current_log_lines();
     // Show the newest lines that fit; the tail is newest-last.
     let start = lines.len().saturating_sub(inner.height as usize);
     let shown: Vec<Line> = lines[start..]
         .iter()
-        .map(|l| Line::raw(strip_ansi(l)))
+        .map(|l| {
+            let mut s = strip_ansi(l);
+            if !app.logs_verbose {
+                // Concise mode: hide heartbeat spam, cap line width.
+                if s.contains("decode heartbeat") {
+                    return Line::raw("");
+                }
+                if s.len() > 160 {
+                    s.truncate(157);
+                    s.push_str("…");
+                }
+            }
+            Line::raw(s)
+        })
         .collect();
-    frame.render_widget(Paragraph::new(shown), inner);
+    let hint = if app.logs_verbose { "verbose" } else { "concise" };
+    let mut out: Vec<Line> = vec![chips, Line::from(Span::styled(
+        format!(" [v: {} — v toggles detail] ", hint),
+        theme::muted(),
+    ))];
+    out.extend(shown);
+    frame.render_widget(Paragraph::new(out), inner);
 }
 
 /// Strip ANSI escape sequences from a log line for clean display.

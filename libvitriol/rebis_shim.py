@@ -201,6 +201,22 @@ def steer_verdict(up: Upstream, messages: list[dict], draft_message: dict) -> di
     return None
 
 
+def est_tokens(text: str) -> int:
+    return max(1, len(text or "") // 4)
+
+
+def access_line(route: str, head: str, t_entry: float, in_tok: int,
+                out_tok: int | None, session: str,
+                stream: str = "no", extra: str = "") -> str:
+    dur = time.time() - t_entry
+    out_s = str(out_tok) if out_tok is not None else "?"
+    line = (f"[access] route={route} head={head} 200 {dur:.1f}s "
+            f"in~{in_tok} out={out_tok} stream={stream} session={session[:8]}")
+    if extra:
+        line += f" {extra}"
+    return line
+
+
 def merge_reasoning(message: dict) -> dict:
     """If content is empty but reasoning_content exists (thinking model
     exhausted its budget mid-think), surface the reasoning so the client
@@ -618,7 +634,10 @@ class Shim(BaseHTTPRequestHandler):
 
     def gateway_turn(self, payload: dict, key: str, wants_stream: bool):
         """REBIS gateway: route to a head or run the draft-audit pipeline."""
+        t_entry = time.time()
         messages = payload.get("messages") or []
+        in_tok = est_tokens(" ".join(
+            (m.get("content") or "") for m in messages[-3:]))
         # Day-long sessions: compact before routing when history outgrows window.
         if self.compact and needs_compaction(messages):
             head, old_msgs, recent = split_for_compaction(
@@ -656,12 +675,30 @@ class Shim(BaseHTTPRequestHandler):
             self._respond(data, wants_stream)
 
         if route == "draft":
-            # Luna fast path — no ceremony.
+            # Luna fast path — with malformed-tool-JSON recovery.
             luna_payload = dict(payload)
             luna_payload["model"] = self.luna_model
-            data, _u = up.chat(up.mellum, luna_payload)
+            try:
+                data, _u = up.chat(up.mellum, luna_payload)
+            except urllib.error.HTTPError as e:
+                if e.code < 500:
+                    raise
+                # Luna's known failure: broken JSON in tool-call arguments.
+                self._note("luna 5xx — retrying with JSON-format nudge")
+                retry_payload = dict(luna_payload)
+                retry_payload["messages"] = list(luna_payload["messages"]) + [
+                    {"role": "assistant",
+                     "content": "[my previous tool call had malformed JSON "
+                                "arguments]"},
+                    {"role": "user",
+                     "content": "Re-issue that exact tool call with VALID "
+                                "JSON arguments. Output only the tool call."},
+                ]
+                data, _u = up.chat(up.mellum, retry_payload)
             message = merge_reasoning(data["choices"][0]["message"])
             update_state(SESSIONS.setdefault(key, {}), message)
+            self._note(access_line("draft", "luna", t_entry, in_tok,
+                                   (_u or {}).get("completion_tokens"), key))
             ship(data)
             return
 
@@ -669,8 +706,9 @@ class Shim(BaseHTTPRequestHandler):
             # Sol untouched — full depth reasoning (budget-capped server-side).
             sol_payload = dict(payload)
             sol_payload["model"] = self.sol_model
-            sol_payload["max_tokens"] = max(sol_payload.get("max_tokens") or 0,
-                                            4096)
+            # Respect the client's cap — forcing a high floor turned agent
+            # turns into multi-minute marathons.
+            sol_payload["max_tokens"] = sol_payload.get("max_tokens") or 4096
             sol_payload.setdefault("chat_template_kwargs",
                                    {"enable_thinking": True})
 
@@ -720,6 +758,9 @@ class Shim(BaseHTTPRequestHandler):
                          "content": "".join(content_parts)}
                 update_state(SESSIONS.setdefault(key, {}),
                              merge_reasoning(final))
+                self._note(access_line("reason", "sol", t_entry, in_tok,
+                                       len("".join(content_parts)) // 4, key,
+                                       stream="yes"))
                 shim_emit(self.distill_dir, {
                     "type": "gateway_turn", "session": key,
                     "route": "reason-streamed",
@@ -730,6 +771,9 @@ class Shim(BaseHTTPRequestHandler):
             data, _u = up.chat(up.sol, sol_payload)
             message = merge_reasoning(data["choices"][0]["message"])
             update_state(SESSIONS.setdefault(key, {}), message)
+            self._note(access_line("reason", "sol", t_entry, in_tok,
+                                   (data.get("usage") or {}).get("completion_tokens"),
+                                   key))
             ship(data)
             return
 
@@ -796,6 +840,9 @@ class Shim(BaseHTTPRequestHandler):
         needs_audit = (not has_tool_calls(draft_message)) or bool(flags)
         if not needs_audit:
             update_state(state, draft_message)
+            self._note(access_line("pipeline", "luna", t_entry, in_tok,
+                                   est_tokens(draft_message.get("content")), key,
+                                   extra="audit=skipped"))
             shim_emit(self.distill_dir, {
                 "type": "pipeline_pass", "session": key,
                 "audited": False, "draft": draft_message.get("content", "")[:4000]})
@@ -838,6 +885,12 @@ class Shim(BaseHTTPRequestHandler):
 
         if verdict is None or verdict.get("complete"):
             update_state(state, draft_message)
+            self._note(access_line("pipeline", "luna+sol", t_entry, in_tok,
+                                   est_tokens(draft_message.get("content")), key,
+                                   extra="audit=pass"))
+            shim_emit(self.distill_dir, {
+                "type": "pipeline_pass", "session": key,
+                "audited": True, "draft": draft_message.get("content", "")[:4000]})
             self._respond({"choices": [{"index": 0, "finish_reason":
                                         draft_message.get("finish_reason", "stop"),
                                         "message": draft_message}],
@@ -873,6 +926,15 @@ class Shim(BaseHTTPRequestHandler):
             "missing_actions": missing,
         })
         update_state(state, final_msg)
+        self._note(access_line("pipeline", "luna+sol", t_entry, in_tok,
+                               est_tokens(final_msg.get("content")), key,
+                               extra="audit=corrected"))
+        shim_emit(self.distill_dir, {
+            "type": "steer_correct", "session": key,
+            "original_response": (draft_message.get("content") or "")[:4000],
+            "final_response": (final_msg.get("content") or "")[:4000],
+            "missing_actions": missing,
+        })
         self._respond({"choices": [{"index": 0, "finish_reason":
                                     final_msg.get("finish_reason", "stop"),
                                     "message": final_msg}],

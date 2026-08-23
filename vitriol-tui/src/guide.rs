@@ -29,19 +29,28 @@ fn optimizations_dir(cfg: &Config) -> PathBuf {
     cfg.repo_root.join("docs/optimizations")
 }
 
+/// Secondary doc feed: REBIS system teaching docs (flags, protocols).
+fn rebis_docs_dir(cfg: &Config) -> PathBuf {
+    cfg.repo_root.join("docs/rebis")
+}
+
 /// Discover every optimization doc, sorted by title. Missing directory yields
 /// an empty list (never errors).
 pub fn discover(cfg: &Config) -> Vec<Doc> {
-    let Ok(entries) = fs::read_dir(optimizations_dir(cfg)) else {
-        return Vec::new();
-    };
-    let mut out: Vec<Doc> = entries
-        .flatten()
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
-        .map(load_doc)
-        .collect();
+    let mut out = Vec::new();
+    for dir in [optimizations_dir(cfg), rebis_docs_dir(cfg)] {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        out.extend(
+            entries
+                .flatten()
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("md"))
+                .map(load_doc),
+        );
+    }
     out.sort_by(|a, b| a.title.cmp(&b.title));
     out
 }

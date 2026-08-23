@@ -849,6 +849,7 @@ class Shim(BaseHTTPRequestHandler):
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 content_parts: list[str] = []
+                relay_chars = 0  # content + reasoning: honest token proxy
                 try:
                     for raw in sresp:
                         line = raw.decode(errors="ignore").strip()
@@ -863,9 +864,12 @@ class Shim(BaseHTTPRequestHandler):
                         except json.JSONDecodeError:
                             continue
                         for ch in obj.get("choices") or []:
-                            piece = (ch.get("delta") or {}).get("content")
+                            delta = ch.get("delta") or {}
+                            piece = delta.get("content")
                             if piece:
                                 content_parts.append(piece)
+                            relay_chars += len(piece or "") + len(
+                                delta.get("reasoning_content") or "")
                         self.wfile.write(f"data: {chunk}\n\n".encode())
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
@@ -875,12 +879,12 @@ class Shim(BaseHTTPRequestHandler):
                 update_state(SESSIONS.setdefault(key, {}),
                              merge_reasoning(final))
                 self._note(access_line("reason", "sol", t_entry, in_tok,
-                                       len("".join(content_parts)) // 4, key,
+                                       relay_chars // 4, key,
                                        stream="yes"))
                 shim_emit(self.distill_dir, {
                     "type": "gateway_turn", "session": key,
                     "route": "reason-streamed",
-                    "content_len": len("".join(content_parts)),
+                    "content_len": relay_chars,
                 })
                 return
 
@@ -1064,30 +1068,46 @@ class Shim(BaseHTTPRequestHandler):
         corr_payload = dict(payload)
         corr_payload["messages"] = corr_msgs
         corr_payload["model"] = self.sol_model
+        corr_payload["stream"] = False  # corrections must be parseable JSON
         corr_payload.setdefault("chat_template_kwargs",
                                 {"enable_thinking": False})
-        corr_data, _u3 = up.chat(up.sol, corr_payload)
-        final_msg = merge_reasoning(corr_data["choices"][0]["message"])
-        STATS["steered_nudge"] += 1
-        shim_emit(self.distill_dir, {
-            "type": "steer_correct", "session": key,
-            "original_response": (draft_message.get("content") or "")[:4000],
-            "final_response": (final_msg.get("content") or "")[:4000],
-            "missing_actions": missing,
-        })
-        update_state(state, final_msg)
+        final_msg = None
+        corr_error = None
+        try:
+            corr_data, _u3 = up.chat(up.sol, corr_payload)
+            final_msg = merge_reasoning(corr_data["choices"][0]["message"])
+        except (UpstreamBadResponse, urllib.error.URLError, OSError) as e:
+            # Availability-first: a failed correction ships Luna's draft
+            # rather than halting the agent mid-task.
+            corr_error = str(e)[:200]
+            self._note(f"session {key}: correction failed ({e}) — shipping "
+                       "draft unaudited, agent continues")
+        if corr_error is None:
+            STATS["steered_nudge"] += 1
+            shim_emit(self.distill_dir, {
+                "type": "steer_correct", "session": key,
+                "original_response": (draft_message.get("content") or "")[:4000],
+                "final_response": (final_msg.get("content") or "")[:4000],
+                "missing_actions": missing,
+            })
+            extra = "audit=corrected"
+            shipped = final_msg
+        else:
+            # Availability-first: correction failed, agent keeps going on the
+            # draft. Distill marks it for review/training.
+            shim_emit(self.distill_dir, {
+                "type": "correction_failed", "session": key,
+                "reason": corr_error,
+                "draft": draft_message.get("content", "")[:4000]})
+            extra = "audit=corrected-FAILED(shipped draft)"
+            shipped = draft_message
+        update_state(state, shipped)
         self._note(access_line("pipeline", "luna+sol", t_entry, in_tok,
-                               est_tokens(final_msg.get("content")), key,
-                               extra="audit=corrected"))
-        shim_emit(self.distill_dir, {
-            "type": "steer_correct", "session": key,
-            "original_response": (draft_message.get("content") or "")[:4000],
-            "final_response": (final_msg.get("content") or "")[:4000],
-            "missing_actions": missing,
-        })
+                               est_tokens(shipped.get("content")), key,
+                               extra=extra))
         self._respond({"choices": [{"index": 0, "finish_reason":
-                                    final_msg.get("finish_reason", "stop"),
-                                    "message": final_msg}],
+                                    shipped.get("finish_reason", "stop"),
+                                    "message": shipped}],
                        "model": "rebis"}, wants_stream)
 
     def _proxy_raw(self):

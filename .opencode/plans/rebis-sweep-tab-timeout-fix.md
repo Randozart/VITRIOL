@@ -84,3 +84,21 @@ Fixes shipped:
   clean 503 with Sol killed; post-respawn turn 4.6s).
 - Reason route respects client max_tokens (removed the 4096 floor that
   turned agent turns into marathons).
+
+## Hermes drop-chain fixes (2026-08-23, post-live-session)
+
+Access-log archaeology (295 tracebacks = museum of fixed bugs; current era
+clean) exposed the live drop chain: hermes streams (stream:true), the
+pipeline's Sol correction inherited stream:true, Sol answered SSE,
+Upstream.chat json.loads crashed → UpstreamBadResponse → 502 → drop.
+
+- G1: correction forces stream:false upstream (parseable JSON guaranteed)
+- G2: correction failure ships Luna's draft + correction_failed distill
+  marker — agent never halts mid-task (availability-first, user-confirmed)
+- G3: timestamps on every shim log line + access lines (log archaeology
+  was needed twice; no more)
+- G4: relay counter honest (content + reasoning deltas; out=0 bug fixed)
+- catch-all: any handler crash → JSON 502 (never silent close); payload
+  validation → 400; session_key defensive against non-dict messages
+- stop command: ./scripts/rebis-servers.sh stop (tears down everything;
+  supervisor self-match patterns fixed)

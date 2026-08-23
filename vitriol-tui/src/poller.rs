@@ -36,6 +36,7 @@ struct Poller {
     /// Tail of the gen log.
     gen_tail: LogTail,
     luna_beat_offset: Option<u64>,
+    last_gpus: Vec<crate::model::GpuSnapshot>,
     /// Tail of the Hermetis log.
     hermetis_tail: LogTail,
     /// Tail of the embed log.
@@ -66,6 +67,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
             let mut poller = Poller {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
                 luna_beat_offset: None,
+                last_gpus: Vec::new(),
                 hermetis_tail: LogTail::new(LOG_TAIL_CAP),
                 embed_tail: LogTail::new(LOG_TAIL_CAP),
                 decode_beat_offset: None,
@@ -91,6 +93,7 @@ impl Poller {
         self.hermetis_tail.poll(&self.cfg.hermetis_log());
         self.embed_tail.poll(&self.cfg.embed_log());
         let gpus = nvidia::query_gpus();
+        self.last_gpus = gpus.clone();
         let gpu_processes = nvidia::query_processes(&gpus);
         let rebis = self.poll_rebis(agent);
         let snap = Snapshot {
@@ -113,9 +116,35 @@ impl Poller {
     /// Luna velocity, and the shim event stream from the distill store.
     fn poll_rebis(&mut self, agent: &Agent) -> RebisSnapshot {
         let mut snap = RebisSnapshot::default();
-        snap.sol_up = health_up(agent, self.cfg.gen_port);
-        snap.luna_up = health_up(agent, self.cfg.luna_port);
-        snap.mercury_up = health_up(agent, self.cfg.gateway_port);
+        let mut latency = |port: u16| -> (bool, u32) {
+            let t0 = std::time::Instant::now();
+            let up = health_up(agent, port);
+            (up, t0.elapsed().as_millis() as u32)
+        };
+        (snap.sol_up, snap.sol_latency_ms) = latency(self.cfg.gen_port);
+        (snap.luna_up, snap.luna_latency_ms) = latency(self.cfg.luna_port);
+        (snap.mercury_up, snap.mercury_latency_ms) = latency(self.cfg.gateway_port);
+
+        // cumulative predicted tokens from /metrics on both heads
+        for (port, slot) in [(self.cfg.gen_port, 0u8), (self.cfg.luna_port, 1u8)] {
+            if let Some(text) = req_text(agent, &format!("http://127.0.0.1:{port}/metrics")) {
+                for line in text.lines() {
+                    if let Some(v) = line.strip_prefix("llamacpp:tokens_predicted_total ") {
+                        let n: u64 = v.trim().parse().unwrap_or(0);
+                        if slot == 0 { snap.sol_tokens_total = n; }
+                        else { snap.luna_tokens_total = n; }
+                    }
+                }
+            }
+        }
+
+        // map head -> its GPU utilisation (Sol=GPU0, Luna=GPU1)
+        if let Some(g0) = self.last_gpus.iter().find(|g| g.index == 0) {
+            snap.sol_util_pct = g0.util_pct;
+        }
+        if let Some(g1) = self.last_gpus.iter().find(|g| g.index == 1) {
+            snap.luna_util_pct = g1.util_pct;
+        }
 
         if snap.luna_up {
             if let Some(models) = get_json(
@@ -287,6 +316,14 @@ impl Poller {
 }
 
 /// Whether `/health` answers on `port`.
+/// Plain GET returning the body as String (for /metrics text endpoints).
+fn req_text(agent: &Agent, url: &str) -> Option<String> {
+    match agent.get(url).call() {
+        Ok(resp) => resp.into_string().ok(),
+        Err(_) => None,
+    }
+}
+
 fn health_up(agent: &Agent, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/health");
     get_json(agent, &url)

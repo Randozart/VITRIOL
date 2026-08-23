@@ -1631,13 +1631,20 @@ mod tests {
     }
 }
 
+/// Compact token count formatting: 1234567 -> "1.23M".
+fn fmt_tokens(n: u64) -> String {
+    if n >= 1_000_000 { format!("{:.2}M", n as f64 / 1e6) }
+    else if n >= 1_000 { format!("{:.1}k", n as f64 / 1e3) }
+    else { format!("{n}") }
+}
+
 /// REBIS dashboard: head status, route distribution, audit ledger, and the
 /// live gateway event stream. The trenchcoat, visible.
 fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let r = &app.snapshot.rebis;
 
     let rows = Layout::vertical([
-        Constraint::Length(4),  // head status cells
+        Constraint::Length(5),  // head status cells
         Constraint::Length(6),  // routes + audit ledger
         Constraint::Min(1),     // event stream
     ])
@@ -1655,10 +1662,11 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     .split(h_inner);
 
     let head_cell = |f: &mut Frame, area: Rect, name: &str, up: bool,
-                     line2: String| {
+                     line2: String, line3: String| {
         let color = if up { theme::live() } else { theme::muted() };
         let cell_rows =
-            Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+            Layout::vertical([Constraint::Length(1), Constraint::Length(1),
+                              Constraint::Length(1)])
                 .split(area);
         let title_line = Line::from(Span::styled(
             format!("{name} {}", if up { "●" } else { "·" }),
@@ -1666,21 +1674,35 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
         ));
         f.render_widget(Paragraph::new(title_line), cell_rows[0]);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(line2, theme::muted()))),
+            Paragraph::new(Line::from(Span::styled(line2, theme::text()))),
             cell_rows[1],
         );
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(line3, theme::muted()))),
+            cell_rows[2],
+        );
     };
+    let g = &app.snapshot.gen;
     let sol_line = if app.snapshot.gen.up {
-        format!("{} · {} tok/s", app.snapshot.gen.model.as_deref().unwrap_or("-"),
-                app.snapshot.gen.decode_t_s)
+        format!("{} · {:.1} t/s · {}ms",
+                g.model.as_deref().unwrap_or("-"),
+                g.decode_t_s, r.sol_latency_ms)
     } else { "down".into() };
+    let sol_load = format!("load {}% · {} tokens",
+                           r.sol_util_pct, fmt_tokens(r.sol_tokens_total));
     let luna_line = if r.luna_up {
-        format!("{} · {:.1} tok/s",
-                r.luna_model.as_deref().unwrap_or("-"), r.luna_decode_t_s)
+        format!("{} · {:.1} t/s · {}ms",
+                r.luna_model.as_deref().unwrap_or("-"),
+                r.luna_decode_t_s, r.luna_latency_ms)
     } else { "down".into() };
-    head_cell(frame, cols[0], "MERCURY :8280", r.mercury_up, "gateway".into());
-    head_cell(frame, cols[1], "SOL :8279", r.sol_up || app.snapshot.gen.up, sol_line);
-    head_cell(frame, cols[2], "LUNA :8247", r.luna_up, luna_line);
+    let luna_load = format!("load {}% · {} tokens",
+                            r.luna_util_pct, fmt_tokens(r.luna_tokens_total));
+    head_cell(frame, cols[0], "MERCURY :8280", r.mercury_up,
+              "gateway".into(),
+              format!("{}ms", r.mercury_latency_ms));
+    head_cell(frame, cols[1], "SOL :8279", r.sol_up || app.snapshot.gen.up,
+              sol_line, sol_load);
+    head_cell(frame, cols[2], "LUNA :8247", r.luna_up, luna_line, luna_load);
 
     // ── Routes + audit ledger ──
     let mid = panel_neutral(" ROUTES / AUDIT LEDGER ");

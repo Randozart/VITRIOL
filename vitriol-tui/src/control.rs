@@ -30,6 +30,8 @@ pub enum Action {
     Doctor,
     /// Run `vitriol setup` — set CAP_IPC_LOCK for page-locked stream mode.
     Setup,
+    /// Boot the whole REBIS trenchcoat: Sol + Luna + Mercury, supervised.
+    LaunchRebis,
     /// Run a Spagyric decode-knob sweep for a profile's model.
     RunSweep(String),
     /// Run the sweep AND write the per-knob winner as `<name>-swept` profile.
@@ -51,6 +53,7 @@ impl Action {
             Action::Restart { selected: None } => "restart stack".into(),
             Action::Doctor => "run doctor".into(),
             Action::Setup => "vitriol setup (CAP_IPC_LOCK)".into(),
+            Action::LaunchRebis => "launch rebis (Sol+Luna+Mercury)".into(),
             Action::RunSweep(name) => format!("sweep: {name}"),
             Action::SweepAndSave(name) => format!("sweep+save: {name}"),
         }
@@ -69,6 +72,7 @@ impl Action {
             },
             Action::Doctor,
             Action::Setup,
+            Action::LaunchRebis,
         ];
         for p in profiles {
             actions.push(Action::RunSweep(p.name.clone()));
@@ -131,6 +135,12 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
             label: "pre-flight checks".into(),
             program: launch,
             args: vec!["doctor".into()],
+        }],
+        Action::LaunchRebis => vec![Step {
+            label: action.label(),
+            program: cfg.repo_root.join("scripts/rebis-servers.sh")
+                .to_string_lossy().into_owned(),
+            args: vec!["rebis".into()],
         }],
         Action::Setup => {
             // 2026-08-07: `sudo -n` keeps the no-tty control thread honest — a
@@ -356,14 +366,15 @@ mod tests {
             parallel: None,
         };
         let actions = Action::all(&[p], None);
-        assert_eq!(actions.len(), 7);
+        assert_eq!(actions.len(), 8);
         assert_eq!(actions[0], Action::Start { selected: None });
         assert_eq!(actions[1], Action::Stop);
         assert_eq!(actions[2], Action::Restart { selected: None });
         assert_eq!(actions[3], Action::Doctor);
         assert_eq!(actions[4], Action::Setup);
-        assert_eq!(actions[5], Action::RunSweep("mellum2".into()));
-        assert_eq!(actions[6], Action::SweepAndSave("mellum2".into()));
+        assert_eq!(actions[5], Action::LaunchRebis);
+        assert_eq!(actions[6], Action::RunSweep("mellum2".into()));
+        assert_eq!(actions[7], Action::SweepAndSave("mellum2".into()));
         let with_sel = Action::all(&[], Some("qwen"));
         assert_eq!(
             with_sel[0],

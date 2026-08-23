@@ -247,6 +247,16 @@ pub struct RebisSnapshot {
     pub compactions: u32,
     /// Newest events, capped, oldest first.
     pub recent: Vec<RebisEvent>,
+    /// Health-check round-trip in ms (lower = responsive).
+    pub mercury_latency_ms: u32,
+    pub sol_latency_ms: u32,
+    pub luna_latency_ms: u32,
+    /// Cumulative predicted tokens since server start (from /metrics).
+    pub sol_tokens_total: u64,
+    pub luna_tokens_total: u64,
+    /// GPU utilisation of each head's card.
+    pub sol_util_pct: u8,
+    pub luna_util_pct: u8,
 }
 
 /// Live tail of a service log, newest last, capped at [`LOG_TAIL_CAP`] lines.

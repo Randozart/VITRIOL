@@ -201,6 +201,14 @@ def steer_verdict(up: Upstream, messages: list[dict], draft_message: dict) -> di
     return None
 
 
+def health_up(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(f"{url.rstrip('/')}/health", timeout=2) as r:
+            return r.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
 def est_tokens(text: str) -> int:
     return max(1, len(text or "") // 4)
 
@@ -215,6 +223,18 @@ def access_line(route: str, head: str, t_entry: float, in_tok: int,
     if extra:
         line += f" {extra}"
     return line
+
+
+def validate_tool_calls(message: dict) -> tuple[bool, str]:
+    """Every tool_call's arguments must parse as JSON."""
+    for tc in message.get("tool_calls") or []:
+        args = (tc.get("function") or {}).get("arguments", "")
+        if isinstance(args, str):
+            try:
+                json.loads(args)
+            except json.JSONDecodeError:
+                return False, "tool call arguments are not valid JSON"
+    return True, ""
 
 
 def merge_reasoning(message: dict) -> dict:
@@ -338,12 +358,11 @@ def classify_turn(messages: list[dict], tools_attached: bool,
 
     Ladder (documented in plans/rebis-gateway-v2):
       1. explicit escape hatch wins
-      2. kickoff: tools attached, no assistant tool activity yet -> reason
-         (planner authors the first calls; catches E2's failure class)
-      3. last message is a tool result -> draft (executor continuation)
-      4. assistant history has tool calls (finalizing) -> pipeline
-      5. no-tools chat: complexity heuristic -> reason/draft
-      6. fallback -> reason (safe default: quality over speed)
+      2. tools attached -> pipeline (Luna drafts; audit intensity scales:
+         kickoff + finals get full Sol verdicts, executor continuations
+         schema-only)
+      3. no-tools chat -> reason (Sol; bare-chat Luna drafting degenerates)
+      4. fallback -> reason (safe default: quality over speed)
     """
     if forced in ("rebis-qwen",):
         return "reason"
@@ -354,11 +373,9 @@ def classify_turn(messages: list[dict], tools_attached: bool,
     has_calls = any(m.get("tool_calls") for m in messages
                     if m.get("role") == "assistant")
     last_role = messages[-1].get("role")
-    if tools_attached and not has_calls:
-        return "reason"
-    if last_role == "tool":
-        return "draft"
-    if has_calls:
+    # Luna-first: ALL agentic turns draft on Luna; Sol verifies via the
+    # pipeline's audit layer (intensity scales by turn position).
+    if tools_attached:
         return "pipeline"
     # No toolset => not an agentic execution turn. Quality-first: Sol.
     # (Bare-chat Luna drafts degenerate without harness structure.)
@@ -861,20 +878,33 @@ class Shim(BaseHTTPRequestHandler):
         draft_time = round(time.time() - t0, 2)
 
         flags = flag_turn(draft_message, state := SESSIONS.setdefault(key, {}))
-        needs_audit = (not has_tool_calls(draft_message)) or bool(flags)
-        if not needs_audit:
+        schema_ok, schema_report = validate_tool_calls(draft_message)
+        first_assistant = not any(
+            m.get("role") == "assistant" for m in messages[:-1])
+
+        # Executor continuation with well-formed tool calls: schema-only,
+        # ship without a Sol round-trip.
+        if (has_tool_calls(draft_message) and schema_ok
+                and not flags and not first_assistant):
             update_state(state, draft_message)
             self._note(access_line("pipeline", "luna", t_entry, in_tok,
                                    est_tokens(draft_message.get("content")), key,
-                                   extra="audit=skipped"))
+                                   extra="audit=schema-only"))
             shim_emit(self.distill_dir, {
                 "type": "pipeline_pass", "session": key,
-                "audited": False, "draft": draft_message.get("content", "")[:4000]})
+                "audited": False, "schema_only": True,
+                "draft": draft_message.get("content", "")[:4000]})
             self._respond({"choices": [{"index": 0, "finish_reason":
                                         draft_message.get("finish_reason", "stop"),
                                         "message": draft_message}],
                            "model": "rebis"}, wants_stream)
             return
+
+        # Malformed tool-call arguments are a Luna capability limit, not an
+        # attention slip — nudging rarely recovers them (measured). Skip
+        # straight to the audit; Sol correction authors valid calls.
+        if has_tool_calls(draft_message) and not schema_ok:
+            self._note(f"session {key}: malformed tool args — escalating to Sol")
 
         # Sol ingested the growing draft already — final warm covers the tail.
         warm_sol(draft_message.get("content") or "")
@@ -900,14 +930,35 @@ class Shim(BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 pass
         STATS["judged_complete"] += verdict is not None
+        sol_reachable = health_up(up.sol)
         shim_emit(self.distill_dir, {
             "type": "pipeline_audited", "session": key, "flags": flags,
             "complete": bool(verdict and verdict.get("complete")),
+            "sol_down": verdict is None and not sol_reachable,
             "missing_actions": (verdict or {}).get("missing_actions") or [],
             "draft_content": (draft_message.get("content") or "")[:4000],
         })
 
-        if verdict is None or verdict.get("complete"):
+        if verdict is None:
+            # Sol unreachable or unparseable: availability-first — ship the
+            # draft unaudited, marked for review.
+            update_state(state, draft_message)
+            self._note(access_line("pipeline", "luna", t_entry, in_tok,
+                                   est_tokens(draft_message.get("content")), key,
+                                   extra="audit=UNAUDITED(sol_down)"
+                                         if not sol_reachable
+                                         else "audit=UNAUDITED(unparseable)"))
+            shim_emit(self.distill_dir, {
+                "type": "pipeline_unaudited", "session": key,
+                "reason": "sol_down" if not sol_reachable else "unparseable",
+                "draft": draft_message.get("content", "")[:4000]})
+            self._respond({"choices": [{"index": 0, "finish_reason":
+                                        draft_message.get("finish_reason", "stop"),
+                                        "message": draft_message}],
+                           "model": "rebis"}, wants_stream)
+            return
+
+        if verdict.get("complete"):
             update_state(state, draft_message)
             self._note(access_line("pipeline", "luna+sol", t_entry, in_tok,
                                    est_tokens(draft_message.get("content")), key,
@@ -1051,12 +1102,12 @@ def selftest() -> int:
 
     # Gateway routing ladder
     kickoff = [{"role": "user", "content": "implement X using the tools"}]
-    assert classify_turn(kickoff, True) == "reason"
+    assert classify_turn(kickoff, True) == "pipeline"
     exec_hist = kickoff + [
         {"role": "assistant", "tool_calls": [{"id": "1"}]},
         {"role": "tool", "content": "result"},
     ]
-    assert classify_turn(exec_hist, True) == "draft"
+    assert classify_turn(exec_hist, True) == "pipeline"
     finalizing = kickoff + [
         {"role": "assistant", "tool_calls": [{"id": "1"}]},
         {"role": "tool", "content": "result"},

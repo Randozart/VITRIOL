@@ -117,9 +117,12 @@ def main():
         # heap; UD-IQ2_S carries no embedded head. Phase 0 measures raw
         # attention/KV pipeline timing — speculative decoding stays off.
         # keep checkpointing/prompt-cache machinery off for clean timing
-        "--ctx-checkpoints", "0",
-        "--cache-reuse", "0",
-        "--cache-ram", "0",
+        // NOTE: do NOT pass --ctx-checkpoints 0 (heap corruption: checkpoint
+        // code mishandles disabled=0) nor --cache-ram 0 (server never becomes
+        // ready). Bound them instead.
+        "--ctx-checkpoints", "4",
+        "--checkpoint-every-n-tokens", "8192",
+        "--cache-reuse", "256",
         "--host", "127.0.0.1",
         "--port", str(PORT),
     ]

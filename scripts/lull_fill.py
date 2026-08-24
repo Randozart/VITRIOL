@@ -94,24 +94,34 @@ def main():
                 print("[lull_fill] server never became ready")
                 sys.exit(1)
 
-            unit = "alpha beta gamma delta epsilon zeta "
-            # ~5.15 chars/token for these common words; 6 words per unit
+            # adaptive fill: measure the true words→tokens ratio from round 1,
+            # then size each round so we never exceed min(depth, ctx-256)
             n_words_total = int(args.depth * 5.15 / 6)
             chunk_words = max(8, int(args.chunk * 5.15 / 6))
             words = []
             t0 = time.time()
             rounds = 0
             r = {}
-            while len(words) < n_words_total:
-                words.extend("w%d" % i for i in range(len(words), len(words) + chunk_words))
+            tok_per_word = None
+            while True:
+                remaining_tok = args.depth - r.get("tokens_evaluated", 0)
+                if remaining_tok <= 0:
+                    break
+                tpw = tok_per_word or 3.5
+                add_words = max(8, min(chunk_words, int(remaining_tok / tpw)))
+                base = len(words)
+                words.extend("w%d" % (base + i) for i in range(add_words))
                 rounds += 1
                 r = completion({
                     "prompt": " ".join(words),
                     "n_predict": 1,
                     "cache_prompt": True,
                 })
+                got = r.get("tokens_evaluated", 0)
+                if len(words):
+                    tok_per_word = got / len(words)
                 if rounds % 20 == 0:
-                    print(f"[lull_fill] round {rounds}: ~{r.get('tokens_evaluated',0)} tokens cached", flush=True)
+                    print(f"[lull_fill] round {rounds}: {got} tokens cached", flush=True)
             fill_s = time.time() - t0
             depth_reached = r.get("tokens_evaluated", 0)
 

@@ -26,6 +26,7 @@ def main():
     ap.add_argument("--no-substrate", action="store_true")
     ap.add_argument("--no-vmm", action="store_true")
     ap.add_argument("--gen", type=int, default=64)
+    ap.add_argument("--fa", type=str, default=None)
     a = ap.parse_args()
 
     env = dict(os.environ)
@@ -44,6 +45,7 @@ def main():
     cmd = [SERVER, "-m", a.model,
            "-ngl", "99", "-c", str(a.window), "-ub", str(a.ub),
            "-t", "4", "-ts", a.ts,
+           *([] if not a.fa else ["-fa", a.fa]),
            "--cache-type-k", a.kv, "--cache-type-v", a.kv,
            "--ctx-checkpoints", "4", "--checkpoint-every-n-tokens", "8192",
            "--host", "127.0.0.1", "--port", "8299"]
@@ -72,7 +74,7 @@ def main():
                     data=json.dumps({"content": words}).encode(),
                     headers={"Content-Type": "application/json"})
                 nt = len(json.loads(urllib.request.urlopen(tr, timeout=180).read()).get("tokens", []))
-                if nt <= a.target or n <= 200:
+                if abs(nt - a.target) <= a.target * 0.02 or n <= 200:
                     break
                 n = max(100, int(n * a.target / nt))
             print(f"[{a.tag}] single-shot {nt} tokens ...", flush=True)

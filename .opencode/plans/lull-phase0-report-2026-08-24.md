@@ -99,3 +99,33 @@ Note: server REJECTS prompts larger than ctx (HTTP 400) — filler sized at
 3. (LULL) Phase 1 attention-probe implementation can start in parallel —
    it is compile-time independent of the crashing runtime paths (new files +
    kv-cache score plumbing), gated behind `VITRIOL_KV_SCORE=off` default.
+
+---
+
+## Addendum — Phase 1 shipped (2026-08-24 18:xx)
+
+**Attention-probe scoring implemented and verified end-to-end.**
+Commit `46893d105` (submodule) / `5ef1e88` (outer).
+
+Design as built (differs from plan §2.1 in one important way):
+scoring ops are appended at the **tail of the decode graph** rather than
+executed on a side stream — qwen35's custom graph builder asserts strict
+last-node-expansion ordering, so mid-build insertion aborts
+(`ggml_build_forward_impl` last==tensor). Tail placement keeps the sched's
+automatic per-device routing and costs nothing extra; the "lull" execution
+window moves to Phase 3 as planned.
+
+Chain verified on UD-IQ2_S @ c2048 ts 27,9:
+capture(il=3.., q=[256,24,1]) → tail subgraph → 16 layers scored per step
+→ D2H at decode end → cells.score_set(decay·old+new). Marker line
+`VITRIOL_KV_SCORE: probe active` fires once; default-off identical to
+baseline; zero crashes.
+
+Bugs found & fixed during bring-up (all in new code):
+1. mid-build insertion vs builder invariant (→ tail append),
+2. trailing prompt-chunk ubatch resetting a marked output (→ one-shot disarm),
+3. context/cache split-brain: mark_output missing pending=true.
+
+Remaining for the quality gate (§3 Phase 2): perplexity comparison of
+score-driven vs blind eviction at depth — needs deep-prefill flows,
+i.e. resolution of the §3 corruption (Q3_K_M embedded-sibling path).

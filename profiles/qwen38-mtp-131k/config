@@ -7,7 +7,7 @@
 [gpu]
 device = 0
 exclude_secondary = false
-tensor_split = 27,9
+tensor_split = 26,10
 
 [model]
 path = /home/randozart/Downloads/Qwen3.8-27B-Q3_K_M.gguf

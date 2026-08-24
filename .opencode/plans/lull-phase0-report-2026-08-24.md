@@ -153,3 +153,33 @@ With bounded checkpointing (`--ctx-checkpoints 4 --checkpoint-every-n-tokens
 so cache-full eviction can't be triggered by plain oversubscription;
 needs context-shift interplay or multi-slot VRAM pressure to exercise at
 runtime. Logic committed + reviewed; runtime gate deferred.
+
+## Addendum 3 — Phase 0 baselines COMPLETE (2026-08-24 evening)
+
+Model UD-IQ2_S, ts 27,9, q4_0 KV, probe+sparse on, chunked fill
+(`scripts/lull_fill.py`):
+
+| depth | decode t/s (mean of 3×64) | notes |
+|---|---|---|
+| 7,690 | 11.78 | |
+| 24,595 | 12.74 | + VITRIOL_LULL_PROFILE telemetry below |
+| 31,780 | 11.72 | |
+| 64,634 | 11.96 | |
+
+Decode speed is flat vs context depth on this GQA+GDN-hybrid model
+(16/65 full-attn layers): attention is a small share of per-token cost at
+these depths. Implication for LULL: eviction's *speed* case lives at very
+deep ctx (>100k) or comes from VRAM headroom (REBIS co-residency), not
+from mid-depth masking gains.
+
+Lull table @ 24,595 tokens (VITRIOL_LULL_PROFILE=1):
+
+```
+dev0 (3060): busy p50=36.6ms p95=273ms | idle p50=35.1ms  → ~50% wall idle
+dev1 (1070Ti): busy p50=0.24ms (2nd instance micro-graphs); queue-backed
+VRAM watermark @24k fill: dev0 free≈5.2GiB, dev1 free≈4.7GiB
+```
+
+Premise reconfirmed at scale: GPU0 idles about half of decode wall-clock.
+Phase 0 gates SATISFIED; Phases 1–2 shipped; Phase 3–4 remain gated on
+eviction runtime-trigger work (context-shift interplay or multi-slot).

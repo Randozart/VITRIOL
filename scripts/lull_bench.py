@@ -87,6 +87,10 @@ def main():
         "--cache-type-v", "q4_0",
         "--spec-type", "mtp",
         "--spec-draft-n-max", "1",
+        # LULL baselines measure raw pipeline timing; the prompt-cache
+        # checkpoint machinery snapshots ~186MiB per 128 tokens otherwise.
+        "--ctx-checkpoints", "0",
+        "--cache-reuse", "0",
         "--host", "127.0.0.1",
         "--port", str(PORT),
     ]

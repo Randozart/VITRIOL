@@ -91,6 +91,9 @@ def main():
         # checkpoint machinery snapshots ~186MiB per 128 tokens otherwise.
         "--ctx-checkpoints", "0",
         "--cache-reuse", "0",
+        # prompt-cache state saves corrupt the heap in this base (free():
+        # invalid pointer during deep prefill); keep them off for LULL runs
+        "--cache-ram", "0",
         "--host", "127.0.0.1",
         "--port", str(PORT),
     ]

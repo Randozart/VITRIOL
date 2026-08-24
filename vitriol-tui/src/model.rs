@@ -276,6 +276,8 @@ pub struct LogsSnapshot {
     pub mercury: Vec<String>,
     /// Tail of the supervisor log.
     pub supervise: Vec<String>,
+    /// Tail of the inter-model traffic capture.
+    pub traffic: Vec<String>,
 }
 
 /// One full poll result. All services are optional; a down service simply

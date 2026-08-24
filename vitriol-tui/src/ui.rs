@@ -724,6 +724,7 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
         LogSource::Luna => app.snapshot.rebis.luna_up,
         LogSource::Mercury => app.snapshot.rebis.mercury_up,
         LogSource::Supervise => true,
+        LogSource::Traffic => app.snapshot.rebis.mercury_up,
     };
     let block = panel(&title, up);
     let inner = block.inner(area);
@@ -756,9 +757,34 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
         .map(|l| {
             let mut s = strip_ansi(l);
             if !app.logs_verbose {
-                // Concise mode: hide heartbeat spam, cap line width.
-                if s.contains("decode heartbeat") {
+                // Concise mode: hide heartbeat spam + warm metadata, cap
+                // width, and render traffic JSONL heads as summaries.
+                if s.contains("decode heartbeat") || s.contains("\"meta_only\"") {
                     return Line::raw("");
+                }
+                if s.trim_start().starts_with('{') && s.contains("\"kind\"") {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
+                        let g = |k: &str| {
+                            v.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string()
+                        };
+                        let num = |k: &str| {
+                            v.get(k).and_then(|x| x.as_u64()).unwrap_or(0)
+                        };
+                        let kind = g("kind");
+                        let styled = if kind == "audit" {
+                            theme::gold_muted()
+                        } else {
+                            theme::text()
+                        };
+                        return Line::from(Span::styled(
+                            format!(
+                                "{} {:>12} {}→{}  {}→{} chars",
+                                g("ts"), kind, g("from"), g("to"),
+                                num("prompt_chars"), num("response_chars")
+                            ),
+                            styled,
+                        ));
+                    }
                 }
                 if s.len() > 160 {
                     s.truncate(157);

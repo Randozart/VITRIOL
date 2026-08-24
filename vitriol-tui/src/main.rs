@@ -154,6 +154,7 @@ fn handle_logs_key(app: &mut App, key: crossterm::event::KeyEvent) {
         KeyCode::Char('4') => app.log_source = app::LogSource::Luna,
         KeyCode::Char('5') => app.log_source = app::LogSource::Mercury,
         KeyCode::Char('6') => app.log_source = app::LogSource::Supervise,
+        KeyCode::Char('7') => app.log_source = app::LogSource::Traffic,
         KeyCode::Char('v') if app.tab == app::Tab::Logs => {
             app.logs_verbose = !app.logs_verbose;
         }

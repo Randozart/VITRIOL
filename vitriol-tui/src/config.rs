@@ -30,6 +30,8 @@ pub struct Config {
     pub mercury_log: PathBuf,
     /// Supervisor log. Env `VITRIOL_SUPERVISE_LOG`.
     pub supervise_log: PathBuf,
+    /// Inter-model traffic capture. Env `VITRIOL_TRAFFIC_LOG`.
+    pub traffic_log: PathBuf,
     /// Directory holding the service log files. Env `COPULA_LOG_DIR`.
     pub log_dir: PathBuf,
     /// Hermetis project id for `/hermetis/stats`. Env `VITRIOL_PROJECT_ID`,
@@ -72,6 +74,12 @@ impl Config {
         let mercury_log = env::var_os("VITRIOL_MERCURY_LOG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp/shim.log"));
+        let traffic_log = env::var_os("VITRIOL_TRAFFIC_LOG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                PathBuf::from(env::var("HOME").unwrap_or_default())
+                    .join(".vitriol/distill/traffic.jsonl")
+            });
         let supervise_log = env::var_os("VITRIOL_SUPERVISE_LOG")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/tmp/rebis-supervise.log"));
@@ -105,6 +113,7 @@ impl Config {
             luna_log,
             mercury_log,
             supervise_log,
+            traffic_log,
             log_dir,
             project_id,
             repo_root,

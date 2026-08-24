@@ -44,6 +44,7 @@ struct Poller {
     luna_tail: LogTail,
     mercury_tail: LogTail,
     supervise_tail: LogTail,
+    traffic_tail: LogTail,
     /// Byte offset of the newest `decode heartbeat` line seen last poll, or
     /// None before the first sighting. Lets the poller tell "still generating"
     /// (offset advanced) from "went idle" (offset unchanged since the previous
@@ -76,6 +77,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
                 luna_tail: LogTail::new(LOG_TAIL_CAP),
                 mercury_tail: LogTail::new(LOG_TAIL_CAP),
                 supervise_tail: LogTail::new(LOG_TAIL_CAP),
+                traffic_tail: LogTail::new(LOG_TAIL_CAP),
                 decode_beat_offset: None,
                 last_live_t_s: 0.0,
                 gen_port_override: None,
@@ -101,6 +103,7 @@ impl Poller {
         self.luna_tail.poll(&self.cfg.luna_log);
         self.mercury_tail.poll(&self.cfg.mercury_log);
         self.supervise_tail.poll(&self.cfg.supervise_log);
+        self.traffic_tail.poll(&self.cfg.traffic_log);
         let gpus = nvidia::query_gpus();
         self.last_gpus = gpus.clone();
         let gpu_processes = nvidia::query_processes(&gpus);
@@ -119,6 +122,7 @@ impl Poller {
                 luna: self.luna_tail.snapshot(),
                 mercury: self.mercury_tail.snapshot(),
                 supervise: self.supervise_tail.snapshot(),
+                traffic: self.traffic_tail.snapshot(),
             },
         };
         let _ = tx.send(snap);

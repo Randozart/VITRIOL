@@ -14,7 +14,9 @@ with synthesized SSE from the buffered response.
 
 import argparse
 import hashlib
+import os
 import sys
+from pathlib import Path
 
 _here = str(__import__("pathlib").Path(__file__).resolve().parent)
 if _here not in sys.path:
@@ -223,6 +225,50 @@ def mem_available_mib() -> int:
     except (OSError, ValueError, IndexError):
         pass
     return 1 << 30  # unknown: assume plenty
+
+
+# ── Inter-model traffic capture ──────────────────────────────────────
+
+TRAFFIC_PATH = os.environ.get(
+    "REBIS_TRAFFIC_LOG",
+    str(Path.home() / ".vitriol" / "distill" / "traffic.jsonl"))
+TRAFFIC_MAX_BYTES = 20 * 1024 * 1024
+TRAFFIC_WARM = os.environ.get("REBIS_TRAFFIC_WARM", "") == "1"
+
+
+def rotate_traffic(path_str: str, max_bytes: int) -> None:
+    path = Path(path_str)
+    if path.exists() and path.stat().st_size > max_bytes:
+        path.rename(path.with_suffix(".jsonl.1"))
+
+
+def traffic_log(kind: str, frm: str, to: str, prompt: str,
+                response: str = "", duration_s: float | None = None,
+                meta_only: bool = False,
+                path_str: str = TRAFFIC_PATH,
+                max_bytes: int = TRAFFIC_MAX_BYTES) -> None:
+    """One inter-model exchange → traffic.jsonl.
+
+    Bodies are tail-truncated to 8 KB (latest context matters most).
+    meta_only records (warm prefills) carry no bodies.
+    """
+    try:
+        rotate_traffic(path_str, max_bytes)
+        rec = {"ts": time.strftime("%H:%M:%S"), "kind": kind,
+               "from": frm, "to": to,
+               "prompt_chars": len(prompt or ""),
+               "response_chars": len(response or "")}
+        if duration_s is not None:
+            rec["duration_s"] = round(duration_s, 2)
+        if not meta_only:
+            rec["prompt"] = (prompt or "")[-8000:]
+            rec["response"] = (response or "")[-8000:]
+        else:
+            rec["meta_only"] = True
+        with open(path_str, "a") as f:
+            f.write(json.dumps(rec) + "\n")
+    except OSError as e:
+        print(f"[shim] traffic write failed: {e}", file=sys.stderr)
 
 
 def health_up(url: str) -> bool:
@@ -948,6 +994,9 @@ class Shim(BaseHTTPRequestHandler):
         if not draft_message.get("content"):
             draft_message["content"] = ""
         draft_time = round(time.time() - t0, 2)
+        traffic_log("draft", "luna", "sol",
+                    (payload.get("messages") or [{}])[-1].get("content", "")[-4000:],
+                    draft_message.get("content") or "", draft_time)
 
         flags = flag_turn(draft_message, state := SESSIONS.setdefault(key, {}))
         schema_ok, schema_report = validate_tool_calls(draft_message)
@@ -1001,6 +1050,9 @@ class Shim(BaseHTTPRequestHandler):
                     verdict = vj
             except json.JSONDecodeError:
                 pass
+        traffic_log("audit", "sol", "luna", audit_prompt,
+                    json.dumps(verdict) if verdict else "unparseable",
+                    time.time() - t_entry)
         STATS["judged_complete"] += verdict is not None
         sol_reachable = health_up(up.sol)
         shim_emit(self.distill_dir, {

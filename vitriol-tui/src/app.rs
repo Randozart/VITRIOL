@@ -131,6 +131,8 @@ pub enum LogSource {
     Luna,
     /// Mercury gateway log.
     Mercury,
+    /// Inter-model traffic capture.
+    Traffic,
     /// Supervisor log (head respawns).
     Supervise,
 }
@@ -141,6 +143,7 @@ impl LogSource {
         match self {
             LogSource::Luna => "LUNA",
             LogSource::Mercury => "MERCURY",
+            LogSource::Traffic => "TRAFFIC",
             LogSource::Supervise => "SUPERVISE",
             LogSource::Gen => "GEN",
             LogSource::Hermetis => "HERMETIS",
@@ -149,10 +152,11 @@ impl LogSource {
     }
 
     /// Display order for the LOGS source chips.
-    pub const LOG_ORDER: [LogSource; 6] = [
+    pub const LOG_ORDER: [LogSource; 7] = [
         LogSource::Gen,
         LogSource::Luna,
         LogSource::Mercury,
+        LogSource::Traffic,
         LogSource::Supervise,
         LogSource::Hermetis,
         LogSource::Embed,
@@ -1141,6 +1145,7 @@ impl App {
             LogSource::Embed => &self.snapshot.logs.embed,
             LogSource::Luna => &self.snapshot.logs.luna,
             LogSource::Mercury => &self.snapshot.logs.mercury,
+            LogSource::Traffic => &self.snapshot.logs.traffic,
             LogSource::Supervise => &self.snapshot.logs.supervise,
         }
     }

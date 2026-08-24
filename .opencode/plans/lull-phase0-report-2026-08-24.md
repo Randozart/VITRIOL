@@ -202,3 +202,32 @@ server CANCELS incoming tasks at exhaustion WITHOUT invoking evict_sparse
 and/or slot pre-check). No corruption; server survives. NEXT: trace exact
 cancel site (update_slots slot-selection vs state_read_meta) and route
 exhaustion through prepare()-with-eviction or fall back to shift.
+
+## Addendum 5 — quant certification @131k (2026-08-24 night)
+
+User question: can Qwen3.8-27B run at 3q/4q with reasonable speed/context?
+
+Findings (UD-IQ2_S baseline: 11.7–12.7 t/s flat through 64k):
+
+| config | result |
+|---|---|
+| Q3_K_M ts27,9 @131k | loads, OOM mid-fill ~17k (chunked) / ~37k (single-shot) |
+| same + TQ3_0 KV (3.5bpw, −512MiB static) | identical wall ~17k |
+| IQ3_S ts27,9 @131k (+probe+sparse, ±FA) | OOM/launch-fail at ~101–104k |
+| IQ3_S / IQ2_S @65k | CLEAN: 9.3–12.0 t/s |
+
+Key discoveries:
+1. Fork supports TurboQuant KV: `--cache-type-k/v tq3_0` (3.5 bpw, 22%
+   smaller than q4_0; tq3_1s 4.0bpw, tq3_4s also present) plus per-device
+   asymmetric overrides (VITRIOL_KV_QUANT_GPU<d>). Works at runtime.
+2. But static KV size is NOT the 131k blocker. Measured VRAM creep during
+   chunked prefill: ~23 KiB/token on dev0 regardless of KV bits (VMM pool
+   ratchet from varying graph shapes / scratch scaling with n_kv). Wall
+   depth ∝ free margin: Q3_K_M (heaviest) dies earliest.
+3. Practical ceiling today: **~64k certified; ~100k reachable (IQ3_S);
+   131k blocked by creep**, not KV size.
+
+Paths forward: LULL Phases 3–4 are the aligned fix (eviction/spill bounds
+resident n_kv, which shrinks both creep exposure and scratch), or hunt the
+per-token grower upstream (profiler watermark instrumentation already in
+place to lead that hunt).

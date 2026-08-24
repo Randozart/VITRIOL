@@ -69,7 +69,29 @@ def main():
     logfile = f"/tmp/opencode/lull-{args.tag}.log"
     env = dict(os.environ)
     env["VITRIOL_LULL_PROFILE"] = "1"
-    env["VITRIOL_MODE"] = "stream"
+    # mirror scripts/vitriol's exec-env block (defaults from DEFAULT_* there):
+    # the CUDA integration behaves differently with unset vars vs the
+    # battle-tested launcher environment.
+    env.setdefault("VITRIOL_MODE", "stream")
+    env["VITRIOL_LRU_MB"] = "0"
+    env["VITRIOL_MEMORY_MODE"] = "off"
+    env["VITRIOL_KV_MODE"] = "standard"
+    env["VITRIOL_FROZEN_PROMPT"] = "off"
+    env["VITRIOL_SEMANTIC_MODE"] = "off"
+    env["VITRIOL_KV_QUANT"] = "q4_0"
+    env["VITRIOL_KV_QUANT_V"] = "f16"
+    env["VITRIOL_LOOKUP"] = "0"
+    env["VITRIOL_ENGINE_MODE"] = "vitriol-dma"
+    env["VITRIOL_EXPERT_COUNT"] = "0"
+    env["VITRIOL_OUTPUT_CACHE"] = "off"
+    env["VITRIOL_PREDICTIVE_PREFETCH"] = "off"
+    env["VITRIOL_PIN_FIRST_N_LAYERS"] = "0"
+    env["VITRIOL_PRUNE_EXPERTS"] = "0"
+    env["VITRIOL_EARLY_EXIT"] = "0"
+    env["VITRIOL_EARLY_EXIT_THRESHOLD"] = "0.001"
+    env["VITRIOL_EARLY_EXIT_MIN_LAYERS"] = "10"
+    env["VITRIOL_CHIMERA_MODE"] = "auto"
+    env["VITRIOL_MODEL_PATH"] = MODEL
     for kv in args.env:
         k, _, v = kv.partition("=")
         if v == "":

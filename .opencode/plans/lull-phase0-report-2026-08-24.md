@@ -231,3 +231,31 @@ Paths forward: LULL Phases 3–4 are the aligned fix (eviction/spill bounds
 resident n_kv, which shrinks both creep exposure and scratch), or hunt the
 per-token grower upstream (profiler watermark instrumentation already in
 place to lead that hunt).
+
+## Addendum 6 — "working before" reconciled; certification table (2026-08-24 night)
+
+**Reproduction:** profile `qwen38-mtp-131k` on merged main build, faithful
+env+flags (ctx 49152, MTP n1): **14.05 t/s** mean shallow-bench (ts 26,10;
+historical 12.89 @ ts 27,9 — ts 27,9 no longer fits dev0 at context-init on
+this base; rs-cache alloc OOM). No regression. The stale AGENTS.md row
+("131072 / ~14.1") conflated window with filled depth: sweep benches used a
+13-token prompt, and the profile's own meta documented "131K OOMs ~45-61K
+tokens". Window ≠ usable depth.
+
+**Certified depth×quant table** (single-shot mega-prefill + 3×64 decode,
+full LULL substrate probe+sparse ON, tq3_0 KV, ts 26,10 ub64):
+
+| quant | filled tokens | decode t/s | vs historical |
+|---|---|---|---|
+| Q3_K_M | 43,890 | 9.47 | at historical edge |
+| Q3_K_M | **54,692** | **9.21** | **beats 45–61k death zone** |
+| UD-IQ3_S | **96,836** | **11.32** | near prior 101k obs |
+| UD-IQ2_S | 64,634 | 11.7–12.7 | prior addendum |
+
+**NO_VMM experiment:** `GGML_CUDA_NO_VMM=1` did NOT lift the wall
+(Q3_K_M@131k died at 59,392 tokens, launch-failure mode instead of OOM).
+Creep grower still unidentified; profiler watermark hunt remains open.
+
+**Practical answer to "3q/4q at reasonable speed/context":**
+IQ3_S → ~97k ctx @ ~11 t/s. Q3_K_M → ~55k @ ~9 t/s. Both certified on the
+merged main build. 4q: no local file; est. between the two.

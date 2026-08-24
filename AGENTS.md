@@ -81,11 +81,27 @@ Saved VITRIOL profiles (load with `vitriol config load <name>`):
 
 | profile | ctx | MTP | t/s | notes |
 |---|---|---|---|---|
-| `qwen38-mtp-131k` | 131072 | n=1 | ~14.1 | **default/winner**, ts 24,12, q4k/q4v |
+| `qwen38-mtp-131k` | 49152 | n=1 | ~14.1 shallow-bench | **default/winner**, ts 27,9 (26,10 on merged base), q4k/q4v; meta: "131K OOMs ~45-61K tokens on this dual-GPU pair" |
 | `qwen38-262k` | 262144 | off | ~11.0 | max native ctx, ts 24,12, q4k/q4v |
 
+Depth-filled reality (2026-08-24 certification, merged base, chunked/single-shot
+prefill + 3×64 decode at depth — see `.opencode/plans/lull-phase0-report-2026-08-24.md`
+Addenda 5–6):
+- Q3_K_M + `tq3_0` KV, ts 26,10 ub64: **54,692 tok @ 9.21 t/s** (beats the historical
+  45–61k OOM zone); 43,890 tok @ 9.47 t/s.
+- UD-IQ3_S + `tq3_0` KV, ts 26,10 ub64: **96,836 tok @ 11.32 t/s**.
+- IQ2_S @ 64,634 tok: 11.7–12.7 t/s.
+- VRAM creep ~23 KiB/token on dev0 during long prefills is the depth wall
+  (independent of KV bits; NOT fixed by GGML_CUDA_NO_VMM=1). Window ≠ usable
+  depth: shallow-bench numbers do not certify filled-context operation.
+
+Recommended working config (certified): `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64
+--cache-type-k tq3_0 --cache-type-v tq3_0` (TurboQuant KV = 3.5 bpw, −22% vs q4_0;
+per-device overrides via `VITRIOL_KV_QUANT[_K|_V]_GPU<d>`). Add
+`--spec-type mtp --spec-draft-n-max 1` for the 49k-window profile.
+
 Required flags (all wired into `scripts/vitriol` config now):
-`-ngl 99 -ts 24,12 --main-gpu 0 -ub 128 --cache-type-k q4_0 --cache-type-v q4_0 --spec-type mtp --spec-draft-n-max 1`
+`-ngl 99 -ts 26,10 --main-gpu 0 -ub 64 --cache-type-k tq3_0 --cache-type-v tq3_0 --spec-type mtp --spec-draft-n-max 1`
 
 MTP draft depth: n_max must be **1**. A 2026-08-19 fix (`res->t_mtp_out` in `qwen35-mtp.cpp`)
 enabled chained drafts, but depth>=2 regresses (n=5 → 9.0 t/s, n=3 → 11.3, n=2 → 12.9) because

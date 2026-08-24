@@ -129,3 +129,27 @@ Bugs found & fixed during bring-up (all in new code):
 Remaining for the quality gate (§3 Phase 2): perplexity comparison of
 score-driven vs blind eviction at depth — needs deep-prefill flows,
 i.e. resolution of the §3 corruption (Q3_K_M embedded-sibling path).
+
+## Addendum 2 — corruption SOLVED; deep-context unblocked (2026-08-24 evening)
+
+**The heap corruption was ours, not the base's.** Bisect-by-flag isolated it:
+`--ctx-checkpoints 0` alone corrupts the heap on multi-chunk prefill
+(checkpoint code mishandles disabled=0); `--cache-ram 0` separately prevents
+server readiness. Both flags came from MY bench hardening, which is why the
+crash shadowed every commit/model/flag combination tested. Q3_K_M's embedded
+sibling is exonerated as the primary cause (it may still have independent
+quirks — retest once).
+
+With bounded checkpointing (`--ctx-checkpoints 4 --checkpoint-every-n-tokens
+8192`) and default cache-ram:
+
+- Chunked fill to **7690 tokens @ c8192**: clean, probe scoring active,
+  decode 11.8 t/s at depth (`scripts/lull_fill.py`, tag fill7680s).
+- Phase 2 eviction rewrite shipped: global-lowest-score selection (old code
+  stopped scanning at n_evict before sorting → index-order eviction),
+  per-stream recent window, periodic VITRIOL_KV_EVICT telemetry.
+
+**Open gap:** HTTP API pre-check rejects prompts ≥ ctx before init_batch,
+so cache-full eviction can't be triggered by plain oversubscription;
+needs context-shift interplay or multi-slot VRAM pressure to exercise at
+runtime. Logic committed + reviewed; runtime gate deferred.

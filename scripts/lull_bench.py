@@ -62,6 +62,8 @@ def main():
     ap.add_argument("--prefill", type=int, default=512, help="tokens to prefill before timing")
     ap.add_argument("--gen", type=int, default=64)
     ap.add_argument("--env", action="append", default=[], help="extra KEY=VAL server env")
+    ap.add_argument("--extra", action="append", default=[], help="extra server CLI flags")
+    ap.add_argument("--no-ts", action="store_true", help="omit tensor split (single GPU)")
     args = ap.parse_args()
 
     logfile = f"/tmp/opencode/lull-{args.tag}.log"
@@ -79,7 +81,6 @@ def main():
         SERVER,
         "-m", MODEL,
         "-ngl", "99",
-        "-ts", "27,9",
         "--main-gpu", "0",
         "-c", str(args.ctx),
         "-ub", "128",
@@ -97,6 +98,9 @@ def main():
         "--host", "127.0.0.1",
         "--port", str(PORT),
     ]
+    if not args.no_ts:
+        cmd += ["-ts", "27,9"]
+    cmd += args.extra
     print(f"[lull_bench] launching {' '.join(cmd)}", flush=True)
     with open(logfile, "w") as lf:
         proc = subprocess.Popen(cmd, stdout=lf, stderr=lf, env=env,

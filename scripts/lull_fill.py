@@ -65,9 +65,9 @@ def main():
         "-ub", "128",
         "--cache-type-k", "q4_0",
         "--cache-type-v", "q4_0",
-        // NOTE: do NOT pass --ctx-checkpoints 0 (heap corruption: checkpoint
-        // code mishandles disabled=0) nor --cache-ram 0 (server never becomes
-        // ready). Bound them instead.
+        # NOTE: do NOT pass --ctx-checkpoints 0 (heap corruption: checkpoint
+        # code mishandles disabled=0) nor --cache-ram 0 (server never becomes
+        # ready). Bound them instead.
         "--ctx-checkpoints", "4",
         "--checkpoint-every-n-tokens", "8192",
         "--cache-reuse", "256",

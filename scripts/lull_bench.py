@@ -25,7 +25,7 @@ import urllib.request
 HOME = os.path.expanduser("~")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(REPO, "llama.cpp", "build", "bin", "llama-server")
-MODEL = os.path.join(HOME, "Downloads", "mtp-Qwen3.8-27B-Q4_0.gguf")
+MODEL = os.path.join(HOME, "Downloads", "Qwen3.8-27B-UD-IQ2_S.gguf")
 PORT = 8299
 
 
@@ -112,14 +112,13 @@ def main():
         "-ub", "128",
         "--cache-type-k", "q4_0",
         "--cache-type-v", "q4_0",
-        "--spec-type", "mtp",
-        "--spec-draft-n-max", "1",
-        # LULL baselines measure raw pipeline timing; the prompt-cache
-        # checkpoint machinery snapshots ~186MiB per 128 tokens otherwise.
+        # NOTE: no --spec-type mtp. MTP showed zero benefit on this hardware
+        # (AGENTS.md sweep), and Q3_K_M's embedded-head path corrupts the
+        # heap; UD-IQ2_S carries no embedded head. Phase 0 measures raw
+        # attention/KV pipeline timing — speculative decoding stays off.
+        # keep checkpointing/prompt-cache machinery off for clean timing
         "--ctx-checkpoints", "0",
         "--cache-reuse", "0",
-        # prompt-cache state saves corrupt the heap in this base (free():
-        # invalid pointer during deep prefill); keep them off for LULL runs
         "--cache-ram", "0",
         "--host", "127.0.0.1",
         "--port", str(PORT),

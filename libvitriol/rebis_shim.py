@@ -365,17 +365,6 @@ def sol_compact(up, messages_old: list[dict], prior_digest: str | None) -> str |
 
 # ── Gateway v2: routing + draft-audit pipeline ───────────────────────
 
-DESIGN_MARKERS = ("why ", "how ", "architecture", "design", "explain",
-                  "review", "plan", "tradeoff", "compare", "should we")
-
-def estimate_reason_need(text) -> bool:
-    low = (text or "").lower()
-    if len(low) > 1500:
-        return True
-    head = low[:600]
-    return any(mk in head for mk in DESIGN_MARKERS)
-
-
 def classify_turn(messages: list[dict], tools_attached: bool,
                   forced: str | None = None) -> str:
     """Route decision: 'reason' (Sol/Qwen) | 'draft' (Luna/Mellum)
@@ -495,7 +484,20 @@ class Shim(BaseHTTPRequestHandler):
             print(f"[shim] {msg}", flush=True)
 
     def do_GET(self):
-        if self.mode == "gateway" and self.path.startswith("/v1/models"):
+        if self.mode == "gateway" and self.path.startswith("/health"):
+            # Truthful gateway health: ok only when BOTH heads answer.
+            # (The old proxy reported Luna's health as Mercury's.)
+            sol_ok = health_up(self.upstream.sol)
+            luna_ok = health_up(self.upstream.luna)
+            status = "ok" if (sol_ok and luna_ok) else "degraded"
+            body = json.dumps({"status": status, "sol": sol_ok,
+                               "luna": luna_ok}).encode()
+            self.send_response(200 if status == "ok" else 503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.mode == "gateway" and self.path.startswith("/v1/models"):
             body = json.dumps(synthesize_models()).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -529,6 +531,10 @@ class Shim(BaseHTTPRequestHandler):
                 return
             key = session_key(messages)
             STATS["requests"] += 1
+            # SESSIONS eviction: bound memory on long uptimes.
+            if len(SESSIONS) > 256:
+                for sk in sorted(SESSIONS)[: len(SESSIONS) - 256]:
+                    SESSIONS.pop(sk, None)
             # Memory guardrail: refuse to route when the box is starving —
             # a hard freeze takes everything down, this takes down one turn.
             if mem_available_mib() < 1200:
@@ -848,43 +854,30 @@ class Shim(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
-                content_parts: list[str] = []
-                relay_chars = 0  # content + reasoning: honest token proxy
+                done_seen = False
+                content = ""
+                relay_chars = 0
                 try:
-                    for raw in sresp:
-                        line = raw.decode(errors="ignore").strip()
-                        if not line.startswith("data:"):
-                            continue
-                        chunk = line[5:].strip()
-                        if chunk == "[DONE]":
-                            self.wfile.write(b"data: [DONE]\n\n")
-                            break
-                        try:
-                            obj = json.loads(chunk)
-                        except json.JSONDecodeError:
-                            continue
-                        for ch in obj.get("choices") or []:
-                            delta = ch.get("delta") or {}
-                            piece = delta.get("content")
-                            if piece:
-                                content_parts.append(piece)
-                            relay_chars += len(piece or "") + len(
-                                delta.get("reasoning_content") or "")
-                        self.wfile.write(f"data: {chunk}\n\n".encode())
+                    with sresp:
+                        content, relay_chars, done_seen = \
+                            consume_relay_stream(
+                                sresp,
+                                lambda b: self.wfile.write(b))
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
                     pass
-                final = {"role": "assistant",
-                         "content": "".join(content_parts)}
+                final = {"role": "assistant", "content": content}
                 update_state(SESSIONS.setdefault(key, {}),
                              merge_reasoning(final))
+                stream_extra = "yes" if done_seen else "yes TRUNCATED"
                 self._note(access_line("reason", "sol", t_entry, in_tok,
                                        relay_chars // 4, key,
-                                       stream="yes"))
+                                       stream=stream_extra))
                 shim_emit(self.distill_dir, {
                     "type": "gateway_turn", "session": key,
                     "route": "reason-streamed",
                     "content_len": relay_chars,
+                    "stream_truncated": not done_seen,
                 })
                 return
 
@@ -1110,6 +1103,40 @@ class Shim(BaseHTTPRequestHandler):
                                     "message": shipped}],
                        "model": "rebis"}, wants_stream)
 
+def consume_relay_stream(resp, write_fn) -> tuple[str, int, bool]:
+    """Consume an upstream SSE stream, relaying every chunk downstream.
+
+    Returns (content, relay_chars, done_seen). relay_chars counts content
+    AND reasoning deltas (honest token proxy). done_seen=False means the
+    upstream died before completing — content is a truncated partial.
+    """
+    content_parts: list[str] = []
+    relay_chars = 0
+    done_seen = False
+    for raw in resp:
+        line = raw.decode(errors="ignore").strip() \
+            if isinstance(raw, bytes) else raw.strip()
+        if not line.startswith("data:"):
+            continue
+        chunk = line[5:].strip()
+        if chunk == "[DONE]":
+            write_fn(b"data: [DONE]\n\n")
+            done_seen = True
+            break
+        try:
+            obj = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue
+        for ch in obj.get("choices") or []:
+            delta = ch.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+            relay_chars += len(piece or "") + len(
+                delta.get("reasoning_content") or "")
+        write_fn(f"data: {chunk}\n\n".encode())
+    return "".join(content_parts), relay_chars, done_seen
+
     def _proxy_raw(self):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length) if length else b""
@@ -1247,6 +1274,30 @@ def selftest() -> int:
         estimate_tokens(m["content"]) for m in keep)
     assert needs_compaction(msgs, threshold=1000)
     assert not needs_compaction(msgs, threshold=10**9)
+
+    # Relay consumer: full stream vs truncated (no [DONE])
+    def collect(chunks):
+        out = []
+        consume_relay_stream(iter(chunks), out.append)
+        return b"".join(out).decode(), out
+
+    full = [
+        b'data: {"choices":[{"delta":{"content":"he"}}]}\n',
+        b'data: {"choices":[{"delta":{"content":"llo"}}]}\n',
+        b"data: [DONE]\n",
+    ]
+    content, chars, done = consume_relay_stream(iter(full), lambda b: None)
+    assert content == "hello" and done and chars == 5
+    trunc = full[:2]  # no [DONE]
+    content2, chars2, done2 = consume_relay_stream(iter(trunc), lambda b: None)
+    assert content2 == "hello" and not done2
+
+    # SESSIONS eviction bound
+    for i in range(300):
+        SESSIONS[f"s{i}"] = {"turn_count": 1}
+    for sk in sorted(SESSIONS)[: len(SESSIONS) - 256]:
+        SESSIONS.pop(sk, None)
+    assert len(SESSIONS) <= 256
 
     print("selftest: all assertions passed")
     return 0

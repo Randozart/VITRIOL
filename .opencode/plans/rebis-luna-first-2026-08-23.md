@@ -76,3 +76,19 @@ audits wait (503 path handles gracefully).
   Distill now records correction-rate per route — a week of traffic
   quantifies it, and the harvested corrections are exactly the SFT data
   that would train it out (D2 closure of the loop).
+
+## Strict review round (2026-08-23 23:50, commit 8372cb5)
+
+Six issues found by systematic review that the selftests didn't cover:
+1. Truncated streams shipped as complete (relay now tracks [DONE];
+   stream_truncated marked in access + distill)
+2. Relay upstream socket leak (with-statement)
+3. Gateway /health proxied Luna's health as Mercury's — synthesizes
+   truthful {status, sol, luna} now (503 "degraded" when a head is down)
+4. Warm guard misapplied to sequential context (removed before it
+   NameError'd in production)
+5. SESSIONS eviction at 256
+6. Dead code removed
+
+All shim-side; heads untouched; 151 tests + live smoke (streamed turn +
+truthful health) green.

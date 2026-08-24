@@ -25,7 +25,7 @@ import urllib.request
 HOME = os.path.expanduser("~")
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVER = os.path.join(REPO, "llama.cpp", "build", "bin", "llama-server")
-MODEL = os.path.join(HOME, "Downloads", "Qwen3.8-27B-Q3_K_M.gguf")
+MODEL = os.path.join(HOME, "Downloads", "mtp-Qwen3.8-27B-Q4_0.gguf")
 PORT = 8299
 
 
@@ -64,9 +64,13 @@ def main():
     ap.add_argument("--env", action="append", default=[], help="extra KEY=VAL server env")
     ap.add_argument("--extra", action="append", default=[], help="extra server CLI flags")
     ap.add_argument("--no-ts", action="store_true", help="omit tensor split (single GPU)")
+    ap.add_argument("--model", type=str, default=None,
+                    help="gguf path (default: mtp-Q4_0; Q3_K_M corrupts heap, avoid)")
     args = ap.parse_args()
 
     logfile = f"/tmp/opencode/lull-{args.tag}.log"
+    model = args.model or os.path.join(
+        HOME, "Downloads", "mtp-Qwen3.8-27B-Q4_0.gguf")
     env = dict(os.environ)
     env["VITRIOL_LULL_PROFILE"] = "1"
     # mirror scripts/vitriol's exec-env block (defaults from DEFAULT_* there):

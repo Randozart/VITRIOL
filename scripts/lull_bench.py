@@ -104,11 +104,13 @@ def main():
             completion({"prompt": "warmup", "n_predict": 8, "cache_prompt": True})
 
             # prefill to requested depth: one big prompt, cached
-            filler = ("The quick brown fox jumps over the lazy dog. " * 400)[:64 * 1024]
+            # ~5.2 chars/token for these words; server clamps if we overshoot
             n_fill = max(0, args.prefill - 16)
-            reps = max(1, n_fill // 900)
+            unit = "alpha beta gamma delta epsilon zeta "
+            target_chars = int(n_fill * 5.2)
+            prompt = (unit * (target_chars // len(unit) + 1))[:target_chars]
             t0 = time.time()
-            r_pre = completion({"prompt": filler * reps, "n_predict": 1,
+            r_pre = completion({"prompt": prompt, "n_predict": 1,
                                 "cache_prompt": True})
             prefill_s = time.time() - t0
             n_ctx_used = r_pre.get("tokens_evaluated", 0) + 1

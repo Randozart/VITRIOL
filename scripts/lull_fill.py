@@ -44,6 +44,10 @@ def main():
     ap.add_argument("--gen", type=int, default=64)
     ap.add_argument("--tag", type=str, default=None)
     ap.add_argument("--sparse", action="store_true", help="enable VITRIOL_KV_MODE=sparse")
+    ap.add_argument("--model", type=str, default=MODEL, help="gguf path")
+    ap.add_argument("--ts", type=str, default="27,9", help="tensor split")
+    ap.add_argument("--ub", type=int, default=128)
+    ap.add_argument("--fa", type=str, default=None, help="force flash attention on/off")
     args = ap.parse_args()
 
     tag = args.tag or f"fill{args.depth}{'s' if args.sparse else ''}"
@@ -57,12 +61,13 @@ def main():
 
     cmd = [
         SERVER,
-        "-m", MODEL,
+        "-m", args.model,
         "-ngl", "99",
-        "-ts", "27,9",
         "--main-gpu", "0",
+        "-ts", args.ts,
         "-c", str(args.ctx),
-        "-ub", "128",
+        "-ub", str(args.ub),
+        *([] if args.fa is None else ["-fa", args.fa]),
         "--cache-type-k", "q4_0",
         "--cache-type-v", "q4_0",
         # NOTE: do NOT pass --ctx-checkpoints 0 (heap corruption: checkpoint

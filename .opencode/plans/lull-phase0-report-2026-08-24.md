@@ -183,3 +183,22 @@ VRAM watermark @24k fill: dev0 free≈5.2GiB, dev1 free≈4.7GiB
 Premise reconfirmed at scale: GPU0 idles about half of decode wall-clock.
 Phase 0 gates SATISFIED; Phases 1–2 shipped; Phase 3–4 remain gated on
 eviction runtime-trigger work (context-shift interplay or multi-slot).
+
+## Addendum 4 — merged to main; multi-slot pressure findings (2026-08-24 night)
+
+LULL merged into `main` (outer `03fa477`+`6f9d35e`) and submodule
+`vitriol-mellum2` (`054fae712`, clean merge over LCP/MTP-head commits).
+Main-tree `build/bin` rebuilt (61;86, PIC) and smoke-verified: probe marker
+fires, generation coherent.
+
+Quality gate slice 1 PASSED: greedy generation byte-identical probe-on vs
+off at 12,090-token depth (scoring inert until eviction consumes scores —
+correct no-regression behavior).
+
+Dual-slot pressure test (--parallel 2 --kv-unified, two interleaved ~10k
+sessions, sparse+probe): sessions grow cleanly to ~12k combined, then
+server CANCELS incoming tasks at exhaustion WITHOUT invoking evict_sparse
+— cancellation happens upstream of init_batch (prompt-cache restore path
+and/or slot pre-check). No corruption; server survives. NEXT: trace exact
+cancel site (update_slots slot-selection vs state_read_meta) and route
+exhaustion through prepare()-with-eviction or fall back to shift.

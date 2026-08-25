@@ -110,3 +110,21 @@ merged); pushed to origin + randozart. `vitriol-mellum2` retained as frozen
 alias at same hash. No branches deleted per user preference; `master` stays
 upstream-sync base. Safety net first: outer main (78 commits) and submodule
 vitriol-mellum2 (11) pushed before any ref surgery.
+
+## 8. Addendum — hang wedge + self-healing stack v2 (2026-08-25 late night)
+
+Incident ~23:00: server did NOT crash — it hung (health deaf, /slots timed
+out) under swap pressure: 176 MiB free, server on 7.8 GiB swap, session grown
+to 48016 tokens making the slot0 checkpoint 1 GiB. Restart=always only fires
+on exit, so a hung process stayed hung. Manual restart recovered; sidecar
+replayed 48k tokens in ~2 s.
+
+Hardening (`e5eaabc`), all verified live:
+1. Hang watchdog in the sidecar: same-PID health-deaf ~60 s → forced
+   `systemctl --user restart vitriol-server.service`.
+2. Autosave churn guard: metrics-counter signature skip — frozen counters
+   mean no rewrites (1 GiB ticks were thrash fuel).
+3. Thrash sentinel: slow /slots aborts save tick.
+4. `vitriol stop` now sticky: systemctl-based stop (INVOCATION_ID guard for
+   ExecStartPre context); verified no resurrection past RestartSec window.
+5. Unit cascade: server Wants=autosave, autosave PartOf=server.

@@ -92,3 +92,21 @@ Deployed stack (commit `48fc479`, plan: watchdog-persistence-plan):
 
 Verified drill: kill -9 → resurrect 10 s → healthy ~40 s → context replayed
 306 ms. Data-loss bound = one autosave interval for the conversation tail.
+
+## 7. Addendum — capacity-aware dual-slot routing + branch unification (2026-08-25 night)
+
+**Routing bug**: after checkpoint restores, every unpinned prompt landed on
+slot 1 (8192) — restored slots keep `t_last_used == -1` and the LRU tie-break
+(`<=`) let the last slot win ties. Hermes' 39k session died with
+`exceed_context_size_error` against the 8k window while slot 0 (73728) idled.
+Fix in `get_available_slot()` (submodule `441ccd871`): capacity-fit skip in
+both selection passes + strict-`<` tie-break. Verified: 12k/39k unpinned →
+slot 0; explicit `id_slot=1` (ontic) unaffected.
+
+**Branch unification** (user directive: one branch, all best ideas, no
+swapping between models): `vitriol` fast-forwarded `4dfd95ed4 → 441ccd871`
+(strict superset — lull-kv, fewer-experts, slot-context, tq3_0 KV, Mellum all
+merged); pushed to origin + randozart. `vitriol-mellum2` retained as frozen
+alias at same hash. No branches deleted per user preference; `master` stays
+upstream-sync base. Safety net first: outer main (78 commits) and submodule
+vitriol-mellum2 (11) pushed before any ref surgery.

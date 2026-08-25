@@ -1,0 +1,15 @@
+[Unit]
+Description=VITRIOL slot persistence (startup restore + periodic disk autosave)
+After=vitriol-server.service
+
+[Service]
+Type=simple
+Environment=VITRIOL_PORT=8279
+Environment=VITRIOL_AUTOSAVE_SECS=300
+Environment=VITRIOL_SLOT_SAVE_DIR=%h/.vitriol/checkpoints
+ExecStart=%h/Desktop/Projects/VITRIOL/scripts/lull_slot_persist.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

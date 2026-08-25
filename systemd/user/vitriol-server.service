@@ -1,0 +1,20 @@
+[Unit]
+Description=VITRIOL llama-server (Lapis Occultus, dual-slot)
+
+[Service]
+Type=forking
+WorkingDirectory=%h/Desktop/Projects/VITRIOL
+Environment=VITRIOL_KV_SCORE=probe
+Environment=VITRIOL_POOL_RESET=1
+ExecStartPre=-%h/Desktop/Projects/VITRIOL/scripts/vitriol stop
+ExecStart=%h/Desktop/Projects/VITRIOL/scripts/vitriol serve --detach
+Restart=always
+RestartSec=5
+# NOTE: systemd --user clamps negative OOMScoreAdjust (no CAP_SYS_RESOURCE);
+# effective server adj stays at the manager default (100). Actual protection
+# comes from vitriol-autosave.service's oom-shield raising big consumers.
+OOMScoreAdjust=-500
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

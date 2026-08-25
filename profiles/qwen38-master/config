@@ -15,7 +15,7 @@ tensor_split = 24,12
 
 [model]
 path = /home/randozart/Downloads/Qwen3.8-27B-UD-IQ3_S.gguf
-context = 98304
+context = 81920
 threads = 4
 ngl = 99
 alias = Lapis Occultus
@@ -32,6 +32,7 @@ prune_experts = 0
 reasoning = off
 
 [server]
+slot_save_path = /home/randozart/.vitriol/checkpoints
 host = 127.0.0.1
 port = 8279
 parallel = 1

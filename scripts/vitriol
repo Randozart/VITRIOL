@@ -77,6 +77,7 @@ CFG_PORT="$DEFAULT_PORT"
 CFG_HOST="$DEFAULT_HOST"
 CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
+CFG_SLOT_SAVE_PATH=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
@@ -139,6 +140,7 @@ parse_config() {
                 server.host)           CFG_HOST="$val" ;;
                 server.parallel)       CFG_PARALLEL="$val" ;;
                 server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
+                server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -226,6 +228,7 @@ port = $CFG_PORT
 # Parallel slots for concurrent requests
 parallel = $CFG_PARALLEL
 slot_context = $CFG_SLOT_CONTEXT
+slot_save_path = $CFG_SLOT_SAVE_PATH
 
 [memory]
 # Emulated memory mode: on | off
@@ -364,6 +367,7 @@ config_reset() {
     CFG_HOST="$DEFAULT_HOST"
     CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
+CFG_SLOT_SAVE_PATH=""
     CFG_UBATCH="$DEFAULT_UBATCH"
     write_config
     echo "✓ Config reset to defaults"
@@ -391,6 +395,7 @@ config_set() {
         server.host)           CFG_HOST="$val" ;;
         server.parallel)       CFG_PARALLEL="$val" ;;
         server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
+        server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
         memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -691,7 +696,7 @@ print_header() {
 
 tui_main_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║           Configuration Menu             ║"
@@ -769,7 +774,7 @@ tui_main_menu() {
 
 tui_gpu_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║            GPU Settings                  ║"
@@ -833,7 +838,7 @@ tui_model_menu() {
         else
             mtp_label="Spec Type [off]"
         fi
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║          Model Settings                  ║"
@@ -972,7 +977,7 @@ tui_model_menu() {
 
 tui_vitriol_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║          VITRIOL Mode Settings           ║"
@@ -1071,7 +1076,7 @@ tui_vitriol_menu() {
 
 tui_memory_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║          Context & Memory Settings       ║"
@@ -1175,7 +1180,7 @@ tui_memory_menu() {
 
 tui_engine_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║          Engine Settings                  ║"
@@ -1204,7 +1209,7 @@ tui_engine_menu() {
 
 tui_server_menu() {
     while true; do
-        clear
+        clear 2>/dev/null || true
         print_header
         echo "╔══════════════════════════════════════════╗"
         echo "║          Server Settings                 ║"
@@ -1790,7 +1795,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}"
 
         # Print launch banner
-        clear
+        clear 2>/dev/null || true
         [[ -f "$HEADER_FILE" ]] && cat "$HEADER_FILE"
         echo ""
         mtp_flag=""
@@ -1952,6 +1957,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         HOST="${CLI_HOST:-${CFG_HOST}}"
         PARALLEL="${CLI_PARALLEL:-${CFG_PARALLEL}}"
         SLOT_CONTEXT="${CLI_SLOT_CONTEXT:-${CFG_SLOT_CONTEXT:-}}"
+        SLOT_SAVE_PATH="${CLI_SLOT_SAVE_PATH:-${CFG_SLOT_SAVE_PATH:-}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
@@ -1976,6 +1982,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
             "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
+        [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
@@ -2018,7 +2025,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
 
         MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")
 
-        clear
+        clear 2>/dev/null || true
         [[ -f "$HEADER_FILE" ]] && cat "$HEADER_FILE"
         echo ""
         mtp_flag=""
@@ -2094,6 +2101,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # Per-slot context caps (upstream PR #23340 port)
         SLOT_CTX_ARGS=()
         [[ -n "$SLOT_CONTEXT" ]] && SLOT_CTX_ARGS=(--slot-context "$SLOT_CONTEXT")
+        # Disk-persistent slot checkpoints (restore via lull_slot_persist.py)
+        SSP_ARGS=()
+        [[ -n "$SLOT_SAVE_PATH" ]] && SSP_ARGS=(--slot-save-path "$SLOT_SAVE_PATH")
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
@@ -2148,6 +2158,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
+                        "${SSP_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
@@ -2205,6 +2216,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --port "$PORT" \
                         --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
+                        "${SSP_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
@@ -2262,6 +2274,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
+                        "${SSP_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
@@ -2316,6 +2329,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --port "$PORT" \
                     --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
+                        "${SSP_ARGS[@]}" \
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \

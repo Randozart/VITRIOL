@@ -1,5 +1,7 @@
 [Unit]
 Description=VITRIOL llama-server (Lapis Occultus, dual-slot)
+# bring the persistence sidecar up/down with us
+Wants=vitriol-autosave.service
 
 [Service]
 Type=forking

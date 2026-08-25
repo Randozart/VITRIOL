@@ -1,6 +1,10 @@
 [Unit]
-Description=VITRIOL slot persistence (startup restore + periodic disk autosave)
+Description=VITRIOL slot persistence (startup restore + periodic disk autosave + hang watchdog)
 After=vitriol-server.service
+# follow the server lifecycle: starting the server starts us, stopping it
+# stops us (so `vitriol stop` / systemctl stop can't be fought by the
+# hang-watchdog restarting a deliberately stopped server)
+PartOf=vitriol-server.service
 
 [Service]
 Type=simple

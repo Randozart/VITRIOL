@@ -2342,6 +2342,18 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
     stop)
         STOPPED=false
 
+        # Under a systemd manager, raw kills lose: Restart=always resurrects
+        # within 5 s. Explicit `systemctl --user stop` is sticky — no restart.
+        # Exception: when invoked BY the unit itself (ExecStartPre), stopping
+        # our own unit would deadlock — fall through to pidfile cleanup only.
+        if [[ -z "${INVOCATION_ID:-}" ]] && systemctl --user cat vitriol-server.service >/dev/null 2>&1; then
+            echo "→ Stopping via systemd (sticky, no auto-restart)..."
+            systemctl --user stop vitriol-autosave.service 2>/dev/null || true
+            systemctl --user stop vitriol-server.service || true
+            STOPPED=true
+            # still sweep strays from non-unit launches below if pidfiles remain
+        fi
+
         # Stop shim (memory mode)
         SHIM_PID_FILE="${CONFIG_DIR}/shim.pid"
         if [[ -f "$SHIM_PID_FILE" ]]; then

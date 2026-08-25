@@ -2082,8 +2082,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"
         # Model alias: name reported via /v1/models and matched in requests
         MODEL_ALIAS="${CFG_MODEL_ALIAS:-${VITRIOL_MODEL_ALIAS:-}}"
-        ALIAS_ARGS=""
-        [[ -n "$MODEL_ALIAS" ]] && ALIAS_ARGS="--alias $MODEL_ALIAS"
+        ALIAS_ARGS=()
+        [[ -n "$MODEL_ALIAS" ]] && ALIAS_ARGS=(--alias "$MODEL_ALIAS")
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
@@ -2140,7 +2140,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
-                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                             "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
@@ -2196,7 +2196,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
-                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                         "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/server.pid"
@@ -2251,7 +2251,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         --slots --metrics \
                         --no-mmap \
-                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
+                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
                 LLAMA_PID=$!
                 echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
 
@@ -2305,7 +2305,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \
-                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                     "$@"
             fi
         fi

@@ -1755,12 +1755,15 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             exit 1
         fi
 
+        # 2026-08-24: downgraded from hard error to warning. Every deep-context
+        # certification run that day executed WITHOUT the cap (CUDA pinned
+        # allocations do not count against RLIMIT_MEMLOCK on this stack), so a
+        # missing cap is not fatal. Keep 'sudo vitriol setup' available for
+        # hosts where mlock does fail.
         CAPS=$(getcap "$BINARY" 2>/dev/null || true)
         if [[ "$CAPS" != *"cap_ipc_lock"* ]]; then
-            echo "ERROR: CAP_IPC_LOCK not set on $BINARY"
-            echo "  Run: vitriol setup"
-            echo "  This is required for cudaHostRegister + mlock to work"
-            exit 1
+            echo "NOTE: CAP_IPC_LOCK not set on $BINARY (optional on this host)."
+            echo "  If you ever see mlock/DMA failures: sudo vitriol setup"
         fi
 
         MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")
@@ -1981,13 +1984,11 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             exit 1
         fi
 
-        # Check caps for server binary too
+        # Check caps for server binary too (warning only — see note above)
         SERVER_CAPS=$(getcap "$SERVER_BINARY" 2>/dev/null || true)
         if [[ "$SERVER_CAPS" != *"cap_ipc_lock"* ]]; then
-            echo "ERROR: CAP_IPC_LOCK not set on $SERVER_BINARY"
-            echo "  Run: vitriol setup"
-            echo "  This is required for cudaHostRegister + mlock to work"
-            exit 1
+            echo "NOTE: CAP_IPC_LOCK not set on $SERVER_BINARY (optional on this host)."
+            echo "  If you ever see mlock/DMA failures: sudo vitriol setup"
         fi
 
         MODEL_SIZE=$(stat --format=%s "$MODEL" 2>/dev/null | numfmt --to=iec || echo "?")

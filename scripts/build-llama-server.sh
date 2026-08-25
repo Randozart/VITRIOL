@@ -38,6 +38,26 @@ echo ""
 echo "Build complete."
 echo "Server: $BUILD_DIR/bin/llama-server"
 echo "CUDA lib: $BUILD_DIR/bin/libggml-cuda.so"
+
+# ── Best-effort CAP_IPC_LOCK reapply ────────────────────────────────────────
+# setcap does not survive recompiles (new inode). 2026-08-24: the cap is
+# OPTIONAL on this host — CUDA pinned allocations do not count against
+# RLIMIT_MEMLOCK, and every deep-context certification ran uncapped. So this
+# is best-effort, never fatal, and 'sudo' is only used non-interactively.
+apply_caps() {
+    local bin="$1"
+    if [[ ! -f "$bin" ]]; then return 0; fi
+    if [[ "$(id -u)" == "0" ]]; then
+        setcap cap_ipc_lock=+ep "$bin" && echo "CAP_IPC_LOCK set on $bin"
+    elif sudo -n setcap cap_ipc_lock=+ep "$bin" 2>/dev/null; then
+        echo "CAP_IPC_LOCK set on $bin (via passwordless sudo)"
+    else
+        echo "NOTE: $bin has no CAP_IPC_LOCK (fine on this host)."
+        echo "      To set it: sudo vitriol setup"
+    fi
+}
+apply_caps "$BUILD_DIR/bin/llama-server"
+apply_caps "$BUILD_DIR/bin/llama-cli"
 echo ""
 echo "To run:"
 echo "  source $VITRIOL_ROOT/vitriol.env"

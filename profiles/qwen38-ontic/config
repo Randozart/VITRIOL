@@ -32,9 +32,10 @@ prune_experts = 0
 reasoning = off
 
 [server]
+slot_context = 0=90112,1=8192
 host = 127.0.0.1
 port = 8279
-parallel = 1
+parallel = 2
 
 [memory]
 mode = off

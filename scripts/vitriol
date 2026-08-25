@@ -76,6 +76,7 @@ CFG_VERBOSE="$DEFAULT_VERBOSE"
 CFG_PORT="$DEFAULT_PORT"
 CFG_HOST="$DEFAULT_HOST"
 CFG_PARALLEL="$DEFAULT_PARALLEL"
+CFG_SLOT_CONTEXT=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
@@ -137,6 +138,7 @@ parse_config() {
                 vitriol.verbose)       CFG_VERBOSE="$val" ;;
                 server.host)           CFG_HOST="$val" ;;
                 server.parallel)       CFG_PARALLEL="$val" ;;
+                server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -223,6 +225,7 @@ host = $CFG_HOST
 port = $CFG_PORT
 # Parallel slots for concurrent requests
 parallel = $CFG_PARALLEL
+slot_context = $CFG_SLOT_CONTEXT
 
 [memory]
 # Emulated memory mode: on | off
@@ -360,6 +363,7 @@ config_reset() {
     CFG_PORT="$DEFAULT_PORT"
     CFG_HOST="$DEFAULT_HOST"
     CFG_PARALLEL="$DEFAULT_PARALLEL"
+CFG_SLOT_CONTEXT=""
     CFG_UBATCH="$DEFAULT_UBATCH"
     write_config
     echo "✓ Config reset to defaults"
@@ -386,6 +390,7 @@ config_set() {
         vitriol.reasoning)         CFG_REASONING="$val" ;;
         server.host)           CFG_HOST="$val" ;;
         server.parallel)       CFG_PARALLEL="$val" ;;
+        server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
         memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -1946,6 +1951,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         PORT="${CLI_PORT:-${CFG_PORT}}"
         HOST="${CLI_HOST:-${CFG_HOST}}"
         PARALLEL="${CLI_PARALLEL:-${CFG_PARALLEL}}"
+        SLOT_CONTEXT="${CLI_SLOT_CONTEXT:-${CFG_SLOT_CONTEXT:-}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
@@ -1969,6 +1975,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
             "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
+        [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
@@ -2084,6 +2091,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         MODEL_ALIAS="${CFG_MODEL_ALIAS:-${VITRIOL_MODEL_ALIAS:-}}"
         ALIAS_ARGS=()
         [[ -n "$MODEL_ALIAS" ]] && ALIAS_ARGS=(--alias "$MODEL_ALIAS")
+        # Per-slot context caps (upstream PR #23340 port)
+        SLOT_CTX_ARGS=()
+        [[ -n "$SLOT_CONTEXT" ]] && SLOT_CTX_ARGS=(--slot-context "$SLOT_CONTEXT")
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
@@ -2137,6 +2147,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --host "$HOST" \
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
+                        "${SLOT_CTX_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
@@ -2193,6 +2204,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --host "$HOST" \
                         --port "$PORT" \
                         --parallel "$PARALLEL" \
+                        "${SLOT_CTX_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
@@ -2249,6 +2261,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --host "$HOST" \
                         --port "$LLAMA_PORT" \
                         --parallel "$PARALLEL" \
+                        "${SLOT_CTX_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
@@ -2302,6 +2315,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --host "$HOST" \
                     --port "$PORT" \
                     --parallel "$PARALLEL" \
+                        "${SLOT_CTX_ARGS[@]}" \
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \

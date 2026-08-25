@@ -27,6 +27,7 @@ CALIBRATION_DIR="${CONFIG_DIR}/calibration"
 
 # ── defaults ─────────────────────────────────────────────────────
 DEFAULT_MODEL="/home/randozart/Desktop/Projects/Qwen3.6-35B-A3B-UD-IQ2_M.gguf"
+DEFAULT_MODEL_ALIAS=""
 DEFAULT_CTX=136192
 DEFAULT_THREADS=4
 DEFAULT_NGL=99
@@ -84,6 +85,7 @@ CFG_KV_QUANT_V="$DEFAULT_KV_QUANT_V"
 CFG_LOOKUP="$DEFAULT_LOOKUP"
 CFG_ENGINE_MODE="$DEFAULT_ENGINE_MODE"
 CFG_SPEC_TYPE="$DEFAULT_SPEC_TYPE"
+CFG_MODEL_ALIAS="${DEFAULT_MODEL_ALIAS:-}"
 CFG_SPEC_DRAFT_N_MAX="$DEFAULT_SPEC_DRAFT_N_MAX"
 CFG_SPEC_DRAFT_MODEL="$DEFAULT_SPEC_DRAFT_MODEL"
 CFG_SPEC_DRAFT_DEVICE="$DEFAULT_SPEC_DRAFT_DEVICE"
@@ -129,6 +131,7 @@ parse_config() {
                 model.context)         CFG_CTX="$val" ;;
                 model.threads)         CFG_THREADS="$val" ;;
                 model.ngl)             CFG_NGL="$val" ;;
+                model.alias)           CFG_MODEL_ALIAS="$val" ;;
                 vitriol.mode)          CFG_MODE="$val" ;;
                 vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
                 vitriol.verbose)       CFG_VERBOSE="$val" ;;
@@ -2061,6 +2064,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
          # Multi-GPU tensor split args
          TS_ARGS=""
         [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"
+        # Model alias: name reported via /v1/models and matched in requests
+        MODEL_ALIAS="${CFG_MODEL_ALIAS:-${VITRIOL_MODEL_ALIAS:-}}"
+        ALIAS_ARGS=""
+        [[ -n "$MODEL_ALIAS" ]] && ALIAS_ARGS="--alias $MODEL_ALIAS"
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
@@ -2117,7 +2124,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
-                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                             "$@" &>"$GEN_LOG" &
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
                 echo "  llama-server PID: $! (internal port $LLAMA_PORT)"
@@ -2172,7 +2179,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
-                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                         "$@" &>"$GEN_LOG" &
                 echo $! > "${CONFIG_DIR}/server.pid"
                 echo "  Server PID: $!"
@@ -2226,7 +2233,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         --slots --metrics \
                         --no-mmap \
-                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
+                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
                 LLAMA_PID=$!
                 echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
 
@@ -2280,7 +2287,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \
-                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                     "$@"
             fi
         fi

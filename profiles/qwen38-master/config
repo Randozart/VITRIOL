@@ -18,6 +18,7 @@ path = /home/randozart/Downloads/Qwen3.8-27B-UD-IQ3_S.gguf
 context = 131072
 threads = 4
 ngl = 99
+alias = Lapis Occultus
 expert_count = 0
 
 [vitriol]

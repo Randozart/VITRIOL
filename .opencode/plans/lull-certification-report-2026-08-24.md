@@ -104,3 +104,46 @@ window profile, drop for deep-window work if VRAM-tight.
 3. Probe-quality ppl gate once eviction fires live.
 4. Phases 3–4: lull scheduler + tiered cold-KV spill — the structural fix
    for the depth wall this report documents.
+
+---
+
+## 6. Depth-push results (2026-08-24 late session)
+
+Goal: deepest possible FILLED context per quant; "window ≠ depth" discipline
+(KV is allocated for the full window at load — right-size window ≈ target).
+
+### New Q3_K_M record
+
+| run | filled | decode t/s |
+|---|---|---|
+| ts 24,12, w98304, q4_0+FA, ub64 | **92,642** | **9.22** |
+| same, w100354, target 96k | died 94,208 (dev0 OOM) | — |
+| ts 26,10, w131072, tq3_0, substrate ON (earlier) | 54,692 | 9.21 |
+
+Recipe that works: **right-sized window + `ts 24,12` + `-fa on` + q4_0 KV +
+ub64**. Historical `ts 24,12` in AGENTS.md was likely exactly this deep-fill
+configuration.
+
+### Mechanism progress on the VRAM creep
+
+1. Creep is dev0-only, linear (~23 KiB/token), independent of KV bits.
+2. `VITRIOL_POOL_RESET=1` (new, committed): rewinds compute-pool bump
+   allocator between graph evals → recovers ~20% depth (45k→67k on one
+   config) by stopping the VMM LIFO-drift component.
+3. Residual growth lives OUTSIDE the compute pool: per-graph-rebuild input
+   buffers (kq masks etc.) go through direct cudaMalloc as n_kv grows.
+   Next fix target: pool/reuse those input buffers or pad-and-reuse.
+4. cuBLAS "failed to launch"/"unsupported value" failures at depth
+   (dev1, tiny GEMMs) are secondary symptoms of device memory pressure /
+   sticky state, not root causes.
+
+### Updated practical envelope
+
+| model | max certified fill | t/s | config |
+|---|---|---|---|
+| UD-IQ2_S | 64,634 | 11.7–12.7 | ts 27,9 q4_0 |
+| Q3_K_M | **92,642** | **9.22** | ts 24,12 w98k q4_0 FA ub64 |
+| UD-IQ3_S | **96,836** | **11.32** | ts 26,10 w131k tq3_0 |
+
+ub32 note: dies with cublas invalid-parameter at ~53k (separate small bug,
+avoid for now).

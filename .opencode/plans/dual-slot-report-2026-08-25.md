@@ -72,3 +72,23 @@ second fence (a misrouted >8k request is rejected outright).
    the ontic subprocess).
 3. Containerized blueprint for this exact stack documented separately:
    `~/Desktop/Projects/ontic/docs/reports/hermes-trismegistus-architecture.md`.
+
+## 6. Addendum — OOM #2 postmortem & watchdog stack (2026-08-25 evening)
+
+Second kernel OOM kill at 20:18:12 (anon-rss 4.9 GiB, dual-slot c=98304).
+Host-level cause: opencode ~5.2 GiB across 6 processes on 16 GiB DDR3; the
+server (oom_score_adj 200) is merely the preferred victim. VRAM-side answer
+to "shouldn't it degrade gracefully?": **no** — CUDA_CHECK is [[noreturn]];
+a foreign VRAM steal aborts mid-graph-build, and no NVML monitoring exists.
+
+Deployed stack (commit `48fc479`, plan: watchdog-persistence-plan):
+1. `vitriol-server.service` — Restart=always/5s around the launcher.
+2. `vitriol-autosave.service` — `lull_slot_persist.py`: PID-generation
+   detection (~5 s) → restore slot{N}.bin into fresh instances; periodic
+   disk autosave (300 s) via `--slot-save-path`; warm GDN slot ≈150 MiB.
+3. oom-shield — raises big consumers' oom_score_adj to 300 (user-manager
+   clamps negative adjust; same-uid can only raise others).
+4. Context budget cut c98304→c81920 (split 0=73728,1=8192); hermes follows.
+
+Verified drill: kill -9 → resurrect 10 s → healthy ~40 s → context replayed
+306 ms. Data-loss bound = one autosave interval for the conversation tail.

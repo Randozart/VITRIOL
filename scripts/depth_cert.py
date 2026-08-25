@@ -28,6 +28,12 @@ def main():
     ap.add_argument("--gen", type=int, default=64)
     ap.add_argument("--fa", type=str, default=None)
     a = ap.parse_args()
+    fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=%s ub=%d mode=%s substrate=%s" %
+          (os.path.basename(a.model), a.ts, a.window,
+           a.kv, a.kv, a.fa or 'auto', a.ub,
+           os.environ.get('VITRIOL_MODE','?'),
+           'off' if a.no_substrate else 'on'))
+    fp += " pool_reset=" + os.environ.get('VITRIOL_POOL_RESET','0')
 
     env = dict(os.environ)
     env["VITRIOL_MODE"] = "stream"
@@ -51,6 +57,8 @@ def main():
            "--host", "127.0.0.1", "--port", "8299"]
     log = f"/tmp/opencode/dc-{a.tag}.log"
     with open(log, "w") as lf:
+        lf.write(fp + "\n")
+        lf.flush()
         p = subprocess.Popen(cmd, stdout=lf, stderr=lf, env=env, start_new_session=True)
         res = {"tag": a.tag}
         try:
@@ -93,6 +101,7 @@ def main():
                 ts.append(round(a.gen / dt, 2))
             res["t_s_rounds"] = ts
             res["t_s_mean"] = round(sum(ts) / len(ts), 2)
+            res["argv"] = cmd
         except Exception as e:
             res["error"] = f"{type(e).__name__}: {e}"
         finally:

@@ -49,6 +49,12 @@ def main():
     ap.add_argument("--ub", type=int, default=128)
     ap.add_argument("--fa", type=str, default=None, help="force flash attention on/off")
     args = ap.parse_args()
+    fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=q4_0/q4_0 ub=%d mode=%s sparse=%s score=%s" %
+          (os.path.basename(args.model), args.ts, args.ctx, args.ub,
+           os.environ.get('VITRIOL_MODE','?'),
+           'on' if args.sparse else 'off',
+           os.environ.get('VITRIOL_KV_SCORE','off')))
+    fp += " pool_reset=" + os.environ.get('VITRIOL_POOL_RESET','0')
 
     tag = args.tag or f"fill{args.depth}{'s' if args.sparse else ''}"
     logfile = f"/tmp/opencode/lullfill-{tag}.log"
@@ -81,6 +87,8 @@ def main():
     ]
     print(f"[lull_fill] launching ctx={args.ctx} depth={args.depth} sparse={args.sparse}", flush=True)
     with open(logfile, "w") as lf:
+        lf.write(fp + "\n")
+        lf.flush()
         proc = subprocess.Popen(cmd, stdout=lf, stderr=lf, env=env,
                                 start_new_session=True)
         result = {}
@@ -140,6 +148,7 @@ def main():
                 ts.append(round(args.gen / dt, 3))
 
             result = {
+                "argv": cmd,
                 "tag": tag, "ctx_alloc": args.ctx, "depth_reached": depth_reached,
                 "fill_s": round(fill_s, 1), "t_s_rounds": ts,
                 "t_s_mean": round(sum(ts) / len(ts), 3), "log": logfile,

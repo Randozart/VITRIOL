@@ -67,6 +67,14 @@ def main():
     ap.add_argument("--model", type=str, default=None,
                     help="gguf path (default: mtp-Q4_0; Q3_K_M corrupts heap, avoid)")
     args = ap.parse_args()
+    fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=%s ub=%s mode=%s substrate=%s" %
+          (os.path.basename(args.model if hasattr(args,'model') else MODEL),
+           getattr(args,'ts','27,9'), args.ctx,
+           getattr(args,'kv','q4_0'), getattr(args,'kv','q4_0'),
+           getattr(args,'fa',None) or 'auto', getattr(args,'ub',128),
+           os.environ.get('VITRIOL_MODE','?'),
+           'off' if getattr(args,'no_substrate',False) else 'on'))
+    fp += " pool_reset=" + os.environ.get('VITRIOL_POOL_RESET','0')
 
     logfile = f"/tmp/opencode/lull-{args.tag}.log"
     model = args.model or os.path.join(
@@ -131,6 +139,8 @@ def main():
     cmd += args.extra
     print(f"[lull_bench] launching {' '.join(cmd)}", flush=True)
     with open(logfile, "w") as lf:
+        lf.write(fp + "\n")
+        lf.flush()
         proc = subprocess.Popen(cmd, stdout=lf, stderr=lf, env=env,
                                 start_new_session=True)
         try:
@@ -165,6 +175,7 @@ def main():
             gen_s = sum(rounds) / len(rounds)
 
             result = {
+                "argv": cmd,
                 "tag": args.tag, "ctx_alloc": args.ctx,
                 "ctx_used_prefill": n_ctx_used,
                 "prefill_s": round(prefill_s, 3),

@@ -145,6 +145,8 @@ parse_config() {
                 kv.quant_mode)         CFG_KV_QUANT="$val" ;;
                 kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
                 kv.ubatch_size)        CFG_UBATCH="$val" ;;
+        kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
+                kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
                 lookup_tokens)         CFG_LOOKUP="$val" ;;
                 engine.mode)             CFG_ENGINE_MODE="$val" ;;
                 spec.type)             CFG_SPEC_TYPE="$val" ;;
@@ -391,6 +393,7 @@ config_set() {
         kv.quant_mode)         CFG_KV_QUANT="$val" ;;
         kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
         kv.ubatch_size)        CFG_UBATCH="$val" ;;
+        kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
         lookup_tokens)          CFG_LOOKUP="$val" ;;
         engine.mode)           CFG_ENGINE_MODE="$val" ;;
         spec.type)             CFG_SPEC_TYPE="$val" ;;
@@ -1709,7 +1712,7 @@ case "$CMD" in
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
         LOOKUP="${CLI_LOOKUP:-${CFG_LOOKUP}}"
         ENGINE_MODE="${CLI_ENGINE_MODE:-${CLI_ENGINE_MODE:-${CFG_ENGINE_MODE}}}"
-        KV_QUANT_V="${CLI_KV_QUANT_V:-${CFG_KV_QUANT_V}}}"
+        KV_QUANT_V="${CLI_KV_QUANT_V:-${CFG_KV_QUANT_V}}"
 DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
@@ -1725,6 +1728,13 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         PRUNE_EXPERTS="${CLI_PRUNE_EXPERTS:-${CFG_PRUNE_EXPERTS}}"
         CHIMERA_MODE="${CLI_CHIMERA_MODE:-${CFG_CHIMERA_MODE}}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
+        CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
+
+        # VITRIOL-FINGERPRINT: canonical one-line config identity. Emitted to
+        # console and (on real launches) appended to GEN_LOG so any log excerpt
+        # answers "what flags produced this?" without archaeology.
+        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "${VITRIOL_KV_MODE:-standard}" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
             OUTPUT_CACHE="off"
@@ -1809,6 +1819,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo "  Binary:      $BINARY"
         echo "  Port:        $PORT"
         [[ "$VERBOSE" == "true" ]] && echo "  Logging:     verbose"
+        echo "  $FINGERPRINT"
         echo "═══════════════════════════════"
         echo ""
 
@@ -1954,6 +1965,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
+        CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
+        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
+            "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
@@ -2036,6 +2051,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         fi
         echo "  Slots:     $PARALLEL parallel"
         [[ "$VERBOSE" == "true" ]] && echo "  Logging:   verbose"
+        echo "  $FINGERPRINT"
         echo "═══════════════════════════"
         echo ""
 
@@ -2071,7 +2087,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
-        CKPT_ARGS="--checkpoint-every-n-tokens 2048"
+        CKPT_ARGS="--checkpoint-every-n-tokens ${CKPT_EVERY:-2048}"
         # Flash Attention is required for V cache quantization and generally faster
         FA_ARGS="-fa on"
         # Prefill optimization flags
@@ -2126,6 +2142,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                          -t "$THREADS" \
                             $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                             "$@" &>"$GEN_LOG" &
+                            printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
                 echo "  llama-server PID: $! (internal port $LLAMA_PORT)"
 
@@ -2181,6 +2198,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         -t "$THREADS" \
                         $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $ALIAS_ARGS $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
                         "$@" &>"$GEN_LOG" &
+                            printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/server.pid"
                 echo "  Server PID: $!"
             fi

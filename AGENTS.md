@@ -2,11 +2,15 @@
 
 ## Testing Protocol
 
-1. **Always use VITRIOL DMA offloading** for model tests. Never test with `-ngl 0` (CPU-only) unless explicitly requested. VITRIOL is designed to make large models fit on small GPUs — use `VITRIOL_MODE=stream` and `-ngl 99`.
+1. **Residency rule (2026-08-24, supersedes "always DMA")**: stream/DMA offloading ONLY when weights exceed combined VRAM (e.g. 35B-class). For resident-capable quants (≤ ~20 GiB combined) the default is `VITRIOL_MODE=off` — weights fully VRAM-resident; streaming a fitting model starves GPUs on DDR3/PCIe expert fetches and is a pessimization. Streaming in an experiment record must be justified.
 
-2. **After any build** (`cmake --build`), ask the user to run `sudo vitriol setup` before testing. This sets `CAP_IPC_LOCK` on the server binary, required for page-locked DMA buffers.
+2. **CAP_IPC_LOCK is optional on this host**: CUDA pinned allocations do not count against RLIMIT_MEMLOCK; all 2026-08-24 certifications ran uncapped. `scripts/build-llama-server.sh` reapplies caps best-effort after builds; `sudo vitriol setup` remains for hosts where mlock fails. Never pass `--ctx-checkpoints 0` (heap corruption) or `--cache-ram 0` (no readiness).
 
 3. **Always kill stale servers** with `killall -9 llama-server` before starting a new one.
+
+4. **Flag provenance (mandatory)**: every launch emits a `VITRIOL-FINGERPRINT:` line (launcher, server main, and runners). Every benchmark RESULT embeds full argv. Every report/log excerpt must be traceable to its fingerprint — silent flag drift is a review blocker. Profile files under `profiles/` are canonical config sources.
+
+5. **Window ≠ depth**: KV is allocated for the whole window at load. Context claims must state FILLED token counts (see lull-certification-report Addenda 5–6).
 
 ## Documentation
 
@@ -106,14 +110,18 @@ VITRIOL_POOL_RESET=1 first — certified 96,836 tok @ 11.32 t/s).
 Required flags (all wired into `scripts/vitriol` config now):
 `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64 --cache-type-k tq3_0 --cache-type-v tq3_0 --spec-type mtp --spec-draft-n-max 1`
 
-MTP draft depth: n_max must be **1**. A 2026-08-19 fix (`res->t_mtp_out` in `qwen35-mtp.cpp`)
-enabled chained drafts, but depth>=2 regresses (n=5 → 9.0 t/s, n=3 → 11.3, n=2 → 12.9) because
-chained MTP-head drafts drift (acceptance decays) and each costs ~8 ms. Trunk-seeded depth-1 is
-100% accepted. Sweep: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`.
+MTP draft depth: n_max must be **1** (re-confirmed 2026-08-24: n=2 → 12.71 vs n=1 → 14.05
+t/s shallow-bench). Zero measurable end-to-end benefit on this hardware (2026-05-25 sweep +
+2026-08-24 recheck) — omit unless A/B-ing. Depth>=2 regresses because chained MTP-head drafts
+drift (acceptance decays) and each costs ~8 ms.
+Sweep: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`.
+Deep-context certification: `.opencode/plans/lull-certification-report-2026-08-24.md`.
 
 Key facts:
 - Build must target BOTH archs: `cmake -B build -DCMAKE_CUDA_ARCHITECTURES="61;86"` (native-only default misses sm_86 → "no kernel image" crash).
-- `VITRIOL_KV_QUANT` env does NOT apply; must pass `--cache-type-k/v` explicitly.
+- KV quantization: `--cache-type-k/v` accepts `tq3_0`/`tq3_1s`/`tq3_4s` (TurboQuant,
+  2026-08-24 certified) in addition to f16/q8_0/q4_0/q4_1/iq4_nl. Per-device
+  asymmetric overrides exist via `VITRIOL_KV_QUANT[_K|_V]_GPU<d>` (llama-kv-cache.cpp).
 - MTP only works if `qwen35_mtp` arch string exists in `src/llama-arch.cpp` (fixed 2026-08-18). Symptom when broken: `unknown override architecture: 'qwen35_mtp'` + `speculative=none`.
 - 262K + MTP does NOT fit (Pascal compute buffers). Drop MTP for 262K.
-- opencode provider: models `qwen38-mtp` (131K) and `qwen38-262k` in `~/.config/opencode/opencode.jsonc`.
+- [STALE?] opencode provider entries `qwen38-mtp`/`qwen38-262k` in `~/.config/opencode/opencode.jsonc` predate the 2026-08-24 certifications — verify before relying on them. Hermes-agent uses `~/.hermes/config.yaml` ("Lapis Occultus" → qwen38-master endpoint).

@@ -99,6 +99,9 @@ Recommended working config (certified): `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64
 --cache-type-k tq3_0 --cache-type-v tq3_0` (TurboQuant KV = 3.5 bpw, −22% vs q4_0;
 per-device overrides via `VITRIOL_KV_QUANT[_K|_V]_GPU<d>`). Add
 `--spec-type mtp --spec-draft-n-max 1` for the 49k-window profile.
+Master deep-context profile: `vitriol config load qwen38-master`
+(IQ3_S, c131072 tq3_0, sparse+probe; export VITRIOL_KV_SCORE=probe and
+VITRIOL_POOL_RESET=1 first — certified 96,836 tok @ 11.32 t/s).
 
 Required flags (all wired into `scripts/vitriol` config now):
 `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64 --cache-type-k tq3_0 --cache-type-v tq3_0 --spec-type mtp --spec-draft-n-max 1`

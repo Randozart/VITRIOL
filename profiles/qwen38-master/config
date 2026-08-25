@@ -11,7 +11,7 @@
 [gpu]
 device = 0
 exclude_secondary = false
-tensor_split = 26,10
+tensor_split = 24,12
 
 [model]
 path = /home/randozart/Downloads/Qwen3.8-27B-UD-IQ3_S.gguf
@@ -22,7 +22,7 @@ alias = Lapis Occultus
 expert_count = 0
 
 [vitriol]
-mode = stream
+mode = off
 lru_mb = 0
 verbose = false
 output_cache = off
@@ -43,9 +43,10 @@ semantic_mode = off
 [kv]
 mode = sparse
 frozen_prompt = off
-quant_mode = tq3_0
-quant_mode_v = tq3_0
+quant_mode = q4_0
+quant_mode_v = q4_0
 ubatch_size = 64
+checkpoint_every_n_tokens = 8192
 
 lookup_tokens = 0
 engine.mode = vitriol-dma

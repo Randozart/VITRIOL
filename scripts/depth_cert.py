@@ -25,18 +25,23 @@ def main():
     ap.add_argument("--kv", default="tq3_0")
     ap.add_argument("--no-substrate", action="store_true")
     ap.add_argument("--no-vmm", action="store_true")
+    ap.add_argument("--sample-util", action="store_true", help="sample GPU util% during run")
+    ap.add_argument("--spec", action="store_true", help="enable MTP speculative decoding n=1")
+    ap.add_argument("--spec-draft-model", type=str, default=None, help="separate MTP head gguf")
+    ap.add_argument("--no-mmap", action="store_true")
     ap.add_argument("--gen", type=int, default=64)
     ap.add_argument("--fa", type=str, default=None)
+    ap.add_argument("--mode", default="off", help="VITRIOL_MODE: off|stream|sync|async")
     a = ap.parse_args()
     fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=%s ub=%d mode=%s substrate=%s" %
           (os.path.basename(a.model), a.ts, a.window,
            a.kv, a.kv, a.fa or 'auto', a.ub,
-           os.environ.get('VITRIOL_MODE','?'),
+           a.mode,
            'off' if a.no_substrate else 'on'))
     fp += " pool_reset=" + os.environ.get('VITRIOL_POOL_RESET','0')
 
     env = dict(os.environ)
-    env["VITRIOL_MODE"] = "stream"
+    env["VITRIOL_MODE"] = a.mode
     env["VITRIOL_KV_QUANT"] = a.kv
     env["VITRIOL_KV_QUANT_V"] = a.kv
     if not a.no_substrate:
@@ -50,8 +55,12 @@ def main():
 
     cmd = [SERVER, "-m", a.model,
            "-ngl", "99", "-c", str(a.window), "-ub", str(a.ub),
-           "-t", "4", "-ts", a.ts,
+           "-t", "4",
+           *([] if a.ts == "none" else ["-ts", a.ts]),
            *([] if not a.fa else ["-fa", a.fa]),
+           *([] if not a.spec else (["--spec-type", "mtp", "--spec-draft-n-max", "1"] +
+              ([] if not a.spec_draft_model else ["--spec-draft-model", a.spec_draft_model]))),
+           *(["--no-mmap"] if a.no_mmap else []),
            "--cache-type-k", a.kv, "--cache-type-v", a.kv,
            "--ctx-checkpoints", "4", "--checkpoint-every-n-tokens", "8192",
            "--host", "127.0.0.1", "--port", "8299"]
@@ -61,6 +70,21 @@ def main():
         lf.flush()
         p = subprocess.Popen(cmd, stdout=lf, stderr=lf, env=env, start_new_session=True)
         res = {"tag": a.tag}
+        util_samples = []
+        stop_util = [False]
+        if a.sample_util:
+            import threading as _th
+            def _sampler():
+                while not stop_util[0]:
+                    out = subprocess.run(["nvidia-smi",
+                        "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                        capture_output=True, text=True).stdout
+                    try:
+                        util_samples.append([int(x) for x in out.split()])
+                    except Exception:
+                        pass
+                    time.sleep(2)
+            _th.Thread(target=_sampler, daemon=True).start()
         try:
             ok = False
             for _ in range(420):
@@ -102,6 +126,9 @@ def main():
             res["t_s_rounds"] = ts
             res["t_s_mean"] = round(sum(ts) / len(ts), 2)
             res["argv"] = cmd
+            if a.sample_util and util_samples:
+                n = len(util_samples)
+                res["gpu_util_mean"] = [round(sum(x[i] for x in util_samples)/n) for i in (0,1)]
         except Exception as e:
             res["error"] = f"{type(e).__name__}: {e}"
         finally:

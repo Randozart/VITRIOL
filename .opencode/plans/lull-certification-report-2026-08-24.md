@@ -147,3 +147,44 @@ configuration.
 
 ub32 note: dies with cublas invalid-parameter at ~53k (separate small bug,
 avoid for now).
+
+## 7. Final master configuration & speed investigation (2026-08-25)
+
+### The tq3_0 KV discovery
+Controlled matrix (MODE=off, ub64, FA, single-shot fills) isolated the day's
+speed variance to **KV format**, not streaming/splits:
+
+| config | decode |
+|---|---|
+| IQ2_S / IQ3_S, **q4_0 KV** — any split, any mode, any depth | **11.7–12.9 t/s** |
+| IQ3_S, tq3_0 KV, resident | 6.86 ✗ (no MMQ path → slow dequant attention) |
+| IQ3_S + separate MTP head | 8.45 and degrading ✗ |
+
+Streaming exonerated as the decode villain at these sizes; the AGENTS.md
+"always DMA" rule is formally rescinded (see protocol §1). Historical
+golden-era profiles recovered from `~/.vitriol/profiles/`:
+`qwen38-iq2s-100k` (**ts 1,0 — fully single-GPU**, ctx 100k!) and
+`qwen38-iq3s-131k` (ts 70,30).
+
+### Master profile final form (`qwen38-master`)
+IQ3_S · q4_0 KV · ts 24,12 · ub64 · c131072 · MODE=off · -fa on ·
+--no-mmap · ckpt 4×8192 · sparse+probe+pool-reset exports.
+Certified: **92,642 tok filled @ ~9–12.4 t/s** (rounds noisy; best 12.4).
+tq3_0+stream remains the stable-deep alternative (11.32 @ 96.8k) if a
+session needs >92k.
+
+### Infrastructure shipped this round
+1. `VITRIOL-FINGERPRINT` at all three launch sites + runners (argv in every
+   RESULT); silent flag drift now review-blockable.
+2. `kv.checkpoint_every_n_tokens` profile key (was hardcoded 2048).
+3. `lull_reuse_audit.py` — per-turn cache-hit/forced-miss accounting.
+4. Launcher `model.alias` support (array-safe): Lapis Occultus lives.
+5. hermes providers.custom timeouts (3600s/1800s) as prefill insurance.
+6. Production relaunched detached under persistent logging; TUI TPS gauge
+   revived (heartbeat file restored).
+
+### Open
+- Reuse audit accumulates with real hermes traffic; forced-full rate is the
+  number to watch (verdict logic built into auditor).
+- Decode plateau ~12 t/s appears hardware/kernel-equilibrium for this arch;
+  CUDA graphs confirmed engaged during stable decode.

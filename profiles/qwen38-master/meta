@@ -1,3 +1,3 @@
 name=qwen38-master
-description=Qwen3.8-27B UD-IQ3_S MASTER: tq3_0 KV (3.5bpw), ts 26,10, ub64, c131072. Certified 2026-08-24: 96,836 tok filled @ 11.32 t/s depth decode; shallow-bench faster. Requires exported VITRIOL_KV_SCORE=probe + VITRIOL_POOL_RESET=1. Window!=depth: KV allocates for full window at load.
+description=Qwen3.8-27B UD-IQ3_S MASTER: q4_0 KV, ts 24,12, ub64, c131072, MODE=off (resident). 2026-08-24 late: 92,642 tok filled, decode 7.8-12.4 t/s (variance noted); tq3_0 KV costs -40% decode in resident mode (no MMQ path) and MTP-via-separate-head degrades — both rejected. Requires exports: VITRIOL_KV_SCORE=probe VITRIOL_POOL_RESET=1. Window!=depth.
 created=2026-08-24

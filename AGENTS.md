@@ -55,6 +55,23 @@
 - **Optimal: pin=12, mtp=0 or mtp=2, ubatch=128, ctx=65536** → 9.98 t/s
 - Full report: `.opencode/plans/mtp-sweep-report-2026-05-25.md`
 
+## Cloud Escalation Policy (ascensus)
+
+Escalation is euro-capped (`ASCENSUS_EUR_DAILY=1`, monthly 30) and
+self-tapers: every escalation is stored to Hermetis, so a problem class pays
+the cloud price **once**. Early escalation of recurring problem classes is an
+investment, not an expense. Escalate when ANY of:
+
+1. One bug has consumed **3+ failed hypotheses** locally.
+2. You are about to do something irreversible or hard to undo (force-push,
+   schema/data migration, deleting unbacked state) and feel <90% sure.
+3. The error class is long-tail platform behavior — kernel/systemd/CUDA/
+   driver internals — where small models hallucinate confidently.
+
+Do NOT escalate for: routine coding, this repo's own conventions (they live
+in docs/), anything already answered in Hermetis (dedup handles it).
+When the budget gate refuses, answer locally — never retry-loop ascensus.
+
 ## Licensing and Provenance (GPL-2.0)
 
 VITRIOL and its llama.cpp fork are licensed under the **GNU GPL v2** (see `LICENSE`).

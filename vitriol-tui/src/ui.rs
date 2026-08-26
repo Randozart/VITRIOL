@@ -752,7 +752,14 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
     let lines = app.current_log_lines();
     // Show the newest lines that fit; the tail is newest-last.
     let start = lines.len().saturating_sub(inner.height as usize);
-    let shown: Vec<Line> = lines[start..]
+    // Classify first: concise mode suppresses heartbeat/meta spam. Suppressed
+    // runs are then coalesced into ONE muted line showing the LATEST hidden
+    // entry — you see that something is happening without the firehose.
+    enum Rendered {
+        Shown(String),
+        Suppressed(String),
+    }
+    let classified: Vec<Rendered> = lines[start..]
         .iter()
         .map(|l| {
             let mut s = strip_ansi(l);
@@ -760,7 +767,7 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
                 // Concise mode: hide heartbeat spam + warm metadata, cap
                 // width, and render traffic JSONL heads as summaries.
                 if s.contains("decode heartbeat") || s.contains("\"meta_only\"") {
-                    return Line::raw("");
+                    return Rendered::Suppressed(s.trim_start().to_string());
                 }
                 if s.trim_start().starts_with('{') && s.contains("\"kind\"") {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
@@ -776,13 +783,10 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
                         } else {
                             theme::text()
                         };
-                        return Line::from(Span::styled(
-                            format!(
-                                "{} {:>12} {}→{}  {}→{} chars",
-                                g("ts"), kind, g("from"), g("to"),
-                                num("prompt_chars"), num("response_chars")
-                            ),
-                            styled,
+                        return Rendered::Shown(format!(
+                            "{} {:>12} {}→{}  {}→{} chars",
+                            g("ts"), kind, g("from"), g("to"),
+                            num("prompt_chars"), num("response_chars")
                         ));
                     }
                 }
@@ -791,9 +795,41 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
                     s.push_str("…");
                 }
             }
-            Line::raw(s)
+            Rendered::Shown(s)
         })
         .collect();
+    fn suppressed_line(n: usize, latest: &str, width: u16) -> Line<'static> {
+        let mut t =
+            format!("  ⋮ {} suppressed · latest: {}", n, latest);
+        let max = (width as usize).saturating_sub(4).max(24);
+        let chars: Vec<char> = t.chars().collect();
+        if chars.len() > max {
+            t = chars[..max.saturating_sub(1)].iter().collect::<String>() + "…";
+        }
+        Line::from(Span::styled(t, theme::muted()))
+    }
+    let mut shown: Vec<Line> = Vec::with_capacity(classified.len());
+    let mut run = 0usize;
+    let mut last_suppressed = String::new();
+    for r in classified {
+        match r {
+            Rendered::Suppressed(text) => {
+                run += 1;
+                last_suppressed = text;
+            }
+            Rendered::Shown(s) => {
+                if run > 0 {
+                    shown.push(suppressed_line(run, &last_suppressed, inner.width));
+                    run = 0;
+                    last_suppressed.clear();
+                }
+                shown.push(Line::raw(s));
+            }
+        }
+    }
+    if run > 0 {
+        shown.push(suppressed_line(run, &last_suppressed, inner.width));
+    }
     let hint = if app.logs_verbose { "verbose" } else { "concise" };
     let mut out: Vec<Line> = vec![chips, Line::from(Span::styled(
         format!(" [v: {} — v toggles detail] ", hint),

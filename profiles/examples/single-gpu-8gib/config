@@ -1,0 +1,53 @@
+# EXAMPLE PROFILE — single GPU (8 GiB), small/quantized resident model
+#
+# Minimal single-slot starting point. For models that do NOT fit, see the
+# residency rule discussion in docs/ARCHITECTURE.md and VERDICTS.md —
+# streaming strategies exist but are measured pessimizations when weights
+# would fit.
+#
+# Install: copy to ~/.vitriol/profiles/<name>/config, edit, then
+#   vitriol config load <name> && vitriol stop && vitriol serve
+
+[gpu]
+device = 0
+exclude_secondary = true      # single-GPU box: ignore other devices
+
+[model]
+path = REPLACE_WITH_MODEL_PATH.gguf   # <-- TUNE (aim <= 6.5 GiB for 8G VRAM)
+context = 32768               # <-- TUNE: KV must fit alongside weights
+threads = 4                   # <-- TUNE: physical cores
+ngl = 99
+alias = my-model
+expert_count = 0
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+slot_save_path = /home/YOU/.vitriol/checkpoints   # <-- TUNE (checkpoints)
+host = 127.0.0.1
+port = 8279
+parallel = 1                  # no slot_context line: one full-context slot
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = sparse
+frozen_prompt = off
+quant_mode = q4_0             # q4_0 KV: fastest; tq3_0 saves ~22% KV size
+quant_mode_v = q4_0
+ubatch_size = 64
+checkpoint_every_n_tokens = 8192
+
+lookup_tokens = 0
+engine.mode = vitriol-dma
+chimera.mode = auto

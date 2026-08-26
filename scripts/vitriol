@@ -2548,6 +2548,34 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         exec bash "${PROJECT_DIR}/scripts/install.sh" --uninstall
         ;;
 
+    services)
+        # Install systemd user units from the repo (canonical copies live in
+        # systemd/user/). `vitriol services uninstall` removes them again.
+        shift
+        ACTION="install"
+        [[ "${1:-}" == "uninstall" ]] && ACTION="uninstall"
+        UNIT_DIR="${HOME}/.config/systemd/user"
+        SRC_DIR="${PROJECT_DIR}/systemd/user"
+        if [[ "$ACTION" == "install" ]]; then
+            mkdir -p "$UNIT_DIR"
+            for u in vitriol-server.service vitriol-autosave.service; do
+                cp "${SRC_DIR}/${u}" "${UNIT_DIR}/${u}"
+                echo "✓ installed ${u}"
+            done
+            systemctl --user daemon-reload
+            echo ""
+            echo "Units installed. Enable + start:"
+            echo "  systemctl --user enable --now vitriol-server.service"
+            echo "  (the autosave sidecar follows via Wants=/PartOf=)"
+        else
+            for u in vitriol-autosave.service vitriol-server.service; do
+                systemctl --user stop "$u" 2>/dev/null || true
+                rm -f "${UNIT_DIR}/${u}" && echo "✓ removed ${u}"
+            done
+            systemctl --user daemon-reload
+        fi
+        ;;
+
     pymander)
         # Reference mind (Pymander) store + ingest. P1: domains, ingest,
         # search, per-project selection. Reuses the Hermetis db machinery.

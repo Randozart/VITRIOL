@@ -1,0 +1,56 @@
+# EXAMPLE PROFILE — dual GPU (12 GiB + 8 GiB), resident MoE model
+#
+# Starting point for a two-GPU box where combined VRAM holds the model
+# resident (see the residency rule in docs/ARCHITECTURE.md). Derived from a
+# production profile for RTX 3060 12G + GTX 1070 Ti 8G; re-tune the marked
+# lines for your hardware.
+#
+# Install: copy to ~/.vitriol/profiles/<name>/config, edit, then
+#   vitriol config load <name> && vitriol stop && vitriol serve
+
+[gpu]
+device = 0
+exclude_secondary = false
+# tensor split across GPUs — ratio, not GiB. 24,12 == 2:1 for 12+8.
+tensor_split = 24,12          # <-- TUNE: match your VRAM ratio
+
+[model]
+path = REPLACE_WITH_MODEL_PATH.gguf   # <-- TUNE
+context = 81920               # window; usable depth is certified separately
+threads = 4                   # <-- TUNE: physical cores
+ngl = 99                      # all layers on GPU under the residency rule
+alias = my-model              # name clients see via /v1/models
+expert_count = 0
+
+[vitriol]
+mode = off                    # residency rule: off when weights fit VRAM
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+slot_save_path = /home/YOU/.vitriol/checkpoints   # <-- TUNE (checkpoints)
+slot_context = 0=73728,1=8192 # <-- TUNE: omit line entirely for single slot
+host = 127.0.0.1
+port = 8279
+parallel = 2                  # one slot per tenant
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = sparse
+frozen_prompt = off
+quant_mode = q4_0             # fast path; tq3_0 = smaller but profile-dependent
+quant_mode_v = q4_0
+ubatch_size = 64              # small ubatch = depth-friendly prefill on old PCIe
+checkpoint_every_n_tokens = 8192
+
+lookup_tokens = 0
+engine.mode = vitriol-dma
+chimera.mode = auto

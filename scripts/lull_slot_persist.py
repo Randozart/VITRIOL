@@ -311,6 +311,11 @@ PROTECTED = {
     "llama-server", "hermes", "lull_slot_persist", "vitriol-tui",
     "systemd", "python3",
 }
+# machine-specific extras (e.g. "firefox,opencode") without editing the file
+PROTECTED.update(
+    n.strip() for n in
+    os.environ.get("VITRIOL_OOM_PROTECT_EXTRA", "").split(",") if n.strip()
+)
 SHIELD_ADJ = int(os.environ.get("VITRIOL_OOM_SHIELD_ADJ", "300"))
 SHIELD_MIN_RSS_MB = int(os.environ.get("VITRIOL_OOM_SHIELD_MB", "300"))
 

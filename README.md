@@ -12,11 +12,65 @@ VITRIOL is my attempt at using every optimization possible to run modern AI mode
 
 Regarding the name, in alchemy, vitriol was considered the ultimate catalyst for transmuting matter. This is something this application aims to do as well. To transform old hardware into a high performant AI transformer. Lead into gold. You know the drill. Aditionally, around the 15th century, the esoteric backcronym was formed: *"Visita Interiora Terrae Rectificando Invenies Occultum Lapidem"*. In a way, this is what we are doing. We are reaching down into the bowels of the computer, rectifying the data streams, and running inference on our newfound philosopher's stone. Yes, I know how incredibly silly this all sounds, but it makes me happy to be using archaic alchemical terminology. Regarding the logo: In alchemical texts and artwork, vitriol was often depicted as a "Green Lion devouring the Sun". This is a metaphor for sulfuric acid dissolving base metals (symbolically represented by the green lion) to extract and purify precious gold (the alchemical symbol for which is the sun).
 
+## The three wars (chapter two)
+
+Everything above was written during war one and is kept for the record.
+What actually happened since is a story in three acts:
+
+**War I — fit the model (35B era).** A Qwen3.6-35B MoE needs ~12 GB of
+weights; the GPUs here have 8 and 12 GB. Answer: don't fit it — stream it.
+Page-locked host RAM ("RAM Shot"), a custom copy engine, Chimera dual-backend
+(CUDA+Vulkan). It worked: 23.3 tok/s where the baseline was "doesn't boot".
+Sections below describe this era; treat them as history.
+
+**Verdict interlude.** Then the project did the rare thing: it measured its
+own darling. On DDR3 + narrow PCIe, *streaming a model that fits in VRAM* is
+a pessimization — resident execution beat every streamed configuration. That
+verdict is codified as the residency rule and most of War I's machinery is
+now a tombstone. See [docs/VERDICTS.md](docs/VERDICTS.md).
+
+**War II — afford the model (27B era).** Qwen3.8-27B nearly fits across both
+GPUs. Answer: buy the missing 8 GB (a secondhand 1070 Ti next to the 3060),
+then make the remainder behave — TurboQuant KV at 3.5 bpw, LULL attention-
+probe scoring to decide which KV pages earn their keep, slot tenancy so two
+tenants share one server without stealing each other's context. Certified
+result: **96,836 filled tokens @ 11.32 tok/s** — depth measured, not
+window-allocated ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+
+**War III — keep it alive (now).** A model that runs on a red-lined 16 GiB
+box dies differently: OOM kills, swap-thrash hangs, task-queue jams. VITRIOL
+became an appliance: disk checkpoints that survive crashes by default, a
+sidecar that replays conversation warmth into fresh instances within seconds,
+a hang watchdog, a proactive bounce that restarts cleanly *before* memory
+exhaustion wedges the box, and an oom-shield that works backwards — since
+unprivileged users cannot protect their own processes, it marks everything
+else as more killable. See [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
+> **Reading the repo**: `docs/ARCHITECTURE.md` is the single source of truth
+> for current behavior. `docs/VERDICTS.md` holds every dead idea and why it
+> died. Sections of this README dated to Wars I–II are preserved as history.
+
+### Hardware assumptions (what's tuned where)
+
+This tree is tuned for one specific machine: i7-3770 (no AVX2), 16 GiB DDR3 +
+zram, RTX 3060 12 GiB + GTX 1070 Ti 8 GiB. Tensor splits (`ts 24,12`), KV
+quant choices, cache caps (`--cache-ram 1024` against an 8 GiB default
+entitlement), and sidecar thresholds are all *this-box* numbers. They live in
+`profiles/` (personal) and `profiles/examples/` (generic starting points) —
+re-tune there, not in code.
+
+### Upstream posture
+
+`master` tracks upstream ggml-org for periodic merges only. The `vitriol`
+branch is the canonical daily driver and drifts deliberately; `vitriol-mellum2`
+is a frozen alias of the same history. Merge cadence: when upstream grows
+something we want, not before.
+
 ## Quick Start
 
 ```bash
 # 1. Clone with submodule (llama.cpp is pinned)
-git clone --recursive https://github.com/your/vitriol.git
+git clone --recursive https://github.com/Randozart/VITRIOL.git
 # Or if already cloned: git submodule update --init --recursive
 
 # 2. Build (tests and examples excluded — see issue #1)

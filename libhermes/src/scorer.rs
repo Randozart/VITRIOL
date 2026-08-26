@@ -94,7 +94,11 @@ pub struct ScoreWeights {
 /// The composite score — Python `compute_score`.
 pub fn compute_score(input: &ScoreInput<'_>, w: &ScoreWeights) -> f64 {
     let rel = semantic_similarity(input.query, input.content);
-    let rec = recency_score(input.created_at, 30.0);
+    let max_days: f64 = std::env::var("MEMORY_RECENCY_MAX_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30.0);
+    let rec = recency_score(input.created_at, max_days);
     let heb = input.hebbian_weight.clamp(0.0, 1.0);
     let strn = input.node_strength.clamp(0.0, 1.0);
     rel * w.relevance_weight

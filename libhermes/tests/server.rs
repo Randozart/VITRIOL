@@ -154,7 +154,9 @@ async fn validation_and_pending_routes() {
     assert!(j["error"].as_str().unwrap().contains("root"));
 
     let (s, j) = call(&st, "GET", "/pymander/list", None).await;
-    assert_eq!(s, StatusCode::NOT_IMPLEMENTED);
-    assert!(j["error"].as_str().unwrap().contains("P5"));
+    // P5 shipped /pymander/* routes (cd424f2); list returns ok + domains.
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(j["ok"], serde_json::json!(true));
+    assert!(j["domains"].is_array());
     let _ = std::fs::remove_dir_all(&root);
 }

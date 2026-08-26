@@ -40,9 +40,21 @@ pub fn get_active_projects(root: &Path) -> Vec<String> {
         return Vec::new();
     };
     let mut out = Vec::new();
+    // Recency window: consolidating every legacy project on one idle tick
+    // wedged the global write path (2026-08-26). Only projects touched
+    // recently are "active"; HERMES_ACTIVE_WINDOW_DAYS=0 disables the filter.
+    let window_days: u64 = std::env::var("HERMES_ACTIVE_WINDOW_DAYS")
+        .ok().and_then(|v| v.parse().ok()).unwrap_or(7);
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() && p.join("memory.db").exists() {
+            if window_days > 0 {
+                let stale = e.metadata().and_then(|m| m.modified())
+                    .map(|mt| mt.elapsed().unwrap_or_default()
+                        < std::time::Duration::from_secs(window_days * 86400))
+                    .unwrap_or(true);
+                if !stale { continue; }
+            }
             if let Some(name) = p.file_name() {
                 out.push(name.to_string_lossy().into_owned());
             }

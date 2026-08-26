@@ -8,7 +8,9 @@
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Result type used across the module.
 pub type Result<T> = std::result::Result<T, rusqlite::Error>;
@@ -131,8 +133,41 @@ pub const SCHEMA_DDL: &str = r#"
 pub struct Hermes {
     /// Memory root directory (Python `MEMORY_DIR`).
     root: PathBuf,
-    /// Global write mutex (Python `_write_lock`).
-    write_lock: Mutex<()>,
+    /// Per-project write mutexes. A GLOBAL lock here let one stalled
+    /// consolidation of any legacy project wedge every write (observed
+    /// 2026-08-26: backlog-full zombie acceptor). Contention is now scoped
+    /// to a single project's db, with bounded acquisition below.
+    project_locks: std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+/// Bounded wait for a project's write guard. A wedged writer stalls only its
+/// own project and only for this long before callers surface SQLITE_BUSY.
+const WRITE_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn busy_err() -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        Some("hermetis write lock busy (project stalled?)".into()),
+    )
+}
+
+/// Bounded acquisition of a project write lock. `mutex` must be owned (via
+/// Arc clone) by the CALLER so the returned guard outlives this helper.
+pub(crate) fn acquire(
+    mutex: &Mutex<()>,
+) -> std::result::Result<std::sync::MutexGuard<'_, ()>, rusqlite::Error> {
+    let deadline = Instant::now() + WRITE_LOCK_TIMEOUT;
+    loop {
+        match mutex.try_lock() {
+            Ok(g) => return Ok(g),
+            Err(_) => {
+                if Instant::now() >= deadline {
+                    return Err(busy_err());
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
 }
 
 impl Hermes {
@@ -140,9 +175,18 @@ impl Hermes {
     pub fn new(root: &Path) -> Self {
         Self {
             root: root.to_path_buf(),
-            write_lock: Mutex::new(()),
+            project_locks: Mutex::new(HashMap::new()),
         }
     }
+
+    /// Clone the per-project write lock, creating it on first use.
+    fn project_lock(&self, project_id: &str) -> Arc<Mutex<()>> {
+        let mut map = self.project_locks.lock().unwrap();
+        map.entry(project_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
 
     /// Open a store rooted at `~/.vitriol` (honoring `VITRIOL_MEMORY_DIR`).
     pub fn default_root() -> PathBuf {
@@ -193,7 +237,8 @@ impl Hermes {
         project_id: &str,
         session_id: &str,
     ) -> Result<(String, i64)> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         let row = conn.query_row(
             "SELECT session_id, turn_count FROM sessions WHERE session_id = ?1",
@@ -228,7 +273,8 @@ impl Hermes {
         session_id: &str,
         write: &EpisodeWrite,
     ) -> Result<i64> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         let meta = &write.meta;
         let turn_index = match meta.turn_index {
@@ -282,7 +328,8 @@ impl Hermes {
         summary: &str,
         meta: &NodeMeta,
     ) -> Result<i64> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         let existing = conn.query_row(
             "SELECT id FROM knowledge_nodes WHERE label = ?1 AND git_rev = ?2",
@@ -446,7 +493,8 @@ impl Hermes {
         project_id: &str,
         spec: &EdgeSpec,
     ) -> Result<serde_json::Value> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         self.ensure_edge(&conn, spec)?;
         let mut stmt = conn.prepare(
@@ -467,7 +515,8 @@ impl Hermes {
 
     /// Update an edge's weight + timestamp.
     pub fn update_edge_weight(&self, project_id: &str, edge_id: i64, weight: f64) -> Result<()> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         conn.execute(
             "UPDATE edges SET weight = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -491,7 +540,8 @@ impl Hermes {
 
     /// Set a config value.
     pub fn set_config(&self, project_id: &str, key: &str, value: &str) -> Result<()> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         conn.execute(
             "INSERT OR REPLACE INTO config (key, value) VALUES (?1, ?2)",
@@ -534,7 +584,8 @@ impl Hermes {
         content_type: &str,
         vector: &[u8],
     ) -> Result<()> {
-        let _g = self.write_lock.lock().unwrap();
+        let __lock = self.project_lock(project_id);
+        let _g = acquire(&__lock)?;
         let conn = self.conn(project_id)?;
         conn.execute(
             "INSERT OR REPLACE INTO embeddings (content_hash, content_type, vector)

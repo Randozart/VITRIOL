@@ -18,8 +18,10 @@ pub fn format_episode(episode: &serde_json::Value, max_chars: Option<usize>) -> 
         .unwrap_or("")
         .to_string();
     if let Some(mc) = max_chars {
-        if content.len() > mc {
-            content = format!("{}…", &content[..mc]);
+        // Char-safe truncation: byte-slice panics on multi-byte UTF-8.
+        let char_count = content.chars().count();
+        if char_count > mc {
+            content = content.chars().take(mc).collect::<String>() + "…";
         }
     }
     let created = episode
@@ -75,7 +77,7 @@ pub fn format_compact(episode: &serde_json::Value) -> String {
         .map(|c| if c == '\n' { ' ' } else { c })
         .collect();
     let compact = compact.trim().to_string();
-    let compact = if content.len() > 120 {
+    let compact = if compact.chars().count() > 120 {
         format!("{compact}…")
     } else {
         compact

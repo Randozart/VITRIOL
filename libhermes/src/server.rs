@@ -67,6 +67,16 @@ fn now_secs() -> u64 {
 }
 
 /// Resolve + sanitize a project_id (Python `_project_id`).
+fn err_busy(e: &rusqlite::Error) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    if matches!(e, rusqlite::Error::SqliteFailure(f, _)
+        if f.extended_code == rusqlite::ffi::SQLITE_BUSY)
+    {
+        err(503, "memory busy — retry shortly")
+    } else {
+        err(500, &format!("store failed: {e}"))
+    }
+}
+
 fn project_id(payload: &serde_json::Value) -> Option<String> {
     let pid = payload
         .get("project_id")
@@ -83,6 +93,45 @@ fn project_id(payload: &serde_json::Value) -> Option<String> {
         })
         .collect();
     Some(sanitized.chars().take(120).collect())
+}
+
+/// Scrub secrets from content before storage. Masks patterns that look like
+/// API keys, tokens, passwords, or secrets to prevent accidental persistence.
+/// [SECURITY CONTENT SPLIT: Do not add any secrets to this code.]
+fn scrub_secrets(content: &str) -> String {
+    let mut out = content.to_string();
+    // Broad patterns: any key-value-like assignment with sensitive-looking value,
+    // plus known key prefixes. Captures are intentionally greedy to avoid leaks.
+    let patterns: &[(&str, &str)] = &[
+        // Key-value assignments (covers "key=xxx", "token: xxx", "secret xxx", etc.)
+        (r"(?i)(api[_-]?key|token|secret|password|credential|auth)[\s:=]+[^\s,;]{8,}", "[REDACTED:secret]"),
+        // Google API key
+        (r"AIza[0-9A-Za-z_-]{20,}", "[REDACTED:google-key]"),
+        // OpenAI / generic sk- (12+ chars after prefix)
+        (r"sk-[A-Za-z0-9]{12,}", "[REDACTED:openai-key]"),
+        // GitHub PAT / OAuth
+        (r"ghp_[A-Za-z0-9]{10,}", "[REDACTED:github-token]"),
+        (r"gho_[A-Za-z0-9]{10,}", "[REDACTED:github-token]"),
+        (r"github_pat_[A-Za-z0-9]{10,}", "[REDACTED:github-token]"),
+        // GitLab
+        (r"glpat-[A-Za-z0-9_-]{10,}", "[REDACTED:gitlab-token]"),
+        // Slack
+        (r"xox[bpsa]-[A-Za-z0-9-]{10,}", "[REDACTED:slack-token]"),
+        // Bearer tokens
+        (r"Bearer\s+[A-Za-z0-9._-]{10,}", "[REDACTED:bearer-token]"),
+        // AWS
+        (r"AKIA[0-9A-Z]{10,}", "[REDACTED:aws-key]"),
+        // Stripe
+        (r"(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{10,}", "[REDACTED:stripe-key]"),
+        // Anthropic
+        (r"sk-ant-[A-Za-z0-9_-]{10,}", "[REDACTED:anthropic-key]"),
+    ];
+    for (pat, replacement) in patterns {
+        if let Ok(re) = regex::Regex::new(pat) {
+            out = re.replace_all(&out, *replacement).to_string();
+        }
+    }
+    out
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -114,6 +163,7 @@ async fn store(
     if content.is_empty() {
         return err(400, "content required");
     }
+    let content = scrub_secrets(&content);
     let token_count = payload
         .get("token_count")
         .and_then(|t| t.as_i64())
@@ -132,7 +182,7 @@ async fn store(
             StatusCode::OK,
             Json(serde_json::json!({"ok": true, "episode_id": episode_id, "project_id": pid})),
         ),
-        Err(e) => err(500, &format!("store failed: {e}")),
+        Err(e) => err_busy(&e),
     }
 }
 
@@ -159,6 +209,8 @@ async fn node(
     if label.is_empty() || summary.is_empty() {
         return err(400, "label and summary required");
     }
+    let label = scrub_secrets(label);
+    let summary = scrub_secrets(summary);
     let meta = NodeMeta {
         strength: payload
             .get("strength")
@@ -168,12 +220,12 @@ async fn node(
         source_max: payload.get("source_max").and_then(|s| s.as_i64()),
         ..Default::default()
     };
-    match st.h.store_node(&pid, label, summary, &meta) {
+    match st.h.store_node(&pid, &label, &summary, &meta) {
         Ok(node_id) => (
             StatusCode::OK,
             Json(serde_json::json!({"ok": true, "node_id": node_id, "project_id": pid})),
         ),
-        Err(e) => err(500, &format!("node failed: {e}")),
+        Err(e) => err_busy(&e),
     }
 }
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=VITRIOL Pymander semantic recall (local embeddings + cosine over mongo mirror)
+After=mongod-vitriol.service
+Wants=mongod-vitriol.service
+
+[Service]
+Type=simple
+ExecStart=%h/.vitriol/venvs/rag/bin/python %h/Desktop/Projects/VITRIOL/scripts/vitriol_rag.py
+Restart=always
+RestartSec=5
+# embedder (~150-250 MiB) + runtime; degrades gracefully if exceeded
+MemoryMax=400M
+
+[Install]
+WantedBy=default.target

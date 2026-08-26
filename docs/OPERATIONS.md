@@ -91,6 +91,37 @@ vitriol serve --detach  # manual start (systemd wraps this)
 journalctl --user -u vitriol-autosave.service -f     # watch the watchdogs
 ```
 
+## Pymander semantic recall stack (2026-08-26)
+
+Cross-domain semantic lookup over the curated doctrine, built as
+augmentation — every layer degrades to silence, never to caller errors.
+
+```
+docs/pymander/*.md (canonical)  ──pymander_sync.py──▶  mongod :27018
+        ▲                                               │ vectors
+        │ markdown stays source of truth                ▼
+copula.ts ◀──/search (local cosine, bge-small) ── vitriol_rag.py :8282
+```
+
+| unit | standing RAM | caps |
+|---|---|---|
+| `mongod-vitriol.service` | ~200 MiB | cache 0.25G, `MemoryMax=300M`, port **27018** + private socket dir |
+| `vitriol-rag.service` | ~195 MiB | fastembed bge-small int8 lazy-loaded, `MemoryMax=400M` |
+
+Degradation ladder (all verified live):
+- mongo down, warm cache → serves stale, retries in 30 s
+- mongo down, cold cache → empty results; ascensus proceeds without context
+- rag service down → copula.ts primary path unchanged (Hermetis domain search)
+
+Ops notes:
+- A *system* mongod (`mongodb:mongodb`, port 27017) exists on this host,
+  enabled+failed — it died unnoticed 2026-08-25 night. Recommended cleanup:
+  `sudo systemctl disable --now mongod`. Our instance deliberately uses
+  27018 so the two never contend.
+- Sync: `~/.vitriol/venvs/rag/bin/python scripts/pymander_sync.py`
+  (`--dry-run`, `--full`). Hash-gated: only changed nodes re-embed.
+  Or `POST /sync` on :8282.
+
 ## Known anomaly (watch-list)
 
 One episode (2026-08-26 ~07:43) of the server task queue jamming:

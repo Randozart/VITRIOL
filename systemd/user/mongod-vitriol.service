@@ -1,0 +1,24 @@
+[Unit]
+Description=VITRIOL Pymander vector store (MongoDB, memory-capped)
+After=network.target
+# NOTE: a SYSTEM mongod (mongodb:mongodb, port 27017) exists on this host and
+# is enabled+failed — it died unnoticed 2026-08-25 night. Recommended:
+#   sudo systemctl disable --now mongod
+# This user instance uses 27018 + private socket dir so the two never fight.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/mongod --dbpath %h/.vitriol/mongo/data \
+  --bind_ip 127.0.0.1 --port 27018 \
+  --unixSocketPrefix %h/.vitriol/mongo \
+  --wiredTigerCacheSizeGB 0.25 \
+  --pidfilepath %h/.vitriol/mongo/mongod.pid \
+  --logpath %h/.vitriol/mongo/mongod.log --logappend
+Restart=always
+RestartSec=5
+# standing RAM contract: ~300 MiB hard ceiling (cache capped above too)
+MemoryMax=300M
+OOMScoreAdjust=-200
+
+[Install]
+WantedBy=default.target

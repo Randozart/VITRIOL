@@ -27,6 +27,7 @@ Alchemical names are load-bearing. This is the translation layer.
 | **Spagyric** | hardware autotuner (dissolve, purify, recombine — profiles) |
 | **Copula** | opencode ↔ VITRIOL bond plugin |
 | **Pymander** | curated reference mind (divine Pymander, Hermetica corpus) |
+| **vitriol_rag** | semantic recall sidecar: local bge-small embeddings + client-side cosine over the Mongo mirror of Pymander nodes (:8282) |
 | **ontic forge** | second tenant on slot 1; generation/curation workload |
 | **alka** | ⚰️ legacy kernel-instruction DSL from the DMA era |
 

@@ -2558,7 +2558,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SRC_DIR="${PROJECT_DIR}/systemd/user"
         if [[ "$ACTION" == "install" ]]; then
             mkdir -p "$UNIT_DIR"
-            for u in vitriol-server.service vitriol-autosave.service; do
+            # dependency order: vector store → recall sidecar → server
+            for u in mongod-vitriol.service vitriol-rag.service \
+                     vitriol-autosave.service vitriol-server.service; do
+                [[ -f "${SRC_DIR}/${u}" ]] || continue
                 cp "${SRC_DIR}/${u}" "${UNIT_DIR}/${u}"
                 echo "✓ installed ${u}"
             done

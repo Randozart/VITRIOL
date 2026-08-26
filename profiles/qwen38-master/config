@@ -33,6 +33,7 @@ reasoning = off
 
 [server]
 slot_save_path = /home/randozart/.vitriol/checkpoints
+cache_ram = 1024
 host = 127.0.0.1
 port = 8279
 parallel = 1

@@ -128,3 +128,37 @@ Hardening (`e5eaabc`), all verified live:
 4. `vitriol stop` now sticky: systemctl-based stop (INVOCATION_ID guard for
    ExecStartPre context); verified no resurrection past RestartSec window.
 5. Unit cascade: server Wants=autosave, autosave PartOf=server.
+
+## 9. Addendum — wedge prevention stack (2026-08-26 morning)
+
+Overnight live-fire: hang watchdog fired for real at 00:10:07 (12 strikes),
+forced restart, replayed 63,426 tokens — self-heal worked as designed. But
+the user's bar is higher: the crash should not happen at all.
+
+Root cause quantified: llama-server's DRAM prompt-cache default entitlement
+is 8192 MiB (common.h:600 cache_ram_mib). On a 16 GiB host shared with
+opencode (~5 GiB), a 63k-token session's idle-slot state filled zram
+(7.8/7.8 GiB), spilled into the disk swapfile, and wedged the box.
+
+Prevention deployed (P1+P2+P3):
+- P1: `--cache-ram 1024` in qwen38-{ontic,master} profiles via new
+  `server.cache_ram` profile key + launcher plumbing (CRAM_ARGS,
+  `cram=` fingerprint marker). Verified: flag in argv, server healthy.
+- P2: proactive bounce in sidecar — MemAvailable < 250 MiB sustained ~2 min
+  → pre-bounce checkpoint save + clean systemctl restart, 600 s cooldown.
+  Live-fired with test thresholds: detection→bounce→restore cycle works.
+- P3: hermes `agent.api_max_retries: 8` (~4 min patience) as insurance for
+  any outage that still slips through.
+
+Checkpoint clobber bug found & fixed same morning: --cache-idle-slots clears
+an occupied slot's KV into host RAM, making it LOOK empty; the next autosave
+tick then overwrote a 1.26 GB warm checkpoint with a 1 KiB stub (07:00:59),
+so the 07:29 crash-restart restored nothing. save_idle now writes
+slotN.tmp.bin and only replaces slotN.bin when n_saved > 0 or the previous
+checkpoint was itself trivial; HTTPError no longer deletes checkpoints.
+Verified: fabricated 20 MiB slot1.bin survived an empty-slot tick untouched.
+
+Anomaly watch: one episode of the server task queue jamming (/metrics and
+/health instant, /slots and admin tasks timing out) resolved by a server
+restart; not yet reproduced. If it recurs, capture llama-server logs before
+restarting.

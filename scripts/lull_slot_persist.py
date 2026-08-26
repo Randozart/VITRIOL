@@ -24,6 +24,12 @@ Env:
   VITRIOL_OOM_SHIELD_MB  min RSS MiB for shielding (default 300)
   VITRIOL_HANG_STRIKES   health-fail polls before forced restart
                          (default 12 ≈ 60 s at 5 s polls; 0 disables)
+  VITRIOL_PROACTIVE_MB   MemAvailable floor for proactive bounce: staying
+                         below it for VITRIOL_PROACTIVE_TICKS consecutive
+                         polls triggers checkpoint + clean server restart
+                         BEFORE the swap-thrash hang (default 250; 0 disables)
+  VITRIOL_PROACTIVE_TICKS sustained-low ticks before bounce (default 24 ≈ 2 min)
+  VITRIOL_BOUNCE_COOLDOWN_SECS  min seconds between bounces (default 600)
 
 OOM note: systemd --user clamps negative OOMScoreAdjust (no CAP_SYS_RESOURCE),
 and same-uid writes can only RAISE another process's score. Shield therefore
@@ -47,6 +53,9 @@ SAVE_DIR = os.environ.get("VITRIOL_SLOT_SAVE_DIR",
                           os.path.expanduser("~/.vitriol/checkpoints"))
 BASE = f"http://127.0.0.1:{PORT}"
 HANG_STRIKES_MAX = int(os.environ.get("VITRIOL_HANG_STRIKES", "12"))
+PROACTIVE_MB = int(os.environ.get("VITRIOL_PROACTIVE_MB", "250"))
+PROACTIVE_TICKS = int(os.environ.get("VITRIOL_PROACTIVE_TICKS", "24"))
+BOUNCE_COOLDOWN = int(os.environ.get("VITRIOL_BOUNCE_COOLDOWN_SECS", "600"))
 
 
 def log(msg):
@@ -129,7 +138,14 @@ def activity_signature():
 
 def save_idle(last_sig):
     """Save idle slots, unless the server's activity counters prove nothing
-    changed since the previous successful pass."""
+    changed since the previous successful pass.
+
+    Empty-slot guard: --cache-idle-slots clears a slot's KV into the host RAM
+    cache when a newer task claims it, which makes an occupied slot LOOK
+    empty. Blindly saving would overwrite a multi-GiB warm checkpoint with a
+    1 KiB stub (observed 2026-08-26 07:00:59). So every save lands in
+    slotN.tmp.bin first and only replaces slotN.bin if it carries tokens —
+    or the previous checkpoint was itself trivial."""
     sig = activity_signature()
     if sig is not None and last_sig.get("sig") == sig:
         return  # silent skip: counters frozen, checkpoints already current
@@ -146,15 +162,28 @@ def save_idle(last_sig):
         sid = s["id"]
         fname = f"slot{sid}.bin"
         fpath = os.path.join(SAVE_DIR, fname)
+        tmp_path = os.path.join(SAVE_DIR, f"slot{sid}.tmp.bin")
         try:
-            res = post(f"/slots/{sid}?action=save", {"filename": fname})
-            log(f"saved {fname}: {res.get('n_saved', '?')} tokens "
-                f"({res.get('n_written', 0)} bytes)")
+            res = post(f"/slots/{sid}?action=save", {"filename": f"slot{sid}.tmp.bin"})
+            n_saved = res.get("n_saved", 0) or 0
+            written = res.get("n_written", 0) or 0
+            prev_size = os.path.getsize(fpath) if os.path.exists(fpath) else 0
+            if n_saved == 0 and prev_size > 10 * 1024 * 1024:
+                # cleared-by-cache-idle slot: keep the richer stale checkpoint
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                log(f"slot{sid} empty ({written} B) — preserved existing "
+                    f"{prev_size >> 20} MiB checkpoint")
+                continue
+            os.replace(tmp_path, fpath)
+            log(f"saved {fname}: {n_saved} tokens ({written} bytes)")
         except urllib.error.HTTPError as e:
+            # server refused the save (e.g. slot was reset); keep any
+            # existing checkpoint — stale-but-warm beats gone
             log(f"save {fname} skipped: HTTP {e.code}")
             ok = False
-            if os.path.exists(fpath):
-                os.remove(fpath)  # drop stale ring entry if slot was reset
         except Exception as e:
             log(f"save {fname} failed: {e}")
             ok = False
@@ -204,6 +233,8 @@ def main():
     last_save = 0.0
     last_sig = {}
     hang_strikes = 0
+    low_streak = 0
+    cooldown_until = 0.0
     while True:
         time.sleep(5)
         oom_shield()
@@ -215,9 +246,11 @@ def main():
             log(f"server generation change: {last_pid} -> {pid}")
             last_pid = pid
             hang_strikes = 0
+            low_streak = 0
             if pid is not None and wait_health(600):
                 log("new instance healthy — replaying disk checkpoints")
                 restore_all()
+                last_sig.clear()
         elif pid is not None:
             # same instance as before — is it health-deaf? Restart=always
             # only acts on exit; a hung process stays hung unless we act.
@@ -240,6 +273,34 @@ def main():
                 if hang_strikes:
                     log(f"hang cleared after {hang_strikes} strike(s)")
                 hang_strikes = 0
+
+        # Proactive bounce: sustained memory exhaustion ends one of two ways —
+        # an OOM kill or a swap-thrash hang (observed twice). Both are worse
+        # than a scheduled, checkpointed restart. Fire while the server is
+        # still responsive so the pre-bounce save actually lands.
+        if (PROACTIVE_MB > 0 and mem != -1 and mem < PROACTIVE_MB
+                and pid is not None and pid == last_pid
+                and time.time() >= cooldown_until):
+            low_streak += 1
+            if low_streak >= PROACTIVE_TICKS:
+                log(f"PROACTIVE BOUNCE: MemAvailable {mem} MiB for "
+                    f"{low_streak} polls (~{low_streak * 5}s) — checkpoint "
+                    f"and restart before the wedge")
+                try:
+                    save_idle(last_sig)  # best-effort; bounded timeouts
+                except Exception as e:
+                    log(f"pre-bounce save failed (continuing): {e}")
+                subprocess.run(
+                    ["systemctl", "--user", "restart",
+                     "vitriol-server.service"],
+                    check=False)
+                last_pid = None
+                cooldown_until = time.time() + BOUNCE_COOLDOWN
+                log("bounce issued; cooldown until "
+                    + time.strftime('%H:%M:%S', time.localtime(cooldown_until)))
+        elif mem == -1 or mem >= PROACTIVE_MB:
+            low_streak = 0
+
         if time.time() - last_save >= INTERVAL:
             if pid is not None:
                 save_idle(last_sig)

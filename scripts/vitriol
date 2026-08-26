@@ -78,6 +78,7 @@ CFG_HOST="$DEFAULT_HOST"
 CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
+CFG_CACHE_RAM=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
@@ -141,6 +142,8 @@ parse_config() {
                 server.parallel)       CFG_PARALLEL="$val" ;;
                 server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
                 server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
+        server.cache_ram)      CFG_CACHE_RAM="$val" ;;
+                server.cache_ram)      CFG_CACHE_RAM="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -229,6 +232,7 @@ port = $CFG_PORT
 parallel = $CFG_PARALLEL
 slot_context = $CFG_SLOT_CONTEXT
 slot_save_path = $CFG_SLOT_SAVE_PATH
+cache_ram = $CFG_CACHE_RAM
 
 [memory]
 # Emulated memory mode: on | off
@@ -368,6 +372,7 @@ config_reset() {
     CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
+CFG_CACHE_RAM=""
     CFG_UBATCH="$DEFAULT_UBATCH"
     write_config
     echo "✓ Config reset to defaults"
@@ -396,6 +401,7 @@ config_set() {
         server.parallel)       CFG_PARALLEL="$val" ;;
         server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
         server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
+        server.cache_ram)      CFG_CACHE_RAM="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
         memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -1681,6 +1687,7 @@ case "$CMD" in
                     -ngl) CLI_NGL="$2"; shift 2 ;;
                     -lru) CLI_LRU_MB="$2"; shift 2 ;;
                     -port) CLI_PORT="$2"; shift 2 ;;
+                --cache-ram) CLI_CACHE_RAM="$2"; shift 2 ;;
                     --memory-mode) CLI_MEMORY_MODE="$2"; shift 2 ;;
                     --kv-mode) CLI_KV_MODE="$2"; shift 2 ;;
                     --frozen-prompt) CLI_FROZEN_PROMPT="$2"; shift 2 ;;
@@ -1921,6 +1928,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                 -lru) CLI_LRU_MB="$2"; shift 2 ;;
                 --host) CLI_HOST="$2"; shift 2 ;;
                 -port) CLI_PORT="$2"; shift 2 ;;
+                --cache-ram) CLI_CACHE_RAM="$2"; shift 2 ;;
                 -p) CLI_PARALLEL="$2"; shift 2 ;;
                 --memory-mode) CLI_MEMORY_MODE="$2"; shift 2 ;;
                 --kv-mode) CLI_KV_MODE="$2"; shift 2 ;;
@@ -1958,6 +1966,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         PARALLEL="${CLI_PARALLEL:-${CFG_PARALLEL}}"
         SLOT_CONTEXT="${CLI_SLOT_CONTEXT:-${CFG_SLOT_CONTEXT:-}}"
         SLOT_SAVE_PATH="${CLI_SLOT_SAVE_PATH:-${CFG_SLOT_SAVE_PATH:-}}"
+        CACHE_RAM="${CLI_CACHE_RAM:-${CFG_CACHE_RAM:-}}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
@@ -1983,6 +1992,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
+        [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
@@ -2104,6 +2114,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # Disk-persistent slot checkpoints (restore via lull_slot_persist.py)
         SSP_ARGS=()
         [[ -n "$SLOT_SAVE_PATH" ]] && SSP_ARGS=(--slot-save-path "$SLOT_SAVE_PATH")
+        # DRAM prompt-cache cap: default entitlement (8192 MiB) starved zram on
+        # the 16 GiB host and caused swap-spill hangs
+        CRAM_ARGS=()
+        [[ -n "$CACHE_RAM" ]] && CRAM_ARGS=(--cache-ram "$CACHE_RAM")
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
@@ -2159,6 +2173,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
                         "${SSP_ARGS[@]}" \
+                        "${CRAM_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
@@ -2217,6 +2232,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
                         "${SSP_ARGS[@]}" \
+                        "${CRAM_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
@@ -2275,6 +2291,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
                         "${SSP_ARGS[@]}" \
+                        "${CRAM_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
@@ -2330,6 +2347,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --parallel "$PARALLEL" \
                         "${SLOT_CTX_ARGS[@]}" \
                         "${SSP_ARGS[@]}" \
+                        "${CRAM_ARGS[@]}" \
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \

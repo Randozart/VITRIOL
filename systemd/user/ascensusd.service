@@ -1,0 +1,15 @@
+[Unit]
+Description=ascensusd — shared cloud-escalation core (dedup, euro budget, Gemini)
+After=hermetis.service
+Wants=hermetis.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/Desktop/Projects/VITRIOL/scripts/ascensusd.py
+Restart=always
+RestartSec=5
+# stdlib-only python; tiny. Ceiling for safety, not expectation.
+MemoryMax=150M
+
+[Install]
+WantedBy=default.target

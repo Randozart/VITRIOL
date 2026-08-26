@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermetis memory server (Rust, libhermes) — shared cross-agent brain
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/Desktop/Projects/VITRIOL/libhermes/target/release/hermes-server --host 127.0.0.1 --port 7980
+Restart=always
+RestartSec=5
+# small axum/tokio service + consolidation worker; generous ceiling
+MemoryMax=300M
+
+[Install]
+WantedBy=default.target

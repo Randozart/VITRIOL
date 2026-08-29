@@ -15,6 +15,11 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LLAMA_DIR="${PROJECT_DIR}/llama.cpp"
 BINARY="${LLAMA_DIR}/build/bin/llama-cli"
 SERVER_BINARY="${LLAMA_DIR}/build/bin/llama-server"
+# 2026-08-29 (CachyOS migration): every LD_LIBRARY_PATH assignment that launches
+# llama-server must APPEND the inherited value (`...${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}`),
+# never clobber it — the CUDA 12 runtime libs resolve from ~/.cuda-libs here, and an
+# absolute assignment killed serve with "libcudart.so.12: cannot open shared object file".
+# To undo: revert scripts/vitriol to the pre-append form in commit preceding a2218c6-era.
 HEADER_FILE="${PROJECT_DIR}/assets/vitriol-header.txt"
 CONFIG_DIR="${HOME}/.vitriol"
 CONFIG_FILE="${CONFIG_DIR}/config"
@@ -1881,7 +1886,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}" \
             VITRIOL_MODEL_PATH="$MODEL" \
             VITRIOL_CHIMERA_MODE="$CHIMERA_MODE" \
-                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             $ENV_VERBOSE \
             $ENV_PREDICTIVE_PREFETCH \
             "$BINARY" \
@@ -2174,7 +2179,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}" \
             VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}" \
                     VITRIOL_MODEL_PATH="$MODEL" \
-                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                     $ENV_VERBOSE \
                     $ENV_PREDICTIVE_PREFETCH \
                     nohup "$SERVER_BINARY" \
@@ -2234,7 +2239,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}" \
             VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}" \
                     VITRIOL_MODEL_PATH="$MODEL" \
-                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                     $ENV_VERBOSE \
                     $ENV_PREDICTIVE_PREFETCH \
                     nohup "$SERVER_BINARY" \
@@ -2294,7 +2299,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}" \
             VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}" \
                     VITRIOL_MODEL_PATH="$MODEL" \
-                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                     $ENV_VERBOSE \
                     $ENV_PREDICTIVE_PREFETCH \
                     "$SERVER_BINARY" \
@@ -2351,7 +2356,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}" \
             VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}" \
                     VITRIOL_MODEL_PATH="$MODEL" \
-                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
+                    LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
                     $ENV_VERBOSE \
                     $ENV_PREDICTIVE_PREFETCH \
                     "$SERVER_BINARY" \
@@ -2531,7 +2536,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_EARLY_EXIT_THRESHOLD="${VITRIOL_EARLY_EXIT_THRESHOLD:-0.001}" \
             VITRIOL_EARLY_EXIT_MIN_LAYERS="${VITRIOL_EARLY_EXIT_MIN_LAYERS:-10}" \
             VITRIOL_PREDICTIVE_PREFETCH="$PREDICTIVE_PREFETCH" \
-            LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin" \
+            LD_LIBRARY_PATH="${LLAMA_DIR}/build/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
             $ENV_VERBOSE \
             "$BENCH_BINARY" \
             -m "$MODEL" \

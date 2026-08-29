@@ -1,0 +1,44 @@
+# VITRIOL Configuration — Qwen3.8-9B Q4_K_M fast-lane (262k native, single 3060)
+# Benchmarked 2026-08-26 (EXPERIMENT_LOG.md): shallow gen 40.9 t/s @ c262144,
+# prefill 758–1013 t/s; depth-filled 77k tok → decode 25.6 t/s. VRAM 7915/12288 MiB.
+# Single-GPU BEATS dual split at this size (28.8 t/s split vs 40.9 whole).
+# KV q4_0 MANDATORY: tq3_0 silently corrupts inference on this launch shape
+# (see EXPERIMENT_LOG.md 2026-08-26 — needs per-model re-certification first).
+# Alias kept "Lapis Occultus" so hermes config.yaml works unchanged.
+
+[gpu]
+device = 0
+exclude_secondary = true
+
+[model]
+path = /home/randozart/Downloads/Qwen3.8-9B-Q4_K_M.gguf
+context = 262144
+threads = 4
+ngl = 99
+alias = Lapis Occultus
+expert_count = 0
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+cache_ram = 1024
+host = 127.0.0.1
+port = 8279
+parallel = 1
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+quant_mode = q4_0
+quant_mode_v = q4_0
+ubatch_size = 64

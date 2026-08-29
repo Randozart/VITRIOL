@@ -1,0 +1,3 @@
+name=qwen38-9b-262k
+description=Qwen3.8-9B Q4_K_M fast-lane: single RTX 3060 (exclude_secondary), c262144 native max, q4_0/q4_0 KV, ub64, resident (MODE=off). 2026-08-26 bench: shallow 40.9 t/s, depth 77k tok → 25.6 t/s, prefill ~760-1010 t/s. VRAM 7915/12288 MiB. Alias "Lapis Occultus" for drop-in hermes testing on :8279. WARNING: do NOT swap KV to tq3_0 — silent corruption on this launch shape until re-certified.
+created=2026-08-26

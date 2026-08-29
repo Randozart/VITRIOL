@@ -1,0 +1,42 @@
+# VITRIOL Configuration — Qwen3.8-9B Q8_0 fast-lane (single 3060, c196608)
+# Benchmarked 2026-08-27: ~27 t/s avg single-GPU, clean output.
+# 9.11 GiB weights, VRAM 10253/12288 MiB. q4_0 KV, ub64, fa on.
+# 192K ctx (196608 = 192×1024) — safe margin under 200k.
+
+[gpu]
+device = 0
+exclude_secondary = true
+
+[model]
+path = /home/randozart/Downloads/Qwen3.8-9B-Q8_0.gguf
+context = 196608
+threads = 4
+ngl = 99
+alias = Lapis Occultus
+expert_count = 0
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+cache_ram = 1024
+host = 0.0.0.0
+port = 8279
+parallel = 1
+chat_template = /home/randozart/Desktop/Projects/VITRIOL/profiles/qwen38-9b-q8-192k/chat_template.jinja
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+quant_mode = q4_0
+quant_mode_v = q4_0
+ubatch_size = 64

@@ -1,0 +1,42 @@
+# VITRIOL Configuration — Qwen3.8-9B Q6_K dual-GPU (3060+1070Ti, c16384)
+# 7.04 GiB weights split ts 18,6 across both GPUs.
+# KV q4_0 on dev0: ~8192 MiB budget → c16384 viable with headroom.
+# Slightly slower than single-GPU due to inter-GPU comms.
+
+[gpu]
+device = 0
+exclude_secondary = false
+tensor_split = 18,6
+
+[model]
+path = /home/randozart/Downloads/Qwen3.8-9B-Q6_K.gguf
+context = 16384
+threads = 4
+ngl = 99
+alias = Qwen38-9B-Q6-Dual
+expert_count = 0
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+cache_ram = 1024
+host = 0.0.0.0
+port = 8279
+parallel = 1
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+quant_mode = q4_0
+quant_mode_v = q4_0
+ubatch_size = 64

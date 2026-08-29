@@ -2127,7 +2127,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "$SLOT_CONTEXT" ]] && SLOT_CTX_ARGS=(--slot-context "$SLOT_CONTEXT")
         # Disk-persistent slot checkpoints (restore via lull_slot_persist.py)
         SSP_ARGS=()
-        [[ -n "$SLOT_SAVE_PATH" ]] && SSP_ARGS=(--slot-save-path "$SLOT_SAVE_PATH")
+        # 2026-08-29: llama-server hard-fails if the path is not an existing dir
+        # ("error while handling argument --slot-save-path: not a directory"),
+        # which took down first-boot smoke after profiles gained slot_save_path.
+        [[ -n "$SLOT_SAVE_PATH" ]] && mkdir -p "$SLOT_SAVE_PATH" && SSP_ARGS=(--slot-save-path "$SLOT_SAVE_PATH")
         # DRAM prompt-cache cap: default entitlement (8192 MiB) starved zram on
         # the 16 GiB host and caused swap-spill hangs
         CRAM_ARGS=()

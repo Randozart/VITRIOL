@@ -284,6 +284,7 @@ This loads 896MB of LLM weights (256+256+256+144) through the 256MB BAR1 apertur
 
 ## License
 
-Apache 2.0 with Runtime Exception.
+Apache 2.0 (project-wide since 2026-08-28; the earlier "with Runtime Exception" carve-out
+is retired — plain Apache-2.0 covers all uses).
 The `.alkas` and `.azoth` streams are generated output — not subject to license terms.
 The compiler source and SPARK tools remain under Apache 2.0.

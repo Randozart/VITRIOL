@@ -44,7 +44,7 @@ see [`archive/`](archive/) for the full excavation record.
 
 ## Directories
 
-- `provenance/` — GPL compliance: inspiration-vs-copy records per module
+- `provenance/` — license/provenance records: inspiration-vs-copy records per module (under Apache-2.0 since 2026-08-28; earlier entries record the GPL-2.0 regime they were written under)
 - `reference/` — third-party reference material
 - `plans/` — historical planning documents
 - `optimizations/` — optimization notes

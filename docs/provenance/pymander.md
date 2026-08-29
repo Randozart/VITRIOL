@@ -23,5 +23,5 @@ reference mind built on the project's own Hermetis memory machinery
 
 ## License
 
-Part of VITRIOL (GPL-2.0). Original content authored for this project; no
-borrowed code or assets.
+Part of VITRIOL (Apache-2.0 since 2026-08-28, previously GPL-2.0). Original content
+authored for this project; no borrowed code or assets.

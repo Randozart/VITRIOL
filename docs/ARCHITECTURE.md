@@ -101,7 +101,8 @@ All of this is implemented in `scripts/lull_slot_persist.py` +
 
 Every launch emits a `VITRIOL-FINGERPRINT:` line (launcher, server main,
 runners); every benchmark result embeds full argv. Silent flag drift is a
-review blocker. Licensing is GPL-2.0; third-party code enters only via the
+review blocker. Licensing is Apache-2.0 (since 2026-08-28; previously GPL-2.0);
+third-party code enters only via the
 inspiration/copy rules in `docs/provenance/`.
 
 ## Repository layout

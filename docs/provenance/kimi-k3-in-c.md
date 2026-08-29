@@ -8,10 +8,12 @@ C99 (2.78T MoE, 1.56 TB safetensors checkpoint, 8.24 GB peak RSS, one CPU, no GP
 **License:** Apache-2.0 (code). The Kimi K3 **weights** are Moonshot AI's under their own
 license (the repo ships none).
 
-**VITRIOL status: Apache-2.0 is GPL-2.0-incompatible → NOT copied, re-derived only.**
-Per VITRIOL/AGENTS.md "Licensing and Provenance (GPL-2.0)", Apache-2.0 implementations are
+**VITRIOL status (at adoption, under GPL-2.0): Apache-2.0 was GPL-2.0-incompatible → NOT copied, re-derived only.**
+Per VITRIOL/AGENTS.md "Licensing and Provenance" as of adoption (2026-08-06), Apache-2.0 implementations were
 studied and independently re-implemented. Nothing below is borrowed code; each is a design
-*learned* and re-derived for VITRIOL's (different) architecture.
+*learned* and re-derived for VITRIOL's (different) architecture. Amendment 2026-08-28:
+VITRIOL is now Apache-2.0, so the incompatibility no longer applies — the re-derived code
+may be relicensed in place, but remains independent implementation.
 
 ## What was learned (candidate re-derivations)
 

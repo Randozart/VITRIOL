@@ -1181,3 +1181,141 @@ TUI HOST RAM gauge with FREEZE RISK threshold at 800 MiB. User applied
 vm.swappiness=10 persisted via /etc/sysctl.d/99-rebis.conf (verified runtime).
 
 Full report: docs/rebis/incident-freeze-2026-08-23.md
+
+## 2026-08-26 — Qwen3.8-9B-Q4_K_M first contact
+Model: ~/Downloads/Qwen3.8-9B-Q4_K_M.gguf (5.78 GiB, qwen35, 33 blks incl. embedded MTP head @blk.32 [nextn.* tensors present], GQA 16/4, rope_sections [11,11,10,0] fb 1e7, native ctx 262144, eos 248046, vocab 248320 gpt2/qwen35 pre).
+
+Launch A/B/C discovered **tq3_0 KV silently corrupts inference outside full certified env stack**: garbage math/repetition/no-EOS on plain `-c 65536 --cache-type-{k,v} tq3_0` even after `VITRIOL_KV_SCORE=probe VITRIOL_POOL_RESET=1` added; q4_0 KV + `-fa on` clean (17*23→391 ✓). tq3_0 usage henceforth requires re-certification per-model; do not treat as drop-in global default. Separate latent bug: `--spec-type mtp` crash-loads draft via override_arch qwen35_mtp (`qwen35-mtp.cpp:8 assert nextn>0`, key namespaced lookup miss vs gguf's `qwen35.nextn_predict_layers`). Recorded for review.
+
+Results (correct pipeline: -ngl99 -ub64 --cache q4_0/q4_0 -fa on --kv-unified --parallel 1):
+- SINGLE RTX 3060 c65536: gen 38.74 t/s avg (30 warm), prefill 815 t/s. VRAM 6177 MiB.
+- SINGLE 3060 c262144 (NATIVE MAX): loads fully, VRAM 7915/12288 MiB, KV(q4_0)=2304 MiB (≈9 KiB/tok), 4.3 GiB headroom. Shallow gen 40.92 t/s (no window penalty).
+- DUAL auto-split c262144: 28.81 t/s (VRAM 4554+3531). Split LOSES to single-GPU at this size — keep small models whole.
+- Depth-filled (single, c262144): 26,512 tok → prefill 1013 t/s, decode 34.92 t/s; ~77k tok → prefill 758 t/s, decode 25.58 t/s. No OOM; fit machine never intervened.
+- Quality (chat API, temp .3): syllogism clean one-shot; train-speed word problem correct though think-heavy (needs ≥900tok budget or no_think); code prompt overthinks. Raw /completion sans template unreliable for this distill. Think-style verbose Qwen3.8 signature; quality sits below 27B daily driver but fully serviceable fast-lane material (~2.8–3× speed).
+
+## 2026-08-27 — Whittle-MoE-27B-A18B DQ3_K_XL first contact (FAILED)
+
+| Field | Value |
+|-------|-------|
+| **Model** | `~/Downloads/Whittle-MoE-27B-A18B-v2.1-DQ3_K_XL.gguf` (13.94 GiB, 1171 tensors) |
+| **Arch** | qwen35moe, 64 layers, hidden 5120, 24 attn heads / 4 kv heads, 64 experts / top-16 routing, native ctx 262144, EOS 248046 |
+| **Source** | logic65/Qwen3.8-Whittle-MoE-27B-A17.8B-GGUF (HF) — post-hoc MoE carved from dense Qwen3.8-27B |
+| **Status** | ❌ Forward pass produces garbage — every token decodes to token ID 30 (`?`) regardless of input |
+
+**What happened:**
+- Model loads successfully on dual-GPU (9.6 GiB dev0 + 5.2 GiB dev1, ts 16:8, ub 12, c32768)
+- Decode speed: 5.89 t/s (1 slot, 64-token decode)
+- All outputs are `?` characters. Raw `/v1/completions` endpoint confirms token ID 30 on every position, logprobs null
+- Tested with clean env (no VITRIOL vars), same result — not a VITRIOL engine issue
+- Tested with VITRIOL engine off, same result — not expert interception
+- CPU-only test confirmed loading but too slow on 16 GiB DDR3 to complete
+
+**Root cause:** DQ3_K_XL is unsloth's custom "dynamic quantization" format. Uses tensor types not supported by our fork's CUDA dequantization kernels. Model silently falls back to decoding garbage weights → garbage logits → token 30 every time. Stock llama.cpp reportedly works (verified per HF model card), so this is a fork-specific quant kernel gap.
+
+**Lesson:** DQ (dynamic quant) formats from unsloth are NOT safe on VITRIOL fork without kernel support audit. Standard K-quants (Q4_K_M, Q6_K, Q8_0, etc.) are the safe path.
+
+**Files:** Deleted (user discarded model as too slow for needs anyway — 5.89 t/s vs Q4's 38+ t/s single-GPU).
+
+## 2026-08-27 — Qwen3.8-9B-Q6_K and Q8_0 evaluation
+
+Both are standard K-quant formats from empero-ai/Qwen3.8-9B-GGUF (HF). Same qwen35 arch, 33 blocks, MTP embedded, native ctx 262144, eos 248046.
+
+### Q6_K (7.04 GiB, 442 tensors)
+
+| Config | t/s avg | VRAM | Notes |
+|--------|---------|------|-------|
+| Single 3060, c65536, q4_0 KV, ub64, fa on | **30.08** | 7235 MiB | Clean output, prime function correct |
+| Single 3060, 426-tok prompt | **23.26** | — | Depth test, no degradation |
+
+Fingerprint: `model=Qwen3.8-9B-Q6_K.gguf c=65536 ub=64 ts=none kv=q4_0/q4_0 fa=on`
+
+### Q8_0 (9.11 GiB, 442 tensors)
+
+| Config | t/s avg | VRAM | Notes |
+|--------|---------|------|-------|
+| Single 3060, c65536, q4_0 KV, ub64, fa on | **26.88** | 9069 MiB | Clean output, slightly different but correct prime algo |
+| Dual 3060+1070Ti, c131072, q4_0 KV, ub64, fa on, ts 27,9 | **22.71** | 6735+3122 MiB | Large context viable |
+
+Fingerprint: `model=Qwen3.8-9B-Q8_0.gguf c=65536 ub=64 ts=none kv=q4_0/q4_0 fa=on`
+Fingerprint (dual): `model=Qwen3.8-9B-Q8_0.gguf c=131072 ub=64 ts=27,9 kv=q4_0/q4_0 fa=on`
+
+### Comparison summary (all single-GPU 3060, c65536, q4_0 KV, ub64, fa on)
+
+| Quant | Size | t/s | % of Q4 | Quality | VRAM |
+|-------|------|-----|---------|---------|------|
+| Q4_K_M | 5.78 GiB | 38.74 | 100% | ✅ good | 6177 MiB |
+| Q6_K | 7.04 GiB | 30.08 | 77.6% | ✅ clean | 7235 MiB |
+| Q8_0 | 9.11 GiB | 26.88 | 69.4% | ✅ clean | 9069 MiB |
+
+Speed scales inversely with model size — more data per token from VRAM = slower decode. Q6_K is the sweet spot: near-lossless quality at 77.6% of Q4 speed. Q8_0 is highest quality but 31% slower and tight on VRAM at larger contexts.
+
+## 2026-08-27 — Q8_0 c192K deployment + tolerant chat template (opencode compat)
+
+### Deployment
+- Q8_0 at c196608 (=192×1024, safe margin under 200k) on single 3060: VRAM 10253/12288 MiB, bench 27.33 t/s.
+- KV math correction: GQA (4 kv heads × 128 dim × 64 layers) → q4_0 KV ≈ 8 KiB/tok, NOT 0.5 MiB/tok. c196608 KV ≈ 1.5 GiB. Earlier 200k-infeasible estimate for Q6_K was wrong (Q6 at c200000 = 8419 MiB total, works).
+- Profile `qwen38-9b-q8-192k` saved; opencode default model set (`llama.cpp/lapis`, ctx 196608); hermes config.yaml context_length 81920 → 196608.
+- Note: mid-conversation system messages rendered as `<|im_start|>system` blocks — Qwen models tolerate these as normal context segments.
+
+### Bug: opencode (plan agent) → 500 "Jinja Exception: System message must be at the beginning."
+- Error reached llama-server: model's embedded Jinja template raises when a system message appears at non-first position (`{%- if message.role == "system" %}{%- if not loop.first %}{{- raise_exception(...) }}`).
+- opencode's plan agent injects its system prompt mid-conversation → template raise → AI_APICallError retry loop (attempt #1-4, backoff 16s).
+- hermes unaffected: always sends system-first.
+- Reproduced with curl: system-mid → 500, system-first → 200.
+
+### Fix: tolerant chat template + launcher wiring
+- `profiles/qwen38-9b-q8-192k/chat_template.jinja`: full GGUF template copy, single patch — non-first system message renders as `<|im_start|>system\n{content}<|im_end|>\n` instead of raise_exception. First-position system still skipped (preamble already renders it).
+- `scripts/vitriol`: new `server.chat_template` config key (parsers, config_set, write_config, config_show, config_reset) → `CHAT_TEMPLATE_ARGS=(--chat-template-file ...)` appended at all 4 llama-server invocation sites; fingerprint gains `ct=<basename>` when set.
+- Verified: system-mid → 200, system-first → 200, user-only → 200. Bench 27.33 t/s (no perf impact — template affects prompt rendering only).
+- Server argv confirmed: `--chat-template-file /home/randozart/Desktop/Projects/VITRIOL/profiles/qwen38-9b-q8-192k/chat_template.jinja`.
+- Fingerprint: `model=Qwen3.8-9B-Q8_0.gguf c=196608 ub=64 ts=none kv=q4_0/q4_0 fa=on ct=chat_template.jinja mode_env=off score_env=probe pool_reset_env=1`
+
+### Lesson
+Client message-ordering assumptions leak into GGUF-embedded templates. Any strict template guard (`raise_exception`) is a cross-client hazard — keep a tolerant variant per deployment profile.
+
+## 2026-08-27 — 9B declared dead end; 27B Q3_K_M restored (qwen38-mtp-131k)
+
+### 9B verdict (Qwen3.8-9B: Q4_K_M / Q6_K / Q8_0)
+- **Proven incapable for agent work** (user verdict after live opencode testing). Quality/behaviour insufficient despite clean codegen on toy prompts.
+- GGUFs deleted from ~/Downloads (Q6_K 7.04 GiB, Q8_0 9.11 GiB; Q4_K_M was moved to Elements drive earlier).
+- Artifacts kept: profile `qwen38-9b-q8-192k` (config + tolerant chat_template.jinja) as config reference; results above.
+
+### 27B restore
+- Source: `/media/randozart/Elements/Models/Qwen3.8-27B-Q3_K_M.gguf` (13.8 GB NTFS) → refetched to ~/Downloads. User note: Q3_K_S quality tier sufficient — Q3_K_M exceeds it.
+- Profile loaded: `qwen38-mtp-131k` (MTP n1, ts 27,9, ctx 49152, q4k/q4v KV, stream mode). Added `ubatch_size = 64` + `cache_ram = 1024` + `chat_template` to the profile file (were missing from saved profile).
+- Tolerant chat template derived for 27B (template differs from 9B: leading system messages merged by preamble via `num_sys`; loop guard rejected ALL system/developer → patched to render as `<|im_start|>system|developer` blocks; num_sys skip prevents duplication). Saved `profiles/qwen38-mtp-131k/chat_template.jinja`.
+- Launcher fingerprint: `model=Qwen3.8-27B-Q3_K_M.gguf c=49152 ub=64 ts=27,9 kv=q4_0/q4_0 fa=on mode_env=stream score_env=probe pool_reset_env=1`
+- VRAM: 9804 MiB (3060) + 5474 MiB (1070 Ti), stream mode.
+- Verified: system-mid → 200, system-first → 200, user-only → 200 (correct Python codegen). Bench: **12.76 t/s** (certified shallow: 12.89 — consistent).
+
+### Config alignment
+- hermes config.yaml: Lapis Occultus context_length 196608 → 49152.
+- opencode.jsonc: default model → `llama.cpp/qwen38-mtp` (ctx 49152); 9B `lapis` entry removed; `qwen38-262k` + `mellum-think` entries kept.
+
+## 2026-08-28 — License change: GPL-2.0 → Apache-2.0 (project-wide)
+
+LICENSING: VITRIOL and the llama.cpp fork relicensed from GNU GPL v2 to Apache-2.0.
+Both repos are owned by the same author; no external contributors are affected.
+Motivation: the Trismegistus harness (~/Projects/trismegistus/) integrates
+Hermes-Agent (MIT) and little-coder (Apache-2.0); Apache-2.0 resolves the
+GPL-2.0/Apache-2.0 incompatibility that previously forced re-derive-only adoption
+of Apache-2.0 code (see docs/provenance/kimi-k3-in-c.md, pymander).
+
+FILES CHANGED:
+- LICENSE (root) — full Apache-2.0 text, Copyright 2026 Randy Smits-Schreuder Goedheijt
+- llama.cpp/LICENSE — same
+- AGENTS.md — "Licensing and Provenance (Apache-2.0)" section rewritten (compatibility table inverted: copyleft now the excluded side)
+- llama.cpp/AGENTS.md — Licensing section updated
+- docs/ARCHITECTURE.md, docs/README.md, docs/REBIS.md — current-state references updated
+- docs/provenance/kimi-k3-in-c.md, docs/provenance/pymander.md — amended with dated notes; historical re-derivation records preserved as-is
+- alka-handoff/HANDOFF.md — "Apache 2.0 with Runtime Exception" retired to plain Apache-2.0
+
+NOT CHANGED (deliberate):
+- Kernel modules (vitriol-daemon/vitriol.c, artifacts/moore_stream.c, artifacts/test_simple.c):
+  MODULE_LICENSE("GPL") stays — required for GPL-only kernel symbols, unrelated to userspace licensing.
+- Historical entries in this log, .opencode/plans/*, docs/archive/*: records of past state, kept accurate.
+- llama.cpp/README.md third-party project list (GPL/AGPL mentions): describes OTHER projects' licenses.
+
+VALIDATION: grep sweep for GPL references in *.md — only exempt classes remain (kernel
+MODULE_LICENSE, historical records, third-party project lists).

@@ -72,27 +72,26 @@ Do NOT escalate for: routine coding, this repo's own conventions (they live
 in docs/), anything already answered in Hermetis (dedup handles it).
 When the budget gate refuses, answer locally — never retry-loop ascensus.
 
-## Licensing and Provenance (GPL-2.0)
+## Licensing and Provenance (Apache-2.0)
 
-VITRIOL and its llama.cpp fork are licensed under the **GNU GPL v2** (see `LICENSE`).
-Before incorporating any third-party code, check GPL-2.0 compatibility:
+VITRIOL and its llama.cpp fork are licensed under the **Apache License 2.0** (see `LICENSE`).
+License changed from GPL-2.0 to Apache-2.0 on 2026-08-28 (both repos are owned by the same
+author; no external contributors are affected). Before incorporating any third-party code,
+check compatibility:
 
 | source license | may copy into VITRIOL? |
 |---|---|
-| GPL-2.0 | yes (same license) |
+| Apache-2.0 | yes (same license) |
 | MIT / BSD / ISC / zlib / Unlicense / CC0 | yes, with attribution retained |
-| **Apache-2.0** | **NO — incompatible with GPL-2.0** |
+| GPL-2.0 / LGPL / AGPL | NO — copyleft, keep isolated or re-derive |
 | academic / other restrictive | NO — re-derive only |
 
-Apache-2.0 and GPL-2.0 are mutually incompatible (FSF and Apache both document this):
-a derivative of Apache-2.0 code must carry Apache-2.0's terms, which GPL-2.0 forbids adding
-to a GPL-2.0 combined work. So an Apache-2.0 implementation may be **studied and re-derived
-(ideas → independent implementation), never copied**.
-
-Every algorithm-bearing module carries a `PROVENANCE` header:
+Every algorithm-bearing module still carries a `PROVENANCE` header:
 `// PROVENANCE: inspiration — <repo> (<license>), what was learned, not copied`.
 `inspiration` entries must name the repo, its license, and what was learned (not what was
-borrowed). See `docs/provenance/`.
+borrowed). See `docs/provenance/`. (Historical note: entries predating 2026-08-28 marked
+"re-derived only" were written under the previous GPL-2.0 regime; the constraint no longer
+applies, but the records are kept as-is for accuracy.)
 
 ## Qwen3.8-27B Dual-GPU Config (RTX 3060 + GTX 1070 Ti)
 

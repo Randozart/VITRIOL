@@ -182,9 +182,8 @@ needs ~63 GB).
 
 ## 7. Provenance & licensing
 
-All REBIS orchestration code is original (GPL-2.0, this repo). Mellum2 weights
-are Apache-2.0 (JetBrains); running them as separate server processes imposes
-no GPL obligation on VITRIOL. The D2 fine-tune base
+All REBIS orchestration code is original (Apache-2.0, this repo). Mellum2 weights
+are Apache-2.0 (JetBrains) and license-compatible with VITRIOL. The D2 fine-tune base
 (`Mellum2-Thinking-SFT`) inherits Apache-2.0. No third-party code was copied
 into this system; design patterns were studied, not transplanted.
 

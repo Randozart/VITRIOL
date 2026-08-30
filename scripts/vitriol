@@ -86,6 +86,7 @@ CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
+CFG_CACHE_IDLE_SLOTS="${CFG_CACHE_IDLE_SLOTS:-on}"
 CFG_CHAT_TEMPLATE=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
@@ -154,7 +155,10 @@ parse_config() {
                 server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
                 server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
         server.cache_ram)      CFG_CACHE_RAM="$val" ;;
+                server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.cache_ram)      CFG_CACHE_RAM="$val" ;;
+                server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
+                server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -419,6 +423,7 @@ config_set() {
         server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
         server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
         server.cache_ram)      CFG_CACHE_RAM="$val" ;;
+                server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         server.chat_template)  CFG_CHAT_TEMPLATE="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
@@ -2020,6 +2025,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
         [[ -n "${CHAT_TEMPLATE:-}" ]] && FINGERPRINT="$FINGERPRINT ct=$(basename "$CHAT_TEMPLATE")"
         [[ ${#MMPROJ_ARGS[@]} -gt 0 ]] && FINGERPRINT="$FINGERPRINT vis=on"
+        [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && FINGERPRINT="$FINGERPRINT cis=0"
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
@@ -2162,7 +2168,11 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         #   --kv-unified: shared KV buffer across sequences (required for cache-idle-slots)
         #   --cache-idle-slots: persist full state (incl. RS/SSM buffers) on slot release
         #   --ubatch-size 256: reduce compute buffer pressure, may reduce graph splits
-        CACHE_ARGS="--kv-unified --cache-idle-slots --ubatch-size ${UBATCH:-256}"
+        if [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]]; then
+            CACHE_ARGS="--kv-unified --ubatch-size ${UBATCH:-256}"
+        else
+            CACHE_ARGS="--kv-unified --cache-idle-slots --ubatch-size ${UBATCH:-256}"
+        fi
         # Reasoning/thinking mode: off for Qwen3.6 models
         REASONING_ARGS=""
         [[ "${REASONING}" == "off" ]] && REASONING_ARGS="--reasoning off"

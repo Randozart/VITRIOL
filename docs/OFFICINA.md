@@ -86,6 +86,13 @@ cert suite, profiles, fingerprint emission, GPU lane scheduling, bench.
 - 2026-08-31 (1): editor untypeable at startup — the sidebar overlay
   captured keyboard focus. Fix: OverlayOptions.nonCapturing (the purpose-
   built flag), replacing the unfocus-on-show hack.
+- 2026-08-31 (1b): typing STILL dead after nonCapturing — the ui.custom
+  overlay approach is abandoned for the sidebar. Panel v2 renders via
+  setWidget (structurally incapable of capturing input); /history stays
+  an intentional modal. DOCKED-RIGHT sidebar (Crush/OpenCode layout)
+  requires a horizontal layout primitive pi-tui lacks — next build item:
+  vendor + fork the interactive-mode layout (editor pinned bottom is
+  already pi's natural layout; the right column is the fork).
 - 2026-08-31 (2): `vitriol officina` opened with a first prompt
   "officina" — the launcher's case never shifted, so the subcommand word
   stayed in "$@" and pi read it as a positional prompt. Fix: shift first.

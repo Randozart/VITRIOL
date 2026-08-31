@@ -129,16 +129,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     let rows = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(area);
 
-    let services = Layout::horizontal([
-        Constraint::Ratio(1, 3),
-        Constraint::Ratio(1, 3),
-        Constraint::Ratio(1, 3),
-    ])
-    .split(rows[0]);
+    // 2026-09-01 deprecation cleanup: HERMETIS and EMBED service cards
+    // retired with the SS2 gateway fold-in (render_hermetis_card /
+    // render_embed_card retained below; re-add here to restore).
+    let services = Layout::horizontal([Constraint::Ratio(1, 1)]).split(rows[0]);
 
     render_gen_card(frame, services[0], &app.snapshot);
-    render_hermetis_card(frame, services[1], &app.snapshot);
-    render_embed_card(frame, services[2], &app.snapshot);
 
     let bottom =
         Layout::horizontal([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)]).split(rows[1]);
@@ -255,6 +251,9 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
+/// 2026-09-01: retired with the hermes-era stack (see Tab::ALL note in
+/// app.rs); retained for one-keystroke restore.
+#[allow(dead_code)]
 /// HERMETIS card: status + episode/node/session counts.
 fn render_hermetis_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     let h = &snap.hermetis;
@@ -272,6 +271,8 @@ fn render_hermetis_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
+/// 2026-09-01: retired with the hermes-era stack; retained for restore.
+#[allow(dead_code)]
 /// EMBED card: status.
 fn render_embed_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     let e = &snap.embed;

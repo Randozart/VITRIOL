@@ -29,11 +29,9 @@ fn optimizations_dir(cfg: &Config) -> PathBuf {
     cfg.repo_root.join("docs/optimizations")
 }
 
-/// Secondary doc feed: REBIS system teaching docs (flags, protocols).
-fn rebis_docs_dir(cfg: &Config) -> PathBuf {
-    cfg.repo_root.join("docs/rebis")
-}
-
+// 2026-09-01: the REBIS docs feed was retired with the gateway stack
+// (docs/rebis is empty); restore rebis_docs_dir + the feed entry to bring
+// it back.
 /// Tertiary feed: full flag reference articles.
 fn reference_docs_dir(cfg: &Config) -> PathBuf {
     cfg.repo_root.join("docs/reference")
@@ -43,11 +41,7 @@ fn reference_docs_dir(cfg: &Config) -> PathBuf {
 /// an empty list (never errors).
 pub fn discover(cfg: &Config) -> Vec<Doc> {
     let mut out = Vec::new();
-    for dir in [
-        optimizations_dir(cfg),
-        rebis_docs_dir(cfg),
-        reference_docs_dir(cfg),
-    ] {
+    for dir in [optimizations_dir(cfg), reference_docs_dir(cfg)] {
         let Ok(entries) = fs::read_dir(dir) else {
             continue;
         };

@@ -39,7 +39,7 @@ pub enum Tab {
     Subsystems,
     /// Profiles: edit the active config INI (form-style) + manage profiles.
     Profiles,
-    /// Guide: scroll VITRIOL docs, provenance, and the Pymander corpus.
+    /// Guide: scroll VITRIOL docs and provenance articles.
     Guide,
     /// Officina: the model-surgery workshop REPL (Alka / SPQL).
     Officina,

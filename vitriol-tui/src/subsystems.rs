@@ -60,7 +60,7 @@ pub fn rows_len(cfg: &Config, snap: &Snapshot) -> usize {
     rows(cfg, snap).len()
 }
 
-/// The three port-bearing services (gen / hermetis / embed), liveness from the
+/// The port-bearing services (gen; hermetis/embed retired 2026-09-01), liveness from the
 /// latest poll.
 fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
     let gen = if snap.gen.up {
@@ -71,18 +71,10 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
     } else {
         (Status::Down, cfg.gen_port.to_string())
     };
-    let herm_episodes = snap.hermetis.episodes;
-    let herm = if snap.hermetis.up {
-        let ep = herm_episodes.map_or_else(|| "?".to_string(), |n| n.to_string());
-        (Status::Up, format!("{} · {ep} episodes", cfg.hermetis_port))
-    } else {
-        (Status::Down, cfg.hermetis_port.to_string())
-    };
-    let embed = if snap.embed.up {
-        (Status::Up, cfg.embed_port.to_string())
-    } else {
-        (Status::Down, cfg.embed_port.to_string())
-    };
+    // 2026-09-01: HERMETIS and EMBED rows retired with the hermes-era
+    // services (SS2 gateway fold-in). Pollers retained; restore by
+    // re-adding the rows here if those services ever return.
+
     vec![
         Row {
             glyph: theme::GLYPH_GEN,
@@ -90,22 +82,6 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
             value: gen.1,
             status: gen.0,
             config: vec!["server.port", "vitriol.mode"],
-            group: GROUP_SERVICES,
-        },
-        Row {
-            glyph: theme::GLYPH_HERM,
-            name: "HERMETIS",
-            value: herm.1,
-            status: herm.0,
-            config: vec!["memory.mode", "memory.semantic_mode"],
-            group: GROUP_SERVICES,
-        },
-        Row {
-            glyph: theme::GLYPH_EMBED,
-            name: "EMBED",
-            value: embed.1,
-            status: embed.0,
-            config: vec!["memory.semantic_mode"],
             group: GROUP_SERVICES,
         },
     ]

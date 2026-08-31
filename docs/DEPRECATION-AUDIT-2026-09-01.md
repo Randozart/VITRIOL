@@ -70,3 +70,13 @@ restore (re-add to Tab::ALL); enum carries a dated allow(dead_code) note.
 Officina tab was already disabled (model-surgery REPL not ready).
 Subsystems tab stays — it still reports the services' liveness honestly.
 Guide tab's Pymander corpus reference is next (SS3-adjacent).
+
+### Dashboard cleanup (2026-09-01, PTY-verified)
+
+Dashboard tab: the GEN/HERMETIS/EMBED three-card row is now a single
+full-width GEN card — HERMETIS/EMBED cards retired with their services,
+retained for restore. Subsystems tab: HERMETIS/EMBED rows removed (GEN
+remains). Guide: the empty docs/rebis feed dropped from discovery; the
+"Pymander corpus" wording removed from the Guide tab description.
+PTY-verified on a sized terminal: GEN renders, HERMETIS/EMBED/REBIS
+absent, 8-tab bar intact.

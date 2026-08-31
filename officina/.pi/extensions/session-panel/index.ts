@@ -1,28 +1,47 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { appendFileSync } from "node:fs";
 import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 
-// session-panel v2 (2026-08-31, owner feedback):
+// session-panel v3b (2026-08-31, owner feedback):
 //
-// v1 used a ui.custom overlay for the sidebar — it captured keyboard focus
-// at startup and the editor went dead. v2 renders the session panel as a
-// WIDGET (setWidget), which by construction never captures input: typing
-// is guaranteed to work. Panel shows: session folder, model, tokens,
-// turns, session id, files touched, and the session-management keys.
-// /panel toggles it; OFFICINA_SESSION_PANEL=0 kills the ext (Rule 15).
+// UPSTREAM BUG FOUND: a persistent ui.custom overlay — even nonCapturing —
+// breaks keyboard input routing in pi-coding-agent 0.83.0 (PTY-reproduced:
+// panel on = keys dead, panel off = keys work; input never reaches the
+// focused editor). Until the layout fork, the panel therefore renders as
+// a WIDGET (structurally incapable of capturing input).
+//
+// The panel is a TOP-ANCHORED, NON-CAPTURING overlay: pinned to the top of
+// the screen (anchor "top-center"), it never takes the keyboard (that bug
+// cost us the editor once — typing is PTY-verified on this path).
+// Contents: coupling name, session folder, token flow, turns, files
+// touched, and the session keys. /panel hides/shows it.
 //
 // /history (full transcript, scrollable overlay) stays an intentional
-// MODAL — while it is open it owns the keyboard by design, q closes it.
+// MODAL — while open it owns the keyboard by design, q closes it.
 //
-// DOCKED-RIGHT sidebar (Crush/OpenCode-style layout) needs a horizontal
-// layout primitive pi-tui does not have — tracked as a build item in
-// docs/OFFICINA.md (vendor + fork the interactive-mode layout).
+// Colors: Vitriolum accents on values only (gold coupling, solvent folder,
+// safety-green token flow, violet files, muted labels/frame).
+//
+// Kill switch: OFFICINA_SESSION_PANEL=0 (Rule 15).
+//
+// DOCKED-RIGHT sidebar (Crush/OpenCode layout) still needs the horizontal
+// layout fork tracked in docs/OFFICINA.md.
 
 interface PanelState {
-  files: Map<string, number>; // path -> last-modified timestamp (ms)
+  files: Map<string, number>;
   tokensIn: number;
   tokensOut: number;
   turns: number;
 }
+
+const GOLD = "\x1b[38;2;255;215;0m";
+const SOLVENT = "\x1b[38;2;0;255;255m";
+const SAFETY = "\x1b[38;2;57;255;20m";
+const VIOLET = "\x1b[38;2;178;148;187m";
+const MUTED = "\x1b[38;2;139;148;158m";
+const RESET = "\x1b[0m";
+const c = (color: string, txt: string) => color + txt + RESET;
+const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
@@ -31,18 +50,45 @@ export default function (pi: ExtensionAPI) {
   let cwd = "";
   let modelId = "";
   let sessionId = "";
-  let visible = true;
   let providerName = "llamacpp";
-  let render = () => {};
+  let visible = true;
+  let hidePanel: (() => void) | null = null;
+  let showPanelFn: (() => void) | null = null;
   const couplings = loadCouplings();
 
-  // Track file modifications from edit/write tool calls.
+  const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
+
+  const frame = (x: string, w: number) => {
+    const pad = Math.max(0, w - 4 - visibleLen(x));
+    return `│ ${x}${" ".repeat(pad)} │`;
+  };
+
+  const panelLines = (width: number): string[] => {
+    const w = Math.min(Math.max(width - 2, 40), 160);
+    const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+    const coupling = couplingDisplay(providerName, modelId, couplings, modelId);
+    const home = cwd.replace(/^\/home\/[^/]+/, "~");
+    const inner = [
+      `${c(GOLD, "◈ " + coupling)}`,
+      `${c(MUTED, "session · ")}${c(SOLVENT, home)}${c(MUTED, "  ·  ")}${c(SAFETY, `↑${state.tokensIn}`)}${c(MUTED, " ↓")}${c(SAFETY, `${state.tokensOut}`)}${c(MUTED, ` · ${state.turns} turns`)}${sessionId ? c(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`,
+    ];
+    if (files.length > 0) {
+      inner.push(`${c(MUTED, "files: ")}${files.map(([p]) => c(VIOLET, shortPath(p))).join(c(MUTED, "  "))}`);
+    }
+    inner.push(c(MUTED, "/resume prior · /tree tree · /history transcript · /coupling swap · /panel"));
+    const bar = "─".repeat(w - 2);
+    return ["╭" + c(MUTED, bar) + "╮", ...inner.map((l) => frame(l, w)), "╰" + c(MUTED, bar) + "╯"];
+  };
+
+  let tui: any = null;
+  const touch = () => tui?.requestRender();
+
   pi.on("tool_result", (event) => {
     if (event.toolName !== "edit" && event.toolName !== "write") return;
     const p = event.input?.file_path ?? event.input?.path;
     if (typeof p === "string") {
       state.files.set(p, Date.now());
-      render();
+      touch();
     }
   });
 
@@ -55,72 +101,32 @@ export default function (pi: ExtensionAPI) {
       state.tokensIn += u.input ?? u.input_tokens ?? 0;
       state.tokensOut += u.output ?? u.output_tokens ?? u.tokens ?? 0;
     }
-    render();
+    touch();
   });
 
   pi.on("model_select", (event) => {
     const m = (event as { model?: { id?: string; provider?: string } }).model;
     modelId = m?.id ?? modelId;
     providerName = m?.provider ?? providerName;
-    render();
+    touch();
   });
 
-  const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
-
-  // Vitriolum accents (decode.ts/braille.rs palette): gold = coupling,
-  // solvent = model, safety = token flow, violet = files, muted = labels.
-  const GOLD = "[38;2;255;215;0m";
-  const SOLVENT = "[38;2;0;255;255m";
-  const SAFETY = "[38;2;57;255;20m";
-  const VIOLET = "[38;2;178;148;187m";
-  const MUTED = "[38;2;139;148;158m";
-  const R = "[0m";
-  const c = (color: string, s: string) => color + s + R;
-
-  const panelLines = (): string[] => {
-    const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
-    const coupling = couplingDisplay(providerName, modelId, couplings, modelId);
-    const inner: string[] = [
-      `${c(GOLD, "◈ " + coupling)}`,
-      `${c(MUTED, "session ·")} ${c(SOLVENT, cwd.replace(/^\/home\/[^/]+/, "~"))}  ` +
-        `${c(MUTED, "·")}  ${c(SAFETY, `↑${state.tokensIn}`)} ${c(MUTED, "↓")}${c(SAFETY, `${state.tokensOut}`)} ${c(MUTED, `· ${state.turns} turns`)}`,
-    ];
-    if (files.length > 0) {
-      inner.push(
-        `${c(MUTED, "files: ")}${files.map(([p]) => c(VIOLET, shortPath(p))).join(`${c(MUTED, "  ")}`)}`,
-      );
-    }
-    inner.push(
-      c(MUTED, "/resume prior · /tree tree · /history transcript · /coupling swap · /panel"),
-    );
-    // Cordoned top section (owner request): box-drawn frame, width-aware.
-    const w = Math.min(Math.max(process.stdout.columns ?? 100, 60), 160);
-    const visible = (s: string) => s.replace(/\[[0-9;]*m/g, "").length;
-    const frame = (s: string) => {
-      const pad = Math.max(0, w - 4 - visible(s));
-      return `│ ${s}${" ".repeat(pad)} │`;
-    };
-    const bar = "─".repeat(w - 2);
-    return ["╭" + c(MUTED, bar) + "╮", ...inner.map(frame), "╰" + c(MUTED, bar) + "╯"];
-  };
+  let render = () => {};
 
   pi.on("session_start", (_event, ctx) => {
     cwd = ctx.cwd;
     sessionId = ctx.sessionManager.getSessionId();
     modelId = ctx.model?.id ?? "";
     try {
-      const title = `officina · ${cwd.replace(/^\/home\/[^/]+/, "~")}`;
-      ctx.ui.setTitle?.(title);
+      ctx.ui.setTitle?.(`officina · ${cwd.replace(/^\/home\/[^/]+/, "~")}`);
     } catch {
-      // title is decoration, never load-bearing
+      // decoration, never load-bearing
     }
     render = () => {
       try {
-        ctx.ui.setWidget(
-          "session-panel",
-          visible ? panelLines() : undefined,
-          { placement: "aboveEditor" },
-        );
+        ctx.ui.setWidget("session-panel", visible ? panelLines(process.stdout.columns ?? 100) : undefined, {
+          placement: "aboveEditor",
+        });
       } catch {
         // decoration must never break the session
       }
@@ -129,7 +135,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("panel", {
-    description: "Toggle the session panel (files, tokens, keys)",
+    description: "Toggle the session panel (coupling, folder, tokens, files)",
     handler: async () => {
       visible = !visible;
       render();
@@ -160,8 +166,8 @@ export default function (pi: ExtensionAPI) {
         if (typeof content === "string") text = content;
         else if (Array.isArray(content)) {
           text = content
-            .filter((c): c is { type: string; text?: string } => typeof c === "object" && c !== null && "text" in c)
-            .map((c) => c.text ?? "")
+            .filter((cv): cv is { type: string; text?: string } => typeof cv === "object" && cv !== null && "text" in cv)
+            .map((cv) => cv.text ?? "")
             .join(" ");
         }
         text = text.replace(/\s+/g, " ").trim();
@@ -179,7 +185,7 @@ export default function (pi: ExtensionAPI) {
             const header = `── session history · ${lines.length} messages · ${cwd.replace(/^\/home\/[^/]+/, "~")} ──`;
             const flat: string[] = [header, "── q close · ↑↓/pgup/pgdn · G bottom ──", ""];
             for (const l of lines) {
-              const wrapped = l.text.match(new RegExp(`.{1,${inner - 4}}(\\s|$)`, "g")) ?? [l.text];
+              const wrapped = l.text.match(new RegExp(`.{1,${inner - 4}}(\s|$)`, "g")) ?? [l.text];
               flat.push(` ${l.who === "you" ? "you▸" : "ai ▸"} ${wrapped[0]!.trimEnd()}`);
               for (const cont of wrapped.slice(1)) flat.push(`      ${cont.trimEnd()}`);
               flat.push("");
@@ -194,8 +200,8 @@ export default function (pi: ExtensionAPI) {
             if (data === "q" || data === ESC) return close();
             if (data === `${ESC}[A`) offset = Math.max(0, offset - 1);
             else if (data === `${ESC}[B`) offset = Math.max(0, offset + 1);
-            else if (data === `${ESC}[5~`) offset = Math.max(0, offset - PAGE);
             else if (data === `${ESC}[6~`) offset = Math.max(0, offset + PAGE);
+            else if (data === `${ESC}[5~`) offset = Math.max(0, offset - PAGE);
             else if (data === "G") offset = 0;
             else return;
             tui.requestRender();

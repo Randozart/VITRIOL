@@ -124,3 +124,22 @@ top frame shows the current coupling name.
 - 2026-08-31 (2): `vitriol officina` opened with a first prompt
   "officina" — the launcher's case never shifted, so the subcommand word
   stayed in "$@" and pi read it as a positional prompt. Fix: shift first.
+
+### Session UI fix + agent modes (2026-08-31, evening)
+
+- TYPING BUG ROOT CAUSE (PTY-proven): ANY persistent extension overlay —
+  even with nonCapturing — breaks keyboard routing in pi-coding-agent
+  0.83.0. Bisection: panel ext off = typing works; on = dead, with keys
+  reaching neither the overlay nor the editor. Upstream finding; the
+  session panel therefore stays on the widget system until the layout
+  fork. (Earlier "fixed" claims had shipped stale v1 code through a
+  failed file write — both mistakes now guarded by the PTY test.)
+- agent-mode ext: /mode plan|build. Plan injects a research-first
+  directive (cache-safe tail message) and blocks write/edit on non-.md
+  targets at the tool_call gate with a reason; bash mutations are NOT
+  parsed (documented limit — the directive covers them). Build removes
+  the gate and injects a one-shot "writes allowed again" hint.
+  Kill switch OFFICINA_AGENT_MODE=0.
+- Panel v3b: cordoned, colored (gold coupling / solvent folder /
+  safety tokens / violet files), widget-rendered above the editor,
+  composer pinned at the screen floor.

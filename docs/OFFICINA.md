@@ -153,3 +153,10 @@ background. First user input starts the chat and the logo scrolls away
 naturally (PTY-verified: 3200 braille cells at startup, gone from the
 viewport once the conversation takes over). Missing asset = silently no
 watermark. Kill switch OFFICINA_WATERMARK=0.
+
+### TAB mode toggle (2026-08-31)
+
+TAB toggles Plan/Build (default Build). PTY-verified both directions:
+TAB shows the plan indicator + research directive, TAB again clears it.
+Note: this reclaims the editor's autocomplete binding (tui.input.tab) —
+deliberate tradeoff, the mode toggle is the more valuable binding here.

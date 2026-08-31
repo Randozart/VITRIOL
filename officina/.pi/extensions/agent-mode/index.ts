@@ -36,7 +36,7 @@ export default function (pi: ExtensionAPI) {
     if (mode === "plan") {
       ui.setWidget?.(
         "agent-mode",
-        ["► PLAN MODE — research only, *.md writes. /mode build to build."],
+        ["► PLAN MODE — research only, *.md writes. TAB / /mode build to build."],
         { placement: "belowEditor" },
       );
     } else {
@@ -76,8 +76,19 @@ export default function (pi: ExtensionAPI) {
     renderIndicator();
   });
 
+  // TAB toggles Plan/Build (owner request 2026-08-31). TAB also drives
+  // editor autocomplete (tui.input.tab); the mode toggle is the more
+  // valuable binding on this harness — pass-through autocomplete still
+  // exists via explicit completion UI. Default: Build; TAB flips to Plan.
+  pi.registerShortcut("tab", {
+    description: "Toggle Plan / Build agent mode",
+    handler: async (ctx: { ui?: any }) => {
+      setMode(mode === "build" ? "plan" : "build", ctx);
+    },
+  });
+
   pi.registerCommand("mode", {
-    description: "Agent mode: /mode plan (research, *.md-only writes) · /mode build (full writes)",
+    description: "Agent mode: TAB or /mode plan|build — plan = research, *.md-only writes; build = full writes",
     handler: async (args: string, ctx: { ui: any }) => {
       const a = args.trim().toLowerCase();
       if (!a) {

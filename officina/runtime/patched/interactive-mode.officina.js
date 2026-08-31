@@ -244,6 +244,8 @@ export class InteractiveMode {
     extensionWidgetsBelow = new Map();
     widgetContainerAbove;
     widgetContainerBelow;
+    // [officina P3] docked sidebar column (fed via ui.setSidebar)
+    sidebarContainer;
     // Custom footer from extension (undefined = use built-in footer)
     customFooter = undefined;
     // Header container that holds the built-in or custom header
@@ -288,6 +290,8 @@ export class InteractiveMode {
         this.statusContainer = new Container();
         this.widgetContainerAbove = new Container();
         this.widgetContainerBelow = new Container();
+        // [officina P3] docked sidebar column
+        this.sidebarContainer = new Container();
         this.keybindings = KeybindingsManager.create();
         setKeybindings(this.keybindings);
         const editorPaddingX = this.settingsManager.getEditorPaddingX();
@@ -498,6 +502,8 @@ export class InteractiveMode {
         this.ui.addChild(this.widgetContainerAbove);
         this.ui.addChild(this.editorContainer);
         this.ui.addChild(this.widgetContainerBelow);
+        // [officina P3] docked sidebar column (re-parented by [officina P1])
+        this.ui.addChild(this.sidebarContainer);
         this.ui.addChild(this.footer);
         this.ui.setFocus(this.editor);
         this.setupKeyHandlers();
@@ -1553,6 +1559,20 @@ export class InteractiveMode {
         }
         this.setHiddenThinkingLabel();
     }
+    // [officina P3] Docked sidebar content from extensions. lines ===
+    // undefined clears it. Truncation matches the widget budget.
+    setExtensionSidebar(lines) {
+        this.sidebarContainer.clear();
+        if (lines && lines.length > 0) {
+            for (const line of lines.slice(0, InteractiveMode.MAX_WIDGET_LINES)) {
+                this.sidebarContainer.addChild(new Text(line, 1, 0));
+            }
+            if (lines.length > InteractiveMode.MAX_WIDGET_LINES) {
+                this.sidebarContainer.addChild(new Text(theme.fg("muted", "... (sidebar truncated)"), 1, 0));
+            }
+        }
+        this.ui.requestRender();
+    }
     // Maximum total widget lines to prevent viewport overflow
     static MAX_WIDGET_LINES = 10;
     /**
@@ -1697,6 +1717,7 @@ export class InteractiveMode {
             setWorkingIndicator: (options) => this.setWorkingIndicator(options),
             setHiddenThinkingLabel: (label) => this.setHiddenThinkingLabel(label),
             setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
+            setSidebar: (lines) => this.setExtensionSidebar(lines),
             setFooter: (factory) => this.setExtensionFooter(factory),
             setHeader: (factory) => this.setExtensionHeader(factory),
             setTitle: (title) => this.ui.terminal.setTitle(title),

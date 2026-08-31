@@ -42,6 +42,8 @@ const MUTED = "\x1b[38;2;139;148;158m";
 const RESET = "\x1b[0m";
 const c = (color: string, txt: string) => color + txt + RESET;
 const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+// Docked-sidebar width (cells): narrow column, same clamp floor as panelLines.
+const SIDEBAR_W = 34;
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
@@ -124,6 +126,12 @@ export default function (pi: ExtensionAPI) {
     }
     render = () => {
       try {
+        // Docked layout (runtime fork): render into the sidebar column.
+        // Capability probe — no env coupling; classic mode keeps the widget path.
+        if (typeof (ctx.ui as any).setSidebar === "function") {
+          (ctx.ui as any).setSidebar(visible ? panelLines(SIDEBAR_W) : undefined);
+          return;
+        }
         ctx.ui.setWidget("session-panel", visible ? panelLines(process.stdout.columns ?? 100) : undefined, {
           placement: "aboveEditor",
         });

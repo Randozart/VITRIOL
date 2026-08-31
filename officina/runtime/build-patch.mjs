@@ -53,8 +53,67 @@ patch(
 // remains the classic-mode fallback until this lands).
 
 // ── P3: ui.setSidebar plumbing ───────────────────────────────────────────
-// [officina P3] reserved: setSidebar(lines) feeds the docked column and
-// routes through the same widget invalidation path.
+// The docked sidebar is a dedicated Container in the layout, fed by
+// ui.setSidebar(lines) from extensions (session-panel). Step 3 mounts it in
+// the vertical stack (below the widgets, above the footer); step 4's P1
+// re-parents it beside chat+editor when Columns lands.
+
+patch(
+  "P3 field",
+  `    widgetContainerAbove;
+    widgetContainerBelow;`,
+  `    widgetContainerAbove;
+    widgetContainerBelow;
+    // [officina P3] docked sidebar column (fed via ui.setSidebar)
+    sidebarContainer;`,
+);
+
+patch(
+  "P3 container init",
+  `        this.widgetContainerAbove = new Container();
+        this.widgetContainerBelow = new Container();`,
+  `        this.widgetContainerAbove = new Container();
+        this.widgetContainerBelow = new Container();
+        // [officina P3] docked sidebar column
+        this.sidebarContainer = new Container();`,
+);
+
+patch(
+  "P3 layout mount",
+  `        this.ui.addChild(this.widgetContainerBelow);
+        this.ui.addChild(this.footer);`,
+  `        this.ui.addChild(this.widgetContainerBelow);
+        // [officina P3] docked sidebar column (re-parented by [officina P1])
+        this.ui.addChild(this.sidebarContainer);
+        this.ui.addChild(this.footer);`,
+);
+
+patch(
+  "P3 setter method",
+  `    // Maximum total widget lines to prevent viewport overflow`,
+  `    // [officina P3] Docked sidebar content from extensions. lines ===
+    // undefined clears it. Truncation matches the widget budget.
+    setExtensionSidebar(lines) {
+        this.sidebarContainer.clear();
+        if (lines && lines.length > 0) {
+            for (const line of lines.slice(0, InteractiveMode.MAX_WIDGET_LINES)) {
+                this.sidebarContainer.addChild(new Text(line, 1, 0));
+            }
+            if (lines.length > InteractiveMode.MAX_WIDGET_LINES) {
+                this.sidebarContainer.addChild(new Text(theme.fg("muted", "... (sidebar truncated)"), 1, 0));
+            }
+        }
+        this.ui.requestRender();
+    }
+    // Maximum total widget lines to prevent viewport overflow`,
+);
+
+patch(
+  "P3 ui surface",
+  `            setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),`,
+  `            setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
+            setSidebar: (lines) => this.setExtensionSidebar(lines),`,
+);
 
 mkdirSync(outDir, { recursive: true });
 writeFileSync(outPath, header + src);

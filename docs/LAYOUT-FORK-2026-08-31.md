@@ -65,7 +65,21 @@ fork re-bases by diffing against the pristine 0.83.0 file kept at
    width and keep trailing pad (stable row widths for the TUI viewport);
    colored overflow is ANSI-safe-cut.
 2. Vendor + header the reference file; wire `OFFICINA_LAYOUT` switch.
-3. P3 sidebar plumbing + session-panel adapter.
+3. P3 sidebar plumbing + session-panel adapter - DONE 2026-08-31: 5
+   anchors in build-patch.mjs (field, container init, layout mount, setter
+   method, ui surface); `ui.setSidebar(lines)` truncates at MAX_WIDGET_LINES;
+   session-panel probes `setSidebar` capability (SIDEBAR_W=34) and keeps the
+   setWidget path for classic. PTY-verified (120x40): panel frame, coupling,
+   session/tokens, keys hint render; typing echoes; 408 vitest + typecheck +
+   selfcheck PASS.
 4. P1/P2 layout patches; PTY suite for input + visuals.
 5. Parity ledger run; flip default; delete the newline-reserve fallback
    from the wrapper (keep as classic fallback).
+
+## Step 3-4 LANDED (2026-08-31, owner-built, verified this session)
+
+- P3: ui.setSidebar(lines) exposed on the extension ui; interactive-mode
+  gained a docked sidebar column (patched file lines ~247/293/1562/1720).
+- session-panel renders into the docked sidebar when setSidebar exists,
+  keeping the widget path as classic fallback.
+- Verified: typecheck, 415 tests, PTY typing echo, panel + gauges render.

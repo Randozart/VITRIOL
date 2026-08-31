@@ -47,8 +47,8 @@ describe("emitHarnessEvent (real fs)", () => {
     }
   });
 
-  it("eventsPath respects TRIS_STATE_DIR and defaults to ~/.local/state", () => {
+  it("eventsPath respects TRIS_STATE_DIR and defaults to ~/.vitriol/officina/state (SS4)", () => {
     expect(eventsPath({ TRIS_STATE_DIR: "/x" })).toBe(join("/x", "events.jsonl"));
-    expect(eventsPath({ HOME: "/h" })).toContain("/h/.local/state/trismegistus/events.jsonl");
+    expect(eventsPath({ HOME: "/h" })).toContain("/h/.vitriol/officina/state/events.jsonl");
   });
 });

@@ -14,7 +14,24 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-STATE_DIR = Path(os.environ.get("TRIS_STATE_DIR", str(Path.home() / ".local/state/trismegistus")))
+# SS4 (2026-08-31): state consolidated under ~/.vitriol/officina/state;
+# a legacy ~/.local/state/trismegistus store is migrated (moved) on first
+# use so ledgers and events survive the fold-in.
+_DEFAULT_STATE = Path.home() / ".vitriol" / "officina" / "state"
+_LEGACY_STATE = Path.home() / ".local/state/trismegistus"
+
+
+def _migrate_state() -> Path:
+    if _LEGACY_STATE.exists() and not _DEFAULT_STATE.exists():
+        try:
+            _DEFAULT_STATE.parent.mkdir(parents=True, exist_ok=True)
+            _LEGACY_STATE.rename(_DEFAULT_STATE)
+        except OSError:
+            return _LEGACY_STATE  # move failed; keep serving the old store
+    return _DEFAULT_STATE
+
+
+STATE_DIR = Path(os.environ.get("TRIS_STATE_DIR") or _migrate_state())
 
 
 def events_path() -> Path:

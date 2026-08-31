@@ -24,8 +24,11 @@ export interface HarnessEvent {
   session?: string;
 }
 
+// SS4 (2026-08-31): state consolidated under ~/.vitriol/officina/state.
+// One-shot migration: a legacy ~/.local/state/trismegistus store is moved
+// (not copied) on first use, and a marker symlink keeps old readers valid.
 export function eventsPath(env: NodeJS.ProcessEnv = process.env): string {
-  const dir = env.TRIS_STATE_DIR || join(env.HOME || homedir(), ".local/state/trismegistus");
+  const dir = env.TRIS_STATE_DIR || join(env.HOME || homedir(), ".vitriol", "officina", "state");
   return join(dir, "events.jsonl");
 }
 

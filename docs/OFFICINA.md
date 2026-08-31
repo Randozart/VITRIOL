@@ -225,3 +225,22 @@ versionable, reviewable in diffs) and global
 projects). Injection merges both, labeled. memory_search covers both
 stores plus own-session files. Live-verified: project write landed in
 /tmp/proj-x/.officina/MEMORY.md.
+
+### SS2b + SS3 + SS4 landed (2026-08-31)
+
+- SS2b caveman: deterministic prose compressor ported to TS
+  (provenance: hermes compress.py @ 237e424, measured −65% upstream).
+  DARK by default, armed with TRIS_CAVEMAN=1; applies to compression-
+  allowed tool results only (dispatch reports, memory_search); code spans
+  byte-preserved, never inflates.
+- SS2b memory-extractor: user-utterance fact candidates (same four rules
+  + confidences) queue to ~/.vitriol/officina/memory/curator-queue.jsonl
+  for human sign-off; auto-append to project MEMORY.md only with
+  TRIS_MEMORY_AUTO=1 and confidence >= 0.85. Poisoning discipline kept.
+- SS3 repo-map: OFF unless a real checkout exists (OFFICINA_REPO_MAP_DIR
+  or legacy var); no external clone assumed; tests updated to the new
+  contract.
+- SS4 state: consolidated at ~/.vitriol/officina/state; legacy
+  ~/.local/state/trismegistus migrates (moves) on first CLI use.
+- SELFCHECK: PASS (grep, vitest 408, typecheck, cli pytest, config,
+  keybindings).

@@ -27,10 +27,15 @@ export interface RepoMapConfig {
 /** Resolve the extension config from the environment. Pure. */
 export function repoMapConfig(env: NodeJS.ProcessEnv = process.env): RepoMapConfig {
   const home = env.HOME || homedir();
+  const repomapDir =
+    env.OFFICINA_REPO_MAP_DIR || env.TRIS_REPO_MAP_DIR || resolve(home, "Desktop/Projects/repo-map");
+  // SS3 (2026-08-31): OFF unless a real checkout exists at the resolved dir.
+  // No external clone assumed; the ext degrades honestly when absent.
+  const enabled = env.TRIS_NO_REPO_MAP !== "1" && existsSync(repomapDir);
   return {
-    enabled: env.TRIS_NO_REPO_MAP !== "1",
+    enabled,
     pythonBin: env.TRIS_REPO_MAP_PY || resolve(home, "venvs/repo-map/bin/python"),
-    repomapDir: env.TRIS_REPO_MAP_DIR || resolve(home, "Desktop/Projects/repo-map"),
+    repomapDir,
     shimPath: fileURLToPath(new URL("shim.py", import.meta.url)),
     requestTimeoutMs: 120_000,
     maxOutputChars: 2000, // entry-side budget guard: outline/symbol capped (~500 tok)

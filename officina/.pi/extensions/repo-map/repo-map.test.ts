@@ -7,12 +7,18 @@ import { RepoMapClient, capText, repoMapConfig } from "./client.ts";
 //   RM_LIVE=1 npx vitest run .pi/extensions/repo-map/repo-map.test.ts
 
 describe("repoMapConfig", () => {
-  it("defaults: enabled, home-relative paths, 2000-char output cap", () => {
+  it("SS3: OFF by default — no external clone assumed (checkout absent)", () => {
     const cfg = repoMapConfig({ HOME: "/home/tester" });
-    expect(cfg.enabled).toBe(true);
+    expect(cfg.enabled).toBe(false); // /home/tester/.../repo-map does not exist
     expect(cfg.pythonBin).toContain("/home/tester/venvs/repo-map/bin/python");
     expect(cfg.repomapDir).toContain("repo-map");
     expect(cfg.maxOutputChars).toBe(2000);
+  });
+
+  it("enables only when the checkout dir actually exists", () => {
+    const cfg = repoMapConfig({ OFFICINA_REPO_MAP_DIR: "/tmp", TRIS_REPO_MAP_PY: "/opt/py" });
+    expect(cfg.enabled).toBe(true); // /tmp exists
+    expect(cfg.repomapDir).toBe("/tmp");
   });
 
   it("kill switch TRIS_NO_REPO_MAP=1 disables the extension", () => {

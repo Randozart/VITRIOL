@@ -144,11 +144,7 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
 
     render_gen_card(frame, services[0], &app.snapshot);
 
-    let bottom =
-        Layout::horizontal([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)]).split(rows[1]);
-
-    render_gpu_card(frame, bottom[0], &app.snapshot);
-    render_decode_card(frame, bottom[1], app);
+    render_decode_card(frame, rows[1], app);
 
     // The former GPU tab's full panel (gauges + per-GPU metrics) fills the
     // remaining height - one view instead of two tabs.
@@ -322,6 +318,9 @@ fn render_embed_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
 
 /// GPU card: one compact btop-style block per GPU (VRAM + UTIL gauges), then
 /// the compute-process table.
+/// 2026-09-01: retired from the Dashboard - its VRAM/UTIL rows duplicated
+/// the GAUGES panel. Retained for restore.
+#[allow(dead_code)]
 fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     let up = !snap.gpus.is_empty();
     let title = format!(" {} GPU ", theme::GLYPH_GPU);

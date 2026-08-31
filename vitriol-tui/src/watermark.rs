@@ -32,22 +32,24 @@ fn logo_lines(repo_root: &Path) -> Option<&'static Vec<String>> {
         .as_ref()
 }
 
-/// Draw the logo bottom-aligned and horizontally centered inside `area`,
-/// showing as many rows as fit. Partial reveal is intentional: on small
-/// areas the stone "rises".
+/// Draw the FULL logo, horizontally centered, inside `area` - but only if
+/// the area fits every row (plus breathing room). No partial reveal: a cut
+/// braille stone looks broken, so too-small areas get nothing.
 pub fn render(frame: &mut Frame, area: Rect, repo_root: &Path) {
     let Some(lines) = logo_lines(repo_root) else { return };
     if area.height < 4 || area.width < 20 {
         return;
     }
-    let show = lines.len().min(area.height as usize);
-    let skip = lines.len() - show;
+    if (area.height as usize) < lines.len() {
+        return;
+    }
+    let show = lines.len();
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let left_pad = area.width.saturating_sub(width as u16) / 2;
     let y = area.y + area.height - show as u16;
     let rect = Rect { x: area.x, y, width: area.width, height: show as u16 };
     let style = Style::default().fg(TINT).add_modifier(Modifier::DIM);
-    let spans: Vec<Line> = lines[skip..]
+    let spans: Vec<Line> = lines
         .iter()
         .map(|l| {
             let mut s = Span::styled(" ".repeat(left_pad as usize), style);

@@ -32,6 +32,7 @@ in a header comment. This registry is the index of those citations.
 |---|---|---|
 | Braille gradient bars (6-dot cells, fill order, ramps) | VITRIOL `vitriol-tui/src/braille.rs` (own, Apache-2.0) | `vitriol-decode/braille.ts` header |
 | Vitriolum palette + ramps | VITRIOL `vitriol-tui/src/theme.rs`, roots in owner's Officina-dark VS Code theme | `theme/officina.json` vars |
+| Extension palette module (single source; honey retargeted to antidote `#ff5f1f`) | VITRIOL `vitriol-tui/src/theme.rs` (own, Apache-2.0); parity-tested by `_shared/vitriolum.test.ts` | `_shared/vitriolum.ts` header |
 | Caveman ruleset (−65% measured) | owner's caveman skill; hermes plugin port | `caveman/compress.ts` |
 | Small-model split, skills-lazy-loading, hook deny/halt, LSP-edit ideas | Crush v0.91.2 (FSL-1.1-MIT) — PATTERNS only, no code | `docs/CRUSH-MINING-PLAN-2026-08-31.md` |
 | Legacy names | `refs/trismegistus/turns/*` git refs and `~/.local/state/trismegistus` retained deliberately for data continuity (SS4 decision) | docs/OFFICINA.md |

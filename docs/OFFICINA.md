@@ -299,3 +299,27 @@ ts=22,14): identical task set of 3 — docked 161 tok_in / 16 tok_out
 ledger records appended. PTY: docked frame at col 87 with chat text on
 the same screen rows, composer at floor, watermark intact, typing echoes;
 classic rollback verified. `OFFICINA_LAYOUT=classic` remains the rollback.
+
+### Theme unification — Vitriolum single source (2026-08-31, night)
+
+`_shared/vitriolum.ts` is now the single palette source for all
+extensions, mirroring `vitriol-tui/src/theme.rs` (canonical) and
+`theme/officina.json`. Every extension re-declared its own ANSI constants
+before; now they import `fg`/`fgSeq`/helpers. Drift fixes: the widget
+accent "honey" (#e15a1f, stale branding reference) is retargeted to the
+theme's antidote #ff5f1f — subagent tracker, plan-mode, phase-model,
+deep-research all shift one notch brighter orange; tracker ✓/✗ SGR 32/31
+become safety/substrate truecolor. vitriol-decode ramps + muted and the
+officina-header watermark tint now derive from the same module.
+Sidebar panel tone (owner pickup, same night): the docked column renders
+on the theme's panel color #161b22 (theme.rs PANEL) instead of the bare
+#0d1117 substrate — the sidebar reads as a distinct surface, matching the
+VS Code Officina-dark panel treatment. Applied in OfficinaSplit
+(build-patch.mjs) as a per-row bg fill + reset; the gap column stays
+substrate.
+
+Enforcement: `_shared/vitriolum.test.ts` (4 tests) parses theme.rs
+Color::Rgb triplets and officina.json vars and fails on any drift;
+selfcheck section 2b greps the 9 core hexes across json + extension
+palette. No palette value was replaced — the theme is the same; only the
+off-palette duplicate is gone.

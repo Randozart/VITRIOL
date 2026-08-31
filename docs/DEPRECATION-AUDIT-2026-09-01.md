@@ -98,3 +98,12 @@ leftover space — Dashboard gauges leftover, and CONTROLS below the action
 list while idle — in #1c2634 dim tint, partial reveal by design.
 PTY-verified geometrically: braille cell count scales with terminal
 height (2996 @ 45 rows vs 1508 @ 24).
+
+### Dashboard/watermark refinement (2026-09-01, owner feedback)
+
+- Dashboard: the GPU summary card removed entirely (its VRAM/UTIL rows
+  duplicated GAUGES) — Dashboard is now GEN card → GAUGES panel → DECODE
+  card. GPU card fn retained.
+- Watermark: full-logo-only. If the area cannot fit all 40 rows, nothing
+  renders — no partial/cut stone. PTY-verified: at 28 rows no logo
+  braille appears (gauges only); at 56 rows the full stone renders.

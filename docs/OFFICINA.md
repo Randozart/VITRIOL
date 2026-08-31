@@ -38,8 +38,8 @@ OFFICINA_DIR overrides the location for non-standard installs.
 
 ## Design law
 
-docs/SCAFFOLD-SOVEREIGNTY-2026-08-31.md (in the trismegistus archive),
-AGENTS.md First-Party Mandate: upstreams (little-coder, hermes, OpenCode,
+docs/officina-archive/SCAFFOLD-SOVEREIGNTY-2026-08-31.md (local copy;
+originals frozen in the trismegistus archive repo), First-Party Mandate: upstreams (little-coder, hermes, OpenCode,
 Crush) are mining sources only; pi-coding-agent is a pinned library, not
 a shipped frontend; the HTTP API is the only engine surface.
 
@@ -170,3 +170,20 @@ before_agent_start event (plan directive rides every plan turn; the
 build hint rides exactly once and is consumed). No turn is ever fired by
 switching modes. Startup note: a one-time "keybinding conflict" banner
 for TAB is informational — the extension binding wins.
+
+### Conflict banner silenced (2026-08-31)
+
+officina.mjs now idempotently ensures ~/.pi/agent/keybindings.json has
+"tui.input.tab": [] (TAB unbound from autocomplete — claimed by the
+agent-mode toggle). Merge-preserving: existing keybindings survive and an
+owner-managed tui.input.tab entry is never touched. PTY-verified: startup
+banner gone, typing intact.
+
+### Fold-in completion (2026-08-31)
+
+VITRIOL is now self-contained. The tris CLI moved to officina/cli
+(~/.local/bin/tris retargeted; 41 tests green), the unified config
+detached from the old repo into ~/.config/trismegistus/config.yaml (real
+file), and the canonical design docs live in docs/officina-archive/.
+The trismegistus repo (now private) is pure history — nothing on this
+machine requires it anymore.

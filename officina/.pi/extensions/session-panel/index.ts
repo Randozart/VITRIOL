@@ -1,19 +1,20 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
 
-// session-panel (2026-08-31, owner request):
-//   /history — scrollable FULL session transcript in an overlay
-//     (↑/↓ line, pgup/pgdn page, g/G top/bottom, q/Esc close).
-//   /panel   — toggle the right-hand sidebar: modified files this session
-//     (tracked from edit/write tool calls), model, tokens, session id, cwd,
-//     and the keys that matter (/resume, /tree, /history, /panel).
+// session-panel v2 (2026-08-31, owner feedback):
 //
-// Sessions: pi's session manager is per-project; /resume (picker) and
-// /tree (navigator) are built in and advertised in the sidebar so prior
-// session management is discoverable. The terminal title + widget line
-// (vitriol-decode) display which folder the session belongs to.
+// v1 used a ui.custom overlay for the sidebar — it captured keyboard focus
+// at startup and the editor went dead. v2 renders the session panel as a
+// WIDGET (setWidget), which by construction never captures input: typing
+// is guaranteed to work. Panel shows: session folder, model, tokens,
+// turns, session id, files touched, and the session-management keys.
+// /panel toggles it; OFFICINA_SESSION_PANEL=0 kills the ext (Rule 15).
 //
-// Kill switch: OFFICINA_SESSION_PANEL=0 (Rule 15).
+// /history (full transcript, scrollable overlay) stays an intentional
+// MODAL — while it is open it owns the keyboard by design, q closes it.
+//
+// DOCKED-RIGHT sidebar (Crush/OpenCode-style layout) needs a horizontal
+// layout primitive pi-tui does not have — tracked as a build item in
+// docs/OFFICINA.md (vendor + fork the interactive-mode layout).
 
 interface PanelState {
   files: Map<string, number>; // path -> last-modified timestamp (ms)
@@ -22,8 +23,6 @@ interface PanelState {
   turns: number;
 }
 
-const WIDTH = 34;
-
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
 
@@ -31,8 +30,8 @@ export default function (pi: ExtensionAPI) {
   let cwd = "";
   let modelId = "";
   let sessionId = "";
-  let panelVisible = true;
-  let invalidate: (() => void) | null = null;
+  let visible = true;
+  let render = () => {};
 
   // Track file modifications from edit/write tool calls.
   pi.on("tool_result", (event) => {
@@ -40,114 +39,74 @@ export default function (pi: ExtensionAPI) {
     const p = event.input?.file_path ?? event.input?.path;
     if (typeof p === "string") {
       state.files.set(p, Date.now());
-      invalidate?.();
+      render();
     }
   });
 
   pi.on("message_end", (event) => {
-    const msg = event.message as { role?: string; usage?: { input?: number; output?: number; tokens?: number } };
+    const msg = event.message as { role?: string; usage?: Record<string, number> };
     if (msg?.role !== "assistant") return;
     state.turns += 1;
-    const u = msg.usage as Record<string, number> | undefined;
+    const u = msg.usage;
     if (u) {
       state.tokensIn += u.input ?? u.input_tokens ?? 0;
       state.tokensOut += u.output ?? u.output_tokens ?? u.tokens ?? 0;
     }
-    invalidate?.();
+    render();
   });
+
+  pi.on("model_select", (event) => {
+    modelId = (event as { model?: { id?: string } }).model?.id ?? modelId;
+    render();
+  });
+
+  const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
+
+  const panelLines = (): string[] => {
+    const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
+    const lines = [
+      `◈ session · ${cwd.replace(/^\/home\/[^/]+/, "~")}  ·  ${modelId || "(default)"}  ·  ↑${state.tokensIn} ↓${state.tokensOut} · ${state.turns} turns`,
+    ];
+    if (files.length > 0) {
+      lines.push(`   files: ${files.map(([p]) => shortPath(p)).join("  ")}`);
+    }
+    lines.push(`   /resume prior sessions · /tree tree · /history transcript · /panel toggle`);
+    return lines;
+  };
 
   pi.on("session_start", (_event, ctx) => {
     cwd = ctx.cwd;
     sessionId = ctx.sessionManager.getSessionId();
     modelId = ctx.model?.id ?? "";
-    if (panelVisible) buildPanel(ctx);
+    try {
+      const title = `officina · ${cwd.replace(/^\/home\/[^/]+/, "~")}`;
+      ctx.ui.setTitle?.(title);
+    } catch {
+      // title is decoration, never load-bearing
+    }
+    render = () => {
+      try {
+        ctx.ui.setWidget(
+          "session-panel",
+          visible ? panelLines() : undefined,
+          { placement: "aboveEditor" },
+        );
+      } catch {
+        // decoration must never break the session
+      }
+    };
+    render();
   });
-
-  pi.on("model_select", (event) => {
-    modelId = (event as { model?: { id?: string } }).model?.id ?? modelId;
-    invalidate?.();
-  });
-
-  const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
-
-  const sidebarLines = (): string[] => {
-    const t = (s: string) => s;
-    const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-    const lines = [
-      t("◈ OFFICINA"),
-      t(`cwd     ${cwd.replace(/^\/home\/[^/]+/, "~")}`),
-      t(`model   ${modelId || "(default)"}`),
-      t(`session ${sessionId.slice(0, 8)}`),
-      t(`tokens  ↑${state.tokensIn} ↓${state.tokensOut} · ${state.turns} turns`),
-      t(""),
-      t("── files touched ──"),
-    ];
-    if (files.length === 0) lines.push(t("  (none yet)"));
-    for (const [p] of files) lines.push(t(`  ${shortPath(p)}`));
-    lines.push(t(""));
-    lines.push(t("── keys ──"));
-    lines.push(t("  /resume  prior sessions"));
-    lines.push(t("  /tree    session tree"));
-    lines.push(t("  /history full transcript"));
-    lines.push(t("  /panel   toggle this sidebar"));
-    return lines;
-  };
-
-  const buildPanel = (ctx: { ui: any }) => {
-    ctx.ui
-      .custom(
-        (tui: any) => ({
-          render(width: number): string[] {
-            void width;
-            const w = Math.min(WIDTH, Math.max(20, (tui?.columns ?? 100) - 4));
-            const pad = (s: string) => {
-              const cut = s.length > w - 2 ? s.slice(0, w - 5) + "…" : s;
-              return cut.padEnd(w - 2);
-            };
-            return ["", ...sidebarLines().map(pad), ""];
-          },
-          invalidate() {},
-          handleInput() {},
-        }),
-        {
-          overlay: true,
-          overlayOptions: { anchor: "top-right", margin: 1 } as never,
-          onHandle: (handle: any) => {
-            // sidebar must NOT steal focus from the editor
-            try {
-              handle.unfocus({ target: null });
-            } catch {
-              // overlay focus policy is a UI detail; fail soft
-            }
-            invalidate = () => {
-              try {
-                handle.refresh?.();
-              } catch {
-                // best effort
-              }
-            };
-          },
-        },
-      )
-      .catch(() => {
-        // overlay unavailable in this mode — sidebar is decoration
-      });
-  };
 
   pi.registerCommand("panel", {
-    description: "Toggle the Officina sidebar (modified files, session data)",
-    handler: async (_args: string, ctx: { ui: any }) => {
-      panelVisible = !panelVisible;
-      if (!panelVisible) {
-        invalidate?.();
-        invalidate = null;
-        return;
-      }
-      buildPanel(ctx);
+    description: "Toggle the session panel (files, tokens, keys)",
+    handler: async () => {
+      visible = !visible;
+      render();
     },
   });
 
-  // ── /history — full transcript, scrollable overlay ────────────────────
+  // ── /history — full transcript, scrollable modal overlay ─────────────
   const ESC = "\x1b";
   pi.registerCommand("history", {
     description: "Scroll the full session transcript (↑↓ pgup/pgdn, q to close)",
@@ -156,7 +115,13 @@ export default function (pi: ExtensionAPI) {
       const msgs = entries
         .filter((e: { type?: string }) => e.type === "message")
         .map((e: { message?: unknown }) => (e as { message: unknown }).message);
-      const llm = convertToLlm(msgs as never[]) as Array<{ role: string; content: unknown }>;
+      let llm: Array<{ role: string; content: unknown }> = [];
+      try {
+        const { convertToLlm } = await import("@earendil-works/pi-coding-agent");
+        llm = convertToLlm(msgs as never[]) as typeof llm;
+      } catch {
+        return; // no transcript, no modal
+      }
       const lines: Array<{ who: string; text: string }> = [];
       for (const m of llm) {
         if (m.role !== "user" && m.role !== "assistant") continue;
@@ -171,20 +136,18 @@ export default function (pi: ExtensionAPI) {
         }
         text = text.replace(/\s+/g, " ").trim();
         if (!text) continue;
-        const who = m.role === "user" ? "you" : m.role === "assistant" ? "officina" : m.role;
-        lines.push({ who, text });
+        lines.push({ who: m.role === "user" ? "you" : "ai", text });
       }
 
-      let offset = 0; // lines from bottom
+      let offset = 0;
       const PAGE = 20;
 
-      void ctx.ui.custom(
+      await ctx.ui.custom(
         (tui: any, _theme: any, _keys: any, close: () => void) => ({
           render(width: number): string[] {
             const inner = Math.max(4, width - 4);
             const header = `── session history · ${lines.length} messages · ${cwd.replace(/^\/home\/[^/]+/, "~")} ──`;
-            const body: string[] = [header, "── q close · ↑↓/pgup/pgdn scroll ──", ""];
-            const flat: string[] = [];
+            const flat: string[] = [header, "── q close · ↑↓/pgup/pgdn · G bottom ──", ""];
             for (const l of lines) {
               const wrapped = l.text.match(new RegExp(`.{1,${inner - 4}}(\\s|$)`, "g")) ?? [l.text];
               flat.push(` ${l.who === "you" ? "you▸" : "ai ▸"} ${wrapped[0]!.trimEnd()}`);
@@ -194,9 +157,7 @@ export default function (pi: ExtensionAPI) {
             const avail = Math.max(10, (tui?.rows ?? 40) - 8);
             const start = Math.max(0, flat.length - avail - offset);
             const view = flat.slice(start, start + avail);
-            body.push(...view);
-            body.push(`── [${flat.length ? Math.min(flat.length, start + avail) : 0}/${flat.length}] ──`);
-            return body;
+            return [...view, `── [${flat.length ? Math.min(flat.length, start + avail) : 0}/${flat.length}] ──`];
           },
           invalidate() {},
           handleInput(data: string) {

@@ -86,8 +86,13 @@ cert suite, profiles, fingerprint emission, GPU lane scheduling, bench.
 - 2026-08-31 (1): editor untypeable at startup — the sidebar overlay
   captured keyboard focus. Fix: OverlayOptions.nonCapturing (the purpose-
   built flag), replacing the unfocus-on-show hack.
-- 2026-08-31 (1b): typing STILL dead after nonCapturing — the ui.custom
-  overlay approach is abandoned for the sidebar. Panel v2 renders via
+- 2026-08-31 (1b): typing STILL dead after nonCapturing — root cause
+  found by PTY reproduction: the v2 (widget-based) panel never actually
+  shipped; a failed file write left v1's focus-stealing overlay in the
+  tree while the commit message claimed v2. v2 re-landed and verified by
+  driving the real TUI in a pseudo-terminal — keystrokes now echo in the
+  editor. LESSON: TUI bugs get PTY-reproduction tests before "fixed" is
+  claimed. The ui.custom overlay approach is abandoned for the sidebar. Panel v2 renders via
   setWidget (structurally incapable of capturing input); /history stays
   an intentional modal. DOCKED-RIGHT sidebar (Crush/OpenCode layout)
   requires a horizontal layout primitive pi-tui lacks — next build item:

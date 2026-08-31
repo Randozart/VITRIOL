@@ -143,3 +143,13 @@ top frame shows the current coupling name.
 - Panel v3b: cordoned, colored (gold coupling / solvent folder /
   safety tokens / violet files), widget-rendered above the editor,
   composer pinned at the screen floor.
+
+### Watermark (2026-08-31)
+
+officina-header ext: the VITRIOL braille logo (assets/braille-logo-80c.txt,
+80 cols, 40 rows) renders watermark-style as the session header on an
+untouched session — tinted #1c2634, a faint blue lift off the #0d1117
+background. First user input starts the chat and the logo scrolls away
+naturally (PTY-verified: 3200 braille cells at startup, gone from the
+viewport once the conversation takes over). Missing asset = silently no
+watermark. Kill switch OFFICINA_WATERMARK=0.

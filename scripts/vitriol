@@ -2603,7 +2603,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # workshop coupled to this engine. Single-source rule: the scaffold
         # code lives in its own repo; this launcher only resolves + execs it,
         # and honestly reports engine state first (fingerprint discipline).
-        OFFICINA_DIR="${OFFICINA_DIR:-${HOME}/Desktop/Projects/trismegistus/officina}"
+        OFFICINA_DIR="${OFFICINA_DIR:-${PROJECT_DIR}/officina}"
         OFFICINA_ENTRY="${OFFICINA_DIR}/officina.mjs"
         if [[ ! -f "$OFFICINA_ENTRY" ]]; then
             echo "[vitriol] officina not found at ${OFFICINA_ENTRY}" >&2

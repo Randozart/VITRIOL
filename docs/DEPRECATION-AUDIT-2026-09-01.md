@@ -87,3 +87,14 @@ remains). Guide: the empty docs/rebis feed dropped from discovery; the
 "Pymander corpus" wording removed from the Guide tab description.
 PTY-verified on a sized terminal: GEN renders, HERMETIS/EMBED/REBIS
 absent, 8-tab bar intact.
+
+### TUI cleanup addendum (2026-09-01): redundancy trim + watermark
+
+Dashboard de-duplicated: the GPU summary card (its VRAM/UTIL rows
+duplicated the GAUGES panel) is retired — Dashboard is now GEN card,
+GAUGES panel (full braille metrics), DECODE card. The braille watermark
+(vitriol-tui/src/watermark.rs) renders the logo bottom-aligned in
+leftover space — Dashboard gauges leftover, and CONTROLS below the action
+list while idle — in #1c2634 dim tint, partial reveal by design.
+PTY-verified geometrically: braille cell count scales with terminal
+height (2996 @ 45 rows vs 1508 @ 24).

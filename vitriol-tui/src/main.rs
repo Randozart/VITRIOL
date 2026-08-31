@@ -21,6 +21,7 @@ mod secrets;
 mod subsystems;
 mod theme;
 mod ui;
+mod watermark;
 
 use std::io;
 use std::sync::atomic::AtomicBool;

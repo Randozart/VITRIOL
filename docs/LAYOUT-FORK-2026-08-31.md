@@ -90,7 +90,12 @@ fork re-bases by diffing against the pristine 0.83.0 file kept at
    screen row, composer at floor, watermark intact. Classic rollback
    PTY-verified. 408 vitest + typecheck + selfcheck PASS.
 5. Parity ledger run; flip default; delete the newline-reserve fallback
-   from the wrapper (keep as classic fallback).
+   from the wrapper (keep as classic fallback) - DONE 2026-08-31.
+   Parity: same 3-task set, same fingerprint (27B ts=22,14), engine-side
+   metrics deltas — docked 161 tok_in / 16 tok_out (5.3 tok/task),
+   classic 161 / 16 (5.3 tok/task): bit-identical; ledger records
+   appended with `layout` field. Docked confirmed the documented default
+   in docs/OFFICINA.md; newline-reserve gated to classic (done in step 4).
 
 ## Step 3-4 LANDED (2026-08-31, owner-built, verified this session)
 

@@ -274,3 +274,28 @@ read-only history — NEVER sync archive → canonical. A reversed rsync
 briefly reverted committed files to stale versions; caught by comparing
 working tree to HEAD and restored from HEAD (nothing authored was lost).
 Going forward, code flows one direction only: edits land in VITRIOL.
+
+### Layout fork steps 3-5 — docked layout is the default (2026-08-31, night)
+
+P3: `ui.setSidebar(lines)` on the extension ui surface; session-panel
+renders into the docked column when the patched mode is active (capability
+probe — no env coupling) and keeps the widget path for classic.
+P1: OfficinaSplit (JS port of runtime/columns.ts, injected by
+build-patch.mjs; OSC/APC zero-width-aware because pi's CURSOR_MARKER is an
+APC sequence) puts chat/pending/status/widgets/editor in a main column
+with the sidebar docked right (34 cols, auto-hide < 100); header and
+footer stay full width. P2: filler rows above the editor block pin the
+composer natively; the launcher newline-reserve is classic-only.
+
+CRITICAL FIX (PTY gate): module hooks do NOT cross process boundaries —
+the fullscreen launcher spawns pi as a child, so the hook registered in
+officina.mjs never applied and the child silently ran stock
+interactive-mode. Fix: `runtime/register-hooks.mjs` re-registers the hook
+in the child via `NODE_OPTIONS --import` (OFFICINA_PKG_DIST env).
+
+PARITY (step 5, engine-side metrics deltas, same fingerprint Qwen3.8-27B
+ts=22,14): identical task set of 3 — docked 161 tok_in / 16 tok_out
+(5.3 tok/task), classic 161 / 16 (5.3 tok/task) — bit-identical; both
+ledger records appended. PTY: docked frame at col 87 with chat text on
+the same screen rows, composer at floor, watermark intact, typing echoes;
+classic rollback verified. `OFFICINA_LAYOUT=classic` remains the rollback.

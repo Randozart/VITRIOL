@@ -153,6 +153,25 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     // The former GPU tab's full panel (gauges + per-GPU metrics) fills the
     // remaining height - one view instead of two tabs.
     render_gpu_tab(frame, rows[2], app);
+
+    // Watermark: the stone rises in the gauges panel's leftover space.
+    if !app.snapshot.gpus.is_empty() {
+        let gauges_height = (app.snapshot.gpus.len() as u16) * 8 + 2;
+        if rows[2].height > gauges_height + 4 {
+            crate::watermark::render(
+                frame,
+                Rect {
+                    x: rows[2].x,
+                    y: rows[2].y + gauges_height,
+                    width: rows[2].width,
+                    height: rows[2].height - gauges_height,
+                },
+                &app.cfg.repo_root,
+            );
+        }
+    } else {
+        crate::watermark::render(frame, rows[2], &app.cfg.repo_root);
+    }
 }
 
 /// Build a bordered panel block with a themed title.
@@ -891,6 +910,22 @@ fn render_controls_tab(frame: &mut Frame, area: Rect, app: &mut App) {
 
     render_action_list(frame, cols[0], app);
     render_control_log(frame, cols[1], app);
+    // Watermark below the action list while nothing is running.
+    if !app.control_running {
+        let items = app.actions().len() as u16 + 3;
+        if cols[0].height > items + 8 {
+            crate::watermark::render(
+                frame,
+                Rect {
+                    x: cols[0].x + 1,
+                    y: cols[0].y + items + 1,
+                    width: cols[0].width - 2,
+                    height: cols[0].height - items - 2,
+                },
+                &app.cfg.repo_root,
+            );
+        }
+    }
 }
 
 /// Render the CONTROLS action list with the cursor and running state.

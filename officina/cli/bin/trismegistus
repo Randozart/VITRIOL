@@ -1,0 +1,391 @@
+#!/home/randozart/venvs/tris/bin/python
+"""tris — the Trismegistus front door (Round 4, T1).
+
+Usage:
+    tris up [profile]        start engine via supervisor (verified)
+    tris down                stop engine (verified dead)
+    tris smoke [model-id]    two-stage chain test
+    tris code [args...]      little-coder TUI, environment guaranteed
+    tris chat [args...]      Hermes CLI on the vitriol provider
+    tris go "<task>" [dir]   gated sub-coder dispatch + ledger record
+    tris budget              §R2.8 allocation vs measured ledger
+    tris watch               ratatui cockpit (tris-watch binary)
+    tris ledger-ingest <f> [label]  append a consumer usage report to the ledger
+    tris perms-sync          mirror safety.permissions -> permissions.json
+    tris validate|status     config contract gate (static / +probe)
+    tris lanes [--json]      GPU lane report — read-only (M8 MVP)
+
+Exit 1 on FAIL. Interpreter: venv shebang (no system PyYAML); Nix devShell
+will replace it — see docs/TRIS-EXPERIENCE.md.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+
+import tris_lib as tl  # noqa: E402
+from validate_lib import dig, engine_reachable, load_unified, render, validate, _parse_ini_profile, _profile_file  # noqa: E402
+
+DEFAULT_CFG = Path.home() / ".config/trismegistus/config.yaml"
+REPO = Path(__file__).resolve().parent.parent
+
+
+def _cfg_dict() -> dict:
+    try:
+        return load_unified(DEFAULT_CFG)
+    except Exception:  # noqa: BLE001 — validate reports the reason
+        return {}
+
+
+def _endpoint(cfg: dict) -> str:
+    return str(dig(cfg, "engine.vitriol.endpoint") or "http://127.0.0.1:8279")
+
+
+# ── lifecycle wrappers ─────────────────────────────────────────────────────
+
+def _dev_server(action: str, arg: str = "") -> int:
+    script = str(REPO / "scripts/dev-server.sh")
+    argv = [script, action] + ([arg] if arg else [])
+    return subprocess.run(argv).returncode
+
+
+def cmd_up(arg: str) -> int:
+    return _dev_server("start", arg or "")
+
+
+def cmd_down(_arg: str) -> int:
+    return _dev_server("stop")
+
+
+def cmd_smoke(arg: str) -> int:
+    return _dev_server("smoke", arg)
+
+
+def cmd_watch(_arg: str) -> int:
+    exe = os.environ.get("TRIS_WATCH_BIN", str(Path.home() / ".local/bin/tris-watch"))
+    if not Path(exe).exists():
+        print(f"tris-watch not built yet: {exe} (cargo build --release -p tris-watch in {REPO}/tui)", file=sys.stderr)
+        return 1
+    os.execv(exe, [exe] + rest)
+
+
+# ── exec-through commands (TTY belongs to the tool) ────────────────────────
+
+def _guarantees(cfg: dict) -> dict[str, str]:
+    env = dict(os.environ)
+    env.setdefault("VITRIOL_BASE_URL", _endpoint(cfg))
+    env.setdefault("LLAMACPP_API_KEY", "none")
+    if not shutil_which(env.get("PATH", ""), "node"):
+        node = resolve_node(env)
+        if node:
+            env["PATH"] = str(Path(node).parent) + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def shutil_which(path_str: str, prog: str) -> str | None:
+    for d in path_str.split(os.pathsep):
+        f = Path(d) / prog
+        if f.exists() and os.access(f, os.X_OK):
+            return str(f)
+    return None
+
+
+def resolve_node(env: dict[str, str]) -> str | None:
+    """PATH -> fnm newest -> system (same order as trismegistus bridge)."""
+    found = shutil_which(env.get("PATH", ""), "node")
+    if found:
+        return found
+    import glob
+
+    def ver(p: str) -> tuple[int, int, int]:
+        import re
+
+        m = re.search(r"v(\d+)\.(\d+)\.(\d+)", p)
+        return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
+
+    home = env.get("HOME", str(Path.home()))
+    for pat in (home + "/.local/share/fnm/node-versions/v*/installation/bin/node",
+                home + "/.fnm/node-versions/v*/installation/bin/node"):
+        hits = sorted(glob.glob(pat), key=ver, reverse=True)
+        if hits:
+            return hits[0]
+    for c in ("/usr/bin/node", "/usr/local/bin/node"):
+        if Path(c).exists():
+            return c
+    return None
+
+
+def cmd_code(extra: list[str]) -> int:
+    cfg = _cfg_dict()
+    mode = str(dig(cfg, "scaffold.mode") or "officina")
+    if mode == "officina":
+        entry = Path.home() / "Desktop/Projects/VITRIOL/officina/officina.mjs"  # officina moved into VITRIOL (2026-08-31)
+        if entry.exists():
+            env = _guarantees(cfg)
+            node = resolve_node(env) or "node"
+            argv = [node, str(entry)] + extra
+            os.execvpe(argv[0], argv, env)  # never returns
+        print("tris code: officina deps missing (officina/node_modules) — falling back to little-coder", file=sys.stderr)
+    # legacy path: little-coder distribution (mining source; sovereignty plan P4 removes this)
+    lc = Path(str(dig(cfg, "paths.little_coder") or (Path.home() / "Desktop/Projects/little-coder")))
+    script = lc / "bin/little-coder.mjs"
+    if not script.exists():
+        print(f"tris code: little-coder not found at {lc}", file=sys.stderr)
+        return 1
+    env = _guarantees(cfg)
+    node = resolve_node(env) or "node"
+    argv = [node, str(script), "--provider", "llamacpp", "--model",
+            os.environ.get("TRIS_LC_MODEL", default_model(cfg))] + extra
+    os.execvpe(argv[0], argv, env)  # never returns
+
+
+def default_model(cfg: dict) -> str:
+    """Model currently loaded (fingerprint) else what the config will boot."""
+    import re
+
+    m = re.search(r"model=(\S+)", tl.fingerprint_from_log())
+    if m:
+        return m.group(1)
+    for key in ("engine.vitriol.smoke_profile", "engine.vitriol.profile"):
+        name = dig(cfg, key)
+        if isinstance(name, str):
+            pf = _profile_file(name)
+            if pf is not None:
+                mid = Path(_parse_ini_profile(pf).get("path", "")).name
+                if mid:
+                    return mid
+    return "Qwen3.8-27B-Q3_K_M.gguf"
+
+
+def cmd_chat(extra: list[str]) -> int:
+    hermes = Path.home() / "Desktop/Projects/hermes-agent/venv/bin/hermes"
+    if not hermes.exists():
+        print(f"tris chat: hermes CLI not found at {hermes}", file=sys.stderr)
+        return 1
+    os.execvpe(str(hermes), [str(hermes)] + extra, dict(os.environ))  # never returns
+
+
+# ── dispatch with ledger ───────────────────────────────────────────────────
+
+def _bridge_module():
+    import importlib.util
+
+    root = Path.home() / ".hermes/plugins/vitriol-bridge"
+    spec = importlib.util.spec_from_file_location("vb_cli", root / "__init__.py",
+                                                  submodule_search_locations=[str(root)])
+    mod = importlib.util.module_from_spec(spec)
+    mod.__package__ = "vb_cli"
+    mod.__path__ = [str(root)]
+    sys.modules["vb_cli"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def cmd_go(extra: list[str]) -> int:
+    words = list(extra)
+    repo = os.getcwd()
+    if words and Path(words[-1]).is_dir():
+        repo = words.pop()
+    task = " ".join(words).strip()
+    if not task:
+        print('usage: tris go "<task>" [repo-dir]', file=sys.stderr)
+        return 2
+    cfg = _cfg_dict()
+    # Audit F11: seed the bridge's approved-roots env from the unified config
+    # (bridge stays stdlib-pure; config is read by exactly one layer).
+    # Explicit env wins — same precedence as every other TRIS_* seam.
+    if "TRIS_DISPATCH_ROOTS" not in os.environ:
+        roots = dig(cfg, "safety.dispatch_roots") or []
+        os.environ["TRIS_DISPATCH_ROOTS"] = os.pathsep.join(str(r) for r in roots)
+    fp = tl.fingerprint_from_log()
+    t0 = time.time()
+    tl.emit_event("tris", "go-dispatch", task[:120], turn=-1)
+    res = json.loads(_bridge_module().handle_dispatch({"goal": task, "repo_dir": repo}))
+    wall = time.time() - t0
+
+    # Audit F3: consumer-side usage is the ledger truth; engine metrics
+    # deltas are sanity-only (any concurrent engine traffic pollutes them).
+    u = res.get("session_usage")
+    sanity = res.get("sanity_metrics") or {}
+    if u:
+        tok_in, tok_out = int(u["input"]), int(u["output"]) + int(u["reasoning"])
+        accounting = "session-usage"
+    else:  # fallback, flagged — never silently equal to consumer truth
+        tok_in = int(sanity.get("prompt_tokens", 0))
+        tok_out = int(sanity.get("generated_tokens", 0))
+        accounting = "metrics-delta-fallback"
+    rec = {
+        "ts": t0, "fingerprint": fp, "certified": tl.model_certified(fp),
+        "task": task[:200], "model": _model_of(fp), "exit": res.get("exit", -1),
+        "success": bool(res.get("success")), "wall_s": round(wall, 1),
+        "tok_in": tok_in, "tok_out": tok_out,
+        "cache_read": int(u["cache_read"]) if u else None,
+        "api_calls": int(u["calls"]) if u else None,
+        "accounting": accounting,
+        "sanity_metrics": sanity,
+        "t_s": round(tok_out / wall, 2) if wall > 0 and tok_out else None,
+        "gate": {"kv_fill_pct": res.get("kv_fill_pct_at_spawn"), "allowed": "blocked" not in str(res.get("error", ""))},
+    }
+    tl.append_ledger(rec)
+    print(json.dumps(rec, indent=1))
+    report = str(res.get("report") or res.get("error") or "")
+    if report:
+        print("\n── sub-coder report ─────────────────────────────")
+        print(report[-1500:])
+    if res.get("success"):
+        return 0
+    print(f"dispatch failed: {res.get('error', 'see record')}", file=sys.stderr)
+    return 1
+
+
+def _model_of(fp: str) -> str:
+    import re
+
+    m = re.search(r"model=(\S+)", fp)
+    return m.group(1) if m else "?"
+
+
+# ── budget ─────────────────────────────────────────────────────────────────
+
+def cmd_budget(arg: str) -> int:
+    as_json = arg == "--json"
+    cfg_text = DEFAULT_CFG.read_text() if DEFAULT_CFG.exists() else ""
+    alloc = tl.budget_table(cfg_text)
+    led = tl.read_ledger()
+    if as_json:
+        done = [r for r in led if r.get("success")]
+        print(json.dumps({
+            "alloc": alloc,
+            "records": len(led), "ok": len(done),
+            "avg_tok_in": round(sum(r.get("tok_in") or 0 for r in done) / max(1, len(done))),
+            "avg_tok_out": round(sum(r.get("tok_out") or 0 for r in done) / max(1, len(done))),
+            "avg_t_s": round(sum(r.get("t_s") or 0 for r in done if r.get("t_s")) / max(1, sum(1 for r in done if r.get("t_s"))), 2),
+            "certified": sum(1 for r in led if r.get("certified")),
+            "recent": led[-5:],
+        }))
+        return 0
+    done = [r for r in led if r.get("success")]
+    avg_in = sum(r.get("tok_in", 0) for r in done) / len(done) if done else 0
+    avg_out = sum(r.get("tok_out", 0) for r in done) / len(done) if done else 0
+    print(f"allocation rows (config §R2.8 mirror): {len(alloc)}")
+    for row in alloc:
+        print(f"  {row['item']:44s} {row['budget']:>6d} tok")
+    print(f"\nledger: {len(led)} records ({len(done)} ok) | avg tok/task in={avg_in:.0f} out={avg_out:.0f}"
+          f" | certified={sum(1 for r in led if r.get('certified'))}")
+    for r in led[-3:]:
+        print(f"  [{ 'CERT' if r.get('certified') else 'DEV ' }] {r.get('task','')[:60]!r} "
+              f"in={r.get('tok_in')} out={r.get('tok_out')} t/s={r.get('t_s')}")
+    return 0
+
+
+# ── validate/status (kept from step 23) ────────────────────────────────────
+
+def cmd_validate(args: list[str]) -> int:
+    cfg_path = Path(args[0]) if args and not args[0].startswith("-") else DEFAULT_CFG
+    rep = validate(cfg_path)
+    print(render(rep, "--json" in args))
+    return rep.exit_code
+
+
+def cmd_status(args: list[str]) -> int:
+    rep = validate(DEFAULT_CFG)
+    cfg = _cfg_dict()
+    probe = engine_reachable(_endpoint(cfg))
+    print(render(rep))
+    mark = "PASS" if probe.get("reachable") else "WARN"
+    print(f"[{mark}] engine-probe              {probe.get('health', '')}")
+    return rep.exit_code
+
+
+def cmd_lanes(args: list[str]) -> int:
+    """M8 MVP (2026-08-31): READ-ONLY GPU lane report — who is up, on which
+    port, at what context/vision truth. Swaps and control come later
+    (docs/CRUSH-MINING-PLAN-2026-08-31.md §3-M8)."""
+    cfg = _cfg_dict()
+    lanes = dig(cfg, "lanes") if isinstance(dig(cfg, "lanes"), dict) else None
+    snap = tl.lane_snapshot(lanes)
+    if "--json" in args:
+        print(json.dumps(snap, indent=1))
+        return 0
+    print(f"fingerprint: {snap['fingerprint'] or '(none found)'}")
+    for gpu in snap["gpus"]:
+        print(f"gpu: {gpu}")
+    for name, lane in snap["lanes"].items():
+        if lane["status"] != "ok":
+            print(f"[{name}] DOWN  {lane['endpoint']}")
+            continue
+        vis = "vision" if lane["vision"] else "text-only"
+        ctx = lane["n_ctx"] if lane["n_ctx"] is not None else "?"
+        print(f"[{name}] UP    {lane['endpoint']}  model={lane['model']}  n_ctx={ctx}  {vis}")
+    down = [n for n, l in snap["lanes"].items() if l["status"] != "ok"]
+    print(f"\n{len(snap['lanes']) - len(down)} up, {len(down)} down"
+          + (f" (down: {', '.join(down)})" if down else ""))
+    return 0
+
+
+# ── dispatch table (flat, guard-clause style) ──────────────────────────────
+
+def main(argv: list[str]) -> int:
+    cmd = argv[1] if len(argv) > 1 else "help"
+    rest = argv[2:]
+    simple = {"up": cmd_up, "down": cmd_down, "smoke": cmd_smoke, "watch": cmd_watch, "budget": cmd_budget}
+    if cmd in simple:
+        return simple[cmd](" ".join(rest) if cmd == "budget" else (rest[0] if rest else ""))
+    if cmd == "code":
+        return cmd_code(rest)
+    if cmd == "chat":
+        return cmd_chat(rest)
+    if cmd == "go":
+        return cmd_go(rest)
+    if cmd == "ledger-ingest":
+        # Audit F3: any consumer's usage report (hermes -z --usage-file ...)
+        # becomes a ledger row — one accounting vocabulary for the harness.
+        if not rest:
+            print("usage: tris ledger-ingest <usage.json> [task-label]", file=sys.stderr)
+            return 2
+        try:
+            u = json.loads(Path(rest[0]).read_text())
+        except (OSError, ValueError) as e:
+            print(f"cannot read usage file: {e}", file=sys.stderr)
+            return 1
+        fp = tl.fingerprint_from_log()
+        rec = {
+            "ts": time.time(), "fingerprint": fp, "certified": tl.model_certified(fp),
+            "task": (rest[1] if len(rest) > 1 else "hermes-oneshot")[:200],
+            "model": u.get("model") or _model_of(fp),
+            "success": bool(u.get("completed")), "exit": 0 if u.get("completed") else 1,
+            "wall_s": None, "tok_in": u.get("input_tokens"), "tok_out": u.get("output_tokens"),
+            "cache_read": u.get("cache_read_tokens"), "api_calls": u.get("api_calls"),
+            "accounting": "hermes-usage-file", "sanity_metrics": None, "t_s": None,
+            "gate": {"kv_fill_pct": None, "allowed": True},
+        }
+        tl.append_ledger(rec)
+        print(json.dumps(rec, indent=1))
+        return 0
+    if cmd == "perms-sync":
+        cfg = _cfg_dict()
+        path = tl.sync_perms(cfg)
+        print(f"permissions.json written: {path} ({len(tl.perms_snapshot(cfg)['rules'])} rules, {tl.perms_snapshot(cfg)['source_hash']})")
+        return 0
+    if cmd == "validate":
+        return cmd_validate(rest)
+    if cmd == "status":
+        return cmd_status(rest)
+    if cmd == "lanes":
+        return cmd_lanes(rest)
+    if cmd in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    print(f"unknown command: {cmd} (tris help)", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

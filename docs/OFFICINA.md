@@ -160,3 +160,13 @@ TAB toggles Plan/Build (default Build). PTY-verified both directions:
 TAB shows the plan indicator + research directive, TAB again clears it.
 Note: this reclaims the editor's autocomplete binding (tui.input.tab) —
 deliberate tradeoff, the mode toggle is the more valuable binding here.
+
+### Mode-switch inference bug (2026-08-31, owner-reported)
+
+TAB/mode switch fired a model turn with the directive as its prompt —
+the switch used pi.sendUserMessage, which STARTS A TURN. Fixed: mode
+directives now ride along invisibly on the user's own next turn via the
+before_agent_start event (plan directive rides every plan turn; the
+build hint rides exactly once and is consumed). No turn is ever fired by
+switching modes. Startup note: a one-time "keybinding conflict" banner
+for TAB is informational — the extension binding wins.

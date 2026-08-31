@@ -44,6 +44,12 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  // One-shot: after plan -> build, hint the model ONCE that writes are
+  // allowed again. Delivered as a hidden ride-along on the user's NEXT
+  // turn (beforeAgentStart) - never via sendUserMessage, which would
+  // start a turn on its own (the "switch fires inference" bug).
+  let buildHintPending = false;
+
   const setMode = (next: Mode, ctx?: { ui?: any }) => {
     if (next === mode) {
       ctx?.ui?.notify?.(`agent mode: already ${mode}`, "info");
@@ -51,25 +57,27 @@ export default function (pi: ExtensionAPI) {
     }
     mode = next;
     if (mode === "plan") {
-      const inj = injectionResult("agent-mode", PLAN_DIRECTIVE);
-      if (inj) {
-        // cache-safe tail injection (Rule 7); system path appends to prompt
-        if ("message" in inj && inj.message) {
-          pi.sendUserMessage?.(inj.message.content as never);
-        } else if ("systemPrompt" in inj && inj.systemPrompt) {
-          ctx?.ui?.notify?.("plan directive active for the next turn", "info");
-        }
-      }
       ctx?.ui?.notify?.("PLAN mode: research only, *.md writes", "info");
     } else {
-      const inj = injectionResult("agent-mode", BUILD_HINT);
-      if (inj && "message" in inj && inj.message) {
-        pi.sendUserMessage?.(inj.message.content as never);
-      }
+      buildHintPending = true;
       ctx?.ui?.notify?.("BUILD mode: writes unblocked", "info");
     }
     renderIndicator();
   };
+
+  // Ride-along delivery: attach mode directives to the user's own turn.
+  // In plan mode the directive rides EVERY turn; the build hint rides
+  // exactly once, then is consumed.
+  pi.on("before_agent_start", () => {
+    if (mode === "plan") {
+      return injectionResult("agent-mode", PLAN_DIRECTIVE);
+    }
+    if (buildHintPending) {
+      buildHintPending = false;
+      return injectionResult("agent-mode", BUILD_HINT);
+    }
+    return;
+  });
 
   pi.on("session_start", (_event, ctx) => {
     ui = ctx.ui;

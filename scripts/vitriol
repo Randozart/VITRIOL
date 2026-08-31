@@ -1362,6 +1362,16 @@ usage() {
                              harness in the current directory (local-inference
                              tuned; engine telemetry in the editor). Args pass
                              through to the scaffold CLI (e.g. -p "one-shot").
+  vitriol officina [args]    the VITRIOL coding workshop: full-screen agent
+                             harness in the current directory (local-inference
+                             tuned; engine telemetry in the editor). Args pass
+                             through to the scaffold CLI (e.g. -p "one-shot").
+  vitriol validate           harness config gate (ex-tris)
+  vitriol lanes              GPU lane report (ex-tris)
+  vitriol budget             allocation vs measured ledger (ex-tris)
+  vitriol ledger-ingest <f>  append a consumer usage report (ex-tris)
+  vitriol perms-sync         mirror safety.permissions (ex-tris)
+  vitriol status             validate + live engine probe (ex-tris)
   vitriol help               this message
 
 Run options:
@@ -2674,8 +2684,12 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         ;;
 
     pymander)
-        # Reference mind (Pymander) store + ingest. P1: domains, ingest,
-        # search, per-project selection. Reuses the Hermetis db machinery.
+        # 2026-09-01 DEPRECATED (deprecation audit): Officina memory
+        # (~/.vitriol/officina/memory + per-project .officina/MEMORY.md)
+        # replaced the pymander recall path for the workshop. The Rust
+        # binary below still works for direct store access until removal.
+        echo "[vitriol] pymander is deprecated - Officina memory replaced it." >&2
+        echo "[vitriol] direct store access still available this release:" >&2
         shift
         # 2026-08-07: Pymander CLI is now the Rust binary (libhermes).
         if [ -x "${PROJECT_DIR}/libhermes/target/release/pymander" ]; then
@@ -2749,6 +2763,16 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         if [[ -x "$BENCH_BINARY" ]]; then
             setup_caps "$BENCH_BINARY"
         fi
+        ;;
+
+    validate|lanes|budget|ledger-ingest|perms-sync|status)
+        # 2026-09-01 (fold-in): the tris front door folded into vitriol.
+        # These subcommands exec the officina CLI (single source:
+        # officina/cli). `vitriol officina` remains the workshop entry.
+        shift   # drop the subcommand word; "$@" is the CLI's own args
+        TRIS_PY="${OFFICINA_CLI_PY:-${HOME}/venvs/tris/bin/python}"
+        [[ -x "$TRIS_PY" ]] || TRIS_PY=python3
+        exec "$TRIS_PY" "${PROJECT_DIR}/officina/cli/bin/trismegistus" "$CMD" "$@"
         ;;
 
     help|--help|-h)

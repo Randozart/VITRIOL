@@ -43,9 +43,20 @@ operator console), `install`/`uninstall`, oom-shield, sidecar/watchdog.
 
 ## Sequencing
 
-1. Retire pymander + rag + mongo (stop/disable units, deprecation notice
-   in launcher, keep data one release).  — needs owner go
+
+### Owner clarification (2026-09-01): the two gauges serve different masters
+
+`vitriol tui` is the BACKGROUND ops console (machine state while you work
+elsewhere) - it stays. Officina's gauges exist so you never swap to it
+mid-session. Different moments, not duplication; the earlier
+"consolidate tui gauges" note is withdrawn.
+
+
+1. pymander + rag + mongo: launcher notice DONE 2026-09-01. OWNER still
+   stops the units: systemctl --user disable --now vitriol-rag.service
+   mongod-vitriol.service (data dirs kept one release).
 2. Owner decision on hermes-gateway.service (messaging: keep or kill).
-3. Fold tris's unique subcommands into `vitriol`; retire tris symlink.
+3. DONE 2026-09-01: validate/lanes/budget/ledger-ingest/perms-sync/status
+   exec the officina CLI; tris symlink removed.
 4. autosave policy hand-off with the F7 checkpoint consolidation.
 5. Re-run selfcheck + `vitriol officina` smoke after each removal.

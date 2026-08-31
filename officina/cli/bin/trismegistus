@@ -161,11 +161,11 @@ def default_model(cfg: dict) -> str:
 
 
 def cmd_chat(extra: list[str]) -> int:
-    hermes = Path.home() / "Desktop/Projects/hermes-agent/venv/bin/hermes"
-    if not hermes.exists():
-        print(f"tris chat: hermes CLI not found at {hermes}", file=sys.stderr)
-        return 1
-    os.execvpe(str(hermes), [str(hermes)] + extra, dict(os.environ))  # never returns
+    # SS2 (2026-08-31): the workshop owns chat. hermes-agent is no longer a
+    # supported runtime - `vitriol officina` is the conversation surface.
+    print("tris chat: retired (SS2 gateway fold-in). The workshop is the chat:", file=sys.stderr)
+    print("  vitriol officina", file=sys.stderr)
+    return 1
 
 
 # ── dispatch with ledger ───────────────────────────────────────────────────

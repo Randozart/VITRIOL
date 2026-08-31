@@ -199,3 +199,19 @@ machine requires it anymore.
   typecheck, cli pytest, config + keybindings checks, opt-in --live
   engine smoke. Run before every release tag.
 - Remaining: SS2 gateway fold-in, SS3 repo-map, SS4 state rename.
+
+### SS2a — gateway fold-in phase one (2026-08-31)
+
+Officina owns memory. New `memory` ext (provenance: successor to
+hermes-bridge + hermes memory-extractor concept, trismegistus hermes-plugins
+@ 237e424): store ~/.vitriol/officina/memory/{MEMORY,USER}.md, tools
+memory_read / memory_write / memory_search (own-session JSONL scan),
+per-turn hidden injection of facts via before_agent_start (cache-safe).
+LIVE-VERIFIED: the 27B wrote a fact to MEMORY.md through memory_write.
+hermes-bridge ext retired (its only consumer was the memory contract);
+`tris chat` retired — `vitriol officina` is the conversation surface.
+injection-guard ported to TS (provenance header cites the hermes guards.py
+origin): log mode default, block opt-in via TRIS_GUARD_MODE, screening
+browser/webfetch ingested text. Caveman-rules + memory-extractor ports
+recorded as SS2b (dark features, no runtime dependency today). Gates:
+typecheck, 407 tests, praetor PASS, live memory write + one-shot OK.

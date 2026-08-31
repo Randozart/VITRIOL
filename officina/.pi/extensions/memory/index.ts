@@ -10,11 +10,13 @@ import { injectionResult } from "../_shared/inject.ts";
 // SS2 gateway fold-in (docs/SELF-SUFFICIENCY-2026-08-31.md): the workshop
 // stops renting its memory from hermes-agent. This extension OWNS memory:
 //
-//   store     ~/.vitriol/officina/memory/  (plain markdown, agent-writable)
-//   MEMORY.md persistent facts the agent should always know (head-capped,
-//             injected cache-safe as a hidden tail message each turn)
-//   USER.md   facts about the owner
-//   tools     memory_read / memory_write / memory_search
+//   project store  <cwd>/.officina/MEMORY.md — project facts, decisions,
+//                  conventions (the goal is programming: memory belongs to
+//                  the project, versionable, reviewable in diffs)
+//   global store   ~/.vitriol/officina/memory/USER.md — owner facts that
+//                  travel across projects (preferences, hardware, taste)
+//   tools     memory_read / memory_write / memory_search (project store is
+//             the default target; file:"USER.md" targets the global store)
 //
 // memory_search scans OFFICINA'S OWN past session files (JSONL under the
 // live session dir reported by ctx.sessionManager) — case-insensitive
@@ -30,24 +32,40 @@ const INJECT_LINES = Number(process.env.MEMORY_INJECT_LINES) || 50;
 const SEARCH_MAX_HITS = 8;
 const SEARCH_SNIPPET = 240;
 
-function memDir(env: NodeJS.ProcessEnv = process.env): string {
+function globalDir(env: NodeJS.ProcessEnv = process.env): string {
   if (env.OFFICINA_MEMORY_DIR) return env.OFFICINA_MEMORY_DIR;
   return join(env.HOME || homedir(), MEM_DIR_DEFAULT);
+}
+
+function projectDir(cwd: string): string {
+  return join(cwd, ".officina");
 }
 
 function headLines(text: string, n: number): string {
   return text.split("\n").slice(0, n).join("\n");
 }
 
-function readFacts(dir: string): string {
+function readFacts(dirs: string[]): string {
   const parts: string[] = [];
-  for (const f of ["MEMORY.md", "USER.md"]) {
-    const p = join(dir, f);
+  for (const dir of dirs) {
+    if (!dir || !existsSync(dir)) continue;
+    const label = dir.includes(".officina") ? "project" : "global";
+    const p = join(dir, "MEMORY.md");
     if (!existsSync(p)) continue;
     try {
-      parts.push(`### ${f}\n${headLines(readFileSync(p, "utf8"), INJECT_LINES)}`);
+      parts.push(`### MEMORY.md (${label})
+${headLines(readFileSync(p, "utf8"), INJECT_LINES)}`);
     } catch {
       // unreadable store is absence of knowledge, not an error
+    }
+  }
+  const ug = join(globalDir(), "USER.md");
+  if (existsSync(ug)) {
+    try {
+      parts.push(`### USER.md (owner)
+${headLines(readFileSync(ug, "utf8"), INJECT_LINES)}`);
+    } catch {
+      // as above
     }
   }
   return parts.join("\n\n");
@@ -81,7 +99,8 @@ function sessionJsonlFiles(root: string, depth: number): string[] {
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_MEMORY === "0") return; // Rule 15
 
-  const dir = memDir();
+  const globalMemoryDir = globalDir();
+  let projectMemoryDir = "";
   let sessionDir: string | null = null;
 
   pi.registerTool({
@@ -91,8 +110,7 @@ export default function (pi: ExtensionAPI) {
       "Read persistent memory (MEMORY.md facts and USER.md owner facts). Use when past decisions, preferences, or project context might matter.",
     parameters: Type.Object({}),
     async execute() {
-      if (!existsSync(dir)) return { content: [{ type: "text", text: "memory: empty (nothing stored yet)." }], details: undefined as never };
-      const text = readFacts(dir);
+      const text = readFacts([projectMemoryDir, globalMemoryDir]);
       return { content: [{ type: "text", text: text || "memory: empty (nothing stored yet)." }], details: undefined as never };
     },
   });
@@ -107,7 +125,13 @@ export default function (pi: ExtensionAPI) {
       file: Type.Optional(Type.String({ description: "MEMORY.md (default) or USER.md" })),
     }),
     async execute(_id, params) {
-      const file = params.file === "USER.md" ? "USER.md" : "MEMORY.md";
+      // default target: the PROJECT store (programming memory lives with
+      // the project); USER.md routes to the global owner store
+      const target = params.file === "USER.md"
+        ? { dir: globalMemoryDir, file: "USER.md" }
+        : { dir: projectMemoryDir, file: "MEMORY.md" };
+      const file = target.file;
+      const dir = target.dir;
       mkdirSync(dir, { recursive: true });
       const line = `- ${params.fact.replace(/\s+/g, " ").trim().slice(0, 300)}`;
       appendFileSync(join(dir, file), line + "\n");
@@ -138,14 +162,26 @@ export default function (pi: ExtensionAPI) {
         }
       };
 
-      for (const f of ["MEMORY.md", "USER.md"]) {
-        const p = join(dir, f);
+      const memDirs: Array<[string, string]> = [
+        [projectMemoryDir || "(no project)", "project/MEMORY.md"],
+        [globalMemoryDir, "global/USER.md"],
+      ];
+      for (const [d, label] of memDirs) {
+        const p = join(d, "MEMORY.md");
         if (existsSync(p)) {
           try {
-            scan(readFileSync(p, "utf8"), f);
+            scan(readFileSync(p, "utf8"), label);
           } catch {
             // skip unreadable
           }
+        }
+      }
+      const ug = join(globalMemoryDir, "USER.md");
+      if (existsSync(ug)) {
+        try {
+          scan(readFileSync(ug, "utf8"), "global/USER.md");
+        } catch {
+          // skip unreadable
         }
       }
 
@@ -168,8 +204,7 @@ export default function (pi: ExtensionAPI) {
 
   // per-turn injection of persistent facts (cache-safe hidden tail message)
   pi.on("before_agent_start", () => {
-    if (!existsSync(dir)) return;
-    const facts = readFacts(dir);
+    const facts = readFacts([projectMemoryDir, globalMemoryDir]);
     if (!facts) return;
     return injectionResult(
       "officina-memory",
@@ -178,6 +213,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
+    projectMemoryDir = projectDir(ctx.cwd);
     try {
       sessionDir = ctx.sessionManager.getSessionDir();
     } catch {

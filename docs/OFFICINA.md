@@ -215,3 +215,13 @@ origin): log mode default, block opt-in via TRIS_GUARD_MODE, screening
 browser/webfetch ingested text. Caveman-rules + memory-extractor ports
 recorded as SS2b (dark features, no runtime dependency today). Gates:
 typecheck, 407 tests, praetor PASS, live memory write + one-shot OK.
+
+### SS2a-b — memory goes project-scoped (2026-08-31, owner direction)
+
+Memory is programming memory: it belongs to the project. Two stores:
+project cwd/.officina/MEMORY.md (default target of memory_write;
+versionable, reviewable in diffs) and global
+~/.vitriol/officina/memory/USER.md (owner facts that travel across
+projects). Injection merges both, labeled. memory_search covers both
+stores plus own-session files. Live-verified: project write landed in
+/tmp/proj-x/.officina/MEMORY.md.

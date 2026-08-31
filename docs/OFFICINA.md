@@ -187,3 +187,15 @@ detached from the old repo into ~/.config/trismegistus/config.yaml (real
 file), and the canonical design docs live in docs/officina-archive/.
 The trismegistus repo (now private) is pure history — nothing on this
 machine requires it anymore.
+
+### SS1 + SS5 landed (2026-08-31)
+
+- SS1: little-coder fallback removed from the workshop launcher; validate
+  parity retargeted to officina models.json (shipped default merged with
+  ~/.config/officina/models.json; legacy little-coder path is read-only
+  fallback during transition); hermes custom_providers dropped from port
+  parity. User model override migrated to ~/.config/officina/.
+- SS5: officina/scripts/selfcheck.sh — external-path grep gate, vitest,
+  typecheck, cli pytest, config + keybindings checks, opt-in --live
+  engine smoke. Run before every release tag.
+- Remaining: SS2 gateway fold-in, SS3 repo-map, SS4 state rename.

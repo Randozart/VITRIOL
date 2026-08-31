@@ -55,10 +55,18 @@ const LEGACY_BASE_URL_ENV: Record<string, string> = {
 
 /** Resolution order for the user-override file. First existing path wins. */
 export function resolveOverridePath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  // SS1 (2026-08-31): officina owns its config home first; the little-coder
+  // path remains as a read-only legacy fallback so existing installs keep
+  // working without a migration step.
   if (env.LITTLE_CODER_MODELS_FILE) return env.LITTLE_CODER_MODELS_FILE;
+  if (env.OFFICINA_MODELS_FILE) return env.OFFICINA_MODELS_FILE;
   const xdg = env.XDG_CONFIG_HOME;
-  if (xdg) return join(xdg, "little-coder", "models.json");
   const home = env.HOME || env.USERPROFILE;
+  if (home) {
+    const officina = (xdg ? join(xdg, "officina") : join(home, ".config", "officina")) + "/models.json";
+    if (existsSync(officina)) return officina;
+  }
+  if (xdg) return join(xdg, "little-coder", "models.json");
   if (home) return join(home, ".config", "little-coder", "models.json");
   return undefined;
 }

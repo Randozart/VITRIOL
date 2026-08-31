@@ -133,17 +133,13 @@ def cmd_code(extra: list[str]) -> int:
             argv = [node, str(entry)] + extra
             os.execvpe(argv[0], argv, env)  # never returns
         print("tris code: officina deps missing (officina/node_modules) — falling back to little-coder", file=sys.stderr)
-    # legacy path: little-coder distribution (mining source; sovereignty plan P4 removes this)
-    lc = Path(str(dig(cfg, "paths.little_coder") or (Path.home() / "Desktop/Projects/little-coder")))
-    script = lc / "bin/little-coder.mjs"
-    if not script.exists():
-        print(f"tris code: little-coder not found at {lc}", file=sys.stderr)
-        return 1
-    env = _guarantees(cfg)
-    node = resolve_node(env) or "node"
-    argv = [node, str(script), "--provider", "llamacpp", "--model",
-            os.environ.get("TRIS_LC_MODEL", default_model(cfg))] + extra
-    os.execvpe(argv[0], argv, env)  # never returns
+    print(
+        "tris code: officina workshop not installed.\n"
+        "  cd ~/Desktop/Projects/VITRIOL/officina && npm install\n"
+        "  (or run: vitriol officina)",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def default_model(cfg: dict) -> str:

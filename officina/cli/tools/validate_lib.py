@@ -195,37 +195,24 @@ def _ports_from_components(cfg: dict, want: int) -> dict[str, int]:
             p = _profile_port(pname)
             if p is not None:
                 seen[f"profile:{pname}"] = p
-    lc_port = _port_of(_little_coder_base_url() or "")
-    if lc_port:
-        seen["little-coder/models.json"] = lc_port
-    if _hermes_knows_port(want):
-        seen["hermes/custom_providers"] = want
+    oc_port = _port_of(_officina_base_url() or "")
+    if oc_port:
+        seen["officina/models.json"] = oc_port
     return seen
 
 
-def _little_coder_base_url() -> str | None:
-    mc = HOME / ".config/little-coder/models.json"
-    try:
-        data = json.loads(mc.read_text())
-        for prov in data.get("providers", {}).values():
-            if prov.get("baseUrl"):
-                return str(prov["baseUrl"])
-    except (OSError, ValueError):
-        return None
+def _officina_base_url() -> str | None:
+    """User override first (~/.config/officina), legacy little-coder path as
+    read-only fallback during the SS1 transition (fold-in 2026-08-31)."""
+    for mc in (HOME / ".config/officina/models.json", HOME / ".config/little-coder/models.json"):
+        try:
+            data = json.loads(mc.read_text())
+            for prov in data.get("providers", {}).values():
+                if prov.get("baseUrl"):
+                    return str(prov["baseUrl"])
+        except (OSError, ValueError):
+            continue
     return None
-
-
-def _hermes_knows_port(want: int) -> bool:
-    """True when a VITRIOL-named custom provider in hermes config uses want."""
-    hc = HOME / ".hermes/config.yaml"
-    try:
-        hd = yaml.safe_load(hc.read_text()) or {}
-    except (OSError, ValueError, yaml.YAMLError):
-        return False
-    for cp in hd.get("custom_providers", []) or []:
-        if "VITRIOL" in str(cp.get("name", "")).upper() and _port_of(cp.get("base_url", "")) == want:
-            return True
-    return False
 
 
 def check_port_parity(cfg: dict) -> list[Result]:
@@ -305,32 +292,45 @@ def _parity_result(name: str, ids: set[str]) -> Result | None:
         return None
     if mid in ids:
         return Result(f"parity-modelsjson[{name}]", True, False, f"{mid} known to scaffold")
-    return Result(f"parity-modelsjson[{name}]", False, False, f"{mid} NOT in little-coder models.json ids: {sorted(ids)}")
+    return Result(f"parity-modelsjson[{name}]", False, False, f"{mid} NOT in officina models.json ids: {sorted(ids)}")
 
 
 def check_models_json_parity(cfg: dict) -> list[Result]:
     """P2.7: each referenced profile's model filename must be an id little-coder knows.
 
     The 2026-08-28 lesson: configs went stale in THREE places after a model
-    swap. Parity is checked statically (models.json ids, no engine needed)."""
-    ids = _little_coder_ids()
+    swap. Parity is checked statically (officina models.json ids, no engine
+    needed). SS1 (2026-08-31): little-coder is no longer a parity source."""
+    ids = _officina_ids()
     if ids is None:
-        return [Result("parity-modelsjson", False, True, "little-coder models.json unreadable")]
+        return [Result("parity-modelsjson", False, True, "officina models.json unreadable")]
     names = (dig(cfg, "engine.vitriol.profile"), dig(cfg, "engine.vitriol.smoke_profile"))
     refs = [r for r in (_parity_result(str(n), ids) for n in names if isinstance(n, str) and n) if r]
     return refs
 
 
-def _little_coder_ids() -> set[str] | None:
-    mc = HOME / ".config/little-coder/models.json"
-    try:
-        data = json.loads(mc.read_text())
-        from itertools import chain
+def _officina_ids() -> set[str] | None:
+    """Model ids the workshop scaffold knows: the shipped officina/models.json
+    merged with the user override (~/.config/officina/models.json, legacy
+    little-coder path read-only during SS1 transition)."""
+    from itertools import chain
 
-        groups = (prov.get("models") or [] for prov in data.get("providers", {}).values())
-        return {str(m["id"]) for m in chain.from_iterable(groups) if isinstance(m, dict) and m.get("id")}
-    except (OSError, ValueError, TypeError):
-        return None
+    paths = [Path(__file__).resolve().parents[1] / "models.json",
+             HOME / ".config/officina/models.json",
+             HOME / ".config/little-coder/models.json"]
+    ids: set[str] = set()
+    found = False
+    for mc in paths:
+        if not mc.exists():
+            continue
+        found = True
+        try:
+            data = json.loads(mc.read_text())
+            groups = (prov.get("models") or [] for prov in data.get("providers", {}).values())
+            ids |= {str(m["id"]) for m in chain.from_iterable(groups) if isinstance(m, dict) and m.get("id")}
+        except (OSError, ValueError, TypeError):
+            continue
+    return ids if found else None
 
 
 def validate(config_path: Path) -> Report:

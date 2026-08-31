@@ -1,0 +1,15 @@
+{
+  "_comment": "Officina couplings — alternative providers you can hot-swap to from the default VITRIOL coupling (Lapis Occultus). Copy to ~/.vitriol/officina/couplings.json and edit. apiKeyEnv names an environment variable; $ interpolation is handled by pi.",
+  "couplings": [
+    {
+      "id": "ascensus",
+      "name": "Ascensus – cloud escalation (euro-capped)",
+      "baseUrl": "https://api.z.ai/api/coding/paas/v4",
+      "api": "openai-completions",
+      "apiKeyEnv": "ZAI_API_KEY",
+      "models": [
+        { "id": "glm-5.3-flash", "name": "GLM-5.3 Flash (Ascensus)", "contextWindow": 200000, "maxTokens": 8192 }
+      ]
+    }
+  ]
+}

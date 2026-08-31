@@ -81,6 +81,19 @@ Stay engine-side (never move): llama.cpp fork, DMA executor, KV/cache
 managers, server + /slots /metrics /health /props + checkpoint endpoints,
 cert suite, profiles, fingerprint emission, GPU lane scheduling, bench.
 
+## Couplings (2026-08-31)
+
+The default coupling is **Lapis Occultus – VITRIOL**: whatever settings
+VITRIOL is running with, regardless of which model that is — the endpoint
+is the coupling, the model behind it incidental. Alternative providers are
+hot-swappable mid-session (pi.setModel preserves the conversation):
+`/coupling` lists, `/coupling <id>` swaps, `/coupling lapis-occultus`
+returns to the stone. Couplings come from
+~/.vitriol/officina/couplings.json (shape: officina/couplings.example.json;
+an "ascensus" euro-capped cloud-escalation entry is pre-drafted). This is
+the groundwork for a built-in ascensus tool. The session panel's cordoned
+top frame shows the current coupling name.
+
 ## Bugfix log
 
 - 2026-08-31 (1): editor untypeable at startup — the sidebar overlay

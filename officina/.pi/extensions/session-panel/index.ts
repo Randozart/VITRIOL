@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 
 // session-panel v2 (2026-08-31, owner feedback):
 //
@@ -31,7 +32,9 @@ export default function (pi: ExtensionAPI) {
   let modelId = "";
   let sessionId = "";
   let visible = true;
+  let providerName = "llamacpp";
   let render = () => {};
+  const couplings = loadCouplings();
 
   // Track file modifications from edit/write tool calls.
   pi.on("tool_result", (event) => {
@@ -56,7 +59,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("model_select", (event) => {
-    modelId = (event as { model?: { id?: string } }).model?.id ?? modelId;
+    const m = (event as { model?: { id?: string; provider?: string } }).model;
+    modelId = m?.id ?? modelId;
+    providerName = m?.provider ?? providerName;
     render();
   });
 
@@ -64,14 +69,22 @@ export default function (pi: ExtensionAPI) {
 
   const panelLines = (): string[] => {
     const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
-    const lines = [
-      `◈ session · ${cwd.replace(/^\/home\/[^/]+/, "~")}  ·  ${modelId || "(default)"}  ·  ↑${state.tokensIn} ↓${state.tokensOut} · ${state.turns} turns`,
+    const coupling = couplingDisplay(providerName, modelId, couplings, modelId);
+    const inner: string[] = [
+      `◈ ${coupling}`,
+      `◈ session · ${cwd.replace(/^\/home\/[^/]+/, "~")}  ·  ↑${state.tokensIn} ↓${state.tokensOut} · ${state.turns} turns`,
     ];
     if (files.length > 0) {
-      lines.push(`   files: ${files.map(([p]) => shortPath(p)).join("  ")}`);
+      inner.push(`   files: ${files.map(([p]) => shortPath(p)).join("  ")}`);
     }
-    lines.push(`   /resume prior sessions · /tree tree · /history transcript · /panel toggle`);
-    return lines;
+    inner.push(`   /resume prior · /tree tree · /history transcript · /coupling swap · /panel`);
+    // Cordoned top section (owner request): box-drawn frame, width-aware.
+    const w = Math.min(Math.max(process.stdout.columns ?? 100, 60), 160);
+    const frame = (s: string) => {
+      const cut = s.length > w - 2 ? s.slice(0, w - 5) + "…" : s;
+      return `│ ${cut.padEnd(w - 4)} │`;
+    };
+    return ["╭" + "─".repeat(w - 2) + "╮", ...inner.map(frame), "╰" + "─".repeat(w - 2) + "╯"];
   };
 
   pi.on("session_start", (_event, ctx) => {

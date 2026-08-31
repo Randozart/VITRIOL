@@ -266,3 +266,11 @@ runtime/build-patch.mjs regenerates the patched copy from the pristine
 reference with asserted anchors (P1 seam applied; P2/P3 markers reserved).
 Re-basing on a pi bump = bump pin, re-run build-patch, fix anchors.
 Live: DOCKED-OK one-shot, 415 tests, PTY typing intact with docked active.
+
+### Dev-process rule (2026-08-31, earned the hard way)
+
+VITRIOL/officina is the ONLY canonical tree. The trismegistus archive is
+read-only history — NEVER sync archive → canonical. A reversed rsync
+briefly reverted committed files to stale versions; caught by comparing
+working tree to HEAD and restored from HEAD (nothing authored was lost).
+Going forward, code flows one direction only: edits land in VITRIOL.

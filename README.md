@@ -12,6 +12,46 @@ VITRIOL is my attempt at using every optimization possible to run modern AI mode
 
 Regarding the name, in alchemy, vitriol was considered the ultimate catalyst for transmuting matter. This is something this application aims to do as well. To transform old hardware into a high performant AI transformer. Lead into gold. You know the drill. Aditionally, around the 15th century, the esoteric backcronym was formed: *"Visita Interiora Terrae Rectificando Invenies Occultum Lapidem"*. In a way, this is what we are doing. We are reaching down into the bowels of the computer, rectifying the data streams, and running inference on our newfound philosopher's stone. Yes, I know how incredibly silly this all sounds, but it makes me happy to be using archaic alchemical terminology. Regarding the logo: In alchemical texts and artwork, vitriol was often depicted as a "Green Lion devouring the Sun". This is a metaphor for sulfuric acid dissolving base metals (symbolically represented by the green lion) to extract and purify precious gold (the alchemical symbol for which is the sun).
 
+## ⚗️ Officina — the built-in coding workshop
+
+VITRIOL is not just an inference engine — it ships **Officina**, a
+full-screen agentic programming environment that is *detached-but-coupled*:
+it runs as its own workspace in whatever project directory you point it at,
+yet it is welded to the engine over the HTTP surface and uses that coupling
+for real optimization.
+
+```bash
+vitriol serve          # the engine wakes up (any lane, any model)
+cd ~/my-project        # the workshop opens for THIS directory
+vitriol officina       # the stone greets you; start working
+```
+
+What the tight coupling buys you — none of which a generic agent harness
+can do:
+
+- **Live engine telemetry in your editor.** Braille gradient gauges (the
+  same ones the engine TUI draws) show slot occupancy, decode tok/s, and
+  boot decode totals, streamed from `/metrics` and `/slots`. You never
+  open a second terminal to know how far along your model is.
+- **Context tuned to the real window.** Officina knows the engine's
+  certified context — it probes `/props` at startup and registers the
+  *actual* `n_ctx`, not a catalog guess.
+- **Checkpoint-aware.** Warm KV checkpoint/restore and `/rewind` (worktree
+  + context from one turn key) ride the engine's checkpoint endpoints.
+- **The composer, the panel, the stone.** A braille watermark of the
+  VITRIOL logo greets an empty workshop and dissolves on first input; a
+  cordoned panel shows your coupling, folder, token flow, and touched
+  files; the composer sits pinned at the floor of the screen.
+- **Couplings.** The default coupling is *Lapis Occultus – VITRIOL*:
+  whatever the engine is serving, we use. Alternative providers (e.g. a
+  euro-capped cloud escalation) hot-swap mid-session with the conversation
+  intact.
+
+Officina is self-contained in [`officina/`](officina/) and [
+`docs/OFFICINA.md`](docs/OFFICINA.md) is its manual: extensions, Plan/Build
+agent modes (`TAB`), `/history`, `/panel`, `/resume`, couplings, and the
+design law — upstreams are mined, the workshop is ours.
+
 ## The three wars (chapter two)
 
 Everything above was written during war one and is kept for the record.

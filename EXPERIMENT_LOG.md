@@ -1319,3 +1319,44 @@ NOT CHANGED (deliberate):
 
 VALIDATION: grep sweep for GPL references in *.md — only exempt classes remain (kernel
 MODULE_LICENSE, historical records, third-party project lists).
+
+## 2026-08-31 — Qwen3.8-27B Q3_K_M master retarget: dual-GPU boot restored (R3-gate boot record)
+
+WHAT: Master profile retargeted UD-IQ3_S → Q3_K_M (13.8 GB,
+~/Downloads/Qwen3.8-27B-Q3_K_M.gguf), tensor_split 24,12 → 22,14, ctx 81920,
+mmproj F16 armed, kv q4_0/q4_0 ubatch 64, sparse, engine vitriol-dma, score=off,
+pool_reset=0 (F2: profile [kv] canonical, unit env overrides removed).
+
+WHY: 580xx legacy driver swap left the IQ3_S path stale; Q3_K_M is the
+R3-gate quant (POST-MIGRATION-PLAN 2026-08-31).
+
+BLOCKER FOUND + FIXED: first boot crash-looped at warmup decode —
+"no kernel image is available for execution on the device" on CUDA1 (GTX
+1070 Ti, sm_61) inside ggml_cuda_kernel_can_use_pdl / fused rms_norm
+(cudaFuncGetAttributes). Root cause: cuda 13.3.1-1 (installed 2026-08-30)
+dropped Pascal targets; the 08-31 build-ku rebuild carried arch=86 only.
+Fix: side-by-side CUDA 12.9.1 toolkit (~/toolkits/cuda-12.9, Arch Archive
+extract) + gcc14 host compiler (nvcc 12.9 caps host GCC at 14; system is
+16.2) + rebuild arch 61;86 (build-ku-cu12, recipe in POST-MIGRATION-PLAN
+2026-08-31). Standing rule: dual-GPU builds use cu12.9 nvcc + g++-14 until
+the 1070 Ti retires. NOTE: a 10:19 build-ku rebuild without explicit arch
+reproduced the 86-only trap — the recipe's -D flags are mandatory.
+
+FINGERPRINT (boot 10:59, vitriol-server.service, build-ku-cu12 @ b1572):
+VITRIOL-FINGERPRINT model=Qwen3.8-27B-Q3_K_M.gguf ts=22,14 c=81920 kv=q4_0/q4_0 fa=on ub=64 mode=off engine=vitriol-dma ckpt=8192 lru=0 sparse=sparse score=off pool_reset=0 ssp=1 cram=1024 vis=on
+
+RESULTS (spot checks, NOT filled-context benchs — Rule 5):
+- /health ok after ~36 s; /props: n_ctx=81920, modalities.vision=True
+- VRAM at idle: CUDA0 10,589/12,288 MiB; CUDA1 6,182/8,192 MiB (desktop running)
+- Direct smoke TRISMEGISTUS-OK; scaffold chain LITTLE-CODER-VITRIOL-LINK-OK
+- First vision e2e on master: 64x64 red PNG → "Red", 12.0 t/s generation
+- Earlier spot decode on this hardware fingerprint: 88.2 ms/tok ≈ 12.8 t/s
+  (single short turn; prefill ~21 t/s) — indicative only
+
+CERT STATUS: DEV-cert-pending (Rule 6). No depth-filled certification has
+run on this fingerprint; the 2026-08-24 numbers (96,836 tok @ 11.32 t/s,
+UD-IQ3_S, score=probe era) do NOT transfer. R3 baselines require the cert
+suite before any benchmark claim.
+
+NEXT: cert suite on this fingerprint → R3 baseline table (t/s, tok/task,
+success rate) → OOM ladder documented but unused (fits at 22,14/81920).

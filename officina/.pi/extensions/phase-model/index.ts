@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { honey, muted as gray } from "../_shared/vitriolum.ts";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,8 +31,6 @@ import {
 // a user-chosen handover mode.
 
 const INDICATOR_KEY = "phase-model";
-const gray = (s: string) => `\x1b[90m${s}\x1b[39m`;
-const honey = (s: string) => `\x1b[38;2;225;90;31m${s}\x1b[39m`;
 
 interface State {
   planModel?: string;

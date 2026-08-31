@@ -27,6 +27,18 @@ echo "── 2. officina tests + typecheck ──"
 if (cd "$HERE" && npx vitest --run .pi/extensions >/dev/null 2>&1); then ok "vitest extensions"; else bad "vitest extensions"; fi
 if (cd "$HERE" && npm run typecheck >/dev/null 2>&1); then ok "typecheck"; else bad "typecheck"; fi
 
+echo "── 2b. Vitriolum palette parity (vitriol-tui/src/theme.rs ↔ theme/officina.json ↔ .pi/extensions/_shared/vitriolum.ts) ──"
+PAL_OK=1
+for hex in 0d1117 ffd700 00ffff 39ff14 ff4444 ff5f1f 8b949e e0e0e0 2e5fa3; do
+  if grep -qi "$hex" "$VITRIOL/officina/theme/officina.json" \
+    && grep -qi "$hex" "$VITRIOL/officina/.pi/extensions/_shared/vitriolum.ts"; then
+    ok "palette: #$hex (json + extensions)"
+  else
+    bad "palette: #$hex drifted (check officina.json / _shared/vitriolum.ts)"
+    PAL_OK=0
+  fi
+done
+
 echo "── 3. cli tests ──"
 if (cd "$HERE/cli" && python3 -m pytest tools/tests -q >/dev/null 2>&1) \
     || (cd "$HERE/cli" && "${HOME}/venvs/tris/bin/python" -m pytest tools/tests -q >/dev/null 2>&1); then

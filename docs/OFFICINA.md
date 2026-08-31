@@ -316,10 +316,55 @@ on the theme's panel color #161b22 (theme.rs PANEL) instead of the bare
 #0d1117 substrate — the sidebar reads as a distinct surface, matching the
 VS Code Officina-dark panel treatment. Applied in OfficinaSplit
 (build-patch.mjs) as a per-row bg fill + reset; the gap column stays
-substrate.
+substrate. Fit fixes (second PTY pass, pyte screen-render proof): the
+sidebar slot is 42 cells so the panel's 40-cell box never clips, and the
+panel now ANSI-aware-wraps its content rows to the box interior (frame
+columns always align) with narrow-mode compaction: coupling model suffix
+dropped, session id dropped, short key hints.
 
 Enforcement: `_shared/vitriolum.test.ts` (4 tests) parses theme.rs
 Color::Rgb triplets and officina.json vars and fails on any drift;
 selfcheck section 2b greps the 9 core hexes across json + extension
 palette. No palette value was replaced — the theme is the same; only the
 off-palette duplicate is gone.
+
+### Sidebar content upgrade — engine-truth cockpit (2026-08-31, night)
+
+Mined from Crush (`sidebar.go`: context gauge, files+diffcounts,
+focus-when-scrollable) and OpenCode (`sidebar.tsx`: 42-col panel,
+`backgroundPanel`, context block with % + tokens). Adopted: context row
+(braille capacity gauge + % + exact filled/window tokens from
+`ctx.getContextUsage()` — honest `--` right after compaction), engine row
+(slots gauge + tok/s or `idle` + decoded-this-boot), files with real
+`+adds −dels` parsed from `EditToolDetails.patch`. Not adopted: LSP/MCP/
+skills sections, cost, collapsible trees (need a scrollable sidebar).
+Deferred: live plan/todo rows (needs a shared phase-state module),
+session title. New: `_shared/engine.ts` — ONE shared engine poll
+loop (subscribe/snapshot) now feeds both vitriol-decode's widget and the
+sidebar; vitriol-decode refactored onto it, parsers still in decode.ts.
+
+### FOCUS-TEST experiment — interactive sidebar (2026-08-31, night)
+
+Question: can an in-layout (non-overlay) sidebar component safely take
+keyboard focus in the patched interactive-mode? Rig (env-gated,
+`OFFICINA_SIDEBAR_FOCUS_TEST=1`): a `FocusableSidebar` wrapper in
+OfficinaSplit with `handleInput`, focused at constructor+6s, editor
+refocused at +12s; PTY/pyte verdicts per phase.
+
+Results: routing to the wrapper mechanically WORKS (`setFocus` by
+reference delivers keys; wrapper echoed typed text; editor recovered on
+refocus). BUT keystrokes were simultaneously echoed in the main column
+AND captured by the sidebar across phases, with focus appearing to flip
+against the timer schedule — evidence of MULTIPLE InteractiveMode/
+TUI instances (or re-entrant input delivery) in one session: the same
+keystroke reaching several focused components, and two sets of rig
+timers firing. One run also showed duplicate sidebar boxes rendered.
+
+VERDICT: an interactive sidebar is BLOCKED, not by the overlay bug, but
+by an instance/lifecycle layer problem (double construction and/or double
+input delivery) that must be root-caused in pi 0.83.0 before any
+focusable component can coexist with the editor. Roadmap: collapsed
+trees, scrollable sidebar, and persisted toggle stay deferred until that
+is fixed upstream or patched in the fork. Production mode unaffected
+(rig is env-gated); typing, panel, and suites all verified after the
+experiment.

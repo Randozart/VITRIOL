@@ -5,7 +5,7 @@
 // `vitriol officina` from any directory claims the terminal and hands you a
 // programming environment tuned for local inference, speaking the engine's
 // Vitriolum visual language and reporting live engine truth. Runtime is
-// pi-coding-agent (Apache-2.0, pinned 0.83.0) as a LIBRARY/CLI; this entry
+// pi-coding-agent (MIT, pinned 0.83.0) as a LIBRARY/CLI; this entry
 // binds OUR extensions + OUR theme + the VITRIOL endpoint. First-Party
 // Mandate: AGENTS.md 2026-08-31; naming decision: POST-MIGRATION-PLAN.md
 // (2026-08-31, owner-approved "VITRIOL Officina").
@@ -71,6 +71,28 @@ function ensureTabUnbound() {
 }
 ensureTabUnbound();
 
+// Officina branding (owner request 2026-08-31): pi reads APP_NAME/APP_TITLE
+// from `piConfig.name` in its own package.json (dist/config.js) — the same
+// field marks the install as a fork/rebrand, which also disables pi's
+// first-time-setup prompts. Set it idempotently so the workshop presents as
+// "officina" everywhere pi renders its own name (logo line, terminal title,
+// /help text, update strings). The CONFIG DIR stays ~/.pi — repointing
+// piConfig.configDir would orphan the user's keybindings/sessions, and the
+// directory is invisible plumbing anyway. npm install resets this file;
+// the check below re-applies it on the next startup.
+function ensureBranding() {
+  try {
+    const pkgPath = join(pkgRoot, "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+    if (pkg.piConfig?.name === "officina") return;
+    pkg.piConfig = { ...(pkg.piConfig ?? {}), name: "officina" };
+    writeFileSync(pkgPath, JSON.stringify(pkg, null, "\t") + "\n");
+  } catch {
+    // cosmetic; an unbranded run just says "pi" where it would say "officina"
+  }
+}
+ensureBranding();
+
 // Bind OUR stack, then the user's own flags (pi's --extension/--theme flags
 // are repeatable, so user-supplied ones ADD to ours).
 const bound = [];
@@ -95,6 +117,14 @@ if (docked) {
     parentURL: pathToFileURL(join(here, "officina.mjs")),
     data: { pkgDist: join(pkgRoot, "dist"), docked: true },
   });
+  // Module hooks don't cross process boundaries: the fullscreen path below
+  // spawns pi as a child, so the hook must be re-registered there via
+  // NODE_OPTIONS. runtime/register-hooks.mjs reads these env vars.
+  process.env.OFFICINA_PKG_DIST = join(pkgRoot, "dist");
+  const hookImport = pathToFileURL(join(here, "runtime", "register-hooks.mjs")).href;
+  process.env.NODE_OPTIONS = [process.env.NODE_OPTIONS, `--import ${hookImport}`]
+    .filter(Boolean)
+    .join(" ");
 }
 
 // pi's CLI parses process.argv itself (argv[0] is the program path it cares
@@ -115,12 +145,14 @@ if (process.stdout.isTTY && process.env.TRIS_NO_FULLSCREEN !== "1") {
   const OFFICINA_BG = "\x1b]11;#0d1117\x07";
   const RESTORE_BG = "\x1b]111\x07";
   process.stdout.write("\x1b[?1049h" + OFFICINA_BG + "\x1b[H\x1b[2J");
-  // Pin the composer to the bottom (owner request 2026-08-31): pre-push the
-  // render origin down so the editor sits at the screen floor on a fresh
-  // session; as content grows past the reserve, the view scrolls naturally
-  // - the composer stays pinned, like Crush/OpenCode.
-  const reserve = Math.max(2, (process.stdout.rows ?? 40) - 8);
-  process.stdout.write("\n".repeat(reserve));
+  // Pin the composer to the bottom — CLASSIC MODE ONLY. In docked mode the
+  // patched interactive-mode fills remaining viewport rows natively
+  // ([officina P2] OfficinaSplit), so a pre-push here would just insert a
+  // scrollback gap above the first frame.
+  if (!docked) {
+    const reserve = Math.max(2, (process.stdout.rows ?? 40) - 8);
+    process.stdout.write("\n".repeat(reserve));
+  }
   const restore = () => process.stdout.write("\x1b[?1049l" + RESTORE_BG);
   process.on("exit", restore);
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {

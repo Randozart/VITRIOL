@@ -707,4 +707,27 @@ VITRIOL stands on the shoulders of giants. Every core insight — DMA over PCIe,
 | **[GraphRAG](https://arxiv.org/abs/2404.16130)** — Edge, Trinh et al. (Microsoft, 2024) | Replaced flat vector DBs with LLM-derived knowledge graphs for multi-hop retrieval (spreading activation). Informs our cascading memory retrieval. |
 | **[Aider](https://github.com/paul-gauthier/aider)** — Paul Gauthier (2023) | Gold standard for tree-sitter AST-based repo mapping. Informs future AST code graphing for context injection. |
 
+### Agent Harness & Context Efficiency (Officina)
+
+| Project | What We Learned |
+|---------|-----------------|
+| **[Claude Code](https://github.com/anthropics/claude-code)** (Anthropic) | Context editing: evict consumed tool results behind a small keep-window instead of carrying them forever; externalized task lists (TodoWrite) that survive compaction because they live on disk, not in history; permission-gate UX. Patterns only — no code. |
+| **[Aider](https://github.com/Aider-AI/aider)** — Paul Gauthier | tree-sitter symbol graph + PageRank repo map: ~500 structural tokens replace 5–10K of blind file reads. Implemented in `repo-map`. |
+| **[OpenCode](https://github.com/opencode-ai/opencode)** | Per-edit diagnostic loop (check → auto-repair → re-check, ~300-token injected verdicts) and per-turn git snapshots under a private ref. Implemented in `diagnostics-loop` and `snapshot`. |
+| **[Crush](https://github.com/charmbracelet/crush)** v0.91.2 (FSL-1.1-MIT) | Small-model compaction lane: summarization runs on the fast local model while the big model only handles agent turns (our `small-lane`, mellum2 @ 11–12 t/s); Crush-grade live status presentation. PATTERNS only, no code (license incompatible). |
+| **[RTK](https://github.com/rtk-ai/rtk)** | Entry-side reduction of command output (exit status + error lines + tail, 60–90% smaller) before it costs a context token; full payload parked on disk. Implemented in `rtk-output`. |
+| **trismegistus / hermes-plugins** (owner-authored, MIT) | Injection guard (untrusted-content discipline), caveman deterministic compressor (−65% measured), memory-extractor candidate rules with human curation. Ported to TypeScript, headers cite origin. |
+| **[pi-coding-agent](https://github.com/earendil-works/pi-coding-agent)** (MIT, pinned 0.83.0) | Runtime substrate: extension/event API (`tool_call` gates, `context` middleware, tail ride-alongs), fork-rebrand hook. Library per the First-Party Mandate — mined, never patched in place. |
+| **KV-cache prefix discipline** (empirical, this repo) | Per-turn guidance travels as hidden tail messages, never system-prompt edits — editing the prefix invalidated 120K cached tokens mid-conversation (caught with llama.cpp request tracing). See `.pi/extensions/_shared/inject.ts`. |
+
+Measured result of the stack (2026-08-31): **~20K live context against ~200K
+cumulative offloaded** in a working session (~10:1 discard ratio) — full
+record in `.opencode/plans/officina-context-efficiency-record-2026-08-31.md`.
+
+See `docs/PROVENANCE.md` for the file-level citation registry, and
+`docs/provenance/` for per-module headers. VITRIOL is licensed
+`Apache-2.0 OR MIT` (see `LICENSE`, `LICENSE-MIT`); upstream projects are
+mined for insight, never depended on as runtimes, and GPL sources are
+re-derived only.
+
 See `docs/OPTIMIZATION_PLAN.md` for the full V2 roadmap with implementation phases.

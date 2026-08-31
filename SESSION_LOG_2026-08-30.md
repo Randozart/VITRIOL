@@ -100,3 +100,19 @@ the transplant is behaviorally clean.
    test-tq3-prefill PASS. Build sm_86 only (CUDA 13 dropped Pascal).
 3. Port the expert-LRU/pin/prefetch hook sites if MoE serving resumes.
 4. ~~Commit the `vitriol-ku` branch~~ — DONE: c84097e10.
+
+## 7. Officina session addendum (2026-08-31, late)
+
+Six new algorithmic-support extensions landed in `officina/.pi/extensions/`
+(format-gate, edit-churn, diff-fidelity, verify-contract, import-lint,
+session-ledger; plan: `.opencode/plans/officina-algorithmic-support-2026-08-31.md`).
+Layout: sidebar bottom-anchored in OfficinaSplit (pi-tui viewport is the
+bottom N lines — top-anchored panel scrolled away); Plan/Build mode now
+bold-indicated in both directions (widget + sidebar badge via
+`_shared/agent-mode.ts`). Branding: `ensureBranding()` rebrands the pinned
+runtime to "officina" via pi's native `piConfig.name` fork hook.
+
+Full record of the built pipeline + research lineage (Claude Code, Aider,
+OpenCode, Crush, RTK, trismegistus/hermes-plugins) and why 84k context feels
+limitless: `.opencode/plans/officina-context-efficiency-record-2026-08-31.md`.
+Tests: 445 pass, typecheck clean.

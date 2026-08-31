@@ -16,7 +16,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 
-const TARGET_SUFFIX = "/dist/modes/interactive/interactive-mode.js";
+// [officina] patched targets: docked interactive-mode + session selector
+// (empty-state honesty fix, owner report 2026-08-31).
+const PATCHED = new Map([
+  ["/dist/modes/interactive/interactive-mode.js", "interactive-mode.officina.js"],
+  ["/dist/modes/interactive/components/session-selector.js", "session-selector.officina.js"],
+]);
+function originalUrlFor(parentPath) {
+  if (!pkgDist) return null;
+  for (const suffix of PATCHED.keys()) {
+    if (parentPath.endsWith(suffix)) return pathToFileURL(join(pkgDist, suffix.slice("/dist/".length))).href;
+  }
+  return null;
+}
 
 // pkgDir arrives via register()'s initialize data — hooks run on a separate
 // thread, so main-thread env changes after register() are not visible here.
@@ -30,10 +42,6 @@ export function initialize(data) {
   dockedActive = !(data && data.docked === false);
 }
 
-function originalUrl() {
-  return pkgDist ? pathToFileURL(join(pkgDist, "modes", "interactive", "interactive-mode.js")).href : null;
-}
-
 function patchedSourcePath() {
   // runtime/patched/interactive-mode.officina.js lives next to this hook's
   // sibling directory inside officina/runtime
@@ -43,11 +51,10 @@ function patchedSourcePath() {
 }
 
 export function resolve(specifier, context, nextResolve) {
-  const orig = dockedActive ? originalUrl() : null;
-  if (orig && context.parentURL && String(context.parentURL).startsWith("file:")) {
-    const parentPath = fileURLToPath(context.parentURL);
-    if (parentPath.endsWith(TARGET_SUFFIX)) {
-      // Relative imports from INSIDE the patched source must resolve as if
+  if (dockedActive && context.parentURL && String(context.parentURL).startsWith("file:")) {
+    const orig = originalUrlFor(fileURLToPath(context.parentURL));
+    if (orig) {
+      // Relative imports from INSIDE a patched source must resolve as if
       // they came from the original file. Re-anchor via a synthetic parent.
       // orig is already a file:// URL string - pass it straight through
       return nextResolve(specifier, { ...context, parentURL: orig });
@@ -57,12 +64,13 @@ export function resolve(specifier, context, nextResolve) {
 }
 
 export function load(url, context, nextLoad) {
-  const orig = dockedActive ? originalUrl() : null;
-  if (dockedActive && orig && url === orig) {
-    const patched = patchedSourcePath();
-    if (patched) {
-      const source = readFileSync(patched, "utf-8");
-      return { format: "module", source, shortCircuit: true };
+  if (dockedActive) {
+    for (const [suffix, patchedName] of PATCHED) {
+      const orig = pkgDist ? pathToFileURL(join(pkgDist, suffix.slice("/dist/".length))).href : null;
+      if (orig && url === orig) {
+        const source = readFileSync(join(fileURLToPath(new URL(".", import.meta.url)), "patched", patchedName), "utf-8");
+        return { format: "module", source, shortCircuit: true };
+      }
     }
   }
   return nextLoad(url, context);

@@ -12,7 +12,21 @@ import { join } from "node:path";
 // so the stage's own kill switch already gates it (Rule 15: switch off =
 // silence, no separate events kill switch needed).
 
-export type EventSource = "lc-clearer" | "lc-rtk" | "lc-ckpt" | "lc-relay" | "lc-tasks" | "lc-perms" | "lc-lane";
+export type EventSource =
+  | "lc-clearer"
+  | "lc-rtk"
+  | "lc-ckpt"
+  | "lc-relay"
+  | "lc-tasks"
+  | "lc-perms"
+  | "lc-lane"
+  | "lc-format"
+  | "lc-churn"
+  | "lc-fidelity"
+  | "lc-contract"
+  | "lc-imports"
+  | "lc-ledger"
+  | "lc-bg";
 
 export interface HarnessEvent {
   ts: number;

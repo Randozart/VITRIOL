@@ -1,6 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "node:fs";
+import { getAgentMode } from "../_shared/agent-mode.ts";
 import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
+import { fgSeq } from "../_shared/vitriolum.ts";
+import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
+import { RAMPS, renderGauge } from "../vitriol-decode/braille.ts";
+import { fmtRate, fmtTokens } from "../vitriol-decode/decode.ts";
 
 // session-panel v3b (2026-08-31, owner feedback):
 //
@@ -28,22 +33,27 @@ import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 // layout fork tracked in docs/OFFICINA.md.
 
 interface PanelState {
-  files: Map<string, number>;
+  files: Map<string, { ts: number; add: number; del: number }>;
   tokensIn: number;
   tokensOut: number;
   turns: number;
 }
 
-const GOLD = "\x1b[38;2;255;215;0m";
-const SOLVENT = "\x1b[38;2;0;255;255m";
-const SAFETY = "\x1b[38;2;57;255;20m";
-const VIOLET = "\x1b[38;2;178;148;187m";
-const MUTED = "\x1b[38;2;139;148;158m";
+// Colors: Vitriolum accents on values only (gold coupling, solvent folder,
+// safety-green token flow, violet files, muted labels/frame) — palette from
+// _shared/vitriolum.ts (single source, mirrors vitriol-tui/src/theme.rs).
+const GOLD = fgSeq("sovereignty");
+const SOLVENT = fgSeq("solvent");
+const SAFETY = fgSeq("safety");
+const VIOLET = fgSeq("violet");
+const MUTED = fgSeq("gray");
 const RESET = "\x1b[0m";
 const c = (color: string, txt: string) => color + txt + RESET;
+const SUBSTRATE = fgSeq("substrate");
 const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
-// Docked-sidebar width (cells): narrow column, same clamp floor as panelLines.
-const SIDEBAR_W = 34;
+// Docked-sidebar width (cells): panel box renders at 40; slot gives margin
+// so OfficinaSplit never wraps or clips the frame.
+const SIDEBAR_W = 42;
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
@@ -57,6 +67,9 @@ export default function (pi: ExtensionAPI) {
   let hidePanel: (() => void) | null = null;
   let showPanelFn: (() => void) | null = null;
   const couplings = loadCouplings();
+  // Context usage from pi (window-aware); null tokens = unknown (honest dash).
+  let ctxUsage: { tokens: number | null; contextWindow: number; percent: number | null } | null = null;
+  let sessionCtx: any = null;
 
   const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
 
@@ -65,21 +78,103 @@ export default function (pi: ExtensionAPI) {
     return `│ ${x}${" ".repeat(pad)} │`;
   };
 
-  const panelLines = (width: number): string[] => {
-    const w = Math.min(Math.max(width - 2, 40), 160);
-    const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
-    const coupling = couplingDisplay(providerName, modelId, couplings, modelId);
-    const home = cwd.replace(/^\/home\/[^/]+/, "~");
-    const inner = [
-      `${c(GOLD, "◈ " + coupling)}`,
-      `${c(MUTED, "session · ")}${c(SOLVENT, home)}${c(MUTED, "  ·  ")}${c(SAFETY, `↑${state.tokensIn}`)}${c(MUTED, " ↓")}${c(SAFETY, `${state.tokensOut}`)}${c(MUTED, ` · ${state.turns} turns`)}${sessionId ? c(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`,
-    ];
-    if (files.length > 0) {
-      inner.push(`${c(MUTED, "files: ")}${files.map(([p]) => c(VIOLET, shortPath(p))).join(c(MUTED, "  "))}`);
+  // ANSI-aware greedy word wrap: visible cells (SGR zero-width) per line <= width.
+  const wrapAnsi = (s: string, width: number): string[] => {
+    if (visibleLen(s) <= width) return [s];
+    const words = s.split(" ");
+    const lines: string[] = [];
+    let cur = "";
+    for (const word of words) {
+      const candidate = cur ? cur + " " + word : word;
+      if (visibleLen(candidate) <= width) {
+        cur = candidate;
+      } else {
+        if (cur) lines.push(cur);
+        cur = word;
+      }
     }
-    inner.push(c(MUTED, "/resume prior · /tree tree · /history transcript · /coupling swap · /panel"));
+    if (cur) lines.push(cur);
+    return lines;
+  };
+
+  const panelLines = (width: number): string[] => {
+    const narrow = width < 60; // docked sidebar: compact content, wrapped rows
+    const w = narrow ? width - 2 : Math.min(Math.max(width - 2, 40), 160);
+    const innerW = w - 4;
+    const files = [...state.files.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, 4);
+    const couplingFull = couplingDisplay(providerName, modelId, couplings, modelId);
+    // Narrow mode: drop the model suffix from the coupling line (it gets its
+    // own wrapped row otherwise and the box has 10 rows total upstream cap).
+    const coupling = narrow ? couplingFull.split(" · ")[0] : couplingFull;
+    const home = cwd.replace(/^\/home\/[^/]+/, "~");
+    // Mode badge (owner request 2026-08-31): always visible, BOLD, so the
+    // Plan/Build state is unambiguous from inside the sidebar too. PLAN is
+    // loud (antidote orange), BUILD quiet (muted gray) — same discipline as
+    // the agent-mode widget below the editor.
+    const planMode = getAgentMode() === "plan";
+    const badge = planMode
+      ? `${"\x1b[1m"}${fgSeq("antidote")}► PLAN${"\x1b[0m"}`
+      : `${"\x1b[1m"}${fgSeq("gray")}▪ BUILD${"\x1b[0m"}`;
+    const inner = [
+      `${c(GOLD, "◈ " + coupling)}${c(MUTED, "  ·  ")}${badge}`,
+    ];
+    // Context row: braille capacity gauge + % of window + exact filled count.
+    // Honest dashes when pi can't estimate (right after compaction).
+    if (ctxUsage && ctxUsage.contextWindow > 0) {
+      const pct = ctxUsage.percent;
+      const g = renderGauge(RAMPS.capacity, Math.min(1, (pct ?? 0) / 100), 8);
+      const filled = ctxUsage.tokens != null ? fmtTokens(ctxUsage.tokens) : "--";
+      inner.push(
+        `${c(MUTED, "ctx ")}${g} ${pct != null ? c(SAFETY, pct + "%") : c(MUTED, "--")} ${c(MUTED, "· " + filled + " of " + fmtTokens(ctxUsage.contextWindow))}`,
+      );
+    }
+    // Engine row: throughput truth from the shared poller (_shared/engine.ts).
+    const eng = getEngineSnapshot();
+    if (eng.up) {
+      const busy = eng.busy;
+      const total = Math.max(eng.slots.length, busy, 1);
+      const decoding = eng.delta.tps > 0 || busy > 0;
+      const g = renderGauge(
+        decoding ? RAMPS.activity : RAMPS.mercury,
+        decoding ? Math.max(0.08, Math.min(1, eng.delta.tps / 25)) : 0.08,
+        8,
+      );
+      inner.push(
+        `${c(MUTED, "eng ")}${g} ${decoding ? c(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : c(MUTED, "idle")} ${c(MUTED, `· ${busy}/${total} · ${fmtTokens(eng.total)}`)}`,
+      );
+      // Ingestion row (owner request 2026-08-31): live prefill rate. Appears
+      // only while prompt tokens are flowing — its presence IS the liveliness
+      // signal. Prefill saturates compute, so the scale runs to 100 tok/s
+      // (vs decode's 25) on the mercury ramp to distinguish it from decode.
+      const ing = eng.ingest;
+      if (ing && ing.tps > 0.5) {
+        const g2 = renderGauge(RAMPS.mercury, Math.min(1, ing.tps / 100), 8);
+        inner.push(
+          `${c(MUTED, "ing ")}${g2} ${c(SOLVENT, fmtRate(ing.tps) + " tok/s")}${c(MUTED, ` · +${fmtTokens(ing.tokens)}`)}`,
+        );
+      }
+    }
+    inner.push(
+      `${c(MUTED, "session · ")}${c(SOLVENT, home)}${c(MUTED, "  ·  ")}${c(SAFETY, `↑${state.tokensIn}`)}${c(MUTED, " ↓")}${c(SAFETY, `${state.tokensOut}`)}${c(MUTED, ` · ${state.turns} turns`)}${sessionId && !narrow ? c(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`,
+    );
+    if (files.length > 0) {
+      inner.push(
+        `${c(MUTED, "files: ")}${files.map(([p, f]) => {
+          const counts = f.add || f.del ? ` ${c(SAFETY, "+" + f.add)} ${c(SUBSTRATE, "−" + f.del)}` : "";
+          return c(VIOLET, shortPath(p)) + counts;
+        }).join(c(MUTED, "  "))}`,
+      );
+    }
+    inner.push(
+      narrow
+        ? c(MUTED, "/history · /coupling · /panel")
+        : c(MUTED, "/resume prior · /tree tree · /history transcript · /coupling swap · /panel"),
+    );
+    // Wrap every content row to the inner width BEFORE framing so the box
+    // border always lands on the same column (frame() never wraps).
+    const rows = inner.flatMap((l) => wrapAnsi(l, innerW));
     const bar = "─".repeat(w - 2);
-    return ["╭" + c(MUTED, bar) + "╮", ...inner.map((l) => frame(l, w)), "╰" + c(MUTED, bar) + "╯"];
+    return ["╭" + c(MUTED, bar) + "╮", ...rows.map((l) => frame(l, w)), "╰" + c(MUTED, bar) + "╯"];
   };
 
   let tui: any = null;
@@ -88,15 +183,35 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", (event) => {
     if (event.toolName !== "edit" && event.toolName !== "write") return;
     const p = event.input?.file_path ?? event.input?.path;
-    if (typeof p === "string") {
-      state.files.set(p, Date.now());
-      touch();
+    if (typeof p !== "string") return;
+    // Diff counts from the edit tool's unified patch (write: whole file added).
+    let add = 0;
+    let del = 0;
+    const details = (event as { details?: { patch?: string; diff?: string } }).details;
+    const patch = details?.patch ?? details?.diff;
+    if (typeof patch === "string") {
+      for (const line of patch.split("\n")) {
+        if (line.startsWith("+") && !line.startsWith("+++")) add++;
+        else if (line.startsWith("-") && !line.startsWith("---")) del++;
+      }
     }
+    const prev = state.files.get(p);
+    state.files.set(p, {
+      ts: Date.now(),
+      add: (prev?.add ?? 0) + add,
+      del: (prev?.del ?? 0) + del,
+    });
+    touch();
   });
 
   pi.on("message_end", (event) => {
     const msg = event.message as { role?: string; usage?: Record<string, number> };
     if (msg?.role !== "assistant") return;
+    try {
+      ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage;
+    } catch {
+      // decoration, never load-bearing
+    }
     state.turns += 1;
     const u = msg.usage;
     if (u) {
@@ -123,6 +238,16 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.setTitle?.(`officina · ${cwd.replace(/^\/home\/[^/]+/, "~")}`);
     } catch {
       // decoration, never load-bearing
+    }
+    sessionCtx = ctx;
+    try {
+      ctxUsage = ctx.getContextUsage?.() ?? null;
+    } catch {
+      ctxUsage = null;
+    }
+    if (ctx.hasUI) {
+      startEnginePolling();
+      onEngineUpdate(() => render());
     }
     render = () => {
       try {

@@ -8,10 +8,9 @@
 // doesn't depend on the active theme.
 
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
+import { honey, muted as gray } from "../_shared/vitriolum.ts";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const honey = (s: string) => `\x1b[38;2;225;90;31m${s}\x1b[39m`;
-const gray = (s: string) => `\x1b[90m${s}\x1b[39m`;
 
 function fmtElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));

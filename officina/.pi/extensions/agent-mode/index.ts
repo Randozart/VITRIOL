@@ -2,6 +2,8 @@
 // Provenance: original work, this repo (First-Party Mandate). See header
 // block below for behavior and limits.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { setAgentMode, type AgentMode } from "../_shared/agent-mode.ts";
+import { fgSeq } from "../_shared/vitriolum.ts";
 import { injectionResult } from "../_shared/inject.ts";
 
 // agent-mode (2026-08-31, owner request): Plan / Build agent modes.
@@ -33,17 +35,29 @@ export default function (pi: ExtensionAPI) {
   let mode: Mode = "build";
   let ui: any = null;
 
+  // Indicator discipline (owner request 2026-08-31): the mode must be
+  // unambiguous at a glance in BOTH directions — the absence of a PLAN
+  // banner was not proof of BUILD. Both states render, always BOLD; PLAN
+  // is additionally loud (Vitriolum antidote orange), BUILD quiet but
+  // present (muted gray). The session-panel sidebar mirrors the badge via
+  // _shared/agent-mode.ts.
+  const BOLD = "\x1b[1m";
+  const RESET = "\x1b[0m";
   const renderIndicator = () => {
     // ui is ctx-bound (set on session_start); widgets never capture input.
     if (!ui) return;
     if (mode === "plan") {
       ui.setWidget?.(
         "agent-mode",
-        ["► PLAN MODE — research only, *.md writes. TAB / /mode build to build."],
+        [`${BOLD}${fgSeq("antidote")}► PLAN MODE — research only, *.md writes · TAB / /mode build${RESET}`],
         { placement: "belowEditor" },
       );
     } else {
-      ui.setWidget?.("agent-mode", undefined, { placement: "belowEditor" });
+      ui.setWidget?.(
+        "agent-mode",
+        [`${BOLD}${fgSeq("gray")}▪ build mode · TAB / /mode plan for research${RESET}`],
+        { placement: "belowEditor" },
+      );
     }
   };
 
@@ -59,6 +73,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     mode = next;
+    setAgentMode(next as AgentMode);
     if (mode === "plan") {
       ctx?.ui?.notify?.("PLAN mode: research only, *.md writes", "info");
     } else {

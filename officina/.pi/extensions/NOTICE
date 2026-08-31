@@ -1,0 +1,34 @@
+NOTICE — vendored extension attributions
+=========================================
+
+The following extensions in this directory are vendored (with modifications)
+from itayinbarr/little-coder @ 1a6ee8b (2026-08-31), licensed under the
+Apache License 2.0:
+
+  llama-cpp-provider, subagent, plan-mode, phase-model,
+  deep-research, skill-inject, knowledge-inject, ask,
+  notify-done, inline-bash, session-name
+  (all vendored with per-file citation headers; ask from
+  examples/extensions/question.ts, the rest from examples/extensions/
+  notify.ts / inline-bash.ts / session-name.ts)
+
+Per Apache-2.0 §4(d), the upstream NOTICE attributions are reproduced here:
+
+  little-coder
+  Copyright 2026 Itay Inbar
+  Licensed under the Apache License, Version 2.0.
+
+  This product is a derivative work based on CheetahClaws / ClawSpring
+  (https://github.com/SafeRL-Lab/clawspring), Copyright SafeRL-Lab,
+  licensed under the Apache License, Version 2.0. The upstream project
+  provided the foundational agent architecture, tool system, multi-provider
+  support, and REPL interface.
+
+VITRIOL's modifications to the vendored extensions are described in each
+extension's header and in docs/PROVENANCE.md, and are offered under this
+repo's dual license (Apache-2.0 OR MIT) without withdrawing any rights
+granted by the upstream Apache-2.0 license.
+
+All other extensions in this directory are original work of this repo or
+ported from the owner's own trismegistus/hermes-plugins (MIT) — see
+docs/PROVENANCE.md.

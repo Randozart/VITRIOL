@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { fgSeq } from "../_shared/vitriolum.ts";
 
 // officina watermark (2026-08-31, owner request): the VITRIOL braille logo,
 // watermark-style, while the session is untouched. pi renders the header
@@ -35,7 +36,8 @@ export default function (pi: ExtensionAPI) {
     if (!logo) return; // no asset, no watermark — silently fine
 
     // #1c2634: barely-there blue lift off the #0d1117 background.
-    const tint = (line: string) => `[38;2;28;38;52m${line}[0m`;
+    // Vitriolum watermark tint from _shared/vitriolum.ts.
+    const tint = (line: string) => `${fgSeq("watermark")}${line}[0m`;
     const lines = logo.split("\n").map(tint);
 
     ctx.ui.setHeader?.(() => ({

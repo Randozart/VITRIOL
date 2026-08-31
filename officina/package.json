@@ -4,12 +4,13 @@
   "private": true,
   "description": "Trismegistus first-party scaffold (alkahest) — pi-coding-agent as a pinned library, our extensions, VITRIOL-coupled. See docs/SCAFFOLD-SOVEREIGNTY-2026-08-31.md.",
   "type": "module",
-  "license": "MIT",
+  "license": "(Apache-2.0 OR MIT)",
   "engines": {
     "node": ">=22.19.0"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-tui": "0.83.0",
     "@sinclair/typebox": "^0.34.52"
   },
   "scripts": {

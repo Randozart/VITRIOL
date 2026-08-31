@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { honey, muted as gray } from "../_shared/vitriolum.ts";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { injectionResult } from "../_shared/inject.ts";
@@ -47,8 +48,6 @@ const KEEP_PLANNING_CHOICE = "Keep planning (don't implement)";
 // clean \x11 byte on every terminal — unlike alt+p, which many terminals deliver
 // as a literal "π" rather than ESC+p, so the original binding never fired.
 
-const honey = (s: string) => `\x1b[38;2;225;90;31m${s}\x1b[39m`;
-const gray = (s: string) => `\x1b[90m${s}\x1b[39m`;
 const INDICATOR_KEY = "plan-mode";
 
 let planModeOn = false;

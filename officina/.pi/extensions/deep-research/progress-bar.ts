@@ -11,9 +11,8 @@
 // session on any overflowing widget line (issue #48).
 
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
+import { honey, muted as gray } from "../_shared/vitriolum.ts";
 
-const honey = (s: string) => `\x1b[38;2;225;90;31m${s}\x1b[39m`;
-const gray = (s: string) => `\x1b[90m${s}\x1b[39m`;
 
 const BAR_MAX = 40;
 const BAR_MIN = 4;

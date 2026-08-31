@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { honey, muted as gray } from "../_shared/vitriolum.ts";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,8 +37,6 @@ import { runResearchPhases, type Question } from "./pipeline.ts";
 // shortcuts-help owns ctrl+h — and every other ctrl+<letter> is taken by the app
 // or the editor), so it binds cleanly without a conflict warning.
 
-const honey = (s: string) => `\x1b[38;2;225;90;31m${s}\x1b[39m`;
-const gray = (s: string) => `\x1b[90m${s}\x1b[39m`;
 const INDICATOR_KEY = "deep-research-mode";
 const OTHER_SENTINEL = "✎ Other (type my own answer)";
 

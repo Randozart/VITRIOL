@@ -1,6 +1,9 @@
 // Braille gradient gauges — ported from VITRIOL vitriol-tui/src/braille.rs
 // (Apache-2.0, our engine) + the Vitriolum color ramps from theme.rs, so the
 // cockpit and the coding TUI speak the same visual language (2026-08-31).
+// Ramp/muted colors now come from _shared/vitriolum.ts (single palette
+// source for all extensions; parity-tested against theme.rs).
+import { fgSeq, hexToRgb, VITRIOLUM, type VitriolumName } from "../_shared/vitriolum.ts";
 //
 // Six-dot braille cells (U+2800..U+28FF), 6 percentage points per cell,
 // filled bottom-left dot first, rising. Each lit cell is colored along a
@@ -65,27 +68,23 @@ export class Ramp {
   }
 }
 
-// Named Vitriolum ramps (VITRIOL vitriol-tui/src/theme.rs).
+// Named Vitriolum ramps (VITRIOL vitriol-tui/src/theme.rs), colors from the
+// shared palette.
+const palStop = (at: number, name: VitriolumName) => ({ at, color: hexToRgb(VITRIOLUM[name]) });
+const WHITE = { r: 0xff, g: 0xff, b: 0xff }; // capacity ramp start (theme.rs literal)
 export const RAMPS = {
   // capacity: white -> light yellow -> orange -> red -> deep red
-  capacity: Ramp.fromHex([
-    [0, 0xffffff],
-    [0.25, 0xffe066],
-    [0.5, 0xff5f1f],
-    [0.75, 0xff4444],
-    [1, 0x8a1515],
+  capacity: new Ramp([
+    { at: 0, color: WHITE },
+    palStop(0.25, "lightYellow"),
+    palStop(0.5, "antidote"),
+    palStop(0.75, "substrate"),
+    palStop(1, "deepRed"),
   ]),
   // activity: dark teal -> safety green -> solvent cyan
-  activity: Ramp.fromHex([
-    [0, 0x0b5e4c],
-    [0.5, 0x39ff14],
-    [1, 0x00ffff],
-  ]),
+  activity: new Ramp([palStop(0, "darkTeal"), palStop(0.5, "safety"), palStop(1, "solvent")]),
   // mercury: muted gray -> solvent cyan (idle -> alive)
-  mercury: Ramp.fromHex([
-    [0, 0x55606e],
-    [1, 0x00ffff],
-  ]),
+  mercury: new Ramp([palStop(0, "mercury"), palStop(1, "solvent")]),
 } as const;
 
 export interface BarCell {
@@ -116,7 +115,7 @@ const ANSI_RESET = "\x1b[0m";
 
 // Render a colored braille gauge: lit cells ramp-colored, empty cells muted.
 export function renderGauge(ramp: Ramp, ratio: number, cells: number): string {
-  const muted = ansiFg({ r: 0x8b, g: 0x94, b: 0x9e });
+  const muted = fgSeq("gray");
   let out = "";
   for (const cell of barCells(ratio, cells)) {
     if (cell.mask === 0) {

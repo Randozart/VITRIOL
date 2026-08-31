@@ -74,12 +74,16 @@ Do NOT escalate for: routine coding, this repo's own conventions (they live
 in docs/), anything already answered in Hermetis (dedup handles it).
 When the budget gate refuses, answer locally — never retry-loop ascensus.
 
-## Licensing and Provenance (Apache-2.0)
+## Licensing and Provenance (Apache-2.0 OR MIT)
 
-VITRIOL and its llama.cpp fork are licensed under the **Apache License 2.0** (see `LICENSE`).
-License changed from GPL-2.0 to Apache-2.0 on 2026-08-28 (both repos are owned by the same
-author; no external contributors are affected). Before incorporating any third-party code,
-check compatibility:
+VITRIOL and its llama.cpp fork are dual-licensed under the
+**Apache License 2.0 OR the MIT License** (SPDX: `Apache-2.0 OR MIT`; see
+`LICENSE` and `LICENSE-MIT`). Downstream recipients choose either term.
+History: GPL-2.0 → Apache-2.0 on 2026-08-28; dual Apache-2.0/MIT from
+2026-08-31 (both repos are owned by the same author; no external contributors
+are affected). `officina/package.json` carries the same SPDX expression.
+Before incorporating any third-party code, check compatibility (the table
+governs INCOMING code only — our outgoing dual offer is unaffected):
 
 | source license | may copy into VITRIOL? |
 |---|---|

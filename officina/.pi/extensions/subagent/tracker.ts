@@ -7,6 +7,7 @@
 // active theme and the string[] form of setWidget can be used directly.
 
 import { summarizeActivity, type SubCoderResult } from "./spawn.ts";
+import { err as red, honey, muted as gray, ok as green } from "../_shared/vitriolum.ts";
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -18,10 +19,6 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 const MAX_ROWS = 8;
 
 // Brand honey (matches branding/index.ts) + plain SGR status colors.
-const honey = (s: string) => `\x1b[38;2;225;90;31m${s}\x1b[39m`;
-const green = (s: string) => `\x1b[32m${s}\x1b[39m`;
-const red = (s: string) => `\x1b[31m${s}\x1b[39m`;
-const gray = (s: string) => `\x1b[90m${s}\x1b[39m`;
 
 function fmtElapsed(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));

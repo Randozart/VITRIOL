@@ -50,7 +50,14 @@ can do:
 Officina is self-contained in [`officina/`](officina/) and [
 `docs/OFFICINA.md`](docs/OFFICINA.md) is its manual: extensions, Plan/Build
 agent modes (`TAB`), `/history`, `/panel`, `/resume`, couplings, and the
-design law — upstreams are mined, the workshop is ours.
+design law — upstreams are mined, the workshop is ours. Related reading:
+[`docs/SELF-SUFFICIENCY-2026-08-31.md`](docs/SELF-SUFFICIENCY-2026-08-31.md)
+(the standalone guarantee),
+[`docs/PROVENANCE.md`](docs/PROVENANCE.md) (every borrowed thing, cited),
+[`docs/SYSTEMS-MAP-2026-09-01.md`](docs/SYSTEMS-MAP-2026-09-01.md) (who
+consumes what), [`docs/LAYOUT-FORK-2026-08-31.md`](docs/LAYOUT-FORK-2026-08-31.md)
+(the docked-shell build), and [`docs/HANDOFF-2026-08-31.md`](docs/HANDOFF-2026-08-31.md)
+(session handoff).
 
 ## The three wars (chapter two)
 

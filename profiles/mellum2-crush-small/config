@@ -1,0 +1,58 @@
+# VITRIOL Configuration — Mellum2-12B-A2.5B-Instruct Q5_K_M (Crush small-model lane)
+# Derived from mellum2-q5-131k (certified 2026-08-19: 69.88 t/s @ 131K, ts 24,12,
+# tool-calling verified). Changes: dedicated port 8287 (do not collide with the
+# hermes :8279 endpoint), cache-ram 1024 host-RAM guardrail (2026-08-23 hardening),
+# alias Cinnabaris. Purpose: Crush `model small` (summarization/compaction only —
+# no agentic tool-calling demands; see EXPERIMENT_LOG 2026-08-22 verdicts).
+
+[gpu]
+device = 0
+exclude_secondary = false
+tensor_split = 24,12
+
+[model]
+path = /home/randozart/Downloads/Mellum2-12B-A2.5B-Instruct-Q5_K_M.gguf
+context = 131072
+threads = 4
+ngl = 99
+expert_count = 0
+alias = Cinnabaris
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8287
+parallel = 1
+cache_ram = 1024
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+quant_mode = f16
+quant_mode_v = f16
+frozen_prompt = off
+
+[engine]
+mode = vitriol-dma
+
+[lookup]
+tokens = 0
+
+[spec]
+type =
+draft_n_max = 0
+
+[chimera]
+mode = auto

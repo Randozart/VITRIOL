@@ -12,6 +12,8 @@
 
 5. **Window ≠ depth**: KV is allocated for the whole window at load. Context claims must state FILLED token counts (see lull-certification-report Addenda 5–6).
 
+6. **HF CDN stalls on this host** (2026-08-31): `hf download` transfers ~16 MiB then the connection goes silent. Use a ranged-resume downloader (Range + reconnect-on-stall, ~12 MiB/s) like `/tmp/mellum2_fetch.py`; verify against the tree-API `lfs.oid` sha256 — the resolve-HEAD `etag` is the xetHash, NOT the sha256.
+
 ## Documentation
 
 1. **Write all findings in `.md` reports** with ISO 8601 timestamps (YYYY-MM-DD HH:MM).

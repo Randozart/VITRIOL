@@ -80,3 +80,12 @@ built Officina-side:
 Stay engine-side (never move): llama.cpp fork, DMA executor, KV/cache
 managers, server + /slots /metrics /health /props + checkpoint endpoints,
 cert suite, profiles, fingerprint emission, GPU lane scheduling, bench.
+
+## Bugfix log
+
+- 2026-08-31 (1): editor untypeable at startup — the sidebar overlay
+  captured keyboard focus. Fix: OverlayOptions.nonCapturing (the purpose-
+  built flag), replacing the unfocus-on-show hack.
+- 2026-08-31 (2): `vitriol officina` opened with a first prompt
+  "officina" — the launcher's case never shifted, so the subcommand word
+  stayed in "$@" and pi read it as a positional prompt. Fix: shift first.

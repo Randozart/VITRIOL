@@ -1358,6 +1358,10 @@ usage() {
   vitriol pymander search <domain> <query>  retrieve nodes for a query
   vitriol pymander select <project_id> <domain...>  set active domains for a project
   vitriol pymander active <project_id>  show a project's active domains
+  vitriol officina [args]    the VITRIOL coding workshop: full-screen agent
+                             harness in the current directory (local-inference
+                             tuned; engine telemetry in the editor). Args pass
+                             through to the scaffold CLI (e.g. -p "one-shot").
   vitriol help               this message
 
 Run options:
@@ -1833,12 +1837,13 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo ""
         mtp_flag=""
         model_has_mtp "$MODEL" && mtp_flag=" [MTP]"
+        GPU_LABEL=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sed -n "$((DEVICE+1))p")
         echo "═══ Launch Configuration ═══"
         echo "  Model:       $(basename "$MODEL") ($MODEL_SIZE)${mtp_flag}"
         echo "  Context:     $CTX tokens"
         echo "  Mode:        $MODE (RAM Shot + LRU cache)"
         [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
-        echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
+        echo "  GPU:         Device $DEVICE (${GPU_LABEL:-unknown})"
         [[ -n "${TENSOR_SPLIT:-}" ]] && echo "  Tensor Split: ${TENSOR_SPLIT}"
         echo "  Memory:      $MEMORY_MODE"
         echo "  KV Mode:     $KV_MODE"
@@ -2073,12 +2078,13 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         echo ""
         mtp_flag=""
         model_has_mtp "$MODEL" && mtp_flag=" [MTP]"
+        GPU_LABEL=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sed -n "$((DEVICE+1))p")
         echo "═══ VITRIOL Server ═══"
         echo "  Model:       $(basename "$MODEL") ($MODEL_SIZE)${mtp_flag}"
         echo "  Context:     $CTX tokens"
         echo "  Mode:        $MODE (RAM Shot + LRU cache)"
         [[ "$LRU_MB" -gt 0 ]] && echo "  LRU:         $LRU_MB MB VRAM cache"
-        echo "  GPU:         Device $DEVICE (GTX 1070 Ti)"
+        echo "  GPU:         Device $DEVICE (${GPU_LABEL:-unknown})"
         [[ -n "${TENSOR_SPLIT:-}" ]] && echo "  Tensor Split: ${TENSOR_SPLIT}"
         echo "  Memory:      $MEMORY_MODE"
         echo "  KV Mode:     $KV_MODE"
@@ -2161,7 +2167,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
-        CKPT_ARGS="--checkpoint-every-n-tokens ${CKPT_EVERY:-2048}"
+        CKPT_ARGS="--checkpoint-min-step ${CKPT_EVERY:-2048}"
         # Flash Attention is required for V cache quantization and generally faster
         FA_ARGS="-fa on"
         # Prefill optimization flags
@@ -2590,6 +2596,36 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             (cd "${PROJECT_DIR}/vitriol-tui" && cargo build --release) || exit 1
         fi
         exec env VITRIOL_REPO="$PROJECT_DIR" "$TUI_BIN"
+        ;;
+
+    officina)
+        # VITRIOL Officina (2026-08-31, owner-approved bundling): the coding
+        # workshop coupled to this engine. Single-source rule: the scaffold
+        # code lives in its own repo; this launcher only resolves + execs it,
+        # and honestly reports engine state first (fingerprint discipline).
+        OFFICINA_DIR="${OFFICINA_DIR:-${HOME}/Desktop/Projects/trismegistus/officina}"
+        OFFICINA_ENTRY="${OFFICINA_DIR}/officina.mjs"
+        if [[ ! -f "$OFFICINA_ENTRY" ]]; then
+            echo "[vitriol] officina not found at ${OFFICINA_ENTRY}" >&2
+            echo "[vitriol] install it, or set OFFICINA_DIR to its directory." >&2
+            exit 1
+        fi
+        if ! command -v node >/dev/null 2>&1; then
+            NODE_BIN="$(find "${HOME}/.local/share/fnm/node-versions" -path '*/installation/bin/node' 2>/dev/null | sort -V | tail -1)"
+            [[ -z "$NODE_BIN" && -x /usr/bin/node ]] && NODE_BIN=/usr/bin/node
+            if [[ -z "$NODE_BIN" ]]; then
+                echo "[vitriol] officina needs node (fnm or system) — not found." >&2
+                exit 1
+            fi
+            PATH="$(dirname "$NODE_BIN"):$PATH"
+        fi
+        # Engine truth before the workshop opens (never guess, Rule 4/5):
+        if ! curl -sf "http://127.0.0.1:8279/health" >/dev/null 2>&1; then
+            echo "[vitriol] engine is DOWN on 127.0.0.1:8279 — 'vitriol serve' first (or let the workshop run engine-less)." >&2
+        fi
+        # cwd passthrough: the workshop opens for THIS directory (session-local
+        # project context), which is the whole point of the bundled flow.
+        exec node "$OFFICINA_ENTRY" "$@"
         ;;
 
     install)

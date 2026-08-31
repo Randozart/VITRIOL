@@ -79,6 +79,12 @@ if (process.stdout.isTTY && process.env.TRIS_NO_FULLSCREEN !== "1") {
   const OFFICINA_BG = "\x1b]11;#0d1117\x07";
   const RESTORE_BG = "\x1b]111\x07";
   process.stdout.write("\x1b[?1049h" + OFFICINA_BG + "\x1b[H\x1b[2J");
+  // Pin the composer to the bottom (owner request 2026-08-31): pre-push the
+  // render origin down so the editor sits at the screen floor on a fresh
+  // session; as content grows past the reserve, the view scrolls naturally
+  // - the composer stays pinned, like Crush/OpenCode.
+  const reserve = Math.max(2, (process.stdout.rows ?? 40) - 8);
+  process.stdout.write("\n".repeat(reserve));
   const restore = () => process.stdout.write("\x1b[?1049l" + RESTORE_BG);
   process.on("exit", restore);
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) {

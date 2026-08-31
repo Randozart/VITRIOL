@@ -94,6 +94,16 @@ an "ascensus" euro-capped cloud-escalation entry is pre-drafted). This is
 the groundwork for a built-in ascensus tool. The session panel's cordoned
 top frame shows the current coupling name.
 
+## Layout notes (2026-08-31)
+
+- Composer pinned to the screen floor: the wrapper pre-pushes the render
+  origin by rows-8, so a fresh session opens with the typing field at the
+  bottom; content scrolls naturally once it outgrows the reserve
+  (Crush/OpenCode behavior).
+- Panel colors: the cordoned top frame uses Vitriolum accents on values
+  only — gold coupling, solvent folder, safety-green token flow, violet
+  files, muted labels/keys — never full-screen color wash.
+
 ## Bugfix log
 
 - 2026-08-31 (1): editor untypeable at startup — the sidebar overlay

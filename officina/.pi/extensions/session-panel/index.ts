@@ -67,24 +67,41 @@ export default function (pi: ExtensionAPI) {
 
   const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
 
+  // Vitriolum accents (decode.ts/braille.rs palette): gold = coupling,
+  // solvent = model, safety = token flow, violet = files, muted = labels.
+  const GOLD = "[38;2;255;215;0m";
+  const SOLVENT = "[38;2;0;255;255m";
+  const SAFETY = "[38;2;57;255;20m";
+  const VIOLET = "[38;2;178;148;187m";
+  const MUTED = "[38;2;139;148;158m";
+  const R = "[0m";
+  const c = (color: string, s: string) => color + s + R;
+
   const panelLines = (): string[] => {
     const files = [...state.files.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6);
     const coupling = couplingDisplay(providerName, modelId, couplings, modelId);
     const inner: string[] = [
-      `◈ ${coupling}`,
-      `◈ session · ${cwd.replace(/^\/home\/[^/]+/, "~")}  ·  ↑${state.tokensIn} ↓${state.tokensOut} · ${state.turns} turns`,
+      `${c(GOLD, "◈ " + coupling)}`,
+      `${c(MUTED, "session ·")} ${c(SOLVENT, cwd.replace(/^\/home\/[^/]+/, "~"))}  ` +
+        `${c(MUTED, "·")}  ${c(SAFETY, `↑${state.tokensIn}`)} ${c(MUTED, "↓")}${c(SAFETY, `${state.tokensOut}`)} ${c(MUTED, `· ${state.turns} turns`)}`,
     ];
     if (files.length > 0) {
-      inner.push(`   files: ${files.map(([p]) => shortPath(p)).join("  ")}`);
+      inner.push(
+        `${c(MUTED, "files: ")}${files.map(([p]) => c(VIOLET, shortPath(p))).join(`${c(MUTED, "  ")}`)}`,
+      );
     }
-    inner.push(`   /resume prior · /tree tree · /history transcript · /coupling swap · /panel`);
+    inner.push(
+      c(MUTED, "/resume prior · /tree tree · /history transcript · /coupling swap · /panel"),
+    );
     // Cordoned top section (owner request): box-drawn frame, width-aware.
     const w = Math.min(Math.max(process.stdout.columns ?? 100, 60), 160);
+    const visible = (s: string) => s.replace(/\[[0-9;]*m/g, "").length;
     const frame = (s: string) => {
-      const cut = s.length > w - 2 ? s.slice(0, w - 5) + "…" : s;
-      return `│ ${cut.padEnd(w - 4)} │`;
+      const pad = Math.max(0, w - 4 - visible(s));
+      return `│ ${s}${" ".repeat(pad)} │`;
     };
-    return ["╭" + "─".repeat(w - 2) + "╮", ...inner.map(frame), "╰" + "─".repeat(w - 2) + "╯"];
+    const bar = "─".repeat(w - 2);
+    return ["╭" + c(MUTED, bar) + "╮", ...inner.map(frame), "╰" + c(MUTED, bar) + "╯"];
   };
 
   pi.on("session_start", (_event, ctx) => {

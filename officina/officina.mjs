@@ -13,7 +13,8 @@
 // Undo: `tris code` falls back to little-coder when this package is not
 // installed (config flag scaffold.mode decides which path runs).
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
@@ -46,6 +47,29 @@ try {
   console.error("Run:  cd " + here + " && npm install");
   process.exit(1);
 }
+
+// Ensure TAB is formally unbound from editor autocomplete in the user's
+// pi keybindings, so the agent-mode TAB toggle doesn't raise a conflict
+// banner on every startup (owner request 2026-08-31). Merge-preserving:
+// any existing keybindings.json content survives. Opt-out: set the key
+// back to whatever you prefer; we only ever touch "tui.input.tab".
+function ensureTabUnbound() {
+  try {
+    const dir = join(process.env.HOME || homedir(), ".pi", "agent");
+    const p = join(dir, "keybindings.json");
+    let cfg = {};
+    if (existsSync(p)) {
+      cfg = JSON.parse(readFileSync(p, "utf-8"));
+      if (cfg["tui.input.tab"] !== undefined) return; // owner-managed, hands off
+    }
+    cfg["tui.input.tab"] = [];
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+  } catch {
+    // cosmetic optimization; a missed unbind only costs a startup banner
+  }
+}
+ensureTabUnbound();
 
 // Bind OUR stack, then the user's own flags (pi's --extension/--theme flags
 // are repeatable, so user-supplied ones ADD to ours).

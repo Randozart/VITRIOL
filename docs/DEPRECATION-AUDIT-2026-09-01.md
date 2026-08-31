@@ -61,7 +61,14 @@ mid-session. Different moments, not duplication; the earlier
 4. autosave policy hand-off with the F7 checkpoint consolidation.
 5. Re-run selfcheck + `vitriol officina` smoke after each removal.
 
-### TUI cleanup (2026-09-01, disable-not-delete)
+### TUI cleanup (2026-09-01, disable-not-delete) — UPDATED: GPU tab folded
+
+Follow-up (same day, owner request): the GPU tab is GONE from the bar and
+its full panel (GAUGES + per-GPU VRAM/power/clock braille rows) now lives
+inside the Dashboard beneath the GEN card and the GPU/decode summary row
+— one view instead of two tabs. PTY-verified: GAUGES + VRAM render on the
+dashboard, GPU tab absent from the bar. Renderer retained for restore.
+Tab bar: 10 → 8 → 7.
 
 vitriol-tui tab bar trimmed 10 → 8: HERMETIS and REBIS tabs disabled
 (hermes-era memory server + gateway routes — both replaced by the SS2

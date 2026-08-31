@@ -54,9 +54,10 @@ impl Tab {
     // stack (memory server / gateway routes) that Officina replaced. The
     // Subsystems tab still shows their service liveness. Variants, renderers
     // and pollers are retained; re-add to ALL to restore.
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Dashboard,
-        Tab::Gpu,
+        // Tab::Gpu - folded into Dashboard 2026-09-01 (GEN card + summary row
+        // + the full gauges panel on one screen). Variant + renderer retained.
         Tab::Logs,
         Tab::Controls,
         Tab::Sweep,

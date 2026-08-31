@@ -127,7 +127,15 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Dashboard body: service cards row + GPU/decode row.
 fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
-    let rows = Layout::vertical([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(area);
+    // 2026-09-01 (owner): the GPU tab folded into the Dashboard — one view:
+    // GEN card, summary row (GPU + decode), then the full btop-style gauges
+    // filling the remaining height.
+    let rows = Layout::vertical([
+        Constraint::Ratio(1, 4),
+        Constraint::Ratio(1, 4),
+        Constraint::Min(0),
+    ])
+    .split(area);
 
     // 2026-09-01 deprecation cleanup: HERMETIS and EMBED service cards
     // retired with the SS2 gateway fold-in (render_hermetis_card /
@@ -141,6 +149,10 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
 
     render_gpu_card(frame, bottom[0], &app.snapshot);
     render_decode_card(frame, bottom[1], app);
+
+    // The former GPU tab's full panel (gauges + per-GPU metrics) fills the
+    // remaining height - one view instead of two tabs.
+    render_gpu_tab(frame, rows[2], app);
 }
 
 /// Build a bordered panel block with a themed title.

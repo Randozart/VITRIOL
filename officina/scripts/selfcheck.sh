@@ -35,7 +35,25 @@ else
   bad "cli pytest"
 fi
 
-echo "── 4. config + keybindings ──"
+echo "── 3b. provenance headers (docs/PROVENANCE.md registry) ──"
+  PROV_OK=1
+  check_prov() {
+    local f="$1" marker="$2"
+    if [[ -f "$VITRIOL/officina/.pi/extensions/$f" ]] && grep -q "$marker" "$VITRIOL/officina/.pi/extensions/$f"; then
+      ok "provenance: $f"
+    else
+      bad "provenance missing in $f (expect '$marker')"
+      PROV_OK=0
+    fi
+  }
+  check_prov "llama-cpp-provider/index.ts" "Vendored 2026-08-31"
+  check_prov "caveman/compress.ts" "Provenance: ported"
+  check_prov "injection-guard/index.ts" "Provenance: ported"
+  check_prov "memory-extractor/index.ts" "Provenance: ported"
+  check_prov "vitriol-decode/braille.ts" "ported from VITRIOL"
+  check_prov "memory/index.ts" "SS2 gateway fold-in"
+
+  echo "── 4. config + keybindings ──"
 if [[ -f "${HOME}/.config/trismegistus/config.yaml" ]]; then ok "unified config present"; else bad "unified config missing"; fi
 KB="${HOME}/.pi/agent/keybindings.json"
 if [[ -f "$KB" ]] && grep -q '"tui.input.tab"' "$KB"; then ok "TAB unbound (no conflict banner)"; else skip "keybindings.json not written yet (first officina run writes it)"; fi

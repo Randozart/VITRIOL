@@ -1,3 +1,6 @@
+// agent-mode (2026-08-31): Plan/Build agent modes, new in Officina.
+// Provenance: original work, this repo (First-Party Mandate). See header
+// block below for behavior and limits.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { injectionResult } from "../_shared/inject.ts";
 

@@ -1,3 +1,6 @@
+// coupling (2026-08-31): Lapis Occultus default + provider hot-swap.
+// Provenance: original work, this repo (First-Party Mandate). See header
+// block below.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { LAPIS, loadCouplings, providerTagOf, type CouplingDef } from "../_shared/couplings.ts";
 

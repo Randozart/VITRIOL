@@ -244,3 +244,13 @@ stores plus own-session files. Live-verified: project write landed in
   ~/.local/state/trismegistus migrates (moves) on first CLI use.
 - SELFCHECK: PASS (grep, vitest 408, typecheck, cli pytest, config,
   keybindings).
+
+### Provenance registry + enforcement (2026-08-31)
+
+docs/PROVENANCE.md: the complete citation index — libraries (pi pinned
+Apache-2.0, typebox, dev tooling), every extension's origin (little-coder
+ports @ 1a6ee8b with divergence notes; hermes plugin ports @ 237e424 with
+identical rulesets; owner-authored originals), design assets (braille
+bars, Vitriolum palette from our own engine TUI), retired dependencies
+record. selfcheck.sh section 3b now FAILS the tree if any registered file
+loses its provenance header — citations are enforced, not decorative.

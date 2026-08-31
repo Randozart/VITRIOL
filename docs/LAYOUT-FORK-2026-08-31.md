@@ -72,7 +72,23 @@ fork re-bases by diffing against the pristine 0.83.0 file kept at
    setWidget path for classic. PTY-verified (120x40): panel frame, coupling,
    session/tokens, keys hint render; typing echoes; 408 vitest + typecheck +
    selfcheck PASS.
-4. P1/P2 layout patches; PTY suite for input + visuals.
+4. P1/P2 layout patches; PTY suite for input + visuals - DONE 2026-08-31.
+   P1: OfficinaSplit (JS port of columns.ts, injected by build-patch.mjs;
+   OSC/APC zero-width-aware — pi's CURSOR_MARKER is an APC sequence and
+   must not skew the column pad) puts chat/pending/status/widgets/editor
+   in a main column with sidebarContainer docked right (34 cols, auto-hide
+   < 100); header/resources/footer stay full width. P2: filler rows above
+   the editor block pin the composer natively; the officina.mjs
+   newline-reserve is now classic-only.
+   CRITICAL FIX (found by the PTY gate): module hooks do NOT cross process
+   boundaries — the fullscreen launcher spawns pi as a child, so the hook
+   registered in officina.mjs never applied and the child silently ran
+   stock interactive-mode (docked never engaged through the launcher).
+   Fix: OFFICINA_PKG_DIST + `--import runtime/register-hooks.mjs` in
+   NODE_OPTIONS re-registers the hook in the child. PTY-verified docked
+   (120x40): panel frame at col 87, echoed text + sidebar on the SAME
+   screen row, composer at floor, watermark intact. Classic rollback
+   PTY-verified. 408 vitest + typecheck + selfcheck PASS.
 5. Parity ledger run; flip default; delete the newline-reserve fallback
    from the wrapper (keep as classic fallback).
 

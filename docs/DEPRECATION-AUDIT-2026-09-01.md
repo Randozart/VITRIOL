@@ -60,3 +60,13 @@ mid-session. Different moments, not duplication; the earlier
    exec the officina CLI; tris symlink removed.
 4. autosave policy hand-off with the F7 checkpoint consolidation.
 5. Re-run selfcheck + `vitriol officina` smoke after each removal.
+
+### TUI cleanup (2026-09-01, disable-not-delete)
+
+vitriol-tui tab bar trimmed 10 → 8: HERMETIS and REBIS tabs disabled
+(hermes-era memory server + gateway routes — both replaced by the SS2
+fold-in). Variants, renderers and pollers retained for one-keystroke
+restore (re-add to Tab::ALL); enum carries a dated allow(dead_code) note.
+Officina tab was already disabled (model-surgery REPL not ready).
+Subsystems tab stays — it still reports the services' liveness honestly.
+Guide tab's Pymander corpus reference is next (SS3-adjacent).

@@ -17,6 +17,10 @@ use crate::search::{self, SearchHit};
 const SPARKLINE_CAP: usize = 120;
 
 /// Top-level UI tabs.
+// 2026-09-01: allow(dead_code) is deliberate - Hermetis/Rebis/Officina
+// variants and their renderers are retained for one-keystroke restore
+// (see ALL) even while unreachable from the tab bar.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     /// Live service/GPU overview.
@@ -45,19 +49,24 @@ pub enum Tab {
 
 impl Tab {
     /// All tabs in display order.
-    pub const ALL: [Tab; 10] = [
+    // 2026-09-01 deprecation cleanup (docs/DEPRECATION-AUDIT-2026-09-01.md):
+    // HERMETIS and REBIS tabs disabled — both served the hermes-era gateway
+    // stack (memory server / gateway routes) that Officina replaced. The
+    // Subsystems tab still shows their service liveness. Variants, renderers
+    // and pollers are retained; re-add to ALL to restore.
+    pub const ALL: [Tab; 8] = [
         Tab::Dashboard,
         Tab::Gpu,
         Tab::Logs,
         Tab::Controls,
         Tab::Sweep,
-        Tab::Hermetis,
         Tab::Subsystems,
         Tab::Profiles,
         Tab::Guide,
+        // Tab::Hermetis — disabled: hermes-era memory server retired.
+        // Tab::Rebis — disabled: gateway routes/draft-audit retired with SS2.
         // Tab::Officina — disabled: model-surgery REPL not ready for use.
         // Variant + renderer retained; re-add here to restore.
-        Tab::Rebis,
     ];
 
     /// Short label used in the tab bar.

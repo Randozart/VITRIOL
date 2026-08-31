@@ -20,6 +20,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const pkgRoot = join(here, "node_modules", "@earendil-works", "pi-coding-agent");
 
 // Opt out of pi's startup update banner (owner request 2026-08-31) and any
 // other startup network ops. PI_SKIP_VERSION_CHECK=1 kills the
@@ -37,7 +38,6 @@ process.env.PI_SKIP_VERSION_CHECK ??= "1";
 const require = createRequire(pathToFileURL(join(here, "package.json")));
 let cli;
 try {
-  const pkgRoot = join(here, "node_modules", "@earendil-works", "pi-coding-agent");
   const bin = require(join(pkgRoot, "package.json")).bin;
   const binPath = typeof bin === "string" ? bin : bin["pi-coding-agent"] ?? bin.pi ?? Object.values(bin)[0];
   cli = join(pkgRoot, binPath);
@@ -84,6 +84,18 @@ const theme = join(here, "theme", "officina.json");
 if (existsSync(theme)) bound.push("--theme", theme);
 const model = process.env.TRIS_LC_MODEL;
 if (model) bound.push("--model", model);
+
+// Layout fork (docs/LAYOUT-FORK-2026-08-31.md): when docked, a loader hook
+// serves our patched interactive-mode instead of the stock one. Must be
+// registered BEFORE the pi CLI is imported.
+import { register } from "node:module";
+const docked = (process.env.OFFICINA_LAYOUT || "docked") !== "classic";
+if (docked) {
+  register("./runtime/hooks.mjs", {
+    parentURL: pathToFileURL(join(here, "officina.mjs")),
+    data: { pkgDist: join(pkgRoot, "dist"), docked: true },
+  });
+}
 
 // pi's CLI parses process.argv itself (argv[0] is the program path it cares
 // about least); rewrite it so pi sees the bound flags before the user's.

@@ -254,3 +254,15 @@ identical rulesets; owner-authored originals), design assets (braille
 bars, Vitriolum palette from our own engine TUI), retired dependencies
 record. selfcheck.sh section 3b now FAILS the tree if any registered file
 loses its provenance header — citations are enforced, not decorative.
+
+### Layout fork step 2 — vendoring mechanism live (2026-08-31)
+
+runtime/hooks.mjs: a module loader hook serves our patched
+interactive-mode.officina.js to the pinned pi runtime while anchoring all
+of its relative imports at the original package location — the whole
+import graph stays intact with zero rewriting. pkgDist + docked flag
+arrive via register() initialize data (hooks run on a separate thread).
+runtime/build-patch.mjs regenerates the patched copy from the pristine
+reference with asserted anchors (P1 seam applied; P2/P3 markers reserved).
+Re-basing on a pi bump = bump pin, re-run build-patch, fix anchors.
+Live: DOCKED-OK one-shot, 415 tests, PTY typing intact with docked active.

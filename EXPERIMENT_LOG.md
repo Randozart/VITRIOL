@@ -1360,3 +1360,71 @@ suite before any benchmark claim.
 
 NEXT: cert suite on this fingerprint → R3 baseline table (t/s, tok/task,
 success rate) → OOM ladder documented but unused (fits at 22,14/81920).
+
+## 2026-09-01 — E1 upstream sync: merge be789c344 into inner main (04a4f5f12)
+
+2026-09-01 15:26–17:45. Experiment E1 of
+`.opencode/plans/mining-experiment-master-plan-2026-09-01.md`. Full report:
+`.opencode/plans/e1-upstream-sync-2026-09-01.md`. Raw data:
+`.opencode/plans/bench-e1-2026-09-01/`.
+
+MERGE: upstream/master (tip be789c344) merged into inner `llama.cpp` `main`,
+zero conflicts, TQ3/vitriol-* files untouched. A-list verified in tree:
+#28011 (kv-cells.h:336 early stop), #27991 (kv-cache.cpp:2533 restore
+batching), #27621 (MoE fusion specdec), #27978 (mmid.cu templated fast
+path), #28123/#28159 (MTP), #25635 (FA swizzle, mma-gated), -lzm.
+
+BUILD: build-ku2/ = CUDA+Vulkan, 61;86, nvcc 12.9 (~/toolkits/cuda-12.9) +
+-DCMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14 (g++15/16 headers break nvcc
+12.9). ccache wired. CUDA 13.3 @ /opt/cuda still cannot target sm_61.
+
+RESULTS (t/s, CUDA0 pinned unless noted):
+- Shallow 9B: Q6_K fa-on 42.07→42.24 tg, 1527→1547 pp; Q8_0 36.50→36.55 tg.
+  All within noise. H0 PASS. GOTCHA: unpinned run mixed CUDA+Vulkan backends
+  → tg 34.89 (−18%) — always `-dev CUDA0`.
+- Depth 27B Q3_K_M ts 22/14 q4_0 KV ub64 fa=on: tg@d43000 7.59→7.57,
+  tg@d54000 6.81→6.72 (n=3 confirm: 6.80 vs 6.80 — tie). H1a NULL in
+  single-seq bench (#28011 win is multi-seq-conditioned; daily driver runs
+  parallel=1).
+- Slot restore 10,801-tok state, disjoint-dirty, server-level:
+  control 0.176 s, candidate 0.189 s — both fast; upstream 25–63 s pathology
+  absent from vitriol-ku lineage. H1b pass-neutral. Save 356 MB both.
+- lazy-mode (-lzm): tg parity 42.12/42.21; load-time warm parity 4.7/4.9 s
+  (first 15.3 s reading was cold-cache order bias). Neutral, adopted.
+
+FINGERPRINT (bench): llama-bench -m <9B|27B gguf> -ngl 99 [-ts 22/14
+-ctk q4_0 -ctv q4_0 -ub 64] -fa on -p 512 -n 128 [-d 43000|54000] -r 2/3
+-dev CUDA0[,CUDA1]; control build/bin @590a4bb09, candidate build-ku2/bin
+@04a4f5f12; nvcc 12.9; driver 580.178.04.
+
+CERT STATUS: shallow A/B + depth A/B complete vs frozen baselines
+(reproduced ±0.5%). Daily-driver swap deferred: server restarted 17:45 on
+old build/ binary pending user's call; candidate build-ku2 ready.
+
+NEXT: H1c MoE-specific test vs Qwen3.6-35B; multi-seq depth re-test if
+parallel returns; E3 cb_eval oracle; E2 LUT GEMV.
+
+## 2026-09-01 (2) - E3 oracle: cb_eval capture tool, parity ladder, fit.cpp SIGFPE found+fixed
+
+2026-09-01 17:50-18:10. Report: `.opencode/plans/e3-cb-eval-oracle-2026-09-01.md`.
+New tool `llama.cpp/tools/vitriol-oracle/` (capture one decode's every graph
+node via public cb_eval API) + `diff.py` (name-aligned L0/L1 compare +
+perturbation gate). Ladder adopted: `llama.cpp/docs/parity-ladder.md`.
+
+GATES (Qwen3.8-9B-Q6_K, build-ku2): CPU determinism 989/989 byte-exact;
+CPU t1-vs-t4 byte-exact; CUDA determinism byte-exact; perturbation caught;
+CUDA-vs-CPU: 20/989 nodes cos 0.997-0.9999 (q6_k matmul rounding amplified
+through depth+delta-net), greedy token EQUAL (11751). Ladder calibration:
+L1 strict gate for f32/f16 + same-backend; L2 greedy is the quantized
+cross-backend contract.
+
+BUG FOUND+FIXED (upstream-reportable): SIGFPE at init when GPU nearly full
+AND -ngl 0. Root cause common/fit.cpp:408 div-by-zero
+(min(n_gpu_layers,0)==0 under memory-pressure fit path); crash PC verified
+via coredump (idiv %rdi). Patched all degenerate denominators in fit.cpp
+(2 more sites: mem_high-mem step-size, ctx interpolation). Verified: repro
+exit 0; normal-path math unchanged. Patch + oracle tool UNCOMMITTED pending
+user review.
+
+NEXT: E2 LUT GEMV (parity via oracle); daily-driver swap decision; H1c
+MoE bench vs Qwen3.6-35B.

@@ -1,5 +1,5 @@
 [Unit]
-Description=VITRIOL llama-server (Lapis Occultus, dual-slot)
+Description=VITRIOL llama-server (Lapis Occultus, single-slot)
 # bring the persistence sidecar up/down with us
 Wants=vitriol-autosave.service
 

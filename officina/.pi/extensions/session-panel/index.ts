@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "node:fs";
-import { getAgentMode } from "../_shared/agent-mode.ts";
+import { getModeDef, modeColorSeq } from "../_shared/agent-mode.ts";
 import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 import { fgSeq } from "../_shared/vitriolum.ts";
 import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
@@ -107,14 +107,12 @@ export default function (pi: ExtensionAPI) {
     // own wrapped row otherwise and the box has 10 rows total upstream cap).
     const coupling = narrow ? couplingFull.split(" · ")[0] : couplingFull;
     const home = cwd.replace(/^\/home\/[^/]+/, "~");
-    // Mode badge (owner request 2026-08-31): always visible, BOLD, so the
-    // Plan/Build state is unambiguous from inside the sidebar too. PLAN is
-    // loud (antidote orange), BUILD quiet (muted gray) — same discipline as
-    // the agent-mode widget below the editor.
-    const planMode = getAgentMode() === "plan";
-    const badge = planMode
-      ? `${"\x1b[1m"}${fgSeq("antidote")}► PLAN${"\x1b[0m"}`
-      : `${"\x1b[1m"}${fgSeq("gray")}▪ BUILD${"\x1b[0m"}`;
+    // Mode badge (owner request 2026-09-01): registry-driven — BOLD glyph +
+    // label in the mode's own color, same discipline as the agent-mode
+    // widget below the editor. Configurable via ~/.vitriol/officina/modes.json.
+    const modeDef = getModeDef();
+    const modeSeq = modeColorSeq(modeDef);
+    const badge = `${"\x1b[1m"}${modeSeq}${modeDef.glyph} ${modeDef.label}${"\x1b[0m"}`;
     const inner = [
       `${c(GOLD, "◈ " + coupling)}${c(MUTED, "  ·  ")}${badge}`,
     ];
@@ -173,8 +171,10 @@ export default function (pi: ExtensionAPI) {
     // Wrap every content row to the inner width BEFORE framing so the box
     // border always lands on the same column (frame() never wraps).
     const rows = inner.flatMap((l) => wrapAnsi(l, innerW));
-    const bar = "─".repeat(w - 2);
-    return ["╭" + c(MUTED, bar) + "╮", ...rows.map((l) => frame(l, w)), "╰" + c(MUTED, bar) + "╯"];
+    // Frame edge follows the active mode's color (owner request 2026-09-01).
+    const bar = c(modeSeq, "─".repeat(w - 2));
+    const corner = (ch: string) => c(modeSeq, ch);
+    return [corner("╭") + bar + corner("╮"), ...rows.map((l) => frame(l, w)), corner("╰") + bar + corner("╯")];
   };
 
   let tui: any = null;

@@ -130,43 +130,46 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     // 2026-09-01 (owner): the GPU tab folded into the Dashboard — one view:
     // GEN card, summary row (GPU + decode), then the full btop-style gauges
     // filling the remaining height.
+    // 2026-08-31 (owner): GEN and DECODE side by side. Elemental glyphs spread
+    // across the tab's panels by thematic fit:
+    //   🜂 GEN (fire, the forge) · 🜄 DECODE (water, the stream that flows)
+    //   🜃 GAUGES (earth, silicon matter) · 🜁 PROCESSES (air, living breath)
     let rows = Layout::vertical([
-        Constraint::Ratio(1, 4),
         Constraint::Ratio(1, 4),
         Constraint::Min(0),
     ])
     .split(area);
 
-    // 2026-09-01 deprecation cleanup: HERMETIS and EMBED service cards
-    // retired with the SS2 gateway fold-in (render_hermetis_card /
-    // render_embed_card retained below; re-add here to restore).
-    let services = Layout::horizontal([Constraint::Ratio(1, 1)]).split(rows[0]);
+    let cards = Layout::horizontal([
+        Constraint::Ratio(1, 2),
+        Constraint::Ratio(1, 2),
+    ])
+    .split(rows[0]);
 
-    render_gen_card(frame, services[0], &app.snapshot);
-
-    render_decode_card(frame, rows[1], app);
+    render_gen_card(frame, cards[0], &app.snapshot);
+    render_decode_card(frame, cards[1], app);
 
     // The former GPU tab's full panel (gauges + per-GPU metrics) fills the
     // remaining height - one view instead of two tabs.
-    render_gpu_tab(frame, rows[2], app);
+    render_gpu_tab(frame, rows[1], app);
 
     // Watermark: the stone rises in the gauges panel's leftover space.
     if !app.snapshot.gpus.is_empty() {
         let gauges_height = (app.snapshot.gpus.len() as u16) * 8 + 2;
-        if rows[2].height > gauges_height + 4 {
+        if rows[1].height > gauges_height + 4 {
             crate::watermark::render(
                 frame,
                 Rect {
-                    x: rows[2].x,
-                    y: rows[2].y + gauges_height,
-                    width: rows[2].width,
-                    height: rows[2].height - gauges_height,
+                    x: rows[1].x,
+                    y: rows[1].y + gauges_height,
+                    width: rows[1].width,
+                    height: rows[1].height - gauges_height,
                 },
                 &app.cfg.repo_root,
             );
         }
     } else {
-        crate::watermark::render(frame, rows[2], &app.cfg.repo_root);
+        crate::watermark::render(frame, rows[1], &app.cfg.repo_root);
     }
 }
 
@@ -278,43 +281,6 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-/// 2026-09-01: retired with the hermes-era stack (see Tab::ALL note in
-/// app.rs); retained for one-keystroke restore.
-#[allow(dead_code)]
-/// HERMETIS card: status + episode/node/session counts.
-fn render_hermetis_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
-    let h = &snap.hermetis;
-    let title = format!(" {} HERMETIS ", theme::GLYPH_HERM);
-    let block = panel(&title, h.up);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines = vec![
-        status_line(h.up, "memory server"),
-        count_line("episodes", h.episodes),
-        count_line("nodes", h.nodes),
-        count_line("sessions", h.sessions),
-    ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-}
-
-/// 2026-09-01: retired with the hermes-era stack; retained for restore.
-#[allow(dead_code)]
-/// EMBED card: status.
-fn render_embed_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
-    let e = &snap.embed;
-    let title = format!(" {} EMBED ", theme::GLYPH_EMBED);
-    let block = panel(&title, e.up);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let lines = vec![
-        status_line(e.up, "bge embedder"),
-        kv_line("mode", "cpu"),
-        Line::from(vec![Span::styled("bge ctx 512, ngl 0", theme::muted())]),
-    ];
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
-}
 
 /// GPU card: one compact btop-style block per GPU (VRAM + UTIL gauges), then
 /// the compute-process table.
@@ -469,7 +435,8 @@ fn render_braille_bar(frame: &mut Frame, area: Rect, ratio: f64, ramp: theme::Br
 /// idle the card collapses to a dim status line so the panel really stops when
 /// the stack does.
 fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
-    let block = panel_neutral(" DECODE ");
+    let title = format!(" {} DECODE ", theme::GLYPH_HERM);
+    let block = panel_neutral(&title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -684,7 +651,8 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
         );
     }
 
-    let proc_panel = panel_neutral(" PROCESSES ");
+    let p_title = format!(" {} PROCESSES ", theme::GLYPH_EMBED);
+    let proc_panel = panel_neutral(&p_title);
     let p_inner = proc_panel.inner(rows[1]);
     frame.render_widget(proc_panel, rows[1]);
 

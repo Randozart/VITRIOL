@@ -16,7 +16,7 @@ pub const PANEL: Color = Color::Rgb(0x16, 0x1B, 0x22);
 /// Dim border for unfocused panels (Officina `statusBar.background`).
 pub const BORDER_DIM: Color = Color::Rgb(0x21, 0x26, 0x2D);
 /// VITRIOL primary green (Officina "Safety") — borders, headers, gauges.
-pub const GREEN: Color = Color::Rgb(0x39, 0xFF, 0x14);
+pub const GREEN: Color = Color::Rgb(0x3F, 0xB9, 0x50);
 /// VITRIOL gold (Officina "Sovereignty") — titles, active accents.
 pub const GOLD: Color = Color::Rgb(0xFF, 0xD7, 0x00);
 /// Solvent cyan (Officina "Solvent") — active/streaming decode.
@@ -24,7 +24,7 @@ pub const CYAN: Color = Color::Rgb(0x00, 0xFF, 0xFF);
 /// Antidote orange (Officina "Antidote") — warnings.
 pub const ORANGE: Color = Color::Rgb(0xFF, 0x5F, 0x1F);
 /// Substrate red (Officina "Substrate") — down / critical.
-pub const RED: Color = Color::Rgb(0xFF, 0x44, 0x44);
+pub const RED: Color = Color::Rgb(0xF8, 0x51, 0x49);
 /// Foreground text (Officina `editor.foreground`).
 pub const TEXT: Color = Color::Rgb(0xE0, 0xE0, 0xE0);
 /// Muted text (Officina punctuation).

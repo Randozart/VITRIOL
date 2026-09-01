@@ -113,6 +113,21 @@ still certifies at ≥ the session's measured working set (~20k live), and
 (b) multi-dispatch wall-clock improves ≥ 20%, and (c) foreground tail latency
 during gated background jobs stays within noise.
 
+## 6b. RESULTS (2026-09-01, live engine) — ADOPTED ✅
+
+`scripts/bench-dual-slot.py` (fingerprint: server argv in
+`~/.vitriol/officina/state/launch-fingerprint.txt`; engine booted
+`--parallel 2`, `-c 81920 --kv-unified`, ts 22,14, MTP n1):
+
+- A serial: 107.1s wall, 9.6 t/s aggregate
+- B parallel: 71.1s wall, 14.4 t/s aggregate → **1.51× speedup** (≥20% PASS)
+- C foreground stall: decode 11.3 t/s before AND during an 8k prefill
+  admission → **zero stall** (PASS; chunked prefill at ubatch 64)
+- Depth: KV pool unified, VRAM flat vs single-slot — no window sacrificed
+
+Note: `tokens_predicted_total` under-counts with MTP on; the stall sampler
+reads `n_decode_total` (decode steps) instead. All criteria met → adopted.
+
 ## 7. Architecture sketch (v1)
 
 ```

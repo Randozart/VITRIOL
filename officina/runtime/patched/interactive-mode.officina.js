@@ -504,9 +504,67 @@ export class InteractiveMode {
                 this.split?.invalidate();
                 this.ui.requestRender();
             };
-            editor.handleInput = (data) => {
-                if (kb.matches(data, "tui.editor.pageUp")) {
+            const MOUSE_SGR = new RegExp("^\u001b\\[<(\\d+);(\\d+);(\\d+)([Mm])$");
+            let lastDragY = null;
+            const scrollBy = (lines) => {
+                enterScroll();
+                this.officinaScroll = Math.max(0, this.officinaScroll + lines);
+                this.split?.invalidate();
+                this.ui.requestRender();
+            };
+            // While scrolling, hide the watermark/custom header: scrolling up
+            // brings the document top back into the viewport and the logo
+            // rows would sit where history text belongs (owner report
+            // 2026-09-01). Restored verbatim on exit.
+            const hideHeader = () => {
+                if (this.officinaHiddenHeader) return;
+                if (this.customHeader) {
+                    const idx = this.headerContainer.children.indexOf(this.customHeader);
+                    if (idx !== -1) {
+                        this.headerContainer.children.splice(idx, 1);
+                        this.officinaHiddenHeader = this.customHeader;
+                    }
+                }
+            };
+            const restoreHeader = () => {
+                if (this.officinaHiddenHeader) {
+                    this.headerContainer.children.unshift(this.officinaHiddenHeader);
+                    this.officinaHiddenHeader = null;
+                }
+            };
+            const enterScroll = () => {
+                if (!this.officinaScrollActive) {
                     this.officinaScrollActive = true;
+                    hideHeader();
+                }
+            };
+            const exitScroll = () => {
+                this.officinaScrollActive = false;
+                this.officinaScroll = 0;
+                lastDragY = null;
+                restoreHeader();
+                this.split?.invalidate();
+            };
+            editor.handleInput = (data) => {
+                // [officina P8] mouse wheel / drag -> scrollback navigation.
+                const m = MOUSE_SGR.exec(data);
+                if (m) {
+                    const button = Number(m[1]);
+                    const y = Number(m[3]);
+                    const press = m[4] === "M";
+                    if (button === 64 && press) { scrollBy(4); return; }   // wheel up
+                    if (button === 65 && press) { scrollBy(-4); return; }  // wheel down
+                    if ((button & 32) !== 0 && press) {                    // drag/touch motion
+                        if (lastDragY !== null) scrollBy(lastDragY - y);
+                        lastDragY = y;
+                        return;
+                    }
+                    if ((button & 32) === 0 && press) lastDragY = y;       // drag start
+                    if (!press) lastDragY = null;                          // drag ended
+                    return; // other mouse events (clicks) are absorbed
+                }
+                if (kb.matches(data, "tui.editor.pageUp")) {
+                    enterScroll();
                     this.officinaScroll += page();
                     apply(() => {});
                     return;
@@ -520,6 +578,7 @@ export class InteractiveMode {
                         return;
                     }
                     if (kb.matches(data, "tui.editor.cursorUp")) {
+                        enterScroll();
                         this.officinaScroll += 1;
                         apply(() => {});
                         return;
@@ -532,15 +591,12 @@ export class InteractiveMode {
                         return;
                     }
                     if (data === "\x1b") {
-                        this.officinaScrollActive = false;
-                        this.officinaScroll = 0;
+                        exitScroll();
                         apply(() => {});
                         return;
                     }
                     // any other key: leave scrollback mode, let the key through
-                    this.officinaScrollActive = false;
-                    this.officinaScroll = 0;
-                    this.split?.invalidate();
+                    exitScroll();
                 }
                 origHandle(data);
             };
@@ -748,6 +804,14 @@ export class InteractiveMode {
         this.setupEditorSubmitHandler();
         // Start the UI before initializing extensions so session_start handlers can use interactive dialogs
         this.ui.start();
+        // [officina P8] Enable mouse reporting (button + drag + SGR encoding).
+        // pi-tui's stdin-buffer already splits SGR mouse sequences, so they
+        // arrive at our editor wrapper intact and drive scrollback: wheel =
+        // page-ish steps, drag (touch swipe on phones) = line stepping.
+        // Tracking is disabled again in shutdown().
+        try {
+            process.stdout.write("[?1000h[?1002h[?1006h");
+        } catch { /* mouse is enhancement-only */ }
         // [officina FOCUS-TEST] t+6s focus sidebar, t+12s back to editor
         if (process.env.OFFICINA_SIDEBAR_FOCUS_TEST === "1" && this.split?.sidebarFocusTarget) {
             const target = this.split.sidebarFocusTarget;
@@ -3148,6 +3212,9 @@ export class InteractiveMode {
      */
     isShuttingDown = false;
     async shutdown(options) {
+        try {
+            process.stdout.write("[?1006l[?1002l[?1000l");
+        } catch { /* best effort */ }
         if (this.isShuttingDown)
             return;
         this.isShuttingDown = true;

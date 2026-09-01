@@ -13,8 +13,8 @@ export const VITRIOLUM = {
   bg: "#0d1117", // substrate background (OSC 11 claim, TUI BG)
   panel: "#161b22", // panels / cards
   borderDim: "#21262d", // dim borders / darkGray
-  substrate: "#ff4444", // errors, removals
-  safety: "#39ff14", // success, additions, token flow
+  substrate: "#f85149", // errors, removals (desaturated 2026-09-01)
+  safety: "#3fb950", // success, additions, token flow (desaturated 2026-09-01)
   solvent: "#00ffff", // links, folders, "alive" cyan
   sovereignty: "#ffd700", // gold: accent, headings, coupling
   antidote: "#ff5f1f", // warning orange; the brand widget accent

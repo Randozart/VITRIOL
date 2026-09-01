@@ -1,0 +1,23 @@
+{
+  "_comment": "Copy to ~/.vitriol/officina/modes.json to override or add agent modes. Same-name entries override the defaults below; new names are appended and become TAB-cyclable. 'color' is a Vitriolum palette name (sovereignty/antidote/coldBlue/safety/solvent/substrate/violet/gray) or a #rrggbb hex.",
+  "modes": [
+    {
+      "name": "build",
+      "label": "BUILD",
+      "glyph": "▪",
+      "color": "coldBlue",
+      "hint": "writes unlocked",
+      "enterDirective": "AGENT MODE: BUILD. Writes are unlocked — apply the plan with normal write/edit tools.",
+      "blockNonMdWrites": false
+    },
+    {
+      "name": "plan",
+      "label": "PLAN",
+      "glyph": "►",
+      "color": "sovereignty",
+      "hint": "research only, *.md writes",
+      "directive": "AGENT MODE: PLAN (research-first). Investigate before acting. You may ONLY create or modify Markdown files (*.md). Do NOT modify other files or run state-changing commands. Present findings and a concrete plan when ready.",
+      "blockNonMdWrites": true
+    }
+  ]
+}

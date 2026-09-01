@@ -74,8 +74,10 @@ export default function (pi: ExtensionAPI) {
   const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
 
   const frame = (x: string, w: number) => {
+    // Frame edges follow the active mode color (registry read per render).
+    const edgeSeq = modeColorSeq(getModeDef());
     const pad = Math.max(0, w - 4 - visibleLen(x));
-    return `│ ${x}${" ".repeat(pad)} │`;
+    return `${c(edgeSeq, "│")} ${x}${" ".repeat(pad)} ${c(edgeSeq, "│")}`;
   };
 
   // ANSI-aware greedy word wrap: visible cells (SGR zero-width) per line <= width.
@@ -113,8 +115,18 @@ export default function (pi: ExtensionAPI) {
     const modeDef = getModeDef();
     const modeSeq = modeColorSeq(modeDef);
     const badge = `${"\x1b[1m"}${modeSeq}${modeDef.glyph} ${modeDef.label}${"\x1b[0m"}`;
+    // Coupling and badge on SEPARATE rows (owner bugfix 2026-09-01): the
+    // combined row overflowed — ambiguous-width glyphs (▪ · –) count as 2
+    // cells in pi's wrapper even though they render as 1 — and the wrapped
+    // badge fragment read as duplicated text. Two short rows can never wrap.
+    const badgeVisible = visibleLen(badge);
+    const maxCoupling = Math.max(8, innerW - 3);
+    const couplingShort = visibleLen(coupling) > maxCoupling
+      ? coupling.slice(0, Math.max(1, maxCoupling - 1)) + "…"
+      : coupling;
     const inner = [
-      `${c(GOLD, "◈ " + coupling)}${c(MUTED, "  ·  ")}${badge}`,
+      `${c(GOLD, "◈ " + couplingShort)}`,
+      badge,
     ];
     // Context row: braille capacity gauge + % of window + exact filled count.
     // Honest dashes when pi can't estimate (right after compaction).

@@ -31,6 +31,12 @@ let loaded = false;
 const recentToolCalls: string[] = []; // most-recent-first, capped at 8
 let lastFailedTool: string | null = null;
 
+// ── Sidebar data export ──────────────────────────────────────────────────
+/** Return the recent tool calls (most-recent-first). Read-only snapshot. */
+export function getRecentTools(): readonly string[] {
+  return recentToolCalls;
+}
+
 // ── Intent keywords → likely tools ──────────────────────────────────────
 const INTENT_MAP: Record<string, string[]> = {
   read: ["read"], show: ["read"], view: ["read"], cat: ["read"],

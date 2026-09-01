@@ -181,6 +181,9 @@ function indicatorLines(): string[] | undefined {
   return [truncateLineToWidth(raw, terminalColumns())];
 }
 
+// Lives below the editor (owner decision 2026-09-01): state indicators stay
+// next to the composer; the sidebar carries data rows only. undefined
+// clears the widget when no phase tags are set.
 function setIndicator(ctx: any): void {
   if (!ctx?.hasUI) return;
   try {

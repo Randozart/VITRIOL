@@ -25,6 +25,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 const PATCHED = new Map([
   ["dist/modes/interactive/interactive-mode.js", "interactive-mode.officina.js"],
   ["dist/modes/interactive/components/session-selector.js", "session-selector.officina.js"],
+  ["dist/modes/interactive/components/tool-execution.js", "components/tool-execution.js"],
   ["node_modules/@earendil-works/pi-tui/dist/components/markdown.js", "markdown.officina.js"],
 ]);
 function originalUrlFor(parentPath) {

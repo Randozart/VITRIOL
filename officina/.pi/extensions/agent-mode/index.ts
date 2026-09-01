@@ -51,6 +51,10 @@ export default function (pi: ExtensionAPI) {
     return base + hint;
   };
 
+  // Mode indicator lives BELOW the editor — canonical spot (owner decision
+  // 2026-09-01): bold glyph+label in the mode color, recoloring on every
+  // mode switch, next to the composer where the eye is. Sidebar carries
+  // data rows only; the brief sidebar-section experiment was reverted.
   const renderIndicator = () => {
     if (!ui) return;
     const def = getModeDef();

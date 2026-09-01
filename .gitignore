@@ -108,3 +108,7 @@ scripts/gen_test_stream
 vitriol-daemon/vitriol.mod.c
 alka-executor/vitriol_ce_test
 .aider*
+
+# officina-native build artifacts
+officina/native/target/
+officina/native/index.node

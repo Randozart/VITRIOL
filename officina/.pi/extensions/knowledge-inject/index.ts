@@ -27,6 +27,14 @@ const entries = new Map<string, KnowledgeEntry>();
 const cache = new Map<string, string>();
 let loaded = false;
 
+// ── Sidebar data export ──────────────────────────────────────────────────
+let lastInjectedTopics: string[] = [];
+
+/** Return the topics from the last knowledge injection. Read-only snapshot. */
+export function getLastTopics(): readonly string[] {
+  return lastInjectedTopics;
+}
+
 export const MIN_SCORE_THRESHOLD = 2.0;
 const PER_ENTRY_CAP = 150;
 
@@ -131,6 +139,9 @@ export default function (pi: ExtensionAPI) {
       used += entry.tokenCost;
     }
     if (selected.length === 0) return;
+
+    // Track for sidebar display.
+    lastInjectedTopics = selected.map((e) => e.topic);
 
     // Publish required tools on systemPromptOptions. skill-inject reads this
     // to include the requires_tools' skill cards in its own selection.

@@ -15,7 +15,9 @@
   },
   "scripts": {
     "test": "vitest --run extensions",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "native:build": "cargo build --release --manifest-path native/Cargo.toml && cp native/target/release/libofficina_native.so native/index.node",
+    "native:test": "cargo test --release --manifest-path native/Cargo.toml"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

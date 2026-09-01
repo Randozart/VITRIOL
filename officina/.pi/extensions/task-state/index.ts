@@ -24,6 +24,37 @@ import { renderTaskBlock, taskStateConfig, validateTasks, type TaskItem } from "
 
 const CUSTOM_TYPE = "lc-tasks";
 
+// Module-level task file path — updated on session_start, read by getTaskSummary.
+let currentTaskFile = join(taskStateConfig().dir, "default.json");
+
+// ── Sidebar data export ──────────────────────────────────────────────────
+export interface TaskSummary {
+  total: number;
+  pending: number;
+  inProgress: number;
+  completed: number;
+  cancelled: number;
+}
+
+/** Read the current task file and return a summary. Returns null if no tasks. */
+export function getTaskSummary(): TaskSummary | null {
+  try {
+    const parsed = JSON.parse(readFileSync(currentTaskFile, "utf8")) as { tasks?: unknown };
+    const v = validateTasks(parsed.tasks ?? []);
+    const tasks = v.tasks ?? [];
+    if (tasks.length === 0) return null;
+    return {
+      total: tasks.length,
+      pending: tasks.filter((t) => t.status === "pending").length,
+      inProgress: tasks.filter((t) => t.status === "in_progress").length,
+      completed: tasks.filter((t) => t.status === "completed").length,
+      cancelled: tasks.filter((t) => t.status === "cancelled").length,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Session stem used as the task filename (cross-session visibility for Hermes). */
 export function sessionFileStem(sessionFile: string | null | undefined): string {
   if (!sessionFile) return "default";
@@ -34,16 +65,14 @@ export default function (pi: ExtensionAPI) {
   const cfg = taskStateConfig();
   if (!cfg.enabled) return;
 
-  let taskFile = join(cfg.dir, "default.json");
-
   pi.on("session_start", async (_event, ctx) => {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
-    taskFile = join(cfg.dir, `${sessionFileStem(sm?.getSessionFile?.())}.json`);
+    currentTaskFile = join(cfg.dir, `${sessionFileStem(sm?.getSessionFile?.())}.json`);
   });
 
   function readTasks(): TaskItem[] {
     try {
-      const parsed = JSON.parse(readFileSync(taskFile, "utf8")) as { tasks?: unknown };
+      const parsed = JSON.parse(readFileSync(currentTaskFile, "utf8")) as { tasks?: unknown };
       const v = validateTasks(parsed.tasks ?? []);
       return v.tasks ?? [];
     } catch {
@@ -78,14 +107,14 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: `update_tasks rejected: ${v.error}` }], details: {}, isError: true };
       }
       try {
-        mkdirSync(dirname(taskFile), { recursive: true });
-        writeFileSync(taskFile, JSON.stringify({ updated: Date.now(), tasks: v.tasks }, null, 2));
+        mkdirSync(dirname(currentTaskFile), { recursive: true });
+        writeFileSync(currentTaskFile, JSON.stringify({ updated: Date.now(), tasks: v.tasks }, null, 2));
       } catch (e) {
         return { content: [{ type: "text" as const, text: `update_tasks could not persist: ${(e as Error).message}` }], details: {}, isError: true };
       }
       const done = (v.tasks ?? []).filter((t) => t.status === "completed").length;
       emitHarnessEvent(harnessEvent("lc-tasks", "updated", { detail: `${done}/${(v.tasks ?? []).length} done` }));
-      return { content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${taskFile}` }], details: {} };
+      return { content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${currentTaskFile}` }], details: {} };
     },
   });
 

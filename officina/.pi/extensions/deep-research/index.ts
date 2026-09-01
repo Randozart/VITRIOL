@@ -96,6 +96,9 @@ function indicatorLines(): string[] {
   return [truncateLineToWidth(raw, terminalColumns())];
 }
 
+// Lives below the editor (owner decision 2026-09-01): mode-state indicators
+// stay next to the composer; sidebar carries data rows only. `on === false`
+// clears the widget.
 function setIndicator(ctx: any, on: boolean): void {
   if (!ctx?.hasUI) return;
   ctx.ui.setWidget(INDICATOR_KEY, on ? indicatorLines() : undefined, { placement: "belowEditor" });

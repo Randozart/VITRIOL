@@ -4,6 +4,7 @@
 // Ramp/muted colors now come from _shared/vitriolum.ts (single palette
 // source for all extensions; parity-tested against theme.rs).
 import { fgSeq, hexToRgb, VITRIOLUM, type VitriolumName } from "../_shared/vitriolum.ts";
+import { getNative } from "../_shared/native.ts";
 //
 // Six-dot braille cells (U+2800..U+28FF), 6 percentage points per cell,
 // filled bottom-left dot first, rising. Each lit cell is colored along a
@@ -42,9 +43,12 @@ function lerp(a: RGB, b: RGB, t: number): RGB {
 // Piecewise-lerped multi-stop ramp (Vitriolum ramps, VITRIOL theme.rs).
 export class Ramp {
   private stops: RampStop[];
+  /** Name for the native (Rust) renderer; matches officina/native/src/braille.rs. */
+  name?: string;
 
-  constructor(stops: RampStop[]) {
+  constructor(stops: RampStop[], name?: string) {
     this.stops = [...stops].sort((a, b) => a.at - b.at);
+    this.name = name;
   }
 
   static fromHex(hexes: Array<[number, number]>): Ramp {
@@ -80,11 +84,11 @@ export const RAMPS = {
     palStop(0.5, "antidote"),
     palStop(0.75, "substrate"),
     palStop(1, "deepRed"),
-  ]),
+  ], "capacity"),
   // activity: dark teal -> safety green -> solvent cyan
-  activity: new Ramp([palStop(0, "darkTeal"), palStop(0.5, "safety"), palStop(1, "solvent")]),
+  activity: new Ramp([palStop(0, "darkTeal"), palStop(0.5, "safety"), palStop(1, "solvent")], "activity"),
   // mercury: muted gray -> solvent cyan (idle -> alive)
-  mercury: new Ramp([palStop(0, "mercury"), palStop(1, "solvent")]),
+  mercury: new Ramp([palStop(0, "mercury"), palStop(1, "solvent")], "mercury"),
 } as const;
 
 export interface BarCell {
@@ -114,8 +118,19 @@ function ansiFg(c: RGB): string {
 const ANSI_RESET = "\x1b[0m";
 
 // Render a colored braille gauge: lit cells ramp-colored, empty cells muted.
+// Delegates to the Rust addon (officina/native) when built — same output,
+// no per-cell JS allocation. JS path kept as fallback.
 export function renderGauge(ramp: Ramp, ratio: number, cells: number): string {
   const muted = fgSeq("gray");
+  const n = getNative();
+  if (n && ramp.name) {
+    try {
+      const { r, g, b } = hexToRgb(VITRIOLUM.gray);
+      return n.renderGauge(ramp.name, ratio, cells, r, g, b);
+    } catch {
+      // fall through to the JS renderer
+    }
+  }
   let out = "";
   for (const cell of barCells(ratio, cells)) {
     if (cell.mask === 0) {

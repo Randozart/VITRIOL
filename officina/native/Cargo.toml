@@ -1,0 +1,36 @@
+# officina-native — NAPI addon for Officina hot paths (2026-09-01).
+#
+# Ports the CPU-bound helpers from TypeScript/JavaScript to Rust:
+#   ansi.rs    — ANSI strip / visible width / ANSI-preserving cut
+#                (replaces officinaStripZeroWidth / officinaVisibleWidth /
+#                officinaCut in runtime/build-patch.mjs, which ran per line
+#                per render, 60+ fps during generation)
+#   braille.rs — Vitriolum braille gauge rendering
+#                (replaces vitriol-decode/braille.ts renderGauge)
+#
+# Loaded via _shared/native.ts (createRequire of index.node); every JS
+# caller keeps a fallback implementation, so a missing/stale addon is a
+# performance loss, never a correctness one.
+#
+# Provenance: original work, this repo — Rust port of officina's own
+# TypeScript (Apache-2.0 OR MIT). Palette constants mirror vitriolum.ts /
+# vitriol-tui/src/theme.rs (same repo).
+
+[package]
+name = "officina_native"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+napi = { version = "2", default-features = false, features = ["napi4"] }
+napi-derive = "2"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true

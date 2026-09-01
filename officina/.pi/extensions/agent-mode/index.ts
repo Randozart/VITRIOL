@@ -29,7 +29,7 @@ import {
   nextMode,
   setAgentMode,
 } from "../_shared/agent-mode.ts";
-import { fgSeq } from "../_shared/vitriolum.ts";
+import { VITRIOLUM, fgSeq, hexToRgb } from "../_shared/vitriolum.ts";
 import { injectionResult } from "../_shared/inject.ts";
 
 const BOLD = "\x1b[1m";
@@ -80,6 +80,7 @@ export default function (pi: ExtensionAPI) {
     }
     if (def.enterDirective) enterDirectivePending = def.enterDirective;
     ctx?.ui?.notify?.(`${def.label} mode: ${def.hint}`, "info");
+    applyModeTheme();
     renderIndicator();
   };
 
@@ -98,8 +99,45 @@ export default function (pi: ExtensionAPI) {
     return;
   });
 
+  // Mode-tinted chrome (owner request 2026-09-01): the chat box border
+  // follows the active mode's color. Done by swapping in a clone of the
+  // officina theme with the "border" role recolored — pi already rebuilds
+  // the editor border on theme change (updateEditorBorderColor), so this
+  // rides the supported path. Cosmetic: every failure is swallowed.
+  const applyModeTheme = () => {
+    // Publish the border tint for the patched TUI (updateEditorBorderColor
+    // reads it after the thinking-level border logic).
+    try {
+      const def2 = getModeDef();
+      const seq = modeColorSeq(def2);
+      // pi editors call borderColor(text) — publish a styled function, not
+      // a raw sequence (2026-09-01: string tint crashed CustomEditor.render).
+      (globalThis as any).__officinaModeBorder = seq
+        ? ((text: string) => `${seq}${text}${RESET}`)
+        : null;
+    } catch { /* cosmetic */ }
+    try {
+      const def = getModeDef();
+      const hex = def.color.startsWith("#") ? def.color : (VITRIOLUM as Record<string, string>)[def.color];
+      if (!hex) return;
+      const base = ui.getTheme?.("officina") ?? ui.theme;
+      console.error("[officina] applyModeTheme base:", !!base, "fgColors:", !!base?.fgColors, "setTheme:", typeof ui.setTheme);
+      if (!base?.fgColors) return;
+      const { r, g, b } = hexToRgb(hex);
+      const clone = Object.create(Object.getPrototypeOf(base));
+      Object.assign(clone, base);
+      clone.fgColors = new Map(base.fgColors);
+      clone.fgColors.set("border", `[38;2;${r};${g};${b}m`);
+      clone.name = `officina-${def.name}`;
+      ui.setTheme?.(clone);
+    } catch (err) {
+      console.error("[officina] applyModeTheme failed:", err instanceof Error ? err.message : err);
+    }
+  };
+
   pi.on("session_start", (_event, ctx) => {
     ui = ctx.ui;
+    applyModeTheme();
     renderIndicator();
   });
 

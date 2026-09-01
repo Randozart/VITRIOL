@@ -483,6 +483,24 @@ export class InteractiveMode {
             autocompleteMaxVisible,
         });
         this.editor = this.defaultEditor;
+        // [officina P9] dynamic mode tint: the editor border property becomes
+        // a live view of globalThis.__officinaModeBorder (published by the
+        // agent-mode extension), so TAB / /mode recolors the chat box
+        // immediately instead of waiting for the next border refresh.
+        {
+            const ed = this.defaultEditor;
+            let borderFn = ed.borderColor;
+            try {
+                Object.defineProperty(ed, "borderColor", {
+                    configurable: true,
+                    get() {
+                        const tint = globalThis.__officinaModeBorder;
+                        return typeof tint === "function" && !this.officinaBorderBypass ? tint : borderFn;
+                    },
+                    set(v) { borderFn = v; },
+                });
+            } catch { /* decoration only */ }
+        }
         // [officina P7] Scrollback navigation. In docked mode the split repaints
         // a fixed viewport, so chat history never reaches the terminal's native
         // scrollback — PgUp/PgDn previously only scrolled INSIDE multi-line
@@ -3418,6 +3436,13 @@ export class InteractiveMode {
         else {
             const level = this.session.thinkingLevel || "off";
             this.editor.borderColor = theme.getThinkingBorderColor(level);
+        }
+        // [officina P9] mode-tinted border: the active agent mode recolors the
+        // chat box (plan gold, build coldBlue, custom per modes.json). Tint is
+        // published by the agent-mode extension on globalThis.
+        const modeTint = globalThis.__officinaModeBorder;
+        if (modeTint && !this.isBashMode) {
+            this.editor.borderColor = modeTint;
         }
         this.ui.requestRender();
     }

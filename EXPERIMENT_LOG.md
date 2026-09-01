@@ -1428,3 +1428,92 @@ user review.
 
 NEXT: E2 LUT GEMV (parity via oracle); daily-driver swap decision; H1c
 MoE bench vs Qwen3.6-35B.
+
+## 2026-09-01 (3) - H1c blocked: no MoE model loadable by both control and candidate
+
+2026-09-01 ~19:30. Planned MoE-fusion A/B (#27621/#27978) via
+Mellum2-12B-A2.5B-Q5_K_M proxy failed at step one: the control build
+(build/ @ 590a4bb09) cannot load Mellum2 (arch support landed upstream
+after the fork point; candidate loads it fine). No other local MoE gguf.
+Unblock options: Qwen3.6-35B download (HF CDN stall workaround needed)
+or a control build from a Mellum-capable base. H1c stays OPEN. Server
+restarted unchanged.
+
+## 2026-09-01 (4) - E2c interim: sm_61 mmvq kernel headroom confirmed; KV-ideas assessment recorded
+
+2026-09-01 evening. E2c (27B decode audit) opening measurement, 9B Q6_K
+-ngl 99 -fa on -r 3, dev-pinned, build-ku2 @ main (4653fcdcb):
+- 3060 (sm_86, 360 GB/s): tg128 41.30 -> 290 GB/s effective = 81% of peak
+- 1070 Ti (sm_61, 256 GB/s): tg128 23.96 -> 169 GB/s effective = 66% of peak
+15-point gap is kernel-side (mmvq), not model-side. At sm_86-class
+efficiency the 1070 Ti would deliver ~29.4 t/s (+23%). Dispatch audit
+mid-flight: sm_61 gets MMVQ_PARAMETERS_GENERIC (no tuned table), small_k
+force-disabled for Q2_K/Q3_K/IQ3_S on Pascal, halve_iters GB10-only.
+
+KV-compression brainstorm assessed and recorded in master plan section 8:
+E-KV-0 (flip daily KV q4_0 -> tq3_0, attemptable now), E8 (offline KV-PQ
+codebook probe), E9 (MLA conversion, parked). Linear-state already in
+qwen35 arch (GatedDeltaNet); functional/DCT parked on quality risk.
+FINGERPRINT (E2c bench): llama-bench -m Qwen3.8-9B-Q6_K.gguf -ngl 99
+-p 512 -n 128 -fa on -r 3 -dev CUDA0, CUDA_VISIBLE_DEVICES pinned,
+build-ku2/bin, driver 580.178.04.
+
+## 2026-09-01 (5) - BUG: llama-bench + tq3_0 KV segfault at depth; E-KV-0 rerouted via server path
+
+2026-09-01 ~21:00. `llama-bench -d 43000 -ctk tq3_0 -ctv tq3_0` (candidate
+build-ku2 @ main, 27B, ts 22/14, ub64, fa on) SIGSEGV, exit 139, core
+dumped. -d 8192 progressed normally (fill dots observed) - crash happens
+during large depth fill. tq3_0 via llama-server is the certified path
+(2026-08-24, 54,692 tok @ 9.21 t/s); llama-bench's new depth machinery +
+TurboQuant cache was never exercised. Also found+fixed en route: bench
+cache-type parser lacked TQ types (ggml_type_from_name in llama-bench.cpp
+had no tq3_0/1s/4s entries; port gap). Investigate segfault later; E-KV-0
+proceeds via server-path depth measurement (lull Addenda 5-6 method).
+External drive with Models/ not mounted at this time (user note; may hold
+MoE 35B to unblock H1c).
+
+## 2026-09-01 (6) - side track SHELVED: Briev-native inference + custom format (documented)
+
+Full discussion + design + ladder preserved in
+`.opencode/plans/briev-inference-format-side-track-2026-09-01.md`.
+Summary: EXL2/TRT-LLM rejected for this box; user's own-format idea grown
+into a Briev-native inference program (safetensors-derived device-sectioned
+format, .abv SPIR-V kernels, ladder B0-B5, weight-format math showing
+TQ2_0 27B = 7.04 GB = single-1070-Ti daily driver at ~2x decode).
+SHELVED pending user answers to 4 open questions; main line resumes.
+Main-line state at shelving: tq3_0 port bug (COUNT/type_traits/whitelist)
+restored, server init crash UNRESOLVED, E-KV-0 pending, E2c mid-audit.
+
+## 2026-09-01 (7) - tq3_0 port regression CLOSED (5-layer fix); E-KV-0 measurement deferred
+
+2026-09-01 ~22:30. tq3_0 server boot segfault root-caused via coredump
+(SIGSEGV, PC=0 in ggml_compute_forward_flash_attn_ext, CPU backend):
+ggml_get_type_traits_cpu(TQ3)->vec_dot NULL, NDEBUG'd assert, call to 0.
+Root cause: the vitriol-ku port dropped the ENTIRE TQ3 registration layer
+while keeping enum values ABOVE the (upstream-rebased) GGML_TYPE_COUNT.
+Five layers restored, all from the frozen vitriol branch:
+1. ggml/include/ggml.h: GGML_TYPE_COUNT 43 -> 201 (TQ3_0=200 was OOB)
+2. ggml/src/ggml.c: [GGML_TYPE_TQ3_0/1S/4S] type_traits entries + quantize
+   switch cases (quantize_tq3_0/1s/4s were missing there too)
+3. ggml/src/ggml-cpu/ggml-cpu.c: type_traits_cpu entries (vec_dot_type
+   Q8_0 for TQ3 trio; tq3_4s from_float=NULL per old tree)
+4. ggml/src/ggml-cpu/quants.c: quantize_row_tq3_0/1s + vec_dot tq3_0/1s/4s
+   q8_0 functions ported (tq3_4s from_float never existed upstream)
+5. whitelists: common/arg.cpp kv_cache_types + tools/llama-bench
+   ggml_type_from_name (bench tq3_0 parse was also broken)
+VERIFIED: llama-server boots + loads clean (~27 s health 200) with
+-ctk tq3_0 -ctv tq3_0 -c 81920 --parallel 1 ts 22,14 fa on ub64.
+NOTE: the earlier llama-bench -d 43000 tq3_0 SIGSEGV is the same root
+cause (type_name OOB in results header); re-test after this fix.
+NOTE: prior archeology - the pre-ku certified builds (2026-08-24) ran a
+tree where COUNT=201 + full registrations; the ku-port rebased onto
+upstream COUNT=43 and silently orphaned TQ3. The old parser whitelist
+was accidentally masking the broken path by rejecting tq3_0 up front.
+E-KV-0: depth measurement (server-path, lull Addenda 5-6 method) aborted
+by user; tq3_0 server instance killed; daily unit RESTORED (8279, q4_0
+KV, old build, health 200, autosave active). Deferred to next window;
+q4_0 baselines to beat: tg@43k=7.57, tg@54k=6.80 (candidate build).
+UNCOMMITTED on inner main (post-4653fcdcb): arg.cpp whitelist,
+llama-bench.cpp tq parser, ggml.h COUNT, ggml.c traits+switch,
+ggml-cpu.c traits, ggml-cpu/quants.c+.{h} decls. Next session: commit,
+finish E-KV-0, resume E2c (mmvq sm_61 audit at 66%-vs-81% finding).

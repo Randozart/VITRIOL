@@ -396,3 +396,69 @@ Blockers/decisions logged in the session log as they arise.
 3. E1 step 6–8: depth cert, restore timing, lazy-mode A/B.
 4. E3 tool.
 5. Log everything; leave daily-driver server running on the best build.
+
+---
+
+## 8. APPEND (2026-09-01 evening): KV-compression ideas assessment + new experiments
+
+Trigger: user's KV-compression brainstorm (product-of-values + decode key;
+linear attention, MLA, PQ codebooks, functional/DCT-over-time compression).
+Assessment recorded so the ideas stay in scope. Verdicts:
+
+- **Linear/recurrent state**: already present where the model was trained -
+  qwen35 arch is hybrid GatedDeltaNet (bounded 48x128x128 f32 states,
+  ~150 MB/seq; see OurobourOS docs/QWEN35_PORT.md). Softmax layers cannot be
+  post-hoc converted. No action.
+- **MLA latent compression**: requires the bottleneck trained in. Post-hoc
+  conversion research exists (MHA2MLA/TransMLA + recovery fine-tune). Long-
+  horizon model-surgery project. -> **E9 (parked)**.
+- **PQ/codebook KV**: post-hoc applicable; scalar-quant KV is coarse PQ and
+  VITRIOL's tq3_0 (3.5 bpw, certified 2026-08-24) already occupies this lane.
+  Open question: learned-codebook PQ at <= 3 bpw decoded via shared-memory
+  LUT (same trick as E2). -> **E8**.
+- **Functional/DCT-over-time**: highest quality risk (Gibbs ringing on
+  attention-sink spikes; lossy time-smoothing destroys exact retrieval).
+  Its "exact spikes + smooth background" fix is a refined eviction policy -
+  competes with VITRIOL's existing kv sparse + probe design. Park unless
+  E8's curve shows byte-compression still binding.
+
+Bandwidth context (measured 2026-09-01): at 54k filled, KV is ~13-16% of
+decode bytes; weights dominate (~87 GB/s aggregate). KV compression moves
+depth decode a few % and buys window headroom - real but modest. Weight
+decode (E2c) is the bigger byte stream.
+
+### E-KV-0 — daily-driver KV flip to tq3_0 (attemptable now)
+
+Hypothesis: tq3_0 KV at the current 22,14 split matches q4_0 decode t/s
+within noise at shallow depth, gains t/s at depth (22% fewer KV bytes), and
+lowers idle VRAM (window headroom). Pass: tg@43k/54k >= q4_0 numbers
+(7.57/6.80 candidate baselines from E1 depth runs), smoke + /props + vision
+modalities OK.
+Method: stop server -> llama-bench -d 43000,54000 with -ctk tq3_0 -ctv
+tq3_0 (candidate binary; control cannot parse tq3_0) -> edit
+~/.vitriol/config quant_mode q4_0 -> tq3_0 -> start server -> health +
+fingerprint. One window.
+
+### E8 — KV-PQ codebook feasibility (offline first; after E2c/E-KV-0)
+
+Capture real K/V tensors at depth (oracle-style), learn codebooks at
+3.5/2.5/2 bpw, measure attention-output cos (L1 ladder), perplexity delta,
+needle recall. Integrate into llama-kv-cache only if the offline curve beats
+tq3_0 at equal bpw or holds quality at 2.5 bpw. Kill-criteria built in.
+
+### E9 — MLA conversion (parked, long-horizon)
+
+MHA2MLA-style surgery + recovery fine-tune on Qwen3.8-27B. Only if KV bytes
+remain the binding constraint after E-KV-0/E8/E2c.
+
+### E2c interim finding (2026-09-01, this audit)
+
+mmvq q6_K on 9B Q6_K: 3060 sm_86 = 290 GB/s effective (81% of 360 peak);
+1070 Ti sm_61 = 169 GB/s (66% of 256 peak). 15-pt kernel-side headroom on
+sm_61; at 81% the 1070 Ti would do ~29.4 t/s (+23%). 27B daily driver runs
+a 22,14 sequential layer split, so the gain lands proportionally on GPU1's
+share. Audit of mmvq dispatch in progress: batch-1 path selects
+MMVQ_PARAMETERS_GENERIC table on sm_61 (TURING table starts at cc 120);
+should_use_small_k explicitly disables small_k for Q2_K/Q3_K/IQ3_S on
+Pascal ("slow_pascal" list); should_halve_iters is GB10-only. Tuning
+targets: nwarps/rows_per_block for sm_61, possible Pascal table entry.

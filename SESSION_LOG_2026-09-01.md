@@ -19,18 +19,32 @@ Anchored summary (top, per protocol; appended as session progresses).
   H1a NULL (deep-ctx gain is multi-seq-conditioned; we run parallel=1).
   H1b not reproducible (lineage never slow). H1d no end-to-end delta (mma
   path, sm_61 N/A). E6 lazy-mode neutral/adopted. Report:
-  `.opencode/plans/e1-upstream-sync-2026-09-01.md`. EXPERIMENT_LOG updated.
+  `.opencode/plans/e1-upstream-sync-2026-09-01.md`. H1c BLOCKED (no MoE
+  model loadable by both builds; user has Models/ on an unmounted external
+  drive - mount to unblock via Mellum2 or a future 35B).
 - **E3 EXECUTED** (oracle + parity ladder): new `tools/vitriol-oracle`
-  capture tool + `diff.py`; all gates green (determinism byte-exact,
-  perturbation caught, cross-backend divergence characterized as quantized
-  matmul rounding; greedy-equal). Ladder adopted in `llama.cpp/docs/parity-ladder.md`.
-- **BONUS BUG found+fixed**: SIGFPE crash on near-full GPU + `-ngl 0` from
-  new upstream fit machinery (`common/fit.cpp:408` div-by-zero; coredump
-  verified). All degenerate denominators in fit.cpp guarded; repro exits 0.
-  Uncommitted pending user review. Upstream-report candidate.
-- **State**: daily server running on OLD `build/` binary (restored 17:45);
-  candidate `build-ku2/` awaits user's swap call. Uncommitted work:
-  oracle tool, parity-ladder doc, fit.cpp guards.
+  capture tool + `diff.py`; all gates green. Ladder adopted:
+  `llama.cpp/docs/parity-ladder.md`.
+- **fit.cpp SIGFPE found+fixed** (upstream #27169-adjacent); complementary
+  2-site branch `fix-fit-degenerate-divisors` prepared, USER committed
+  (their message) and pushed to fork (`08033df0`) for their own PR.
+- **E2c STARTED** (27B decode audit): sm_61 mmvq headroom CONFIRMED -
+  1070 Ti at 66% of bandwidth peak vs 3060 at 81% on identical q6_K 9B
+  workload; +23% available at parity. Dispatch audit mid-flight.
+- **tq3_0 PORT REGRESSION CLOSED** (evening): the certified TurboQuant KV
+  was unreachable on the vitriol-ku line - COUNT=43 vs TQ types at
+  44/46/200 (OOB), type_traits + CPU traits + CPU quants + whitelists all
+  dropped in the port. Five-layer restoration from the frozen `vitriol`
+  branch; server boots clean. E-KV-0 depth measurement aborted mid-run
+  (user); deferred. EXPERIMENT_LOG (7) has the full fix map.
+- **Side track SHELVED**: Briev-native inference + custom format program -
+  full discussion, ladder B0-B5, weight-format math (TQ2_0 27B = 7.04 GB =
+  single-1070-Ti driver at ~2x decode), open questions:
+  `.opencode/plans/briev-inference-format-side-track-2026-09-01.md`.
+- **State at day end**: daily server RUNNING on old `build/` binary
+  (q4_0 KV, restored 22:30); candidate `build-ku2/` = post-fix tq3_0-
+  capable; tq3_0 fix + oracle UNCOMMITTED on inner main; daily-driver
+  swap still user's call.
 
 ## Decisions
 
@@ -42,12 +56,20 @@ Anchored summary (top, per protocol; appended as session progresses).
 - Daily-driver swap deferred to explicit user decision (not silently done).
 - fit.cpp guards: minimal denominator checks, degenerate branch falls into
   existing else-log; no math change on non-degenerate path.
+- Upstream-bound commit etiquette held: branch prepared, USER wrote the
+  commit message and pushed; no AI push, no AI PR.
+- tq3_0 restoration sourced from the frozen `vitriol` branch verbatim
+  (not re-derived) - registration values are contract, not invention.
+- User aborted the long E-KV-0 server-path measurement; recorded as
+  deferred, not failed. Baselines intact for the next window.
 
 ## Blockers / open questions
 
-- None blocking. Queued: E2 LUT GEMV (oracle now available for parity
-  gate), H1c MoE-specific bench (Qwen3.6-35B), multi-seq depth re-test if
-  parallel returns, E5 Vulkan, upstream bug report for fit.cpp SIGFPE.
+- None blocking. Queued: commit tq3_0 fix + oracle (user approval),
+  E-KV-0 depth window (~10 min), E2c resume (dispatch audit points:
+  GENERIC mmvq table on sm_61, slow_pascal small_k disables, GB10-only
+  halve_iters), H1c unblock (mount external drive), daily-driver swap
+  decision, E5 Vulkan, E7 dp4a, E8 KV-PQ offline probe.
 
 ## Learnings (operational)
 
@@ -60,9 +82,15 @@ Anchored summary (top, per protocol; appended as session progresses).
 - Unpinned dual-backend bench mixes CUDA+Vulkan and costs ~18% tg - always
   `-dev`.
 - setsid+disown needed to keep background llama-server alive across tool
-  timeouts in this harness.
+  timeouts in this harness; tool kills the process group otherwise.
 - `common_init_from_params` runs a warmup decode - capture tools must reset
   state after init (oracle lesson, codified in the tool).
-- New upstream `--fit` machinery changes init behavior under memory pressure:
-  fit errors log as "encountered an error while trying to fit params" -
-  read full logs, not tails.
+- Port-regression pattern (IMPORTANT): a rebased feature whose enum values
+  exceed a rebased GGML_TYPE_COUNT fails ONLY at runtime in Release
+  (asserts compiled out) and ONLY when a code path touches type_traits -
+  and an upstream-style arg whitelist can mask it for months by rejecting
+  the type up front. Grep for enum-value-vs-COUNT drift when porting
+  quant types. The 2026-08-24 tq3_0 certifications could NOT have run on
+  today's main - cert provenance matters when rebasing.
+- Token math for prompt-filling: chars/4 approximations mislead; the server
+  reports prompt_n - trust it, and size fill prompts from it.

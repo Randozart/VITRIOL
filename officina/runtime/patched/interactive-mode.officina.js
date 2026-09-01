@@ -2,21 +2,31 @@
 // Source: @earendil-works/pi-coding-agent 0.83.0
 //         dist/modes/interactive/interactive-mode.js (MIT)
 // Pristine reference: runtime/upstream/interactive-mode.reference.js
-// Patches applied below are marked with [officina P1..P3]: P1 docked
-// two-column split, P2 composer floor-pin, P3 ui.setSidebar plumbing.
+// Patches applied below are marked with [officina P1..P10]:
+//   P1 docked two-column split, P2 composer floor-pin, P3 ui.setSidebar
+//   plumbing, P4 sidebar bottom-anchor, P5 tool-execution display names
+//   (separate file), P6 sidebar visibility bridge, P7 native ANSI/merge
+//   delegation, P8 mouse reporting, P9 dynamic mode tint, P10 scrollback.
 // Re-base by re-running build-patch.mjs after bumping the pin; anchors assert.
 
 // [officina P1] OfficinaSplit — docked two-column layout. JS port of
 // runtime/columns.ts (this repo, original work) with OSC/APC-aware widths:
 // pi-tui's CURSOR_MARKER (an APC sequence) must count as zero-width or the
 // main column pad drifts by 5 cells whenever the editor is focused.
+// [officina P7] Width helpers delegate to the Rust addon
+// (globalThis.__officinaNative, published by _shared/native.ts) when built;
+// JS fallbacks below keep output byte-identical without it.
 function officinaStripZeroWidth(line) {
+    const n = globalThis.__officinaNative;
+    if (n) return n.stripAnsi(line);
     return line
         .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
         .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
         .replace(/\x1b_[^\x07\x1b]*(?:\x07|\x1b\\)/g, "");
 }
 function officinaVisibleWidth(line) {
+    const n = globalThis.__officinaNative;
+    if (n) return n.visibleWidth(line);
     let w = 0;
     for (const ch of officinaStripZeroWidth(line)) {
         const cp = ch.codePointAt(0) ?? 0;
@@ -25,6 +35,8 @@ function officinaVisibleWidth(line) {
     return w;
 }
 function officinaCut(line, width) {
+    const n = globalThis.__officinaNative;
+    if (n) return n.cutLine(line, width);
     let vis = 0;
     let out = "";
     let i = 0;
@@ -92,6 +104,11 @@ class OfficinaSplit {
         const SB_W = OfficinaSplit.SIDEBAR_W;
         const GAP = OfficinaSplit.GAP;
         const sbVisible = width >= OfficinaSplit.MIN_COLS && this.sidebar.children.length > 0;
+        // [officina P6] Push sidebar visibility to extensions (globalThis bridge)
+        // so extensions can render belowEditor fallbacks when sidebar is hidden.
+        if (typeof globalThis.__officinaSidebarVisible === "function") {
+            globalThis.__officinaSidebarVisible(sbVisible);
+        }
         const mainW = sbVisible ? Math.max(1, width - SB_W - GAP) : width;
         const partLines = this.parts.map((c) => c.render(mainW));
         // [officina P2] fill remaining viewport rows above the editor block.
@@ -103,7 +120,7 @@ class OfficinaSplit {
         const mainTotal = partLines.reduce((n, ls) => n + ls.length, 0);
         const filler = Math.max(0, rows - outsideRows - mainTotal);
         let mainLines;
-        // [officina P7] scrollback mode: render a slice of chat history
+        // [officina P10] scrollback mode: render a slice of chat history
         // (offset lines from the live tail) instead of the full tail block.
         // Anchored to the bottom like the live view, with an indicator line.
         if (m.officinaScrollActive && m.officinaScroll > 0 && partLines[0].length > 0) {
@@ -131,14 +148,28 @@ class OfficinaSplit {
         // off the #0d1117 substrate (Vitriolum panel color, theme.rs PANEL).
         const SB_BG = "\x1b[48;2;22;27;34m";
         const SB_RESET = "\x1b[0m";
-        const total = Math.max(mainLines.length, sbLines.length);
         // [officina P4] BOTTOM-ANCHOR the sidebar. pi-tui's visible viewport is
-        // the LAST `rows` lines of output (tui.js: viewportStart = workingHeight
+        // the LAST 'rows' lines of output (tui.js: viewportStart = workingHeight
         // - termHeight), so a top-anchored panel scrolls away as soon as the
         // transcript outgrows the screen — the panel was only visible on a fresh
         // session. Padding ABOVE the sidebar lines pins the panel to the bottom
         // of the emitted block: it stays in every viewport and grows upward.
+        const total = Math.max(mainLines.length, sbLines.length);
         const sbPad = Math.max(0, total - sbLines.length);
+        // [officina P7] Whole merge loop in one native call when available.
+        const n7 = globalThis.__officinaNative;
+        if (n7 && typeof n7.mergeSplitRows === "function") {
+            return n7.mergeSplitRows({
+                mainLines: mainLines,
+                mainW: mainW,
+                sbLines: sbVisible ? sbLines : [],
+                sbW: sbVisible ? SB_W : 0,
+                sbPad: sbVisible ? sbPad : 0,
+                gap: GAP,
+                bg: SB_BG,
+                reset: SB_RESET,
+            });
+        }
         const out = [];
         for (let r = 0; r < total; r++) {
             let left = mainLines[r] ?? "";
@@ -501,7 +532,7 @@ export class InteractiveMode {
                 });
             } catch { /* decoration only */ }
         }
-        // [officina P7] Scrollback navigation. In docked mode the split repaints
+        // [officina P10] Scrollback navigation. In docked mode the split repaints
         // a fixed viewport, so chat history never reaches the terminal's native
         // scrollback — PgUp/PgDn previously only scrolled INSIDE multi-line
         // editor text (useless for reading the session). Intercept them before
@@ -1886,15 +1917,14 @@ export class InteractiveMode {
         this.setHiddenThinkingLabel();
     }
     // [officina P3] Docked sidebar content from extensions. lines ===
-    // undefined clears it. Truncation matches the widget budget.
+    // undefined clears it. Sidebar uses a higher cap than widgets (full
+    // viewport height) since it replaces the below-editor info surface.
     setExtensionSidebar(lines) {
         this.sidebarContainer.clear();
+        const maxLines = this.ui?.terminal?.rows ?? 50;
         if (lines && lines.length > 0) {
-            for (const line of lines.slice(0, InteractiveMode.MAX_WIDGET_LINES)) {
+            for (const line of lines.slice(0, maxLines)) {
                 this.sidebarContainer.addChild(new Text(line, 1, 0));
-            }
-            if (lines.length > InteractiveMode.MAX_WIDGET_LINES) {
-                this.sidebarContainer.addChild(new Text(theme.fg("muted", "... (sidebar truncated)"), 1, 0));
             }
         }
         this.ui.requestRender();
@@ -3230,9 +3260,6 @@ export class InteractiveMode {
      */
     isShuttingDown = false;
     async shutdown(options) {
-        try {
-            process.stdout.write("[?1006l[?1002l[?1000l");
-        } catch { /* best effort */ }
         if (this.isShuttingDown)
             return;
         this.isShuttingDown = true;

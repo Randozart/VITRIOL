@@ -29,6 +29,22 @@ use crate::nvidia;
 /// Number of trailing lines kept per service log.
 const LOG_TAIL_CAP: usize = 200;
 
+/// RETIRED 2026-09-01: the REBIS dual-model gateway (Sol/Luna/Mercury) was
+/// retired with the hermes-era stack (docs/DEPRECATION-AUDIT-2026-09-01.md).
+/// The poller still probes its three ports + reads the shim event stream
+/// every cycle — dead weight now. Gated behind this env flag; set it to 1
+/// to restore REBIS telemetry wholesale (tab stays reachable via Tab::ALL).
+fn rebis_enabled() -> bool {
+    std::env::var("VITRIOL_TUI_ENABLE_REBIS").as_deref() == Ok("1")
+}
+
+/// RETIRED 2026-09-01: Hermetis was removed by the owner (and the embed
+/// server with the Tria Prima stack). Their `/health` probes cost two HTTP
+/// timeouts per cycle against dead ports. Gated behind this env flag.
+fn hermetis_enabled() -> bool {
+    std::env::var("VITRIOL_TUI_ENABLE_HERMETIS").as_deref() == Ok("1")
+}
+
 /// Per-poll mutable state: config plus the three incremental log tails.
 struct Poller {
     /// Endpoint/log config.
@@ -107,11 +123,24 @@ impl Poller {
         let gpus = nvidia::query_gpus();
         self.last_gpus = gpus.clone();
         let gpu_processes = nvidia::query_processes(&gpus);
-        let rebis = self.poll_rebis(agent);
+        // RETIRED 2026-09-01 (see rebis_enabled): REBIS probes skipped
+        // unless explicitly re-enabled.
+        let rebis = if rebis_enabled() {
+            self.poll_rebis(agent)
+        } else {
+            RebisSnapshot::default()
+        };
+        // RETIRED 2026-09-01 (see hermetis_enabled): Hermetis/embed probes
+        // skipped unless explicitly re-enabled.
+        let (hermetis, embed) = if hermetis_enabled() {
+            (poll_hermetis(agent, &self.cfg), poll_embed(agent, &self.cfg))
+        } else {
+            (HermetisSnapshot::default(), EmbedSnapshot::default())
+        };
         let snap = Snapshot {
             gen: self.poll_gen(agent),
-            hermetis: poll_hermetis(agent, &self.cfg),
-            embed: poll_embed(agent, &self.cfg),
+            hermetis,
+            embed,
             gpus,
             gpu_processes,
             rebis,
@@ -303,6 +332,9 @@ impl Poller {
         }
         let slots = poll_slots(agent, &base);
         let busy = slots.iter().any(|s| s.is_processing);
+        // 2026-09-01: n_parallel was hardcoded None even though the GEN card
+        // renders it — derive it from the /slots length instead.
+        let n_parallel = if slots.is_empty() { None } else { Some(slots.len() as u64) };
         // Heartbeat rate, replayed while a slot is busy but the block-buffered
         // log has not flushed a fresh beat yet.
         let mut live = parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset);
@@ -317,7 +349,7 @@ impl Poller {
             up,
             model,
             n_ctx,
-            n_parallel: None,
+            n_parallel,
             decode_t_s: parse_decode_t_s(&self.cfg.gen_log()),
             decode_speed: live,
             perf: parse_perf(&self.cfg.gen_log()),
@@ -444,6 +476,8 @@ fn parse_slots(body: Value) -> Vec<SlotSnapshot> {
                     .and_then(|n| n.get("n_remain"))
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0),
+                // Slot window (2026-09-01): enables the filled-vs-window view.
+                n_ctx: s.get("n_ctx").and_then(|v| v.as_u64()),
             }
         })
         .collect()

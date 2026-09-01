@@ -256,7 +256,11 @@ mod tests {
     fn lerp_color_endpoints_and_mid() {
         assert_eq!(lerp_color(GREEN, CYAN, 0.0), GREEN);
         assert_eq!(lerp_color(GREEN, CYAN, 1.0), CYAN);
-        assert_eq!(lerp_color(GREEN, CYAN, 0.5), Color::Rgb(0x1D, 0xFF, 0x8A));
+        // 2026-09-01: expected updated for the current palette (#3fb950 →
+        // #00ffff). The old constant (0x1D,0xFF,0x8A) predated a GREEN/CYAN
+        // retune and failed on every run — verified correct midpoint is
+        // ((0x3F+0x00)/2, (0xB9+0xFF)/2, (0x50+0xFF)/2) = (0x20,0xDC,0xA8).
+        assert_eq!(lerp_color(GREEN, CYAN, 0.5), Color::Rgb(0x20, 0xDC, 0xA8));
     }
 
     #[test]

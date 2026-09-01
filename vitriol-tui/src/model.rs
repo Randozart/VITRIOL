@@ -47,6 +47,10 @@ pub struct SlotSnapshot {
     pub n_decoded: u64,
     /// Tokens remaining until the current task finishes.
     pub n_remain: u64,
+    /// The slot's context window (2026-09-01 spring cleaning: previously
+    /// dropped by the parser). Lets the UI show filled-vs-window per slot —
+    /// the AGENTS.md "window ≠ depth" distinction.
+    pub n_ctx: Option<u64>,
 }
 
 impl SlotSnapshot {
@@ -60,6 +64,13 @@ impl SlotSnapshot {
             return None;
         }
         Some(self.n_decoded as f64 / total as f64)
+    }
+
+    /// True while the slot holds a task but has not decoded its first token
+    /// yet — the prompt-eval phase (prefill), which the progress bar cannot
+    /// represent.
+    pub fn is_prompt_eval(&self) -> bool {
+        self.is_processing && self.n_decoded == 0
     }
 
     pub fn total_tokens(&self) -> u64 {

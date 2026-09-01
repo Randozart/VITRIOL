@@ -146,16 +146,20 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-/// LOGS tab keys: pick which service log to tail (1/2/3).
+/// LOGS tab keys: pick which service log to tail.
+// 2026-09-01 spring cleaning: 1=GEN, 2=SLOTS (poller-derived transitions).
+// The old 3-7 bindings targeted retired REBIS/Tria-Prima logs; the direct
+// number-jump stays for them so the env-gated restore keeps full reach.
 fn handle_logs_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match key.code {
         KeyCode::Char('1') => app.log_source = app::LogSource::Gen,
-        KeyCode::Char('2') => app.log_source = app::LogSource::Hermetis,
-        KeyCode::Char('3') => app.log_source = app::LogSource::Embed,
-        KeyCode::Char('4') => app.log_source = app::LogSource::Luna,
-        KeyCode::Char('5') => app.log_source = app::LogSource::Mercury,
-        KeyCode::Char('6') => app.log_source = app::LogSource::Supervise,
-        KeyCode::Char('7') => app.log_source = app::LogSource::Traffic,
+        KeyCode::Char('2') => app.log_source = app::LogSource::Slots,
+        KeyCode::Char('3') => app.log_source = app::LogSource::Hermetis,
+        KeyCode::Char('4') => app.log_source = app::LogSource::Embed,
+        KeyCode::Char('5') => app.log_source = app::LogSource::Luna,
+        KeyCode::Char('6') => app.log_source = app::LogSource::Mercury,
+        KeyCode::Char('7') => app.log_source = app::LogSource::Supervise,
+        KeyCode::Char('8') => app.log_source = app::LogSource::Traffic,
         KeyCode::Char('v') if app.tab == app::Tab::Logs => {
             app.logs_verbose = !app.logs_verbose;
         }

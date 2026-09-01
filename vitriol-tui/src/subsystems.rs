@@ -254,7 +254,10 @@ mod tests {
         let mut cfg = Config::from_env();
         cfg.home_dir = "/nonexistent".into();
         let rows = rows(&cfg, &Snapshot::default());
-        assert_eq!(rows.len(), 7);
+        // 2026-09-01: HERMETIS/EMBED service rows are retired (services
+        // removed) — the SUBSYSTEMS tab now shows GEN + the four layer rows.
+        // The old assertion expected the pre-retirement count of 7.
+        assert_eq!(rows.len(), 5);
         let gen = &rows[0];
         assert_eq!(gen.name, "GEN");
         assert_eq!(gen.status, Status::Down);

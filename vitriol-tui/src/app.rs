@@ -145,6 +145,10 @@ pub enum LogSource {
     Traffic,
     /// Supervisor log (head respawns).
     Supervise,
+    /// 2026-09-01: per-slot transition history derived from /slots polling.
+    /// llama-server writes ONE process log, so per-slot "logs" honestly means
+    /// slot-state transitions observed by the poller, not a file tail.
+    Slots,
 }
 
 impl LogSource {
@@ -158,23 +162,33 @@ impl LogSource {
             LogSource::Gen => "GEN",
             LogSource::Hermetis => "HERMETIS",
             LogSource::Embed => "EMBED",
+            LogSource::Slots => "SLOTS",
         }
     }
 
     /// Display order for the LOGS source chips.
-    pub const LOG_ORDER: [LogSource; 7] = [
-        LogSource::Gen,
-        LogSource::Luna,
-        LogSource::Mercury,
-        LogSource::Traffic,
-        LogSource::Supervise,
-        LogSource::Hermetis,
-        LogSource::Embed,
-    ];
+    // 2026-09-01 spring cleaning: only GEN resolves to a live file. The
+    // LUNA/MERCURY/SUPERVISE/TRAFFIC sources belong to the retired REBIS
+    // gateway (docs/DEPRECATION-AUDIT-2026-09-01.md); HERMETIS/EMBED belong
+    // to the removed Tria-Prima stack. All variants + tails are retained —
+    // set VITRIOL_TUI_ENABLE_REBIS=1 / VITRIOL_TUI_ENABLE_HERMETIS=1 to
+    // restore the corresponding chips.
+    pub fn log_order() -> Vec<LogSource> {
+        let mut order = vec![LogSource::Gen, LogSource::Slots];
+        let rebis = std::env::var("VITRIOL_TUI_ENABLE_REBIS").as_deref() == Ok("1");
+        let hermetis = std::env::var("VITRIOL_TUI_ENABLE_HERMETIS").as_deref() == Ok("1");
+        if rebis {
+            order.extend([LogSource::Luna, LogSource::Mercury, LogSource::Traffic, LogSource::Supervise]);
+        }
+        if hermetis {
+            order.extend([LogSource::Hermetis, LogSource::Embed]);
+        }
+        order
+    }
 
     /// Cycle the active log source (LOGS tab ◄ ►).
     pub fn cycle(self, dir: i32) -> LogSource {
-        let order = Self::LOG_ORDER;
+        let order = Self::log_order();
         let idx = order.iter().position(|s| *s == self).unwrap_or(0);
         let next = (idx as i32 + dir).rem_euclid(order.len() as i32) as usize;
         order[next]
@@ -182,10 +196,16 @@ impl LogSource {
 }
 
 /// Application state held across the event loop.
+// 2026-09-01 spring cleaning: GPU labels updated from the retired REBIS
+// naming (Sol/Luna cards) to the actual hardware.
 pub const SWEEP_GPU_OPTS: [&str; 3] =
-    ["GPU0 — Sol card (12 GiB)", "GPU1 — Luna card (8 GiB)", "split across both"];
+    ["GPU0 — RTX 3060 (12 GiB)", "GPU1 — GTX 1070 Ti (8 GiB)", "split across both"];
 pub const SWEEP_CTX_PRESETS: [u32; 4] = [8192, 16384, 32768, 65536];
 pub const SWEEP_MINFREE_PRESETS: [u32; 3] = [1024, 2048, 4096];
+/// Tensor-split presets for the "split across both" target. The live
+/// Q3_K_M retarget config (2026-08-31) runs 22,14; the older dual-GPU
+/// profile table (AGENTS.md) documents 26,10 / 27,9 for other models.
+pub const SWEEP_TS_PRESETS: [&str; 3] = ["22,14", "26,10", "27,9"];
 const SWEEP_HEAD_VRAM_MIB: [u32; 2] = [12042, 8113];
 
 /// Form state for the SWEEP tab.
@@ -265,7 +285,7 @@ impl SweepState {
         match self.gpu_sel {
             0 => ("0".into(), None),
             1 => ("1".into(), None),
-            _ => ("split".into(), Some("3,1".into())),
+            _ => ("split".into(), Some(SWEEP_TS_PRESETS[0].into())),
         }
     }
 }
@@ -332,6 +352,14 @@ pub struct App {
     pub snapshot: Snapshot,
     /// Decode speed history for the velocity gauge, newest last.
     pub decode_history: VecDeque<f64>,
+    /// Per-slot state-transition log (2026-09-01): one line per
+    /// busy→idle / idle→busy / task-change event, oldest first, derived by
+    /// diffing consecutive /slots snapshots in `observe_slots`. This is the
+    /// per-slot observability surface — llama-server writes a single process
+    /// log, so per-slot "logs" are poller-derived transitions.
+    pub slot_history: Vec<String>,
+    /// Previous slot states for transition diffing (slot id → (busy, task)).
+    prev_slots: std::collections::HashMap<u64, (bool, Option<u64>)>,
     /// Active tab.
     pub tab: Tab,
     /// Service log selected in the LOGS tab.
@@ -434,6 +462,8 @@ impl App {
             cfg,
             snapshot: Snapshot::default(),
             decode_history: VecDeque::with_capacity(history_cap),
+            slot_history: Vec::new(),
+            prev_slots: std::collections::HashMap::new(),
             tab: Tab::Dashboard,
             log_source: LogSource::Gen,
             logs_verbose: false,
@@ -1110,6 +1140,8 @@ impl App {
         if self.decode_history.len() > SPARKLINE_CAP {
             self.decode_history.pop_front();
         }
+        // 2026-09-01: derive per-slot transition log lines from the diff.
+        self.observe_slots(&snap.gen.slots);
         self.snapshot = snap;
     }
 
@@ -1148,9 +1180,51 @@ impl App {
         self.log_source = self.log_source.cycle(dir);
     }
 
+    /// Diff the latest /slots snapshot against the previous one and record
+    /// state transitions in `slot_history` (cap 120). Called from the event
+    /// loop whenever a fresh snapshot lands.
+    pub fn observe_slots(&mut self, slots: &[crate::model::SlotSnapshot]) {
+        let now = chrono_now_hm();
+        for s in slots {
+            let key = s.id;
+            let state = (s.is_processing, s.id_task);
+            match self.prev_slots.get(&key) {
+                None => {
+                    if s.is_processing {
+                        self.push_slot_event(now.clone(), s, "acquired");
+                    }
+                }
+                Some(&(prev_busy, prev_task)) => {
+                    if !prev_busy && s.is_processing {
+                        self.push_slot_event(now.clone(), s, "acquired");
+                    } else if prev_busy && !s.is_processing {
+                        self.push_slot_event(now.clone(), s, "released");
+                    } else if s.is_processing && prev_task != s.id_task {
+                        self.push_slot_event(now.clone(), s, "new task");
+                    }
+                }
+            }
+            self.prev_slots.insert(key, state);
+        }
+    }
+
+    fn push_slot_event(&mut self, hm: String, s: &crate::model::SlotSnapshot, what: &str) {
+        let detail = if s.is_prompt_eval() {
+            " (prompt-eval)".into()
+        } else {
+            format!(" {} tok", s.total_tokens())
+        };
+        self.slot_history
+            .push(format!("{hm} · slot {} {what}{detail}", s.id));
+        if self.slot_history.len() > 120 {
+            self.slot_history.remove(0);
+        }
+    }
+
     pub fn current_log_lines(&self) -> &[String] {
         match self.log_source {
             LogSource::Gen => &self.snapshot.logs.gen,
+            LogSource::Slots => &self.slot_history,
             LogSource::Hermetis => &self.snapshot.logs.hermetis,
             LogSource::Embed => &self.snapshot.logs.embed,
             LogSource::Luna => &self.snapshot.logs.luna,
@@ -1170,6 +1244,17 @@ impl App {
             false
         }
     }
+}
+
+/// Wall-clock HH:MM for slot-transition log lines (local time; TUI-grade
+/// precision only — the gen log has the authoritative timestamps).
+fn chrono_now_hm() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let secs_of_day = now % 86_400;
+    format!("{:02}:{:02}", secs_of_day / 3600, (secs_of_day % 3600) / 60)
 }
 
 /// Whether `name` is a valid profile name (alnum, hyphen, underscore).
@@ -1229,15 +1314,20 @@ mod tests {
     }
 
     /// Tab registry stays consistent with the labels rendered in the tab bar.
+    // 2026-09-01 spring cleaning: ALL was trimmed to 7 when HERMETIS/REBIS
+    // were de-tabbed and GPU folded into Dashboard; this test still asserted
+    // the pre-trim registry (10 tabs, Rebis last) and failed on every run.
     #[test]
     fn tab_all_matches_labels() {
-        assert_eq!(Tab::ALL.len(), 10);
+        assert_eq!(Tab::ALL.len(), 7);
         for tab in Tab::ALL {
             assert!(!tab.label().is_empty());
         }
         assert_eq!(Tab::ALL[0], Tab::Dashboard);
-        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Rebis);
+        assert_eq!(Tab::ALL[Tab::ALL.len() - 1], Tab::Guide);
         assert!(!Tab::ALL.contains(&Tab::Officina));
+        assert!(!Tab::ALL.contains(&Tab::Rebis));
+        assert!(!Tab::ALL.contains(&Tab::Hermetis));
     }
 
     #[test]

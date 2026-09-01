@@ -94,7 +94,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled("[r] refresh", theme::muted()),
     ];
     if app.tab == Tab::Logs {
-        spans.push(Span::styled("  [1/2/3] log", theme::muted()));
+        spans.push(Span::styled("  [1/2] log  [◄ ►] switch", theme::muted()));
     }
     if app.tab == Tab::Controls {
         spans.push(Span::styled(
@@ -118,7 +118,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     }
     if app.snapshot.is_empty() {
         spans.push(Span::styled(
-            "  ·  stack unreachable — nothing on :8279/:7980/:4779",
+            // 2026-09-01: only the gen engine is expected these days; the
+            // hermetis/embed ports in the old hint belonged to the retired
+            // Tria-Prima stack.
+            "  ·  stack unreachable — nothing on :8279",
             Style::default().fg(theme::ORANGE),
         ));
     }
@@ -274,6 +277,56 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
                 } else {
                     theme::info()
                 },
+            ),
+        ]));
+    }
+
+    // 2026-09-01 spring cleaning: server-wide lifetime totals from /metrics
+    // — parsed since the beginning, never rendered until now.
+    let t = g.totals;
+    if t.prompt_tokens_total > 0 || t.tokens_predicted_total > 0 {
+        let lifetime = if t.tokens_predicted_total > 0 && t.predicted_tokens_seconds > 0.0 {
+            format!(" · {:.1} t/s lifetime", t.tokens_predicted_total as f64 / t.predicted_tokens_seconds)
+        } else {
+            String::new()
+        };
+        lines.push(Line::from(vec![
+            Span::styled("totals  ", theme::muted()),
+            Span::styled(
+                format!(
+                    "{}k prompt · {}k gen{}",
+                    t.prompt_tokens_total / 1000,
+                    t.tokens_predicted_total / 1000,
+                    lifetime
+                ),
+                theme::info(),
+            ),
+        ]));
+    }
+
+    // 2026-09-01: one line per slot with context fill — the AGENTS.md
+    // "window ≠ depth" distinction made visible (filled tokens vs the
+    // slot's window, not just the busy count in the footer).
+    for s in &g.slots {
+        let state = if s.is_prompt_eval() {
+            "prompt-eval".to_string()
+        } else if s.is_processing {
+            format!("decoding {} tok", s.total_tokens())
+        } else {
+            "idle".to_string()
+        };
+        let ctx = match (s.n_ctx, s.total_tokens()) {
+            (Some(window), used) if window > 0 && used > 0 => {
+                format!(" · ctx {}/{}k", used / 1000, window / 1000)
+            }
+            (Some(window), _) if window > 0 => format!(" · ctx 0/{}k", window / 1000),
+            _ => String::new(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("slot {}  ", s.id), theme::muted()),
+            Span::styled(
+                format!("{state}{ctx}"),
+                if s.is_processing { theme::info() } else { theme::muted() },
             ),
         ]));
     }
@@ -499,10 +552,9 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// One active-slot progress row: task id, braille fill of decoded/total, and
-/// the token counts.
+/// the token counts. 2026-09-01: slots still in prompt-eval (processing but
+/// zero tokens decoded) show a phase label instead of a meaningless 0% bar.
 fn render_slot_progress_row(frame: &mut Frame, area: Rect, slot: &crate::model::SlotSnapshot) {
-    let total = slot.n_decoded + slot.n_remain;
-    let progress = slot.progress().unwrap_or(0.0);
     let cols =
         Layout::horizontal([Constraint::Length(12), Constraint::Min(0), Constraint::Length(14)])
             .split(area);
@@ -513,6 +565,22 @@ fn render_slot_progress_row(frame: &mut Frame, area: Rect, slot: &crate::model::
         ))),
         cols[0],
     );
+    if slot.is_prompt_eval() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "prompt-eval …",
+                theme::info(),
+            ))),
+            cols[1],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("— tok", theme::muted()))),
+            cols[2],
+        );
+        return;
+    }
+    let total = slot.n_decoded + slot.n_remain;
+    let progress = slot.progress().unwrap_or(0.0);
     render_braille_bar(frame, cols[1], progress, theme::BrailleRamp::Velocity);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -718,6 +786,10 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
     let title = format!(" {} LOG ", app.log_source.label());
     let up = match app.log_source {
         LogSource::Gen => app.snapshot.gen.up,
+        LogSource::Slots => !app.slot_history.is_empty() || !app.snapshot.gen.slots.is_empty(),
+        // RETIRED 2026-09-01: these sources belong to the removed REBIS /
+        // Tria-Prima stacks. Only reachable when their env gates are on
+        // (see LogSource::log_order); the snapshot reads are then live again.
         LogSource::Hermetis => app.snapshot.hermetis.up,
         LogSource::Embed => app.snapshot.embed.up,
         LogSource::Luna => app.snapshot.rebis.luna_up,
@@ -743,7 +815,20 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
     };
     let chips = Line::from({
         let mut v = vec![Span::styled(" SOURCES ▸", theme::muted())];
-        v.extend(LogSource::LOG_ORDER.iter().map(|src| chip_span(*src)));
+        for src in LogSource::log_order() {
+            // 2026-09-01: chips for sources whose backing file does not
+            // exist render dim with a "·absent" marker instead of silently
+            // showing an empty tail.
+            let absent = log_file_absent(app, src);
+            let mut span = chip_span(src);
+            if absent {
+                span = Span::styled(
+                    format!("{}·absent", span.content),
+                    theme::muted(),
+                );
+            }
+            v.push(span);
+        }
         v.push(Span::styled("   [◄ ► switch · v detail]", theme::muted()));
         v
     });
@@ -836,6 +921,22 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
     ))];
     out.extend(shown);
     frame.render_widget(Paragraph::new(out), inner);
+}
+
+/// 2026-09-01: whether a log source's backing file is missing. Slots is
+/// poller-derived (no file); every file source stats its path once per frame.
+fn log_file_absent(app: &App, src: LogSource) -> bool {
+    let path: std::path::PathBuf = match src {
+        LogSource::Gen => app.cfg.gen_log(),
+        LogSource::Slots => return false,
+        LogSource::Hermetis => app.cfg.hermetis_log(),
+        LogSource::Embed => app.cfg.embed_log(),
+        LogSource::Luna => app.cfg.luna_log.clone(),
+        LogSource::Mercury => app.cfg.mercury_log.clone(),
+        LogSource::Traffic => app.cfg.traffic_log.clone(),
+        LogSource::Supervise => app.cfg.supervise_log.clone(),
+    };
+    !path.exists()
 }
 
 /// Strip ANSI escape sequences from a log line for clean display.

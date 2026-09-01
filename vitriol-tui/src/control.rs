@@ -45,6 +45,13 @@ pub enum Action {
 }
 
 impl Action {
+    /// RETIRED 2026-09-01: the REBIS trenchcoat actions (Sol+Luna+Mercury via
+    /// scripts/rebis-servers.sh) come back when VITRIOL_TUI_ENABLE_REBIS=1.
+    /// Variants, labels and steps are retained — see poller.rs rebis_enabled().
+    pub fn rebis_enabled() -> bool {
+        std::env::var("VITRIOL_TUI_ENABLE_REBIS").as_deref() == Ok("1")
+    }
+
     /// Short label for the action list.
     pub fn label(&self) -> String {
         match self {
@@ -84,9 +91,12 @@ impl Action {
             },
             Action::Doctor,
             Action::Setup,
-            Action::LaunchRebis,
-            Action::StopRebis,
         ];
+        // RETIRED 2026-09-01: REBIS launch/teardown hidden unless re-enabled.
+        if Self::rebis_enabled() {
+            actions.push(Action::LaunchRebis);
+            actions.push(Action::StopRebis);
+        }
         // Sweeps moved to the dedicated SWEEP tab (profile-independent).
         let _ = profiles;
         actions
@@ -119,34 +129,62 @@ pub enum Event {
 /// Expand an action into its ordered steps.
 fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
     let launch = cfg.launch_script().to_string_lossy().into_owned();
+    // 2026-09-01 spring cleaning: the live server is managed by the systemd
+    // user unit `vitriol-server.service` (ExecStart = `scripts/vitriol serve
+    // --detach`; see the unit file). The old Tria-Prima path
+    // (scripts/launch_vitriol_full.sh, gen+hermetis+embed) is retired, so
+    // Start/Stop/Restart/Doctor now drive the unit. A selected profile is
+    // applied via `vitriol config load` BEFORE the (re)start — the unit's
+    // ExecStart reads the active config at launch.
+    let unit = "vitriol-server.service";
+    let systemctl = |label: &str, args: &[&str]| Step {
+        label: label.to_string(),
+        program: "systemctl".into(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+    };
+    let load_profile = |selected: &Option<String>| -> Vec<Step> {
+        match selected {
+            Some(name) => vec![Step {
+                label: format!("config load {name}"),
+                program: cfg.vitriol_cli().to_string_lossy().into_owned(),
+                args: vec!["config".into(), "load".into(), name.clone()],
+            }],
+            None => Vec::new(),
+        }
+    };
     match action {
-        Action::Start { selected } => vec![Step {
-            label: action.label(),
-            program: launch.clone(),
-            args: launch_args(cfg, selected.as_deref()),
-        }],
-        Action::Stop => vec![Step {
-            label: "stop full stack".into(),
-            program: launch.clone(),
-            args: vec!["stop".into()],
-        }],
-        Action::Restart { selected } => vec![
+        Action::Start { selected } => {
+            let mut steps = load_profile(selected);
+            steps.push(systemctl(
+                "start vitriol-server.service",
+                &["--user", "start", unit],
+            ));
+            steps
+        }
+        Action::Stop => vec![systemctl(
+            "stop vitriol-server.service",
+            &["--user", "stop", unit],
+        )],
+        Action::Restart { selected } => {
+            let mut steps = load_profile(selected);
+            steps.push(systemctl(
+                "restart vitriol-server.service",
+                &["--user", "restart", unit],
+            ));
+            steps
+        }
+        Action::Doctor => vec![
+            systemctl(
+                "unit status",
+                &["--user", "status", unit, "--no-pager", "-l"],
+            ),
+            // The launcher's own doctor (flags/env pre-flight) stays useful.
             Step {
-                label: "stop full stack".into(),
-                program: launch.clone(),
-                args: vec!["stop".into()],
-            },
-            Step {
-                label: "launch full stack".into(),
+                label: "launcher doctor".into(),
                 program: launch,
-                args: launch_args(cfg, selected.as_deref()),
+                args: vec!["doctor".into()],
             },
         ],
-        Action::Doctor => vec![Step {
-            label: "pre-flight checks".into(),
-            program: launch,
-            args: vec!["doctor".into()],
-        }],
         Action::LaunchRebis => vec![Step {
             label: action.label(),
             program: cfg.repo_root.join("scripts/rebis-servers.sh")
@@ -178,7 +216,7 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
                 "--ctx".to_string(),
                 ctx.to_string(),
                 "-o".to_string(),
-                "/tmp/rebis-sweep.csv".to_string(),
+                "/tmp/vitriol-sweep.csv".to_string(),
             ];
             if devices == "split" {
                 if let Some(ratio) = ts {
@@ -201,6 +239,11 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
 /// Launch args: `--no-setup` plus, when a profile is selected, its knob flags
 /// as CLI overrides (flags-only — the active config stays untouched). 2026-08-08:
 /// Start/Restart now honour the PROFILES-tab selected profile.
+// RETIRED 2026-09-01: Start/Restart moved to the systemd unit path (config
+// load + `systemctl --user start`), so this flags-only override machinery is
+// currently unreached. Kept for the profiles-as-CLI-flags experiment; the
+// REBIS actions (rebis_enabled) could reuse it.
+#[allow(dead_code)]
 fn launch_args(cfg: &Config, selected: Option<&str>) -> Vec<String> {
     let mut args = vec!["--no-setup".into()];
     if let Some(name) = selected {
@@ -336,7 +379,11 @@ mod tests {
     use crate::profile::ProfileSource;
 
     #[test]
-    fn start_with_selected_profile_appends_launch_flags() {
+    fn start_with_selected_profile_applies_config_load_then_unit_start() {
+        // 2026-09-01 spring cleaning: Start moved from the retired Tria-Prima
+        // launch script (which took --no-setup + flag overrides) to the live
+        // management path: `vitriol config load <name>` then the systemd
+        // user unit start (ExecStart reads the active config).
         let mut cfg = Config::from_env();
         cfg.repo_root = std::env::temp_dir();
         let started = steps_for(
@@ -345,8 +392,10 @@ mod tests {
             },
             &cfg,
         );
-        assert_eq!(started.len(), 1);
-        assert!(started[0].args.contains(&"--no-setup".to_string()));
+        assert_eq!(started.len(), 2);
+        assert_eq!(started[0].args, vec!["config", "load", "anything"]);
+        assert_eq!(started[1].program, "systemctl");
+        assert_eq!(started[1].args, vec!["--user", "start", "vitriol-server.service"]);
     }
 
     #[test]
@@ -362,13 +411,18 @@ mod tests {
             parallel: None,
         };
         let actions = Action::all(&[p], None);
-        assert_eq!(actions.len(), 7);
+        // 2026-09-01 spring cleaning: LaunchRebis/StopRebis are env-gated
+        // (VITRIOL_TUI_ENABLE_REBIS=1 restores them), so the default list is
+        // the five fixed actions. The gated path is not asserted here to
+        // avoid mutating process-global env in parallel tests.
+        assert_eq!(actions.len(), 5);
         assert_eq!(actions[0], Action::Start { selected: None });
         assert_eq!(actions[1], Action::Stop);
         assert_eq!(actions[2], Action::Restart { selected: None });
         assert_eq!(actions[3], Action::Doctor);
         assert_eq!(actions[4], Action::Setup);
-        assert_eq!(actions[5], Action::LaunchRebis);
+        assert!(!actions.iter().any(|a| matches!(
+            a, Action::LaunchRebis | Action::StopRebis)));
         assert!(!actions.iter().any(|a| matches!(
             a, Action::RunSweepConfig { .. })));
         let with_sel = Action::all(&[], Some("qwen"));

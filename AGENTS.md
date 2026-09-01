@@ -112,6 +112,11 @@ applies, but the records are kept as-is for accuracy.)
 
 Model: `~/Downloads/Qwen3.8-27B-Q3_K_M.gguf` (unsloth, qwen35 arch, embedded MTP head).
 
+**LIVE CONFIG (2026-08-31 retarget)**: `~/.vitriol/config` runs `-ts 22,14`
+(2 more layers to the 1070 Ti for 3060 display headroom at ctx 81920,
+`--parallel 2`). The 26,10 / 27,9 splits below are the OLDER profile
+history — do not quote them as the current operating point.
+
 Saved VITRIOL profiles (load with `vitriol config load <name>`):
 
 | profile | ctx | MTP | t/s | notes |

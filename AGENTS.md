@@ -29,6 +29,15 @@
 - The server context checkpoint logic is in `tools/server/server-context.cpp`.
 - All VITRIOL env vars are prefixed with `VITRIOL_`.
 
+## Vendor Patch Rule (2026-09-01 incident — do not repeat)
+
+`officina/runtime/patched/*` are GENERATED or vendor-pinned copies. **A patch that exists only in a generated file is a patch waiting to be lost.**
+
+- Every modification to `interactive-mode.officina.js` MUST be an anchored patch in `officina/runtime/build-patch.mjs` AND leave a `[officina P<n>]` marker that the build's canary assertions grep for. Running `node runtime/build-patch.mjs` regenerates the file from the pristine reference — anything hand-edited into the generated file is **silently wiped**.
+- Incident (2026-09-01): P4 sidebar bottom-anchor, scrollback (now P10), P8 mouse reporting, and P9 mode tint were hand-applied to the generated file only. Regeneration during unrelated work erased all four committed features (no scroll, runaway sidebar, no mode recolor). They are now anchored patches with 8 build canaries; the build FAILS if any canary is missing.
+- `session-selector.officina.js` and `markdown.officina.js` are hand-maintained (NOT regenerated) — re-base them manually on pi bumps; never assume build-patch covers them.
+- After ANY build-patch change, run `node runtime/build-patch.mjs` and confirm `canaries ok` before shipping.
+
 ## Calibration Tool (Rust)
 
 - **`libvitriol/`** — Rust binary for `vitriol calibrate --quick`.

@@ -18,27 +18,33 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 
 // [officina] patched targets: docked interactive-mode + session selector
 // (empty-state honesty fix, owner report 2026-08-31).
+// Paths are relative to the pi-coding-agent PACKAGE ROOT — the markdown
+// component lives in the nested @earendil-works/pi-tui package, the others
+// in pi-coding-agent's own dist (owner bugfix 2026-09-01: the markdown
+// patch previously keyed off a dist-relative path and never loaded).
 const PATCHED = new Map([
-  ["/dist/modes/interactive/interactive-mode.js", "interactive-mode.officina.js"],
-  ["/dist/modes/interactive/components/session-selector.js", "session-selector.officina.js"],
-  ["/dist/modes/interactive/components/markdown.js", "markdown.officina.js"],
+  ["dist/modes/interactive/interactive-mode.js", "interactive-mode.officina.js"],
+  ["dist/modes/interactive/components/session-selector.js", "session-selector.officina.js"],
+  ["node_modules/@earendil-works/pi-tui/dist/components/markdown.js", "markdown.officina.js"],
 ]);
 function originalUrlFor(parentPath) {
   if (!pkgDist) return null;
-  for (const suffix of PATCHED.keys()) {
-    if (parentPath.endsWith(suffix)) return pathToFileURL(join(pkgDist, suffix.slice("/dist/".length))).href;
+  for (const rel of PATCHED.keys()) {
+    if (parentPath.endsWith(rel)) return pathToFileURL(join(pkgRoot, rel)).href;
   }
   return null;
 }
 
 // pkgDir arrives via register()'s initialize data — hooks run on a separate
 // thread, so main-thread env changes after register() are not visible here.
-let pkgDist = null;
+let pkgDist = null; // pi-coding-agent's dist/ directory
+let pkgRoot = null; // pi-coding-agent's package root
 let dockedActive = true;
 export function initialize(data) {
   const d = data && data.pkgDist;
   if (d && existsSync(join(d, "modes", "interactive", "interactive-mode.js"))) {
     pkgDist = d;
+    pkgRoot = dirname(d); // strip the trailing dist/
   }
   dockedActive = !(data && data.docked === false);
 }
@@ -66,8 +72,8 @@ export function resolve(specifier, context, nextResolve) {
 
 export function load(url, context, nextLoad) {
   if (dockedActive) {
-    for (const [suffix, patchedName] of PATCHED) {
-      const orig = pkgDist ? pathToFileURL(join(pkgDist, suffix.slice("/dist/".length))).href : null;
+    for (const [rel, patchedName] of PATCHED) {
+      const orig = pkgRoot ? pathToFileURL(join(pkgRoot, rel)).href : null;
       if (orig && url === orig) {
         const source = readFileSync(join(fileURLToPath(new URL(".", import.meta.url)), "patched", patchedName), "utf-8");
         return { format: "module", source, shortCircuit: true };

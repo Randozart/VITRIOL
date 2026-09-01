@@ -24,7 +24,7 @@
 
 ## Code Conventions
 
-- This is a fork of `ggml-org/llama.cpp` with VITRIOL modifications. The `vitriol` branch is the canonical daily-driver branch (unified 2026-08-25: contains all feature work — lull, dual-slot, tq3_0 KV, Mellum — no branch swapping needed between models). `vitriol-mellum2` is a frozen alias at the same history; `master` tracks upstream ggml-org for future merges only.
+- This is a fork of `ggml-org/llama.cpp` with VITRIOL modifications. **`main` is the canonical daily-driver branch in BOTH repos** (consolidated 2026-09-01 — see `.opencode/plans/branch-consolidation-2026-09-01.md`). Outer repo: all feature work lives on `main` (was `officina`). Inner fork (`llama.cpp/`): `main` is the live line ported onto ggml-org upstream (was `vitriol-ku`); `vitriol` is the frozen pre-port archive, `master` tracks the fork's published state. `lull-kv` lives in the `VITRIOL-lull` worktree.
 - The VITRIOL predictor is in `ggml/src/ggml-cuda/vitriol-cuda-integration.cpp`.
 - The server context checkpoint logic is in `tools/server/server-context.cpp`.
 - All VITRIOL env vars are prefixed with `VITRIOL_`.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PatchSink, buildReviewPrompt, laneConfig, renderCard, shouldLaunch } from "./lane.ts";
 
-const cfg = laneConfig({} as NodeJS.ProcessEnv);
+const cfg = { ...laneConfig({} as NodeJS.ProcessEnv), gate: "idle" as const };
 const idle = (since: number | null, now = 10_000) =>
   shouldLaunch({ up: true, busy: 0, delta: { tps: 0 } }, 5000, since, now, cfg);
 
@@ -15,6 +15,11 @@ describe("laneConfig", () => {
 });
 
 describe("shouldLaunch gate", () => {
+  it("always gate launches even while the foreground decodes", () => {
+    const acfg = { ...laneConfig({} as NodeJS.ProcessEnv), gate: "always" as const };
+    expect(shouldLaunch({ up: true, busy: 1, delta: { tps: 12 } }, 5000, null, 0, acfg)).toBe(true);
+    expect(shouldLaunch({ up: false, busy: 0, delta: { tps: 0 } }, 5000, null, 0, acfg)).toBe(false);
+  });
   it("launches only when idle for idleMs with a big-enough patch", () => {
     expect(idle(6_000)).toBe(true); // idleMs=4000 default
     expect(idle(9_000)).toBe(false); // not idle long enough

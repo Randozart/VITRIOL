@@ -56,11 +56,14 @@ export default function (pi: ExtensionAPI) {
     if (launched) return;
     const snap = getEngineSnapshot();
     const now = Date.now();
-    if (!snap.up || snap.busy > 0 || snap.delta.tps > 0) {
-      idleSince = null; // foreground is active — reset the idle window
-      return;
+    if (!snap.up) return;
+    if (cfg.gate === "idle") {
+      if (snap.busy > 0 || snap.delta.tps > 0) {
+        idleSince = null; // foreground is active — reset the idle window
+        return;
+      }
+      if (idleSince === null) idleSince = now;
     }
-    if (idleSince === null) idleSince = now;
     if (!shouldLaunch(snap, sink.size, idleSince, now, cfg)) return;
     const patch = sink.drain(cfg.minPatchChars, cfg.maxPatchChars);
     if (!patch) return;

@@ -9,8 +9,19 @@
 //
 // Provenance: original work, this repo (First-Party Mandate).
 
+export type LaneGate = "always" | "idle";
+
 export interface LaneConfig {
   enabled: boolean;
+  /**
+   * When to launch jobs:
+   *  - "always": launch as soon as patches exist, even during foreground
+   *    decode. On the dual-GPU tensor split the two slots interleave and the
+   *    aggregate rate rises (measured 1.51x, bench-dual-slot.py 2026-09-01);
+   *    foreground decode dips ~20% while a job runs.
+   *  - "idle": only between foreground turns (the conservative original).
+   */
+  gate: LaneGate;
   /** Base URL of the VITRIOL engine (llama-server). */
   base: string;
   /** Engine must be idle this long (ms) before a job launches. */
@@ -35,8 +46,10 @@ export function laneConfig(env: NodeJS.ProcessEnv = process.env): LaneConfig {
     return Number.isFinite(x) ? x : d;
   };
   const slotRaw = env.OFFICINA_BG_SLOT;
+  const gate = env.OFFICINA_BG_GATE === "idle" ? "idle" : "always";
   return {
     enabled: env.OFFICINA_NO_BACKGROUND !== "1",
+    gate,
     base: (env.VITRIOL_BASE_URL || "http://127.0.0.1:8279").replace(/\/$/, ""),
     idleMs: n(env.OFFICINA_BG_IDLE_MS, 4000),
     minPatchChars: n(env.OFFICINA_BG_MIN_PATCH, 200),
@@ -72,8 +85,10 @@ export function renderCard(file: string, response: string, cfg: LaneConfig): str
 }
 
 /**
- * Gate decision: launch a pending job only when the engine is up, fully
- * idle, and has been idle for idleMs. Pure — snapshot injected. Pure.
+ * Gate decision. "always" launches whenever the engine is up and a job is
+ * pending (concurrent decode — owner preference 2026-09-01, the dual-GPU
+ * split interleaves slot work with only a ~20% per-slot dip). "idle" is the
+ * conservative mode: wait for a fully idle engine for idleMs. Pure.
  */
 export function shouldLaunch(
   snapshot: { up: boolean; busy: number; delta: { tps: number } },
@@ -83,7 +98,9 @@ export function shouldLaunch(
   cfg: LaneConfig,
 ): boolean {
   if (pendingChars < cfg.minPatchChars) return false;
-  if (!snapshot.up || snapshot.busy > 0 || snapshot.delta.tps > 0) return false;
+  if (!snapshot.up) return false;
+  if (cfg.gate === "always") return true;
+  if (snapshot.busy > 0 || snapshot.delta.tps > 0) return false;
   if (idleSince === null) return false;
   return now - idleSince >= cfg.idleMs;
 }

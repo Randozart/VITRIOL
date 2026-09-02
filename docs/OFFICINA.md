@@ -20,10 +20,10 @@ OFFICINA_DIR overrides the location for non-standard installs.
 - `officina.mjs` — entry: pins pi-coding-agent (Apache-2.0 library),
   binds our extensions + theme, claims the terminal (alt-screen +
   OSC 11 background #0d1117, restored on every exit).
-- `.pi/extensions/` — 24 extensions: our harness pieces (vitriol-decode
+- `.pi/extensions/` — 25 extensions: our harness pieces (vitriol-decode
   live engine telemetry widget, small-lane compaction on the mellum2
   lane, rewind, vitriol-checkpoint, permissions-guard, tool pipeline,
-  hermes-bridge) + mined load-bearing upstream (subagent, plan-mode,
+  hermes-bridge, scratchpad hot notebook) + mined load-bearing upstream (subagent, plan-mode,
   deep-research, skill/knowledge-inject, llama-cpp-provider).
 - `theme/officina.json` — Vitriolum palette (BG #0d1117, PANEL #161b22,
   sovereignty gold, safety green, solvent cyan, substrate red).

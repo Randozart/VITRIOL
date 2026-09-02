@@ -68,6 +68,10 @@
 
 ## Cloud Escalation Policy (ascensus)
 
+Cloud tier is provider-agnostic via `~/.vitriol/secrets` (current:
+`provider = zai-coding-plan`, GLM `glm-4.6`; the 2026-09-02 smoke test
+proved escalate → ledger → Hermetis store-back → dedup hit end-to-end,
+first escalation cost €0.00048, the repeat was free).
 Escalation is euro-capped (`ASCENSUS_EUR_DAILY=1`, monthly 30) and
 self-tapers: every escalation is stored to Hermetis, so a problem class pays
 the cloud price **once**. Early escalation of recurring problem classes is an

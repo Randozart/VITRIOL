@@ -47,6 +47,7 @@ PRICES = {
     "gemini-2.5-flash-lite": (0.10, 0.40),
     "gemini-2.5-flash": (0.28, 2.30),
     "gemini-2.0-flash-lite": (0.09, 0.37),
+    "glm": (0.55, 2.00),  # z.ai api list price approx; coding-plan quota is flat
 }
 try:
     if os.environ.get("ASCENSUS_PRICES_JSON"):
@@ -101,8 +102,11 @@ def save_ledger(led):
 
 
 def read_secrets():
+    """Return (provider, key, model). Provider resolution: env ASCENSUS_PROVIDER
+    beats the secrets `provider` line; bare keys are sniffed (AIza… = gemini)."""
     key = os.environ.get("GEMINI_API_KEY", "")
     model = os.environ.get("GEMINI_MODEL", "")
+    provider = os.environ.get("ASCENSUS_PROVIDER", "")
     try:
         with open(GEMINI_KEY_FILE) as f:
             for line in f:
@@ -110,21 +114,70 @@ def read_secrets():
                 if not m:
                     continue
                 k, v = m.groups()
+                v = v.strip().strip('"')
                 if k == "api_key" and not key:
-                    key = v.strip().strip('"')
+                    key = v
                 elif k == "model" and not model:
-                    model = v.strip().strip('"')
+                    model = v
+                elif k == "provider" and not provider:
+                    provider = v
     except Exception:
         pass
-    return key, model or "gemini-2.5-flash"
+    if not provider:
+        provider = "gemini" if key.startswith("AIza") else "zai-coding-plan"
+    if not model:
+        model = "gemini-2.5-flash" if provider == "gemini" else "glm-4.6"
+    return provider, key, model
 
 
-def http_json(url, payload=None, timeout=120):
+def call_gemini(key, model, user_text):
+    payload = {
+        "contents": [{"parts": [{"text": user_text}]}],
+        "generationConfig": {
+            "maxOutputTokens": 2048,
+            "responseMimeType": "application/json",
+            "responseSchema": {
+                "type": "OBJECT",
+                "properties": {
+                    "answer": {"type": "STRING"},
+                    "reasoning": {"type": "STRING"},
+                    "confidence": {"type": "NUMBER"}},
+                "required": ["answer", "reasoning", "confidence"]}}}
+    res = http_json(
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent?key={key}", payload)
+    raw = "".join(p.get("text", "") for p in
+                  (res.get("candidates", [{}])[0].get("content", {})
+                   .get("parts", []))).strip()
+    um = res.get("usageMetadata", {}) or {}
+    return raw, int(um.get("promptTokenCount", 0)), int(um.get("candidatesTokenCount", 0))
+
+
+def call_zai(key, model, user_text):
+    """z.ai coding-plan endpoint — OpenAI chat-completions compatible."""
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": user_text}],
+        "max_tokens": 2048,
+        "temperature": 0.3,
+    }
+    res = http_json("https://api.z.ai/api/coding/paas/v4/chat/completions",
+                    payload,
+                    headers={"Authorization": f"Bearer {key}"})
+    choice = (res.get("choices") or [{}])[0]
+    raw = ((choice.get("message") or {}).get("content") or "").strip()
+    um = res.get("usage", {}) or {}
+    return raw, int(um.get("prompt_tokens", 0)), int(um.get("completion_tokens", 0))
+
+
+def http_json(url, payload=None, timeout=120, headers=None):
     data = None
-    headers = {"Content-Type": "application/json"}
+    hdrs = {"Content-Type": "application/json"}
+    if headers:
+        hdrs.update(headers)
     if payload is not None:
         data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data=data, headers=headers)
+    req = urllib.request.Request(url, data=data, headers=hdrs)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
@@ -224,10 +277,10 @@ class Handler(BaseHTTPRequestHandler):
             log(f"route signals for {agent}: complexity={complexity_score} "
                 f"privacy={privacy_score} signals={json.dumps(signals)[:200]}")
 
-        key, model = read_secrets()
+        provider, key, model = read_secrets()
         if not key:
             return self._send(200, {"status": "unconfigured",
-                                    "message": "no GEMINI_API_KEY — answer locally"})
+                                    "message": "no cloud API key — answer locally"})
 
         # ── L1 dedup against prior escalations (free) ──
         cached = None
@@ -292,55 +345,41 @@ class Handler(BaseHTTPRequestHandler):
                         f"not retry ascensus until tomorrow.]"),
                     "eur_spent": 0.0})
 
-        # ── Gemini call ──
-        payload = {
-            "contents": [{"parts": [{"text": user_text}]}],
-            "generationConfig": {
-                "maxOutputTokens": 2048,
-                "responseMimeType": "application/json",
-                "responseSchema": {
-                    "type": "OBJECT",
-                    "properties": {
-                        "answer": {"type": "STRING"},
-                        "reasoning": {"type": "STRING"},
-                        "confidence": {"type": "NUMBER"}},
-                    "required": ["answer", "reasoning", "confidence"]}}}
+        # ── cloud call (provider-dispatched) ──
+        fn = call_gemini if provider == "gemini" else call_zai
+        label = "gemini" if provider == "gemini" else "zai"
         try:
-            res = http_json(
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{model}:generateContent?key={key}", payload)
+            raw, in_tok, out_tok = fn(key, model, user_text)
         except urllib.error.HTTPError as e:
             detail = e.read()[:300].decode("utf-8", "replace")
             return self._send(200, {"status": "error",
-                                    "message": f"Gemini HTTP {e.code}: {detail}"})
+                                    "message": f"{label} HTTP {e.code}: {detail}"})
         except Exception as e:
             return self._send(200, {"status": "error",
-                                    "message": f"Gemini failed: {e}"})
+                                    "message": f"{label} failed: {e}"})
 
-        raw = "".join(p.get("text", "") for p in
-                      (res.get("candidates", [{}])[0].get("content", {})
-                       .get("parts", []))).strip()
         answer = raw
         try:
             parsed = json.loads(raw)
             conf = parsed.get("confidence")
-            answer = (parsed.get("answer", "") +
-                      ("\n\n" + parsed["reasoning"] if parsed.get("reasoning") else "") +
+            answer = (str(parsed.get("answer", "")) +
+                      ("\n\n" + str(parsed["reasoning"]) if parsed.get("reasoning") else "") +
                       (f"\n\n(confidence {conf})" if conf is not None else ""))
         except Exception:
             pass
         if not answer:
             return self._send(200, {"status": "error",
-                                    "message": "Gemini returned no text."})
+                                    "message": f"{label} returned no text."})
 
         # ── actuals → single-writer ledger ──
-        um = res.get("usageMetadata", {}) or {}
-        in_tok = int(um.get("promptTokenCount", wire_tokens))
-        out_tok = int(um.get("candidatesTokenCount", 2048))
+        if in_tok <= 0:
+            in_tok = wire_tokens
+        if out_tok <= 0:
+            out_tok = 2048
         p_in, p_out = price_for(model)
         eur = (in_tok * p_in + out_tok * p_out) / 1e6
         led = load_ledger()
-        rec = {"ts": time.time(), "model": model,
+        rec = {"ts": time.time(), "model": model, "provider": provider,
                "in_tok": in_tok, "out_tok": out_tok,
                "eur": eur, "agent": agent}
         if complexity_score is not None:

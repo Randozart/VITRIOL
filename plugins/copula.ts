@@ -283,7 +283,7 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
       }),
       ascensus: tool({
         description:
-          "Escalate a genuinely-hard inquiry to a configured cloud model (Google Gemini) via ascensusd. Use only when the question is beyond your reliable local ability or needs a second opinion. The query and your reasoning attempt are sent; no file contents or secrets leave the machine. Escalations are budget-tracked, deduplicated against prior answers, and stored to memory so the system learns and self-reduces future escalation.",
+          "Escalate a genuinely-hard inquiry to a configured cloud model (provider set in ~/.vitriol/secrets, e.g. z.ai GLM or Gemini) via ascensusd. Use only when the question is beyond your reliable local ability or needs a second opinion. The query and your reasoning attempt are sent; no file contents or secrets leave the machine. Escalations are budget-tracked, deduplicated against prior answers, and stored to memory so the system learns and self-reduces future escalation.",
         args: {
           query: tool.schema.string().describe("The user's hard inquiry, as-is."),
           reasoning: tool.schema.string().optional().describe("Your local reasoning attempt, so the cloud model can improve on it."),

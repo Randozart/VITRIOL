@@ -48,6 +48,9 @@ pub struct MergeInput {
     pub gap: u32,
     pub bg: String,
     pub reset: String,
+    /// Single-char divider drawn in the gap column (e.g. "│"). Empty = plain spaces.
+    #[napi(js_name = "divider")]
+    pub divider_js: Option<String>,
 }
 
 #[napi]
@@ -61,6 +64,7 @@ pub fn merge_split_rows(input: MergeInput) -> Vec<String> {
         input.gap,
         &input.bg,
         &input.reset,
+        input.divider_js.as_deref().unwrap_or(""),
     )
 }
 

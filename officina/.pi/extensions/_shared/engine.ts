@@ -20,6 +20,8 @@ export interface EngineSnapshot {
   delta: { tps: number; tokens: number };
   /** context ingestion (prefill) delta + derived tokens/s */
   ingest: { tps: number; tokens: number };
+  /** cumulative prompt tokens since engine boot (for ingestion gauge) */
+  cumulativeIngest: number;
   /** decode tokens since engine boot */
   total: number;
   slots: SlotInfo[];
@@ -34,6 +36,7 @@ let snap: EngineSnapshot = {
   up: false,
   delta: { tps: 0, tokens: 0 },
   ingest: { tps: 0, tokens: 0 },
+  cumulativeIngest: 0,
   total: 0,
   slots: [],
   busy: 0,
@@ -65,7 +68,7 @@ async function poll(): Promise<void> {
     before = null;
     if (snap.up || !polledOnce) {
       polledOnce = true;
-      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 } };
+      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0 };
       notify();
     }
     return;
@@ -85,7 +88,8 @@ async function poll(): Promise<void> {
   const slotsText = await fetchText(`${base}/slots`, pollMs);
   const slots = slotsText ? parseSlots(slotsText) : snap.slots;
   const busy = busySlots(slots, delta.tokens);
-  snap = { up: true, delta, ingest, total: after.decodeTokens, slots, busy };
+  // cumulativeIngest = total prompt tokens processed since engine boot
+  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy };
   polledOnce = true;
   notify();
 }

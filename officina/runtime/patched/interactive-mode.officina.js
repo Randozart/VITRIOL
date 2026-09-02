@@ -168,6 +168,7 @@ class OfficinaSplit {
                 gap: GAP,
                 bg: SB_BG,
                 reset: SB_RESET,
+                divider: "│",
             });
         }
         const out = [];
@@ -179,7 +180,7 @@ class OfficinaSplit {
                 let right = r >= sbPad ? sbLines[r - sbPad] ?? "" : "";
                 if (officinaVisibleWidth(right) > SB_W) right = officinaCut(right, SB_W);
                 const pad = Math.max(0, SB_W - officinaVisibleWidth(right));
-                line += " ".repeat(GAP) + SB_BG + right + " ".repeat(pad) + SB_RESET;
+                line += SB_BG + "│" + " ".repeat(Math.max(0, GAP - 1)) + SB_BG + right + " ".repeat(pad) + SB_RESET;
             }
             out.push(line);
         }

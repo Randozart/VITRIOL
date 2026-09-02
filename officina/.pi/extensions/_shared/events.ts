@@ -26,7 +26,8 @@ export type EventSource =
   | "lc-contract"
   | "lc-imports"
   | "lc-ledger"
-  | "lc-bg";
+  | "lc-bg"
+  | "lc-scratchpad";
 
 export interface HarnessEvent {
   ts: number;

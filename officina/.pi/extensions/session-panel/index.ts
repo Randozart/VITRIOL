@@ -9,6 +9,7 @@ import { registerSidebarSection, onSidebarUpdate, renderAllSections, sidebarEnri
 import { getTaskSummary } from "../task-state/index.ts";
 import { getRecentTools } from "../skill-inject/index.ts";
 import { getLastTopics } from "../knowledge-inject/index.ts";
+import { getScratchpadSummary } from "../scratchpad/index.ts";
 
 // session-panel v4 (2026-09-01): sidebar section coordinator.
 //
@@ -42,6 +43,33 @@ const SUBSTRATE = fgSeq("substrate");
 const SIDEBAR_W = 42;
 
 const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+
+/** Truncate a styled string to `w` visible cells. Safe for ANSI escape sequences. */
+const truncate = (s: string, w: number): string => {
+  if (visibleLen(s) <= w) return s;
+  let vis = 0;
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\x1b") {
+      const rest = s.slice(i);
+      const m = /^(\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\))/.exec(rest);
+      if (m) { out += m[1]; i += m[1].length; continue; }
+    }
+    if (vis >= w) break;
+    const cp = s.codePointAt(i) ?? 0;
+    const ch = String.fromCodePoint(cp);
+    const cw = cp >= 0x1100 && (cp <= 0x115f || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xff00 && cp <= 0xff60)) ? 2 : 1;
+    if (vis + cw > w) break;
+    out += ch;
+    vis += cw;
+    i += ch.length;
+  }
+  return out;
+};
+
+const thickDiv = () => sc(MUTED, "─".repeat(SIDEBAR_W));
+const thinDiv = () => sc(MUTED, "· ".repeat(Math.floor(SIDEBAR_W / 2)));
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
@@ -83,7 +111,14 @@ export default function (pi: ExtensionAPI) {
   // P10: Coupling name
   registerSidebarSection("coupling", 10, () => {
     const couplingFull = couplingDisplay(providerName, modelId, couplings, modelId);
-    return [sc(GOLD, "◈ " + couplingFull)];
+    return [truncate(sc(GOLD, "◈ " + couplingFull), SIDEBAR_W)];
+  });
+
+  // P11: Model name (actual model behind the coupling)
+  registerSidebarSection("model", 11, () => {
+    if (!sidebarEnriched()) return undefined;
+    if (!modelId) return undefined;
+    return [truncate(sc(MUTED, "  " + modelId), SIDEBAR_W)];
   });
 
   // P12: Session title (if named)
@@ -92,21 +127,39 @@ export default function (pi: ExtensionAPI) {
     try {
       const name = (pi as any).getSessionName?.();
       if (!name) return undefined;
-      return [sc(MUTED, `"${name}"`)];
+      return [truncate(sc(MUTED, `"${name}"`), SIDEBAR_W)];
     } catch {
       return undefined;
     }
+  });
+
+  // P13: Thick divider (header / stats boundary)
+  registerSidebarSection("div1", 13, () => {
+    if (!sidebarEnriched()) return undefined;
+    return [thickDiv()];
   });
 
   // P20: Context usage
   registerSidebarSection("ctx", 20, () => {
     if (!ctxUsage || ctxUsage.contextWindow <= 0) return undefined;
     const pct = ctxUsage.percent;
-    const g = renderGauge(RAMPS.capacity, Math.min(1, (pct ?? 0) / 100), 8);
+    const g = renderGauge(RAMPS.capacity, Math.min(1, (pct ?? 0) / 100), 6);
     const filled = ctxUsage.tokens != null ? fmtTokens(ctxUsage.tokens) : "--";
-    return [
-      `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + " of " + fmtTokens(ctxUsage.contextWindow))}`,
-    ];
+    const total = fmtTokens(ctxUsage.contextWindow);
+    const line = `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct.toFixed(1) + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + "/" + total)}`;
+    return [truncate(line, SIDEBAR_W)];
+  });
+
+  // P22: Ingestion progress (kobold.cpp-style: cumulative tokens + rate)
+  registerSidebarSection("ingest", 22, () => {
+    if (!sidebarEnriched()) return undefined;
+    const eng = getEngineSnapshot();
+    if (!eng.up) return undefined;
+    const ing = eng.ingest;
+    if (!ing || ing.tps < 0.5) return undefined;
+    const g = renderGauge(RAMPS.mercury, Math.min(1, eng.cumulativeIngest / Math.max(1, ctxUsage?.contextWindow ?? 1)), 6);
+    const line = `${sc(MUTED, "ing ")}${g} ${sc(SOLVENT, fmtRate(ing.tps) + " tok/s")}${sc(MUTED, " · " + fmtTokens(eng.cumulativeIngest) + " tokens")}`;
+    return [truncate(line, SIDEBAR_W)];
   });
 
   // P25: Engine throughput
@@ -119,26 +172,16 @@ export default function (pi: ExtensionAPI) {
     const g = renderGauge(
       decoding ? RAMPS.activity : RAMPS.mercury,
       decoding ? Math.max(0.08, Math.min(1, eng.delta.tps / 25)) : 0.08,
-      8,
+      6,
     );
-    const lines = [
-      `${sc(MUTED, "eng ")}${g} ${decoding ? sc(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : sc(MUTED, "idle")} ${sc(MUTED, `· ${busy}/${total} · ${fmtTokens(eng.total)}`)}`,
-    ];
-    // Ingestion row (when active)
-    const ing = eng.ingest;
-    if (ing && ing.tps > 0.5) {
-      const g2 = renderGauge(RAMPS.mercury, Math.min(1, ing.tps / 100), 8);
-      lines.push(
-        `${sc(MUTED, "ing ")}${g2} ${sc(SOLVENT, fmtRate(ing.tps) + " tok/s")}${sc(MUTED, ` · +${fmtTokens(ing.tokens)}`)}`,
-      );
-    }
-    return lines;
+    const line = `${sc(MUTED, "eng ")}${g} ${decoding ? sc(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : sc(MUTED, "idle")} ${sc(MUTED, `· ${busy}/${total} · ${fmtTokens(eng.total)}`)}`;
+    return [truncate(line, SIDEBAR_W)];
   });
 
-  // P30: Separator (when enrichment is active)
-  registerSidebarSection("sep1", 30, () => {
+  // P28: Thin divider (stats / tasks boundary)
+  registerSidebarSection("div2", 28, () => {
     if (!sidebarEnriched()) return undefined;
-    return [sc(MUTED, "─".repeat(40))];
+    return [thinDiv()];
   });
 
   // P35: Task state summary
@@ -150,7 +193,15 @@ export default function (pi: ExtensionAPI) {
     if (summary.inProgress > 0) parts.push(sc(SAFETY, `[>] ${summary.inProgress}`));
     if (summary.pending > 0) parts.push(sc(MUTED, `[ ] ${summary.pending}`));
     parts.push(sc(SAFETY, `${summary.completed} done`));
-    return [sc(MUTED, "tasks ") + parts.join(sc(MUTED, " · "))];
+    return [truncate(sc(MUTED, "tasks ") + parts.join(sc(MUTED, " · ")), SIDEBAR_W)];
+  });
+
+  // P36: Scratchpad summary
+  registerSidebarSection("scratchpad", 36, () => {
+    if (!sidebarEnriched()) return undefined;
+    const s = getScratchpadSummary();
+    if (!s) return undefined;
+    return [truncate(sc(MUTED, "note ") + sc(VIOLET, `${s.facts}f ${s.leads}l ${s.dead}d`) + sc(MUTED, ` · ${s.lines}/${s.cap}`), SIDEBAR_W)];
   });
 
   // P40: Files touched
@@ -158,18 +209,24 @@ export default function (pi: ExtensionAPI) {
     const files = [...state.files.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, 4);
     if (files.length === 0) return undefined;
     return [
-      `${sc(MUTED, "files: ")}${files.map(([p, f]) => {
+      truncate(`${sc(MUTED, "files: ")}${files.map(([p, f]) => {
         const counts = f.add || f.del ? ` ${sc(SAFETY, "+" + f.add)} ${sc(SUBSTRATE, "−" + f.del)}` : "";
         return sc(VIOLET, shortPath(p)) + counts;
-      }).join(sc(MUTED, "  "))}`,
+      }).join(sc(MUTED, "  "))}`, SIDEBAR_W),
     ];
+  });
+
+  // P42: Thin divider (files / session boundary)
+  registerSidebarSection("div3", 42, () => {
+    if (!sidebarEnriched()) return undefined;
+    return [thinDiv()];
   });
 
   // P45: Session stats
   registerSidebarSection("session", 45, () => {
     const home = cwd.replace(/^\/home\/[^/]+/, "~");
     return [
-      `${sc(MUTED, "session · ")}${sc(SOLVENT, home)}${sc(MUTED, "  ·  ")}${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}${sessionId ? sc(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`,
+      truncate(`${sc(MUTED, "session · ")}${sc(SOLVENT, home)}${sc(MUTED, "  ·  ")}${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}${sessionId ? sc(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`, SIDEBAR_W),
     ];
   });
 
@@ -179,7 +236,7 @@ export default function (pi: ExtensionAPI) {
     const tools = getRecentTools();
     if (tools.length === 0) return undefined;
     const shown = tools.slice(0, 5);
-    return [sc(MUTED, "skills ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`)];
+    return [truncate(sc(MUTED, "skills ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`), SIDEBAR_W)];
   });
 
   // P55: Knowledge refs
@@ -188,12 +245,18 @@ export default function (pi: ExtensionAPI) {
     const topics = getLastTopics();
     if (topics.length === 0) return undefined;
     const shown = topics.slice(0, 4);
-    return [sc(MUTED, "ref ") + shown.map((t) => sc(SOLVENT, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${topics.length} injected`)];
+    return [truncate(sc(MUTED, "ref ") + shown.map((t) => sc(SOLVENT, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${topics.length} injected`), SIDEBAR_W)];
+  });
+
+  // P58: Thin divider (before hints)
+  registerSidebarSection("div4", 58, () => {
+    if (!sidebarEnriched()) return undefined;
+    return [thinDiv()];
   });
 
   // P90: Command hints
   registerSidebarSection("hints", 90, () => {
-    return [sc(MUTED, "/resume · /tree · /history · /mode")];
+    return [truncate(sc(MUTED, "/resume · /tree · /history · /mode"), SIDEBAR_W)];
   });
 
   // ── Render coordinator ────────────────────────────────────────────────
@@ -295,7 +358,11 @@ export default function (pi: ExtensionAPI) {
     }
     if (ctx.hasUI) {
       startEnginePolling();
-      onEngineUpdate(() => renderSidebar());
+      onEngineUpdate(() => {
+        // Keep context usage fresh during ingestion (not just on message_end)
+        try { ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage; } catch {}
+        renderSidebar();
+      });
     }
     renderSidebar();
   });

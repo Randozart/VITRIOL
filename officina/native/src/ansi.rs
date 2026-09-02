@@ -134,6 +134,7 @@ pub fn merge_split_rows(
     gap: u32,
     bg: &str,
     reset: &str,
+    divider: &str,
 ) -> Vec<String> {
     let total = main_lines.len().max(sb_lines.len() + sb_pad as usize);
     let mut out = Vec::with_capacity(total);
@@ -156,8 +157,17 @@ pub fn merge_split_rows(
             .to_string();
             let rw = visible_width(&right);
             let right = if rw > sb_w { cut(&right, sb_w) } else { right };
-            for _ in 0..gap {
-                line.push(' ');
+            // Gap column: divider character on panel background, or plain spaces
+            if gap > 0 && !divider.is_empty() {
+                line.push_str(bg);
+                line.push_str(divider);
+                for _ in 1..gap {
+                    line.push(' ');
+                }
+            } else {
+                for _ in 0..gap {
+                    line.push(' ');
+                }
             }
             line.push_str(bg);
             line.push_str(&right);
@@ -217,7 +227,7 @@ mod tests {
     fn merge_split_rows_matches_split_render() {
         let main = vec!["hello".to_string(), "long line that overflows the column".to_string()];
         let sb = vec!["◈ coupling".to_string(), "ctx gauge".to_string()];
-        let out = merge_split_rows(&main, 12, &sb, 20, 0, 1, "\x1b[48;2;22;27;34m", "\x1b[0m");
+        let out = merge_split_rows(&main, 12, &sb, 20, 0, 1, "\x1b[48;2;22;27;34m", "\x1b[0m", "");
         assert_eq!(out.len(), 2);
         // row 0: "hello" + 7 pad + 1 gap + bg + "◈ coupling" + 10 pad + reset
         assert!(out[0].starts_with("hello        \x1b[48;2;22;27;34m◈ coupling"));
@@ -229,7 +239,7 @@ mod tests {
         // sidebar shorter than main → last row keeps main content, empty right
         let main_only = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         let sb_short = vec!["x".to_string()];
-        let out2 = merge_split_rows(&main_only, 4, &sb_short, 4, 0, 1, "\x1b[48m", "\x1b[0m");
+        let out2 = merge_split_rows(&main_only, 4, &sb_short, 4, 0, 1, "\x1b[48m", "\x1b[0m", "");
         assert_eq!(out2.len(), 3);
         assert!(out2[2].starts_with("c   "));
         assert_eq!(visible_width(&out2[2]), 4 + 1 + 4);
@@ -240,7 +250,7 @@ mod tests {
         // P4: 1 sidebar row, 3 main rows, pad=2 → sidebar content on LAST row
         let main = vec!["r1".to_string(), "r2".to_string(), "r3".to_string()];
         let sb = vec!["SB".to_string()];
-        let out = merge_split_rows(&main, 6, &sb, 4, 2, 1, "\x1b[48m", "\x1b[0m");
+        let out = merge_split_rows(&main, 6, &sb, 4, 2, 1, "\x1b[48m", "\x1b[0m", "");
         assert_eq!(out.len(), 3);
         assert!(out[0].starts_with("r1     \x1b[48m    "));
         assert!(out[2].starts_with("r3     \x1b[48mSB  "));
@@ -248,8 +258,19 @@ mod tests {
 
     #[test]
     fn merge_split_rows_empty_sidebar() {
-        let out = merge_split_rows(&["only".to_string()], 10, &[], 0, 0, 1, "", "");
+        let out = merge_split_rows(&["only".to_string()], 10, &[], 0, 0, 1, "", "", "");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0], "only      ");
+    }
+
+    #[test]
+    fn merge_split_rows_divider_in_gap() {
+        let main = vec!["hi".to_string()];
+        let sb = vec!["sb".to_string()];
+        let out = merge_split_rows(&main, 4, &sb, 4, 0, 1, "\x1b[48m", "\x1b[0m", "│");
+        assert_eq!(out.len(), 1);
+        // gap column should be the divider on panel background
+        assert!(out[0].contains("│"));
+        assert!(out[0].contains("\x1b[48m"));
     }
 }

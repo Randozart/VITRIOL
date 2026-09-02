@@ -209,6 +209,21 @@ class Handler(BaseHTTPRequestHandler):
         agent = (req.get("agent") or "unknown").strip()[:32]
         project_id = (req.get("project_id") or "default").strip()[:128]
 
+        # Auto-route telemetry (optional, from the officina auto-route extension).
+        # Logged and persisted in the ledger for threshold tuning; never enforced.
+        def _clamp01(v):
+            try:
+                f = float(v)
+                return min(1.0, max(0.0, f))
+            except (TypeError, ValueError):
+                return None
+        complexity_score = _clamp01(req.get("complexity_score"))
+        privacy_score = _clamp01(req.get("privacy_score"))
+        signals = req.get("signals") if isinstance(req.get("signals"), dict) else {}
+        if complexity_score is not None or privacy_score or signals:
+            log(f"route signals for {agent}: complexity={complexity_score} "
+                f"privacy={privacy_score} signals={json.dumps(signals)[:200]}")
+
         key, model = read_secrets()
         if not key:
             return self._send(200, {"status": "unconfigured",
@@ -325,9 +340,16 @@ class Handler(BaseHTTPRequestHandler):
         p_in, p_out = price_for(model)
         eur = (in_tok * p_in + out_tok * p_out) / 1e6
         led = load_ledger()
-        led["calls"].append({"ts": time.time(), "model": model,
-                             "in_tok": in_tok, "out_tok": out_tok,
-                             "eur": eur, "agent": agent})
+        rec = {"ts": time.time(), "model": model,
+               "in_tok": in_tok, "out_tok": out_tok,
+               "eur": eur, "agent": agent}
+        if complexity_score is not None:
+            rec["complexity_score"] = complexity_score
+        if privacy_score is not None:
+            rec["privacy_score"] = privacy_score
+        if signals:
+            rec["signals"] = signals
+        led["calls"].append(rec)
         led["spent_eur"] += eur
         led["spent_month_eur"] += eur
         save_ledger(led)

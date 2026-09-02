@@ -87,6 +87,21 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
     ]
 }
 
+/// officina auto-route launch config, shown with the ascensus row.
+/// The router itself lives in the officina extension process; the TUI can only
+/// report the env it was launched with.
+fn route_suffix() -> String {
+    if std::env::var("OFFICINA_NO_AUTO_ROUTE").as_deref() == Ok("1") {
+        return " · route=off".into();
+    }
+    let mode = std::env::var("OFFICINA_ROUTE_MODE").unwrap_or_else(|_| "suggest".into());
+    if mode == "off" {
+        return " · route=off".into();
+    }
+    let thr = std::env::var("OFFICINA_ROUTE_THRESHOLD").unwrap_or_else(|_| "0.5".into());
+    format!(" · route={mode}@{thr}")
+}
+
 /// The non-port alchemical layers, config and env-driven.
 fn layer_rows(cfg: &Config) -> Vec<Row> {
     let kv = load_config(cfg);
@@ -97,9 +112,9 @@ fn layer_rows(cfg: &Config) -> Vec<Row> {
         } else {
             secrets.model.clone()
         };
-        format!("cloud escalation · {} · {model}", secrets.mask())
+        format!("cloud escalation · {} · {model}{}{}", secrets.mask(), route_suffix(), "")
     } else {
-        "cloud escalation · no key".into()
+        format!("cloud escalation · no key{}", route_suffix())
     };
     vec![
         Row {

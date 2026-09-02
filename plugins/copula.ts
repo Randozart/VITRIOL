@@ -8,9 +8,8 @@
 // Retrieve: `memory_search` custom tool -> Hermetis /hermetis/search.
 import type { Plugin } from "@opencode-ai/plugin"
 import { tool } from "@opencode-ai/plugin"
-import * as fs from "node:fs"
-import * as os from "node:os"
-import * as path from "node:path"
+
+const ASCENSUSD_URL = process.env.ASCENSUSD_URL ?? "http://127.0.0.1:8283"
 
 const HERMETIS_URL = process.env.COPULA_HERMETIS_URL ?? "http://127.0.0.1:7980"
 const MAX_CONTENT = 20000
@@ -18,30 +17,6 @@ const AUTO_CONTEXT = process.env.COPULA_AUTO_CONTEXT !== "0"
 const CONTEXT_BUDGET = Number(process.env.COPULA_CONTEXT_BUDGET ?? 1500)
 const CONTEXT_TOP_K = Number(process.env.COPULA_CONTEXT_TOP_K ?? 5)
 const CONTEXT_MIN_SCORE = Number(process.env.COPULA_CONTEXT_MIN_SCORE ?? 0.3)
-
-// Read Ascensus secrets managed by vitriol-tui at ~/.vitriol/secrets (0600).
-// The TUI writes [ascensus] api_key/model there; env vars remain the override.
-function readSecrets(): { apiKey: string; model: string } {
-  try {
-    const p = path.join(os.homedir(), ".vitriol", "secrets")
-    const text = fs.readFileSync(p, "utf8")
-    let apiKey = ""
-    let model = ""
-    for (const line of text.split("\n")) {
-      const t = line.trim()
-      if (!t || t.startsWith("#") || t.startsWith("[")) continue
-      const i = t.indexOf("=")
-      if (i < 0) continue
-      const k = t.slice(0, i).trim()
-      const v = t.slice(i + 1).trim()
-      if (k === "api_key") apiKey = v
-      else if (k === "model") model = v
-    }
-    return { apiKey, model }
-  } catch {
-    return { apiKey: "", model: "" }
-  }
-}
 
 function hashString(s: string): string {
   let h = 5381
@@ -308,46 +283,45 @@ export const CopulaHermetis: Plugin = async ({ project, client, directory, workt
       }),
       ascensus: tool({
         description:
-          "Escalate a genuinely-hard inquiry to a configured cloud model (Google Gemini) that takes over the wheel. Use only when the question is beyond your reliable local ability or needs a second opinion. The query and your reasoning attempt are sent; no file contents or secrets leave the machine. Escalations are stored to memory so the system learns and self-reduces future escalation.",
+          "Escalate a genuinely-hard inquiry to a configured cloud model (Google Gemini) via ascensusd. Use only when the question is beyond your reliable local ability or needs a second opinion. The query and your reasoning attempt are sent; no file contents or secrets leave the machine. Escalations are budget-tracked, deduplicated against prior answers, and stored to memory so the system learns and self-reduces future escalation.",
         args: {
           query: tool.schema.string().describe("The user's hard inquiry, as-is."),
           reasoning: tool.schema.string().optional().describe("Your local reasoning attempt, so the cloud model can improve on it."),
         },
         async execute(args, _context) {
-          const secrets = readSecrets()
-          const key = process.env.GEMINI_API_KEY || secrets.apiKey
-          if (!key) {
-            return "Ascensus not configured: no GEMINI_API_KEY in env or ~/.vitriol/secrets. Set it in the SUBSYSTEMS tab, or export GEMINI_API_KEY. Reply locally instead."
-          }
           try {
-            const model = process.env.GEMINI_MODEL || secrets.model || "gemini-2.5-flash"
-            const maxTokens = Number(process.env.GEMINI_MAX_TOKENS ?? 2048)
-            const payload = {
-              contents: [{
-                parts: [{ text: args.reasoning
-                  ? `User inquiry: ${args.query}\n\nLocal reasoning attempt:\n${args.reasoning}`
-                  : `User inquiry: ${args.query}` }],
-              }],
-              generationConfig: { maxOutputTokens: maxTokens },
-            }
-            const res = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
-              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
-            )
+            const res = await fetch(`${ASCENSUSD_URL}/escalate`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                query: args.query,
+                reasoning: args.reasoning,
+                agent: "copula",
+                project_id: projectId,
+              }),
+            })
             if (!res.ok) {
-              const err = await res.text()
-              return `Ascensus call failed (HTTP ${res.status}). ${err.slice(0, 300)}`
+              return `Ascensusd unreachable (HTTP ${res.status}). Answer locally.`
             }
             const data = await res.json()
-            const answer = data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join("\n")
-            if (!answer) {
-              return "Ascensus returned no text. Reply locally instead."
+            if (data.status === "cached") {
+              return `[Ascensus — cached answer]\n${data.answer}`
             }
-            // Learning loop: store the escalation so Hermetis can learn from it.
-            await store("tool", `[ascensus] model=${model}\n${args.query}\n→\n${answer.slice(0, 8000)}`, "default")
-            return `[Ascensus — cloud answer from ${model}]\n${answer}`
+            if (data.status === "unconfigured") {
+              return `Ascensus not configured: ${data.message}. Reply locally instead.`
+            }
+            if (data.status === "budget_exhausted") {
+              return data.message
+            }
+            if (data.status === "error") {
+              return `Ascensus call failed: ${data.message}. Answer locally.`
+            }
+            if (data.status === "escalated" && data.answer) {
+              return `[Ascensus — cloud answer from ${data.model}]\n${data.answer}`
+            }
+            return "Ascensus returned no usable answer. Reply locally instead."
           } catch (e) {
-            return `Ascensus call failed: ${e instanceof Error ? e.message : String(e)}`
+            return `Ascensus call failed: ${e instanceof Error ? e.message : String(e)}. Answer locally.`
           }
         },
       }),

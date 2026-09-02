@@ -83,6 +83,15 @@ Do NOT escalate for: routine coding, this repo's own conventions (they live
 in docs/), anything already answered in Hermetis (dedup handles it).
 When the budget gate refuses, answer locally — never retry-loop ascensus.
 
+Auto-route (officina extension, 2026-09-02): every officina turn is
+classified (complexity + privacy) and routed advisory or enforced.
+`OFFICINA_ROUTE_MODE=suggest|auto|off` (default suggest — advisory only),
+`OFFICINA_ROUTE_THRESHOLD=0.0–1.0` (default 0.5; higher = more local),
+`OFFICINA_NO_AUTO_ROUTE=1` kill switch, `OFFICINA_ROUTE_ASCENSUS_URL`
+(default `http://127.0.0.1:8283`). Cloud tier escalates through ascensusd
+(single budget writer) and injects the verdict as a tail message — it never
+switches models. Sensitive/confidential turns never reach the cloud.
+
 ## Licensing and Provenance (Apache-2.0 OR MIT)
 
 VITRIOL and its llama.cpp fork are dual-licensed under the

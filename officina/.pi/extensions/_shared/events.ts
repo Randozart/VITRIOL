@@ -17,6 +17,7 @@ export type EventSource =
   | "lc-rtk"
   | "lc-ckpt"
   | "lc-relay"
+  | "lc-route"
   | "lc-tasks"
   | "lc-perms"
   | "lc-lane"

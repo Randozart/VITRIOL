@@ -13,7 +13,7 @@
 // Undo: `tris code` falls back to little-coder when this package is not
 // installed (config flag scaffold.mode decides which path runs).
 
-import { existsSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -27,6 +27,29 @@ const pkgRoot = join(here, "node_modules", "@earendil-works", "pi-coding-agent")
 // "Update Available" line; PI_OFFLINE=1 would also block package/update
 // checks. The workshop manages its own pins — the banner is noise.
 process.env.PI_SKIP_VERSION_CHECK ??= "1";
+// Launch env file: ~/.vitriol/officina/env (KEY=VALUE lines, # comments).
+// Read BEFORE extension binding so kill switches and arming flags
+// (OFFICINA_ROUTE_MODE etc.) have one canonical, inspectable home — the
+// TUI SUBSYSTEMS row and AGENTS.md document the same names. File env LOSES
+// to real environment variables ( ??= semantics): an explicit shell export
+// always wins.
+try {
+  const envFile = join(homedir(), ".vitriol", "officina", "env");
+  if (existsSync(envFile)) {
+    for (const line of readFileSync(envFile, "utf-8").split("\n")) {
+      const t = line.trim();
+      if (!t || t.startsWith("#")) continue;
+      const eq = t.indexOf("=");
+      if (eq <= 0) continue;
+      const k = t.slice(0, eq).trim();
+      let v = t.slice(eq + 1).trim();
+      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
+      process.env[k] ??= v;
+    }
+  }
+} catch {
+  // env file is optional; a bad one must never block launch
+}
 // Session continuity: pi's picker is per-project (cwd), so prior sessions
 // for THIS folder are reachable from the session manager; -c/--continue and
 // -r/--resume pass through for direct resume. Advertised in the widget-free

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyTurn, scratchpadContextLines, type ClassifyInput } from "./classifier.ts";
+import { classifyTurn, recentErrorSignal, scratchpadContextLines, type ClassifyInput } from "./classifier.ts";
 
 const base: ClassifyInput = {
   promptText: "fix the typo in README",
@@ -57,6 +57,37 @@ describe("classifyTurn", () => {
     expect(c.privacy).toBe("sensitive");
   });
 
+  it("dates in filenames are NOT pii (2026-09-02 field-test regression)", () => {
+    const c = classifyTurn({ ...base, promptText: "continue the plan in docs/plans/2026-08-31-vault-rewrite-completion.md step 2" });
+    expect(c.privacy).toBe("safe");
+  });
+
+  it("phone-like digit runs still count as sensitive", () => {
+    const c = classifyTurn({ ...base, promptText: "call me at +49 170 555 1234 about the release" });
+    expect(c.privacy).toBe("sensitive");
+  });
+
+  it("compile-error turns reach flagship territory (field-test regression)", () => {
+    const c = classifyTurn({
+      ...base,
+      promptText: "continue the vault rewrite",
+      recentErrorCount: 3,
+      scratchpadContextLines: Array.from({ length: 12 }, (_, i) => `E0599 caller site ${i}`),
+      filesTouched: 6,
+      turnCount: 9,
+    });
+    // 0.15 base + 0.25 (errors≥2) + 0.10 (context>8) + 0.05 (files>5) = 0.55
+    // → local-lg at t=0.5 (cutoff 0.65); cloud stays reserved for churn.
+    expect(c.complexity).toBeCloseTo(0.55, 5);
+    expect(c.complexity).toBeGreaterThanOrEqual(0.45);
+    expect(c.complexity).toBeLessThan(0.65);
+  });
+
+  it("churn on top of compile errors crosses the cloud cutoff", () => {
+    const c = classifyTurn({ ...base, recentErrorCount: 3, churnLoops: 1 });
+    expect(c.complexity).toBeGreaterThan(0.65);
+  });
+
   it("complexity never leaves [0,1]", () => {
     const worst = classifyTurn({
       promptText: "x".repeat(4000) + " cuda kernel systemd driver deadlock segfault",
@@ -68,6 +99,24 @@ describe("classifyTurn", () => {
     });
     expect(worst.complexity).toBeLessThanOrEqual(1);
     expect(worst.complexity).toBeGreaterThan(0.8);
+  });
+});
+
+describe("recentErrorSignal", () => {
+  it("counts isError results", () => {
+    expect(recentErrorSignal([{ isError: true }])).toBe(1);
+  });
+  it("counts compile errors hidden in successful bash output (field-test regression)", () => {
+    const cargo = { isError: false, text: "error[E0599]: no method named `put_meta`\nerror: could not compile `ontic` due to 30 previous errors" };
+    expect(recentErrorSignal([cargo])).toBeGreaterThanOrEqual(1);
+  });
+  it("does not count clean output", () => {
+    expect(recentErrorSignal([{ isError: false, text: "warning: unused import\n    Finished dev profile" }])).toBe(0);
+  });
+  it("respects the window", () => {
+    const old = Array.from({ length: 12 }, () => ({ isError: false, text: "error[E0308]: mismatched types" }));
+    const clean = Array.from({ length: 6 }, () => ({ isError: false, text: "all good" }));
+    expect(recentErrorSignal([...old, ...clean])).toBe(0);
   });
 });
 

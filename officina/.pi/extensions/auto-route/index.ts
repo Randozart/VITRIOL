@@ -31,7 +31,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
-import { classifyTurn, scratchpadContextLines, type ClassifyInput } from "./classifier.ts";
+import { classifyTurn, recentErrorSignal, scratchpadContextLines, type ClassifyInput } from "./classifier.ts";
 import { resolveMode, resolveThreshold, route } from "./router.ts";
 
 const ASCENSUS_URL =
@@ -171,15 +171,16 @@ export default function (pi: ExtensionAPI) {
     lastClassifiedHash = hash;
     turnCount++;
 
-    let recentErrors = 0;
-    for (let i = event.messages.length - 1; i >= 0 && recentErrors < ERROR_SCAN_WINDOW; i--) {
-      if (!isToolResult(event.messages[i])) continue;
-      if ((event.messages[i] as ToolResultShape).isError) recentErrors++;
+    const errWindow: Array<{ isError?: boolean; text?: string }> = [];
+    for (let i = event.messages.length - 1; i >= 0 && errWindow.length < ERROR_SCAN_WINDOW; i--) {
+      const m = event.messages[i];
+      if (!isToolResult(m)) continue;
+      errWindow.unshift({ isError: (m as ToolResultShape).isError, text: textOf((m as { content?: unknown }).content) });
     }
 
     const input: ClassifyInput = {
       promptText: prompt,
-      recentErrorCount: recentErrors,
+      recentErrorCount: recentErrorSignal(errWindow),
       churnLoops: readChurnLoops(),
       scratchpadContextLines: readScratchpadContext(),
       filesTouched: touchedFiles.size,

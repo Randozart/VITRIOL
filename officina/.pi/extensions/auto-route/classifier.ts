@@ -15,7 +15,7 @@
 export interface ClassifyInput {
   /** Text of the most recent user message ("" when none). */
   promptText: string;
-  /** Number of error tool results among the most recent tool results. */
+  /** Number of recent tool results that look like failures (flag or text). */
   recentErrorCount: number;
   /** Times the edit-churn detector fired this session. */
   churnLoops: number;
@@ -50,12 +50,34 @@ const DEEP_DOMAIN_WORDS = [
   "linker", "abi", "opcode", "sm_61", "sm_86", "dmesg",
 ];
 
+/** Recent tool failures: error RESULTS, plus results whose TEXT carries
+ *  compile/test errors — bash exits 1 with isError:false, so the flag alone
+ *  is blind to cargo/tsc output (field-tested 2026-09-02, vault session). */
+export function recentErrorSignal(
+  toolResults: Array<{ isError?: boolean; text?: string }>,
+  window = 6,
+): number {
+  const slice = toolResults.slice(-window);
+  let hits = 0;
+  for (const r of slice) {
+    if (r.isError) { hits++; continue; }
+    const t = r.text ?? "";
+    if (/error\[E\d+\]|^error:|\b\d+ previous errors?\b|panicked at|FAILED|failing/i.test(t)) hits++;
+  }
+  return hits;
+}
+
 const SECRET_PATH_RE =
   /(^|[\s"'(=:])([\w./-]*)(\.env|\.ssh|\.aws|secrets?|credentials?|\.pem|\.p12|\.p8|\.key|keystore)([\w./-]*)/i;
 
 const API_KEY_RE = /\b(AIzaSy[\w-]{20,}|sk-[\w-]{20,}|ghp_[\w]{20,}|github_pat_[\w]{20,}|xox[bp]-[\w-]{10,})\b/;
 
-const PII_RE = /\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b|\b\+?\d[\d\s().-]{7,}\d\b/;
+/** PII: emails, or phone-ish numbers. Phones require 9+ digits NOT already
+ *  shaped like a date (yyyy-mm-dd / dd.mm.yyyy) — the vault field test
+ *  classified a filename date as "sensitive" (2026-09-02). */
+const PII_RE = /\b[\w.+-]+@[\w-]+\.[\w.]{2,}\b/;
+const DATEISH_RE = /\b\d{4}[-/.]\d{1,2}[-/.]\d{1,2}\b|\b\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}\b/;
+const PHONE_RE = /\+?\d[\d\s().-]{7,}\d/;
 
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 
@@ -106,7 +128,10 @@ export function classifyTurn(input: ClassifyInput): Classification {
   if (SECRET_PATH_RE.test(input.promptText) || API_KEY_RE.test(input.promptText)) {
     privacy = "confidential";
     signals.privacy_confidential = 1;
-  } else if (PII_RE.test(input.promptText)) {
+  } else if (
+    PII_RE.test(input.promptText) ||
+    (PHONE_RE.test(input.promptText) && !DATEISH_RE.test(input.promptText))
+  ) {
     privacy = "sensitive";
     signals.privacy_sensitive = 1;
   }

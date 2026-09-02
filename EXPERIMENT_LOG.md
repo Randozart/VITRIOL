@@ -1517,3 +1517,70 @@ UNCOMMITTED on inner main (post-4653fcdcb): arg.cpp whitelist,
 llama-bench.cpp tq parser, ggml.h COUNT, ggml.c traits+switch,
 ggml-cpu.c traits, ggml-cpu/quants.c+.{h} decls. Next session: commit,
 finish E-KV-0, resume E2c (mmvq sm_61 audit at 66%-vs-81% finding).
+
+---
+
+## 2026-09-02 — Officina Sidebar QoL + Ratatui TUI Port Plan
+
+**Session:** 2026-09-02 (continuation)
+**Mode:** Build
+
+### What happened
+
+1. **Ratatui TUI port plan** written and approved:
+   - Plan: `.opencode/plans/ratatui-tui-port-2026-09-02.md`
+   - Architecture: Ratatui (Rust, main process) + pi-coding-agent (Node.js,
+     subprocess via JSONL RPC). Ratatui owns all rendering. pi-coding-agent
+     runs headlessly via `pi --mode rpc`.
+   - GLUE protocol (briev-compiler) evaluated and rejected — compile-time FFI
+     for Brief programs, not runtime IPC.
+   - NAPI embedding rejected — pi-coding-agent is a large ESM package with
+     deep Node.js deps; subprocess RPC is the clean path.
+   - Phase 0 (frontend-independent QoL) ships now; Phases 1-6 (Ratatui port)
+     follow.
+
+2. **Phase 0 — engine.ts**: Added `cumulativeIngest` to EngineSnapshot (total
+   prompt tokens since engine boot). Enables the ingestion gauge to show
+   context fill level during prefill.
+
+3. **Phase 0 — session-panel/index.ts** (7 changes):
+   - Context percentage: `pct.toFixed(1)` (was unformatted float, 10+ decimals)
+   - Context line: `/` separator instead of `of` (saves 2 cells, fits 42w)
+   - Context gauge: shrunk from 8→6 cells (fits 42w sidebar)
+   - Model name on second line (dimGray, enriched only)
+   - Section dividers: thick `──────` between header/stats and stats/tasks,
+     thin `· · · ·` between tasks/files, files/session, and before hints
+   - Scratchpad summary section (P36): facts/leads/dead counts + line usage
+   - Ingestion gauge section (P22): cumulative tokens + rate, visible during
+     active prefill
+   - Every section truncated to 42 cells via ANSI-aware truncate helper
+
+4. **Phase 0 — coldBlue divider** (Rust + JS + vendor patch):
+   - `native/src/ansi.rs`: `merge_split_rows` now accepts `divider: &str`
+     parameter. When non-empty, renders the divider character in the gap
+     column with the panel background behind it.
+   - `native/src/lib.rs`: `MergeInput` struct gets `divider: Option<String>`
+     field (backward-compatible).
+   - `runtime/build-patch.mjs`: JS fallback updated to render `│` in gap.
+   - `runtime/patched/interactive-mode.officina.js`: regenerated with
+     divider in both native and JS paths.
+   - Divider char: `│` (box-drawing vertical) on panel background `#161b22`.
+
+5. **Events.ts**: Added `"lc-scratchpad"` to EventSource union (fixes TS error).
+
+### Results
+
+- Rust: 14/14 tests pass (including new divider test)
+- TypeScript: 475/475 tests pass, tsc clean
+- Smoke: officina one-shot boots clean, extension loads without errors
+
+### Uncommitted (Phase 0)
+
+- `engine.ts` (cumulativeIngest)
+- `events.ts` (lc-scratchpad EventSource)
+- `session-panel/index.ts` (all sidebar QoL)
+- `native/src/ansi.rs` (divider param)
+- `native/src/lib.rs` (MergeInput divider)
+- `runtime/build-patch.mjs` (divider in gap)
+- `runtime/patched/interactive-mode.officina.js` (regenerated)
+- `.opencode/plans/ratatui-tui-port-2026-09-02.md` (new plan)

@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { register as registerActive } from "../_shared/active-files.ts";
 import { contextChars, ledgerConfig, renderLedger, upsertLedger, type LedgerStats } from "./ledger.ts";
 
 // session-ledger — one self-replacing orientation line in the context.
@@ -24,6 +25,7 @@ export default function (pi: ExtensionAPI) {
     const file = String(e.input?.path ?? e.input?.file ?? "");
     if (!file) return;
     edits++;
+    registerActive(file);
     const i = files.indexOf(file);
     if (i >= 0) files.splice(i, 1);
     files.push(file);

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { register as registerActive, tickTurn } from "../_shared/active-files.ts";
 import { ChurnTracker, churnConfig } from "./churn.ts";
 
 // edit-churn — detects the small-model failure mode of re-applying the same
@@ -54,6 +55,7 @@ export default function (pi: ExtensionAPI) {
     } catch {
       return;
     }
+    registerActive(file);
     const directive = tracker.record({ file, oldHash, newHash });
     if (directive) {
       pending.push(directive.message);
@@ -62,6 +64,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event) => {
+    tickTurn();
     if (pending.length === 0) return undefined;
     const block = pending.join("\n\n");
     pending.length = 0; // delivered once

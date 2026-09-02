@@ -25,10 +25,10 @@ function toolResult(over: Partial<ToolResultLike>): ToolResultLike {
 }
 
 describe("clearConfig", () => {
-  it("defaults to enabled with keep=4 and the config-listed excludes", () => {
+  it("defaults to enabled with keep=12 and the config-listed excludes", () => {
     const cfg = clearConfig({});
     expect(cfg.enabled).toBe(true);
-    expect(cfg.keep).toBe(4);
+    expect(cfg.keep).toBe(12);
     for (const t of DEFAULT_EXCLUDE) expect(cfg.exclude).toContain(t);
   });
 
@@ -42,9 +42,9 @@ describe("clearConfig", () => {
     expect(clearConfig({ LITTLE_CODER_CLEAR_KEEP: "2" }).keep).toBe(2);
   });
 
-  it("falls back to 4 for non-numeric or <1 keep", () => {
-    expect(clearConfig({ LITTLE_CODER_CLEAR_KEEP: "lots" }).keep).toBe(4);
-    expect(clearConfig({ LITTLE_CODER_CLEAR_KEEP: "0" }).keep).toBe(4);
+  it("falls back to 12 for non-numeric or <1 keep", () => {
+    expect(clearConfig({ LITTLE_CODER_CLEAR_KEEP: "lots" }).keep).toBe(12);
+    expect(clearConfig({ LITTLE_CODER_CLEAR_KEEP: "0" }).keep).toBe(12);
   });
 
   it("hard-off via the kill switch", () => {

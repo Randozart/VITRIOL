@@ -8,9 +8,9 @@
 //
 // Pure module: config/parse/apply/render — no I/O, no pi imports.
 
-export type SectionName = "facts" | "leads" | "dead";
+export type SectionName = "facts" | "context" | "leads" | "dead";
 
-export const SECTION_NAMES: SectionName[] = ["facts", "leads", "dead"];
+export const SECTION_NAMES: SectionName[] = ["facts", "context", "leads", "dead"];
 
 export interface ScratchpadConfig {
   enabled: boolean;
@@ -24,7 +24,7 @@ export interface ScratchpadConfig {
 
 export function scratchpadConfig(env: NodeJS.ProcessEnv = process.env): ScratchpadConfig {
   const capNum = Number(env.OFFICINA_SCRATCHPAD_CAP);
-  const cap = Number.isFinite(capNum) && capNum >= 0 ? capNum : 60;
+  const cap = Number.isFinite(capNum) && capNum >= 0 ? capNum : 120;
   return {
     enabled: env.OFFICINA_SCRATCHPAD !== "0",
     cap: Math.max(10, Math.floor(cap)),
@@ -35,16 +35,17 @@ export function scratchpadConfig(env: NodeJS.ProcessEnv = process.env): Scratchp
 
 export interface ScratchpadDoc {
   facts: string[];
+  context: string[];
   leads: string[];
   dead: string[];
 }
 
 export function emptyDoc(): ScratchpadDoc {
-  return { facts: [], leads: [], dead: [] };
+  return { facts: [], context: [], leads: [], dead: [] };
 }
 
 export function totalLines(doc: ScratchpadDoc): number {
-  return doc.facts.length + doc.leads.length + doc.dead.length;
+  return doc.facts.length + doc.context.length + doc.leads.length + doc.dead.length;
 }
 
 /** Parse persisted markdown back into sections. Unknown sections are dropped. */
@@ -53,7 +54,7 @@ export function parseScratchpad(text: string): ScratchpadDoc {
   let current: SectionName | null = null;
   for (const raw of text.split("\n")) {
     const line = raw.trim();
-    const m = /^## (facts|leads|dead)$/.exec(line);
+    const m = /^## (facts|context|leads|dead)$/.exec(line);
     if (m) {
       current = m[1] as SectionName;
       continue;
@@ -76,6 +77,7 @@ export function serializeScratchpad(doc: ScratchpadDoc): string {
 
 export interface ScratchpadUpdate {
   facts?: string[];
+  context?: string[];
   leads?: string[];
   dead?: string[];
   reset?: boolean;
@@ -94,7 +96,7 @@ export function applyUpdate(
 ): { doc?: ScratchpadDoc; error?: string } {
   const next: ScratchpadDoc = update.reset
     ? emptyDoc()
-    : { facts: [...doc.facts], leads: [...doc.leads], dead: [...doc.dead] };
+    : { facts: [...doc.facts], context: [...doc.context], leads: [...doc.leads], dead: [...doc.dead] };
   for (const name of SECTION_NAMES) {
     const v = (update as Record<string, unknown>)[name];
     if (v === undefined) continue;

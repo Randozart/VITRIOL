@@ -30,7 +30,7 @@ import {
 // replaced wholesale, so "no longer relevant" means "leave it out of the
 // next write of that section".
 //
-// Kill switch: OFFICINA_SCRATCHPAD=0. Cap: OFFICINA_SCRATCHPAD_CAP (60).
+// Kill switch: OFFICINA_SCRATCHPAD=0. Cap: OFFICINA_SCRATCHPAD_CAP (120).
 
 const CUSTOM_TYPE = "lc-scratchpad";
 const FILE_NAME = "SCRATCHPAD.md";
@@ -48,11 +48,11 @@ function readDoc(): ScratchpadDoc {
 }
 
 /** Sidebar/v2 export: null when the notebook is empty. */
-export function getScratchpadSummary(): { lines: number; cap: number; facts: number; leads: number; dead: number } | null {
+export function getScratchpadSummary(): { lines: number; cap: number; facts: number; context: number; leads: number; dead: number } | null {
   try {
     const doc = existsSync(currentFile) ? parseScratchpad(readFileSync(currentFile, "utf8")) : emptyDoc();
     if (totalLines(doc) === 0) return null;
-    return { lines: totalLines(doc), cap: cfg.cap, facts: doc.facts.length, leads: doc.leads.length, dead: doc.dead.length };
+    return { lines: totalLines(doc), cap: cfg.cap, facts: doc.facts.length, context: doc.context.length, leads: doc.leads.length, dead: doc.dead.length };
   } catch {
     return null;
   }
@@ -66,11 +66,13 @@ export default function (pi: ExtensionAPI) {
     label: "Scratchpad Write",
     description:
       "Update the project hot notebook (external state, survives compaction, re-injected every turn). " +
-      "Detective-notebook discipline: evidence in `facts` (numbers verbatim), open hypotheses in `leads`, " +
+      "Detective-notebook discipline: evidence in `facts` (numbers verbatim), structured working data in `context` " +
+      "(error lists, file excerpts, intermediate results), open hypotheses in `leads`, " +
       `ruled-out ideas in \`dead\`. Hard cap ${cfg.cap} lines total. ` +
       "A section you name is REPLACED wholesale — omit stale lines to prune them. Not history.",
     parameters: Type.Object({
       facts: Type.Optional(Type.Array(Type.String(), { description: "Replace the facts section (evidence: numbers, shapes, argv, observed behavior)" })),
+      context: Type.Optional(Type.Array(Type.String(), { description: "Replace the context section (working-set data: error lists, file excerpts in progress, intermediate results that bridge compaction gaps)" })),
       leads: Type.Optional(Type.Array(Type.String(), { description: "Replace the leads section (open hypotheses, next attempts)" })),
       dead: Type.Optional(Type.Array(Type.String(), { description: "Replace the dead section (ruled out, stated briefly; prune when cold)" })),
       reset: Type.Optional(Type.Boolean({ description: "Wipe the entire notebook before applying (true = start fresh)" })),
@@ -79,7 +81,7 @@ export default function (pi: ExtensionAPI) {
       const before = readDoc();
       const v = applyUpdate(before, update, cfg);
       if (v.error || !v.doc) {
-        const counts = `current: facts=${before.facts.length} leads=${before.leads.length} dead=${before.dead.length}`;
+        const counts = `current: facts=${before.facts.length} context=${before.context.length} leads=${before.leads.length} dead=${before.dead.length}`;
         return { content: [{ type: "text" as const, text: `scratchpad_write rejected: ${v.error} (${counts})` }], details: {}, isError: true };
       }
       try {
@@ -93,7 +95,7 @@ export default function (pi: ExtensionAPI) {
       return {
         content: [{
           type: "text" as const,
-          text: `scratchpad saved: ${total}/${cfg.cap} lines (facts=${v.doc.facts.length} leads=${v.doc.leads.length} dead=${v.doc.dead.length}) -> ${currentFile}`,
+          text: `scratchpad saved: ${total}/${cfg.cap} lines (facts=${v.doc.facts.length} context=${v.doc.context.length} leads=${v.doc.leads.length} dead=${v.doc.dead.length}) -> ${currentFile}`,
         }],
         details: {},
       };

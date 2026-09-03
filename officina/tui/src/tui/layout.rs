@@ -344,6 +344,22 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Vec::new()
     };
 
+    // Carved motto in the breathing row (owner request 2026-09-03): the
+    // full V.I.T.R.I.O.L. acrostic when the column allows it, whole words
+    // dropping from the tail as width shrinks. Fresh screens skip it —
+    // the stone's own motto owns that moment. Drawn after the fire so the
+    // carving keeps text priority if flames rise through the gap.
+    if !state.entries.is_empty() {
+        let gap = Rect {
+            y: area.y + chat_area.height,
+            height: 1,
+            ..area
+        };
+        if let Some(m) = motto_for(area.width as usize) {
+            frame.render_widget(Paragraph::new(Line::from(carved(&m))), gap);
+        }
+    }
+
     // NO paragraph wrap: chat_lines pre-wraps everything to budget. A
     // paragraph-level re-wrap would push rows off the bottom and SILENTLY
     // CLIP the transcript (owner bug 2026-09-03: "the console box hides
@@ -492,17 +508,44 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
     let (before, at, after) = split_at_char(&state.input, state.cursor);
-    let line = Line::from(vec![
-        prompt,
-        Span::raw(before),
-        Span::styled(
-            at,
-            Style::default()
-                .bg(theme::PANEL)
-                .add_modifier(Modifier::REVERSED),
-        ),
-        Span::raw(after),
-    ]);
+    let line = if state.input.is_empty() {
+        // Carved motto placeholder (owner request 2026-09-03) — the cursor
+        // block sits ON the first letter, the rest fades into the panel.
+        let budget = (inner.width as usize).saturating_sub(2); // "> " prompt
+        let motto = motto_for(budget).unwrap_or_default();
+        let mut chars = motto.chars();
+        let first = chars.next().unwrap_or(' ');
+        let rest: String = chars.collect();
+        Line::from(vec![
+            prompt,
+            Span::styled(
+                first.to_string(),
+                Style::default()
+                    .fg(theme::WATERMARK)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::REVERSED | Modifier::DIM),
+            ),
+            Span::styled(
+                rest,
+                Style::default()
+                    .fg(theme::WATERMARK)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ])
+    } else {
+        Line::from(vec![
+            prompt,
+            Span::raw(before),
+            Span::styled(
+                at,
+                Style::default()
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::REVERSED),
+            ),
+            Span::raw(after),
+        ])
+    };
     frame.render_widget(Paragraph::new(line).style(Style::default().bg(theme::PANEL)), inner);
 }
 
@@ -820,6 +863,52 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The V.I.T.R.I.O.L. acrostic — the full classical motto, carved into
+/// the UI's quiet corners (owner request 2026-09-03: the complete string,
+/// all caps). Tactical shortening rule (owner): when width runs out, whole
+/// words drop from the TAIL, word for word — never mid-word cuts.
+const MOTTO_WORDS: &[&str] = &[
+    "VISITA",
+    "INTERIOREM",
+    "TERRAE",
+    "RECTIFICANDO",
+    "INVENIES",
+    "OCCULTUM",
+    "LAPIDEM",
+];
+
+/// Longest whole-word prefix of the motto fitting `width`. None below the
+/// first word — decoration never fights for space.
+fn motto_for(width: usize) -> Option<String> {
+    let mut cur = String::new();
+    for w in MOTTO_WORDS {
+        let candidate = if cur.is_empty() {
+            (*w).to_string()
+        } else {
+            format!("{cur} {w}")
+        };
+        if candidate.chars().count() > width {
+            break;
+        }
+        cur = candidate;
+    }
+    if cur.is_empty() {
+        None
+    } else {
+        Some(cur)
+    }
+}
+
+/// Carved ink — the same faint cut as the watermark stone.
+fn carved(text: &str) -> Span<'static> {
+    Span::styled(
+        text.to_string(),
+        Style::new()
+            .fg(theme::WATERMARK)
+            .add_modifier(Modifier::DIM),
+    )
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Braille left-column bits for one quicksilver gauge row. The mercury
@@ -1001,6 +1090,32 @@ mod gauge_tests {
         // Completely full — every row, no edge cell artifacts.
         for row in 0..10 {
             assert_eq!(gauge_row_bits(row, 10, 10.0), 0x47);
+        }
+    }
+}
+
+#[cfg(test)]
+mod motto_tests {
+    use super::motto_for;
+
+    #[test]
+    fn motto_shortens_word_for_word() {
+        let full = "VISITA INTERIOREM TERRAE RECTIFICANDO INVENIES OCCULTUM LAPIDEM";
+        assert_eq!(motto_for(64).as_deref(), Some(full));
+        assert_eq!(motto_for(200).as_deref(), Some(full));
+        // Tail words drop whole — never mid-word.
+        assert_eq!(motto_for(56).as_deref(), Some("VISITA INTERIOREM TERRAE RECTIFICANDO INVENIES OCCULTUM"));
+        assert_eq!(motto_for(38).as_deref(), Some("VISITA INTERIOREM TERRAE RECTIFICANDO"));
+        assert_eq!(motto_for(24).as_deref(), Some("VISITA INTERIOREM TERRAE"));
+        assert_eq!(motto_for(17).as_deref(), Some("VISITA INTERIOREM"));
+        assert_eq!(motto_for(6).as_deref(), Some("VISITA"));
+        assert_eq!(motto_for(5), None);
+        assert_eq!(motto_for(0), None);
+        // Every returned form fits its width.
+        for w in 0..=70usize {
+            if let Some(m) = motto_for(w) {
+                assert!(m.chars().count() <= w, "width {w}: {:?} overflows", m);
+            }
         }
     }
 }

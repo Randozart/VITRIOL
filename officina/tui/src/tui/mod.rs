@@ -352,11 +352,10 @@ async fn run_loop(
 }
 
 async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
-    // GUARANTEED quit: Ctrl+Q always, regardless of streaming state.
-    if key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        state.should_quit = true;
-        return;
-    }
+    // 2026-09-03 keymap (owner: "just so you don't accidentally quit"):
+    // ^q and ^d REMOVED — the only quit paths are ^esc and /quit, both
+    // deliberate. ^c copies (selection, else last reply) — never quits.
+    // Esc aborts streaming but NEVER quits when idle.
 
     // /help modal (F1) — read-only reference; any of esc/enter/q closes.
     if state.help_open {
@@ -485,22 +484,36 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
     }
 
     match key.code {
+        // ^esc — quit. The only physical quit chord (owner-approved; some
+        // desktops reserve it, /quit always works). MUST precede the plain
+        // Esc arm or the guard never fires.
+        KeyCode::Esc if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.should_quit = true;
+        }
         KeyCode::Esc => {
             if state.is_streaming {
                 let _ = bridge.request(RpcCommand::Abort { id: None }).await;
-            } else {
-                state.should_quit = true;
             }
+            // Idle Esc: close-overlays is handled above (modals); here it
+            // is a deliberate NO-OP — it used to quit (owner report:
+            // accidental quits).
         }
+        // ^c — copy (owner request 2026-09-03). Selection first, else the
+        // last assistant reply. Never aborts, never quits.
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            if state.is_streaming {
-                let _ = bridge.request(RpcCommand::Abort { id: None }).await;
-            } else {
-                state.should_quit = true;
+            let text = state
+                .extract_selection()
+                .or_else(|| state.last_assistant());
+            match text.filter(|t| !t.trim().is_empty()) {
+                Some(t) => {
+                    let n = t.chars().count();
+                    let via = copy_to_clipboard(&t);
+                    state.notice = Some((format!("copied {} chars via {}", n, via), "info".to_string()));
+                }
+                None => {
+                    state.notice = Some(("nothing to copy".to_string(), "info".to_string()));
+                }
             }
-        }
-        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.should_quit = true;
         }
         // ctrl+v — cycle global tool verbosity (owner request 2026-09-03:
         // V for verbose). Line → Block → Full → Line. Persisted.
@@ -790,12 +803,97 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
 }
 
 async fn handle_mouse(m: crossterm::event::MouseEvent, state: &mut AppState) {
-    use crossterm::event::MouseEventKind;
+    use crossterm::event::{MouseButton, MouseEventKind};
     match m.kind {
-        MouseEventKind::ScrollUp => state.scroll_up(3),
-        MouseEventKind::ScrollDown => state.scroll_down(3),
-        _ => {} // clicks / drags are not TUI concerns
+        MouseEventKind::ScrollUp => {
+            state.clear_selection();
+            state.scroll_up(3);
+        }
+        MouseEventKind::ScrollDown => {
+            state.clear_selection();
+            state.scroll_down(3);
+        }
+        // Text selection (owner request 2026-09-03): left-drag across the
+        // transcript anchors a row range; ^c copies it. Plain click clears.
+        MouseEventKind::Down(MouseButton::Left) => {
+            state.clear_selection();
+            if let Some(a) = state.last_chat_area {
+                if m.row >= a.y && m.row < a.y + a.height {
+                    state.sel_anchor = Some((m.column, m.row));
+                    state.sel_head = Some((m.column, m.row));
+                }
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if state.sel_anchor.is_some() {
+                state.sel_head = Some((m.column, m.row));
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => {
+            // A click without a drag was never a selection intent.
+            if state.sel_anchor == state.sel_head {
+                state.clear_selection();
+            }
+        }
+        _ => {}
     }
+}
+
+/// Minimal base64 (RFC 4648, padded) — avoids a crate for one use.
+fn b64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// Copy to the system clipboard: shell tools first (wl-copy / xclip /
+/// xsel — real clipboards), then the OSC52 escape sequence as fallback
+/// for terminals that honor it (kitty, alacritty, wezterm, foot, tmux).
+/// Returns what worked, for the notice line.
+fn copy_to_clipboard(text: &str) -> &'static str {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    const TOOLS: [(&str, [&str; 2]); 3] = [
+        ("wl-copy", ["--", ""]),
+        ("xclip", ["-selection", "clipboard"]),
+        ("xsel", ["--clipboard", "--input"]),
+    ];
+    for (bin, args) in TOOLS {
+        let args: Vec<&str> = args.into_iter().filter(|a| !a.is_empty()).collect();
+        if let Ok(mut child) = Command::new(bin)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            if let Some(mut si) = child.stdin.take() {
+                let _ = si.write_all(text.as_bytes());
+            }
+            if child.wait().map(|s| s.success()).unwrap_or(false) {
+                return bin;
+            }
+        }
+    }
+    // OSC52 — fire-and-forget; capped so huge texts don't choke terminals.
+    let bytes = text.as_bytes();
+    if bytes.len() <= 100_000 {
+        let mut out = io::stdout();
+        let _ = write!(out, "\x1b]52;c;{}\x07", b64(bytes));
+        let _ = out.flush();
+        return "osc52";
+    }
+    "nowhere"
 }
 
 fn insert_char_at(s: &mut String, idx: usize, c: char) {
@@ -1090,5 +1188,68 @@ async fn handle_ui_request(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn b64_rfc4648_vectors() {
+        assert_eq!(b64(b""), "");
+        assert_eq!(b64(b"f"), "Zg==");
+        assert_eq!(b64(b"fo"), "Zm8=");
+        assert_eq!(b64(b"foo"), "Zm9v");
+        assert_eq!(b64(b"foob"), "Zm9vYg==");
+        assert_eq!(b64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(b64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(b64(b"hello"), "aGVsbG8=");
+    }
+
+    #[test]
+    fn selection_rows_order_agnostic() {
+        let mut s = AppState::default();
+        assert_eq!(s.selection_rows(), None);
+        s.sel_anchor = Some((5, 10));
+        s.sel_head = Some((2, 3));
+        assert_eq!(s.selection_rows(), Some((3, 10)));
+        s.sel_head = Some((7, 15));
+        assert_eq!(s.selection_rows(), Some((10, 15)));
+        s.clear_selection();
+        assert_eq!(s.selection_rows(), None);
+    }
+
+    #[test]
+    fn extract_selection_rows_map_to_lines() {
+        use ratatui::layout::Rect;
+        let mut s = AppState::default();
+        s.push_user("alpha".into());
+        s.push_user("beta".into());
+        s.push_user("gamma".into());
+        // Viewport tall enough for every line (6): "☿ alpha", "", "☿ beta",
+        // "", "☿ gamma", "" — offset-from-bottom anchoring with scroll 0
+        // maps screen rows 1:1 onto lines.
+        s.last_chat_area = Some(Rect { x: 0, y: 0, width: 40, height: 6 });
+        s.sel_anchor = Some((0, 0));
+        s.sel_head = Some((30, 0));
+        let t = s.extract_selection().unwrap();
+        assert_eq!(t, "☿ alpha");
+        // Drag down two rows: alpha + blank + beta head.
+        s.sel_head = Some((30, 2));
+        let t = s.extract_selection().unwrap();
+        assert!(t.starts_with("☿ alpha"), "got {:?}", t);
+        assert!(t.contains("☿ beta"), "got {:?}", t);
+    }
+
+    #[test]
+    fn last_assistant_picks_latest_nonempty() {
+        let mut s = AppState::default();
+        assert_eq!(s.last_assistant(), None);
+        s.entries.push(state::ChatEntry::Assistant("first".into()));
+        s.entries.push(state::ChatEntry::Assistant("   ".into())); // whitespace-only skipped
+        s.entries.push(state::ChatEntry::User("hi".into()));
+        s.entries.push(state::ChatEntry::Assistant("second".into()));
+        assert_eq!(s.last_assistant().as_deref(), Some("second"));
     }
 }

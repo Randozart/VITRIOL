@@ -277,6 +277,9 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         ..area
     };
     let chat_width = (chat_area.width as usize).saturating_sub(1);
+    // Selection mapping needs the viewport at ^c time (handle_key has no
+    // Frame) — stash it every frame.
+    state.last_chat_area = Some(chat_area);
 
     let mut lines = state.chat_lines(chat_width);
 
@@ -365,6 +368,27 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         if cell.symbol() != " " {
                             cell.set_fg(*color);
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Selection highlight (owner request 2026-09-03): left-drag across the
+    // transcript, ^c copies. Full-width rows, gauge column excluded, drawn
+    // after the fire tint so the highlight reads as selection, not flame.
+    if let Some((y0, y1)) = state.selection_rows() {
+        let (y0, y1) = (
+            y0.max(chat_area.y),
+            y1.min(chat_area.y + chat_area.height.saturating_sub(1)),
+        );
+        if y1 >= y0 {
+            let buffer = frame.buffer_mut();
+            let x_end = chat_area.x + chat_area.width.saturating_sub(1);
+            for y in y0..=y1 {
+                for x in chat_area.x..x_end {
+                    if let Some(cell) = buffer.cell_mut(ratatui::layout::Position { x, y }) {
+                        cell.set_bg(theme::COLD_BLUE);
                     }
                 }
             }
@@ -626,7 +650,9 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
         Span::styled("esc dissolve", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
-        Span::styled("^c/^q quit", theme::muted()),
+        Span::styled("drag select · ^c copy", theme::muted()),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled("^esc quit", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
         Span::styled("f9 stderr", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),

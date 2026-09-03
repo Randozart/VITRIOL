@@ -139,14 +139,16 @@ pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMa
     pub const HELP_KEYS: &[(&str, &str)] = &[
         ("enter", "send the message"),
         ("tab", "autocomplete / cycle agent mode"),
-        ("esc", "dissolve / close overlays"),
+        ("esc", "abort streaming · close overlays — NEVER quits"),
+        ("drag", "select transcript text (left button across the chat)"),
+        ("^c", "copy — the selection, or the last reply"),
+        ("^esc", "quit (the only quit chord — /quit also works)"),
         ("pgup/pgdn", "scroll back through history (wheel = 3 rows)"),
         ("home/end", "oldest line / live tail (when the input is empty)"),
         ("^v", "cycle tool verbosity (line/block/full)"),
         ("^t", "tool verbosity picker"),
         ("F9", "stderr diagnostics overlay"),
         ("F1", "this help"),
-        ("^c/^q", "quit (interrupts while streaming)"),
     ];
 
     /// One /help modal line. Header rows render as gold section titles;
@@ -301,6 +303,15 @@ pub struct AppState {
     // /help modal (F1)
     pub help_open: bool,
     pub help_sel: usize,
+
+    // Text selection (owner request 2026-09-03): drag with the left
+    // button across the transcript; ^c copies the selected rows. Screen
+    // coords; clamped against last_chat_area at render/extract time.
+    pub sel_anchor: Option<(u16, u16)>,
+    pub sel_head: Option<(u16, u16)>,
+    /// Chat viewport of the last rendered frame — lets handle_key map
+    /// selection rows to transcript lines without a Frame.
+    pub last_chat_area: Option<ratatui::layout::Rect>,
     /// Session clock — drives the glimmer phase (elapsed ms).
     pub started: std::time::Instant,
 
@@ -356,6 +367,9 @@ impl Default for AppState {
             tools_modal_sel: 0,
             help_open: false,
             help_sel: 0,
+            sel_anchor: None,
+            sel_head: None,
+            last_chat_area: None,
             started: std::time::Instant::now(),
             scroll: 0,
             scroll_max: 0,
@@ -625,6 +639,62 @@ impl AppState {
 
     pub fn scroll_down(&mut self, rows: u16) {
         self.scroll = self.scroll.saturating_sub(rows);
+    }
+
+    // ── Text selection (owner request 2026-09-03) ────────────────────────
+
+    /// Normalized selection row range (screen coords), anchor/head order-agnostic.
+    pub fn selection_rows(&self) -> Option<(u16, u16)> {
+        let (a, h) = self.sel_anchor.zip(self.sel_head)?;
+        Some(if a.1 <= h.1 { (a.1, h.1) } else { (h.1, a.1) })
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.sel_anchor = None;
+        self.sel_head = None;
+    }
+
+    /// Text of the selected transcript rows (whole rendered lines, ANSI
+    /// stripped, leading/trailing blank rows dropped). Whole-line granularity:
+    /// wrapped continuations copy intact rather than mangled mid-glyph.
+    pub fn extract_selection(&mut self) -> Option<String> {
+        let area = self.last_chat_area?;
+        let (mut y0, mut y1) = self.selection_rows()?;
+        y0 = y0.max(area.y);
+        y1 = y1.min(area.y + area.height.saturating_sub(1));
+        if y1 < y0 {
+            return None;
+        }
+        let width = (area.width as usize).saturating_sub(1); // gauge col excluded
+        let lines = self.chat_lines(width);
+        let visible = area.height as usize;
+        let start = lines.len().saturating_sub(visible + self.scroll as usize);
+        let mut out: Vec<String> = Vec::new();
+        for row in y0..=y1 {
+            let li = start + (row - area.y) as usize;
+            if let Some(l) = lines.get(li) {
+                out.push(l.to_string().trim_end().to_string());
+            }
+        }
+        while out.first().map(|s| s.is_empty()).unwrap_or(false) {
+            out.remove(0);
+        }
+        while out.last().map(|s| s.is_empty()).unwrap_or(false) {
+            out.pop();
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out.join("\n"))
+        }
+    }
+
+    /// Most recent non-empty assistant reply — ^c fallback with no selection.
+    pub fn last_assistant(&self) -> Option<String> {
+        self.entries.iter().rev().find_map(|e| match e {
+            ChatEntry::Assistant(t) if !t.trim().is_empty() => Some(t.clone()),
+            _ => None,
+        })
     }
 
     /// Jump to the oldest visible content (renderer clamps to scroll_max).

@@ -108,8 +108,83 @@ pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMa
     }
 }
 
-/// Known pi tool names for the modal picker.
-pub const KNOWN_TOOLS: &[&str] = &["bash", "read", "write", "edit", "find", "grep", "ls"];
+    /// Known pi tool names for the modal picker.
+    pub const KNOWN_TOOLS: &[&str] = &["bash", "read", "write", "edit", "find", "grep", "ls"];
+
+    // ── /help modal (owner request 2026-09-03) ───────────────────────────
+
+    /// Sidebar glossary — every row explained. DRIFT GUARD (standing rule,
+    /// plan officina-sidebar-declutter-help-2026-09-03): keep in sync with
+    /// officina/.pi/extensions/session-panel/index.ts — any sidebar content
+    /// change must touch this up.
+    pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
+        ("◈ <name>", "coupling — the engine endpoint identity (gold anchor)"),
+        ("ctx", "context window fill: tokens used / window size + percent"),
+        ("eng", "live engine rate: tok/s while decoding, idle otherwise"),
+        ("[>] n / [ ] n", "plan checklist: tasks in progress / open"),
+        ("n done", "plan checklist: completed tasks"),
+        ("note f l d", "scratchpad: facts / leads / dead ends, lines used/cap"),
+        ("files: +n −n", "recently touched files: lines added / deleted"),
+        ("↑ ↓", "session tokens: prompt tokens in / generated out"),
+        ("turns", "your prompts this session"),
+        ("tools", "recently used tools"),
+        ("ref · n injected", "knowledge documents injected into context"),
+        ("header center", "the model id behind this session"),
+        ("header right", "session name or id @ working folder"),
+        ("silver column", "quicksilver scroll gauge — fills as you scroll up"),
+        ("gauge colors", "teal = ctx fill · silver = idle · green/cyan = decoding"),
+    ];
+
+    /// /help key reference.
+    pub const HELP_KEYS: &[(&str, &str)] = &[
+        ("enter", "send the message"),
+        ("tab", "autocomplete / cycle agent mode"),
+        ("esc", "dissolve / close overlays"),
+        ("pgup/pgdn", "scroll back through history (wheel = 3 rows)"),
+        ("home/end", "oldest line / live tail (when the input is empty)"),
+        ("^v", "cycle tool verbosity (line/block/full)"),
+        ("^t", "tool verbosity picker"),
+        ("F9", "stderr diagnostics overlay"),
+        ("F1", "this help"),
+        ("^c/^q", "quit (interrupts while streaming)"),
+    ];
+
+    /// One /help modal line. Header rows render as gold section titles;
+    /// item rows as `left` (cyan, fixed width) + `right` (text).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HelpRowKind {
+        Header,
+        Item,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct HelpRow {
+        pub kind: HelpRowKind,
+        pub left: String,
+        pub right: String,
+    }
+
+    /// The full /help content: sidebar glossary, keys, then every local
+    /// command (rendered FROM LOCAL_COMMANDS so it cannot drift).
+    pub fn help_rows() -> Vec<HelpRow> {
+        let mut rows: Vec<HelpRow> = Vec::new();
+        let mut push = |kind: HelpRowKind, left: &str, right: &str| {
+            rows.push(HelpRow { kind, left: left.to_string(), right: right.to_string() });
+        };
+        push(HelpRowKind::Header, "SIDEBAR", "");
+        for (l, r) in SIDEBAR_GLOSSARY {
+            push(HelpRowKind::Item, l, r);
+        }
+        push(HelpRowKind::Header, "KEYS", "");
+        for (l, r) in HELP_KEYS {
+            push(HelpRowKind::Item, l, r);
+        }
+        push(HelpRowKind::Header, "COMMANDS", "");
+        for (name, desc) in AppState::LOCAL_COMMANDS {
+            push(HelpRowKind::Item, &format!("/{name}"), desc);
+        }
+        rows
+    }
 
 /// Output cap at ingest (sliced at render for Block/Line).
 const TOOL_OUTPUT_CAP: usize = 2000;
@@ -223,6 +298,9 @@ pub struct AppState {
     // /tools modal picker
     pub tools_modal_open: bool,
     pub tools_modal_sel: usize,
+    // /help modal (F1)
+    pub help_open: bool,
+    pub help_sel: usize,
     /// Session clock — drives the glimmer phase (elapsed ms).
     pub started: std::time::Instant,
 
@@ -276,6 +354,8 @@ impl Default for AppState {
             tools_gen: 0,
             tools_modal_open: false,
             tools_modal_sel: 0,
+            help_open: false,
+            help_sel: 0,
             started: std::time::Instant::now(),
             scroll: 0,
             scroll_max: 0,
@@ -736,6 +816,7 @@ impl AppState {
         ("stats", "refresh session stats"),
         ("thinking", "thinking level (off..max, bare = cycle)"),
         ("tools", "tool verbosity (bare = config menu, or <tool> <mode>[!+|-])"),
+        ("help", "sidebar glossary, keys and commands (F1)"),
     ];
 
     /// Slash-command candidates for the current input (empty if not a

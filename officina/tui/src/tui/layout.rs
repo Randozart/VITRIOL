@@ -235,6 +235,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_tools_modal(frame, state, area);
         return;
     }
+    if state.help_open {
+        render_chat_and_editor(frame, state, area);
+        render_help_modal(frame, state, area);
+        return;
+    }
     render_chat_and_editor(frame, state, area);
 }
 
@@ -798,6 +803,71 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/// /help modal — sidebar glossary, keys, commands (owner request
+/// 2026-09-03). Commands render FROM AppState::LOCAL_COMMANDS so they
+/// cannot drift. ↑↓/jk scrolls, esc/enter/q closes.
+fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    use crate::tui::state::{HelpRowKind, help_rows};
+    let rows = help_rows();
+    let h = area.height.min(24);
+    let w = area.width.min(78);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::BG))
+        .title(Span::styled(
+            format!(" {} help ", theme::GLYPH_ALEMBIC),
+            theme::banner(),
+        ))
+        .title_bottom(Span::styled(
+            " ↑↓ scroll · esc close ",
+            theme::muted(),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let visible = inner.height as usize;
+    let sel = state.help_sel;
+    let skip = if sel + 1 > visible { sel + 1 - visible } else { 0 };
+    let label_w = 16usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in rows.iter().skip(skip.min(rows.len())) {
+        match row.kind {
+            HelpRowKind::Header => {
+                if !lines.is_empty() {
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(Span::styled(
+                    row.left.clone(),
+                    Style::new()
+                        .fg(theme::GOLD)
+                        .bg(theme::BG)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
+            HelpRowKind::Item => {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{:<width$} ", row.left, width = label_w),
+                        Style::new().fg(theme::CYAN).bg(theme::BG),
+                    ),
+                    Span::styled(row.right.clone(), Style::new().fg(theme::TEXT).bg(theme::BG)),
+                ]));
+            }
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 
 fn trunc(s: &str, w: usize) -> String {
     if s.chars().count() <= w {

@@ -358,6 +358,28 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /help modal (F1) — read-only reference; any of esc/enter/q closes.
+    if state.help_open {
+        let len = state::help_rows().len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => state.help_open = false,
+            KeyCode::Up => state.help_sel = state.help_sel.saturating_sub(1),
+            KeyCode::Down => {
+                if state.help_sel + 1 < len {
+                    state.help_sel += 1;
+                }
+            }
+            KeyCode::Char('k') => state.help_sel = state.help_sel.saturating_sub(1),
+            KeyCode::Char('j') => {
+                if state.help_sel + 1 < len {
+                    state.help_sel += 1;
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // /tools modal captures navigation while open.
     if state.tools_modal_open {
         let row_count = state::KNOWN_TOOLS.len() + 1; // + global row
@@ -497,6 +519,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         KeyCode::F(9) => {
             state.show_diag = !state.show_diag;
         }
+        // F1 — help modal (owner request 2026-09-03).
+        KeyCode::F(1) => {
+            state.help_open = !state.help_open;
+            state.help_sel = 0;
+        }
         // Tab: complete selection when the popup is open; otherwise cycle
         // agent mode — "/mode <next>" (bare /mode only lists, agent-mode.ts).
         KeyCode::Tab => {
@@ -604,6 +631,12 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/tools" || msg.starts_with("/tools ") {
                 let args = msg["/tools".len()..].trim();
                 tools_command(state, args);
+                return;
+            }
+            // /help — sidebar glossary + keys + commands (never RPC).
+            if msg == "/help" {
+                state.help_open = true;
+                state.help_sel = 0;
                 return;
             }
             // Local fixed commands.

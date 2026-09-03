@@ -275,7 +275,7 @@ export default function (pi: ExtensionAPI) {
 
   // P90: Command hints
   registerSidebarSection("hints", 90, () => {
-    return [truncate(sc(MUTED, "/resume · /tree · /history · /mode"), CONTENT_W)];
+    return [truncate(sc(MUTED, "/help · /resume · /tree · /history · /mode"), CONTENT_W)];
   });
 
   // ── Render coordinator ────────────────────────────────────────────────

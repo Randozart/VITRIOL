@@ -968,17 +968,83 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             );
         }
         Some("get_messages") => {
+            // Full-fidelity replay (owner bug 2026-09-03: "resumed a
+            // session, but it seems to have lost part of it" — the old
+            // handler replayed user + assistant text ONLY, so every tool
+            // call — most of a coding session's substance — vanished from
+            // the transcript). Walk content blocks: assistant text blocks
+            // become Assistant entries, toolCall blocks become completed
+            // Tool entries, toolResult messages fill their outputs.
             if let Some(msgs) = data.get("messages").and_then(|m| m.as_array()) {
                 for m in msgs {
                     let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
-                    let text = content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
-                    if text.is_empty() {
-                        continue;
-                    }
                     match role {
-                        "user" => state.push_user(text),
-                        "assistant" => state.entries.push(state::ChatEntry::Assistant(text)),
+                        "user" => {
+                            let text = content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
+                            if !text.is_empty() {
+                                state.push_user(text);
+                            }
+                        }
+                        "assistant" => {
+                            let empty = serde_json::Value::Null;
+                            let content = m.get("content").unwrap_or(&empty);
+                            if let Some(blocks) = content.as_array() {
+                                for b in blocks {
+                                    match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                                        "text" => {
+                                            if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                                                if !t.trim().is_empty() {
+                                                    state.entries.push(state::ChatEntry::Assistant(t.to_string()));
+                                                }
+                                            }
+                                        }
+                                        "toolCall" => {
+                                            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
+                                            let id = b.get("id").and_then(|v| v.as_str())
+                                                .or_else(|| b.get("toolCallId").and_then(|v| v.as_str()));
+                                            let args = b
+                                                .get("arguments")
+                                                .or_else(|| b.get("args"))
+                                                .cloned()
+                                                .unwrap_or(serde_json::Value::Null);
+                                            state.tool_start(id, name, &args);
+                                            // NOT completed here — the paired
+                                            // toolResult message fills output;
+                                            // end-of-record sweep closes any
+                                            // that never got one.
+                                        }
+                                        _ => {} // thinking blocks stay private to the record
+                                    }
+                                }
+                            } else {
+                                let text = content_text(content);
+                                if !text.is_empty() {
+                                    state.entries.push(state::ChatEntry::Assistant(text));
+                                }
+                            }
+                        }
+                        "toolResult" => {
+                            let id = m.get("toolCallId").and_then(|v| v.as_str())
+                                .or_else(|| m.get("id").and_then(|v| v.as_str()));
+                            let name = m.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
+                            let text = content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
+                            let is_err = m.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+                            // id-matched completion; name only when the record
+                            // lacks ids (legacy sessions).
+                            state.tool_end(id, name, &text, is_err);
+                        }
                         _ => {}
+                    }
+                }
+                // History ends where it ends: any tool still "running" has
+                // no recorded result — close it (outcome unknown → not an
+                // error). Live streaming can't interleave here: replay only
+                // happens at startup / session switch.
+                for e in state.entries.iter_mut().rev() {
+                    if let state::ChatEntry::Tool { running, .. } = e {
+                        if *running {
+                            *running = false;
+                        }
                     }
                 }
             }
@@ -1260,5 +1326,63 @@ mod tests {
         s.entries.push(state::ChatEntry::User("hi".into()));
         s.entries.push(state::ChatEntry::Assistant("second".into()));
         assert_eq!(s.last_assistant().as_deref(), Some("second"));
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use crate::rpc::protocol::RpcResponse;
+
+    /// Owner bug 2026-09-03: "resumed a session, but it seems to have lost
+    /// part of it" — the replay must restore tool calls and their outputs,
+    /// not just the prose.
+    #[test]
+    fn resume_replay_restores_tool_history() {
+        let mut s = AppState::default();
+        let resp: RpcResponse = serde_json::from_value(serde_json::json!({
+            "type": "response",
+            "command": "get_messages",
+            "success": true,
+            "data": { "messages": [
+                { "role": "user", "content": "fix the flux capacitor" },
+                { "role": "assistant", "content": [
+                    { "type": "thinking", "thinking": "hmm" },
+                    { "type": "toolCall", "id": "tc1", "name": "write",
+                      "arguments": { "path": "a.rs" } },
+                    { "type": "text", "text": "Done." }
+                ]},
+                { "role": "toolResult", "toolCallId": "tc1", "toolName": "write",
+                  "content": [{ "type": "text", "text": "wrote 12 lines" }],
+                  "isError": false }
+            ]}
+        }))
+        .unwrap();
+        let _ = handle_response(&mut s, &resp);
+        let mut users = 0;
+        let mut assistants = 0;
+        let mut tools: Vec<(bool, bool, Vec<String>)> = Vec::new();
+        for e in &s.entries {
+            match e {
+                state::ChatEntry::User(t) => {
+                    users += 1;
+                    assert_eq!(t, "fix the flux capacitor");
+                }
+                state::ChatEntry::Assistant(t) => {
+                    assistants += 1;
+                    assert_eq!(t, "Done.");
+                }
+                state::ChatEntry::Tool { running, error, output, .. } => {
+                    tools.push((*running, *error, output.clone()));
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(users, 1);
+        assert_eq!(assistants, 1, "thinking block stays out of the transcript");
+        assert_eq!(tools.len(), 1, "historic tool call restored");
+        assert!(!tools[0].0, "historic tool is complete, not spinning");
+        assert!(!tools[0].1);
+        assert_eq!(tools[0].2, vec!["wrote 12 lines"], "output replayed");
     }
 }

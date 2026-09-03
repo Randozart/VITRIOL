@@ -634,7 +634,7 @@ fn render_command_popup(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::BG));
+        .style(Style::new().bg(theme::PANEL));
 
     let total = cands.len();
     let visible = (area.height as usize).saturating_sub(2);
@@ -643,7 +643,7 @@ fn render_command_popup(
     } else {
         " commands · Tab completes ".to_string()
     };
-    let block = block.title(Span::styled(title, theme::muted()));
+    let block = block.title(Span::styled(title, Style::new().fg(theme::MUTED)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let skip = if sel + 1 > visible {
@@ -666,7 +666,7 @@ fn render_command_popup(
         } else {
             (
                 Style::new().fg(theme::GOLD),
-                theme::muted(),
+                Style::new().fg(theme::MUTED),
                 "  ",
             )
         };
@@ -688,11 +688,11 @@ fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(theme::crit())
-        .style(Style::new().bg(theme::BG))
+        .border_style(Style::new().fg(theme::RED))
+        .style(Style::new().bg(theme::PANEL))
         .title(Span::styled(
             format!(" {} stderr diagnostics · F9 close ", theme::GLYPH_SULFUR),
-            theme::crit(),
+            Style::new().fg(theme::RED),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -755,11 +755,14 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::BG))
-        .title(Span::styled(" resume session ", theme::banner()))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            " resume session ",
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ))
         .title_bottom(Span::styled(
             " ↑↓ select · enter resume · esc cancel ",
-            theme::muted(),
+            Style::new().fg(theme::MUTED),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -798,12 +801,9 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             )));
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("{:>5} ", when), theme::live()),
-                Span::styled(format!("{:>3} ", e.msg_count), theme::muted()),
-                Span::styled(
-                    format!(" {}", e.title),
-                    Style::new().fg(theme::TEXT).bg(theme::BG),
-                ),
+                Span::styled(format!("{:>5} ", when), Style::new().fg(theme::CYAN)),
+                Span::styled(format!("{:>3} ", e.msg_count), Style::new().fg(theme::MUTED)),
+                Span::styled(format!(" {}", e.title), Style::new().fg(theme::TEXT)),
             ]));
         }
     }
@@ -828,14 +828,14 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::BG))
+        .style(Style::new().bg(theme::PANEL))
         .title(Span::styled(
             format!(" {} tool verbosity ", theme::GLYPH_CRUCIBLE),
-            theme::banner(),
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ select · enter mode · tab strict · ⌫ clear · esc ",
-            theme::muted(),
+            Style::new().fg(theme::MUTED),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -851,7 +851,7 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             (
                 "global".to_string(),
                 state.tool_default.label().to_string(),
-                Style::new().fg(theme::GOLD).bg(theme::BG),
+                Style::new().fg(theme::GOLD),
             )
         } else {
             let name = crate::tui::state::KNOWN_TOOLS[row - 1];
@@ -864,12 +864,12 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     };
                     (
                         format!("{} ({})", mode.label(), word),
-                        Style::new().fg(theme::CYAN).bg(theme::BG),
+                        Style::new().fg(theme::CYAN),
                     )
                 }
                 None => (
                     format!("→ {}", state.tool_default.label()),
-                    Style::new().fg(theme::MUTED).bg(theme::BG),
+                    Style::new().fg(theme::MUTED),
                 ),
             };
             (name.to_string(), status, st)
@@ -884,7 +884,7 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             )));
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:<8} ", label), Style::new().fg(theme::TEXT).bg(theme::BG)),
+                Span::styled(format!("  {:<8} ", label), Style::new().fg(theme::TEXT)),
                 Span::styled(status, status_st),
             ]));
         }
@@ -979,14 +979,14 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::BG))
+        .style(Style::new().bg(theme::PANEL))
         .title(Span::styled(
             format!(" {} help ", theme::GLYPH_ALEMBIC),
-            theme::banner(),
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ scroll · esc close ",
-            theme::muted(),
+            Style::new().fg(theme::MUTED),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -1007,7 +1007,7 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     row.left.clone(),
                     Style::new()
                         .fg(theme::GOLD)
-                        .bg(theme::BG)
+                        .bg(theme::PANEL)
                         .add_modifier(Modifier::BOLD),
                 )));
             }
@@ -1015,9 +1015,9 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{:<width$} ", row.left, width = label_w),
-                        Style::new().fg(theme::CYAN).bg(theme::BG),
+                        Style::new().fg(theme::CYAN),
                     ),
-                    Span::styled(row.right.clone(), Style::new().fg(theme::TEXT).bg(theme::BG)),
+                    Span::styled(row.right.clone(), Style::new().fg(theme::TEXT)),
                 ]));
             }
         }

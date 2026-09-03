@@ -289,6 +289,11 @@ pub struct AppState {
     /// (default emerald — owner request, same session).
     pub fire_on: bool,
     pub fire_style: crate::fire::FireStyle,
+    /// Whether standing text catches the flame color (owner request
+    /// 2026-09-03: "a config setting whether to discolor the text, or
+    /// leave text their original color"). Default on — the discolor
+    /// effect is the original beloved behavior.
+    pub fire_tint: bool,
     pub fire_target: f64,
     pub fire_level: f64,
 
@@ -358,6 +363,7 @@ impl Default for AppState {
             glimmer: crate::watermark::GlimmerMode::Shimmer,
             fire_on: true,
             fire_style: crate::fire::FireStyle::default(),
+            fire_tint: true,
             fire_target: 0.0,
             fire_level: 0.0,
             tool_default: ToolVerbosity::Line,
@@ -602,6 +608,12 @@ impl AppState {
                 self.fire_target = 0.0;
             }
             "style" => self.fire_style = self.fire_style.next(),
+            // Text discoloration toggle (owner request 2026-09-03) —
+            // independent of the flame itself.
+            "tint" => {
+                self.fire_tint = !self.fire_tint;
+                return if self.fire_tint { "tint on".to_string() } else { "tint off".to_string() };
+            }
             word => {
                 if let Some(s) = crate::fire::FireStyle::parse(word) {
                     self.fire_style = s;
@@ -876,7 +888,7 @@ impl AppState {
         ("clear", "clear the transcript"),
         ("compact", "compact the context (optional hints)"),
         ("diag", "toggle diagnostic overlay"),
-        ("fire", "composer flames (bare = toggle, or on|off|style|prismatic|emerald|alchemy)"),
+        ("fire", "composer flames (bare = toggle, or on|off|style|tint|prismatic|emerald|alchemy)"),
         ("glimmer", "watermark glimmer (bare = cycle, or shimmer|breathe|twinkle|off)"),
         ("model", "cycle the model"),
         ("new", "start a new session"),
@@ -1379,6 +1391,20 @@ mod tests {
         assert_eq!(s.set_fire("style"), "emerald");
         assert_eq!(s.set_fire("emerald"), "emerald");
         assert_eq!(s.set_fire("style"), "alchemy");
+    }
+
+    #[test]
+    fn fire_tint_toggles_independently() {
+        let mut s = AppState::default();
+        assert!(s.fire_tint, "tint on by default — the beloved behavior");
+        assert_eq!(s.set_fire("tint"), "tint off");
+        assert!(!s.fire_tint);
+        assert!(s.fire_on, "tint toggle must not touch the flame itself");
+        assert_eq!(s.set_fire("tint"), "tint on");
+        assert!(s.fire_tint);
+        // The flame can die while tint stays configured — config, not state.
+        s.set_fire("off");
+        assert_eq!(s.set_fire("tint"), "tint off");
     }
 
     // ── Tool verbosity (owner request 2026-09-03) ────────────────────────

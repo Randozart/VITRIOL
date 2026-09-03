@@ -119,15 +119,16 @@ fn load_fire(state: &mut AppState) {
         }
     }
     if let Ok(src) = std::fs::read_to_string(fire_path()) {
-        let mut words = src.split_whitespace();
-        if let Some(w) = words.next() {
+        let tokens: Vec<&str> = src.split_whitespace().collect();
+        let mut words = tokens.iter();
+        if let Some(&w) = words.next() {
             match w {
                 "off" | "0" => state.fire_on = false,
                 "on" | "1" => state.fire_on = true,
                 _ => {}
             }
         }
-        if let Some(w) = words.next() {
+        if let Some(&w) = words.next() {
             if let Some(style) = crate::fire::FireStyle::parse(w) {
                 state.fire_style = style;
             }
@@ -135,6 +136,13 @@ fn load_fire(state: &mut AppState) {
             // A lone style word means "on, this voice".
             state.fire_style = style;
             state.fire_on = true;
+        }
+        // Text tint (owner request 2026-09-03) — `tint on|off` anywhere in
+        // the file; absent = the default (on).
+        if let Some(i) = tokens.iter().position(|&w| w == "tint") {
+            if let Some(&v) = tokens.get(i + 1) {
+                state.fire_tint = v != "off";
+            }
         }
     }
 }
@@ -148,7 +156,8 @@ fn persist_fire(state: &AppState) {
     } else {
         "off".to_string()
     };
-    let _ = std::fs::write(fire_path(), format!("{}\n", line));
+    let tint = if state.fire_tint { "tint on" } else { "tint off" };
+    let _ = std::fs::write(fire_path(), format!("{line}\n{tint}\n"));
 }
 
 // ── Tool verbosity persistence (owner request 2026-09-03) ─────────────────

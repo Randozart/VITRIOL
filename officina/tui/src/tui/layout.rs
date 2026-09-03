@@ -372,8 +372,9 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // spans already inherit the flame fg via ratatui's style-patch
     // semantics; markdown-styled AI spans don't. Walk the fire map and
     // force the flame color onto any text glyph inside the strip — flames
-    // lend their color to everything standing in them.
-    if !fire_map.is_empty() {
+    // lend their color to everything standing in them. Toggleable since
+    // 2026-09-03 (`/fire tint`): off leaves text its original color.
+    if state.fire_tint && !fire_map.is_empty() {
         let fire_y = input_area.y.saturating_sub(fire_rows as u16);
         let buffer = frame.buffer_mut();
         for (ry, map_row) in fire_map.iter().enumerate() {

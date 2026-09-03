@@ -25,14 +25,15 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 
     let rows = Layout::vertical([
         Constraint::Length(1), // header
+        Constraint::Length(1), // breathing room (owner request 2026-09-03)
         Constraint::Min(0),    // body
         Constraint::Length(1), // footer
     ])
     .split(area);
 
     render_header(frame, rows[0], state);
-    render_body(frame, state, rows[1]);
-    render_footer(frame, rows[1 + 1], state);
+    render_body(frame, state, rows[2]);
+    render_footer(frame, rows[3], state);
 }
 
 // ── Header ────────────────────────────────────────────────────────────────
@@ -198,12 +199,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         3
     };
+    // One breathing row between the transcript and the prompt box (owner
+    // request 2026-09-03 — text flowed straight into the editor).
     let chat_area = Rect {
-        height: area.height.saturating_sub(input_h as u16),
+        height: area.height.saturating_sub(input_h as u16 + 1),
         ..area
     };
     let input_area = Rect {
-        y: area.y + chat_area.height,
+        y: area.y + chat_area.height + 1,
         height: input_h as u16,
         ..area
     };
@@ -305,51 +308,40 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Quicksilver gauge — single braille-dot column at the chat area's
     // right edge (owner request 2026-09-03). That column is already
     // reserved: chat_width = width − 1, so text never touches it.
-    // Thumb position/size maps scroll onto the viewport; hidden when
-    // the session fits in one screen or the watermark is up.
+    // FILL-UP depth gauge (owner revision, same day): not a moving thumb —
+    // the column fills from the bottom as you scroll UP through history.
+    // At the live tail it is EMPTY; fully scrolled back, it is FULL.
+    // Hidden when the session fits in one screen or the watermark is up.
     {
         let total = (state.scroll_max as usize) + chat_area.height as usize;
         let visible = chat_area.height as usize;
         if total > visible && !state.entries.is_empty() && chat_area.width > 1 {
             let h = chat_area.height as usize;
-            let thumb_h = ((visible as f64 / total as f64) * h as f64)
-                .round()
-                .max(1.0) as usize;
-            let scroll_pct = if total <= visible {
-                0.0
+            let max_s = (total - visible) as f64;
+            let frac = if max_s > 0.0 {
+                (state.scroll as f64 / max_s).clamp(0.0, 1.0)
             } else {
-                state.scroll as f64 / (total - visible) as f64
+                0.0
             };
-            let thumb_top = scroll_pct * (h.saturating_sub(thumb_h)) as f64;
-            let thumb_bot = thumb_top + thumb_h as f64;
+            let fill = frac * h as f64;
+            let full_rows = fill.floor() as usize;
+            let edge = fill - full_rows as f64; // fractional top edge of the mercury column
             let gx = chat_area.x + chat_area.width - 1;
             let buffer = frame.buffer_mut();
 
             for row in 0..h {
-                let fy = row as f64;
-                // Above or below the thumb — empty.
-                if fy + 1.0 < thumb_top || fy > thumb_bot {
-                    continue;
-                }
-                // Braille left-column dots: dot1=0x01, dot2=0x02,
-                // dot3=0x04, dot7=0x40. Full column = 0x47.
-                // Fractional fill maps to dots from the top down.
-                let bits = if fy >= thumb_top && fy + 1.0 <= thumb_bot {
-                    0x47u32 // full cell
-                } else if fy < thumb_top {
-                    // top edge — partial
-                    let frac = (fy + 1.0 - thumb_top).clamp(0.0, 1.0);
-                    let dots = (frac * 4.0).round() as u32;
-                    [0x00, 0x01, 0x03, 0x05, 0x47][dots.min(4) as usize]
-                } else {
-                    // bottom edge — partial
-                    let frac = (thumb_bot - fy).clamp(0.0, 1.0);
-                    let dots = (frac * 4.0).round() as u32;
+                // Braille left-column dots: dot1=0x01 (top), dot2=0x02,
+                // dot3=0x04, dot7=0x40 (bottom). Full column = 0x47.
+                // The column rises from the bottom, so the edge cell's
+                // partial fill lights lower dots first.
+                let bits = if row < full_rows {
+                    0x47u32
+                } else if row == full_rows && edge > 0.01 {
+                    let dots = (edge * 4.0).round() as u32;
                     [0x00, 0x40, 0x44, 0x46, 0x47][dots.min(4) as usize]
-                };
-                if bits == 0 {
+                } else {
                     continue;
-                }
+                };
                 let ch = char::from_u32(0x2800 + bits).unwrap_or('⡇');
                 if let Some(cell) = buffer.cell_mut(ratatui::layout::Position {
                     x: gx,

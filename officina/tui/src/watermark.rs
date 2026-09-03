@@ -73,6 +73,11 @@ const SHIMMER_PERIOD_MS: f64 = 6000.0;
 const SHIMMER_SWEEP_FRAC: f64 = 0.45; // sweep vs stillness, per cycle
 const SHIMMER_BAND: f64 = 6.0; // cells, diagonal width at half intensity
 const SHIMMER_PEAK: (u8, u8, u8) = (0x4A, 0x5F, 0x7D);
+// Green streak (owner request 2026-09-03 — "nice and mysterious"): a
+// narrower emerald band trailing the silver sweep through the stone.
+const SHIMMER_STREAK_BAND: f64 = 3.0; // half the silver band — a streak
+const SHIMMER_STREAK_OFFSET: f64 = 10.0; // cells behind the silver crest
+const SHIMMER_STREAK_PEAK: (u8, u8, u8) = (0x36, 0x68, 0x46); // dim emerald
 const BREATHE_PERIOD_MS: f64 = 5000.0;
 const BREATHE_PEAK: (u8, u8, u8) = (0x35, 0x48, 0x5F);
 const TWINKLE_STEP_MS: u128 = 240; // glint slot length
@@ -181,33 +186,49 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
             let cycle = t.fract();
             let p = (cycle / SHIMMER_SWEEP_FRAC).min(1.0);
             let pos = p * (max_d + SHIMMER_BAND * 2.0) - SHIMMER_BAND;
+            // The emerald streak rides the same phase, trailing the silver
+            // crest (owner request 2026-09-03).
+            let pos_g = pos - SHIMMER_STREAK_OFFSET;
             lines
                 .iter()
                 .enumerate()
                 .map(|(row, l)| {
                     let mut spans: Vec<Span> = Vec::new();
                     let mut plain = String::new();
-                    let mut cur: Option<f64> = None;
+                    // Merge key: (intensity, green?) — same color AND
+                    // similar intensity coalesce into one span.
+                    let mut cur: Option<(f64, bool)> = None;
                     for (col, ch) in l.chars().enumerate() {
                         let d = (col + row * 2) as f64;
-                        let i = (1.0 - (d - pos).abs() / SHIMMER_BAND).clamp(0.0, 1.0);
-                        let i = i * i; // soft falloff
+                        let i_s = {
+                            let i = (1.0 - (d - pos).abs() / SHIMMER_BAND).clamp(0.0, 1.0);
+                            i * i
+                        };
+                        let i_g = {
+                            let i = (1.0 - (d - pos_g).abs() / SHIMMER_STREAK_BAND).clamp(0.0, 1.0);
+                            i * i
+                        };
+                        // Green wins where it's clearly present and at
+                        // least as bright as the silver — the streak reads
+                        // as its own light, not a tint on the sweep.
+                        let green = i_g > 0.05 && i_g >= i_s;
+                        let i = if green { i_g } else { i_s };
                         match cur {
-                            Some(c) if (i - c).abs() < 0.04 => plain.push(ch),
-                            Some(c) => {
-                                spans.push(glint_span(&plain, c));
+                            Some((c, g)) if g == green && (i - c).abs() < 0.04 => plain.push(ch),
+                            Some((c, g)) => {
+                                spans.push(glint_span2(&plain, c, g));
                                 plain = ch.to_string();
-                                cur = Some(i);
+                                cur = Some((i, green));
                             }
                             None => {
                                 plain.push(ch);
-                                cur = Some(i);
+                                cur = Some((i, green));
                             }
                         }
                     }
                     if !plain.is_empty() {
-                        if let Some(c) = cur {
-                            spans.push(glint_span(&plain, c));
+                        if let Some((c, g)) = cur {
+                            spans.push(glint_span2(&plain, c, g));
                         }
                     }
                     Line::from(
@@ -263,11 +284,13 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
 
 /// Span at shimmer intensity `i` in [0, 1] — base style below the merge
 /// threshold, glint tint above (DIM dropped so the tint reads).
-fn glint_span(text: &str, i: f64) -> Span<'static> {
+/// `green` selects the emerald streak peak (owner request 2026-09-03).
+fn glint_span2(text: &str, i: f64, green: bool) -> Span<'static> {
     if i <= 0.02 {
         Span::styled(text.to_string(), Style::default().fg(theme::WATERMARK).add_modifier(Modifier::DIM))
     } else {
-        Span::styled(text.to_string(), Style::default().fg(glint_color(SHIMMER_PEAK, i)))
+        let peak = if green { SHIMMER_STREAK_PEAK } else { SHIMMER_PEAK };
+        Span::styled(text.to_string(), Style::default().fg(glint_color(peak, i)))
     }
 }
 
@@ -278,5 +301,36 @@ fn twinkle_span(text: &str, seed: u32) -> Span<'static> {
         Span::styled(text.to_string(), Style::default().fg(theme::WATERMARK).add_modifier(Modifier::DIM))
     } else {
         Span::styled(text.to_string(), Style::default().fg(glint_color(TWINKLE_PEAK, t)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The emerald streak must stay MYSTERIOUS, not Christmas: at any
+    /// intensity its peak luminance stays at or below the silver sweep's.
+    #[test]
+    fn streak_peak_luminance_bounded_by_silver() {
+        let lum = |c: ratatui::style::Color| match c {
+            ratatui::style::Color::Rgb(r, g, b) => 0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64,
+            _ => 0.0,
+        };
+        for i in [0.2f64, 0.5, 0.8, 1.0] {
+            assert!(lum(glint_color(SHIMMER_STREAK_PEAK, i)) <= lum(glint_color(SHIMMER_PEAK, i)) + 1e-6);
+        }
+    }
+
+    /// Green and silver spans at the same intensity render different
+    /// colors — the streak is its own light, not a tint of the sweep.
+    #[test]
+    fn streak_color_differs_from_silver() {
+        let s = glint_span2("a", 0.8, false);
+        let g = glint_span2("a", 0.8, true);
+        assert_ne!(s.style.fg, g.style.fg);
+        // And below the merge threshold both fall back to the base style.
+        let base_s = glint_span2("a", 0.01, false);
+        let base_g = glint_span2("a", 0.01, true);
+        assert_eq!(base_s.style.fg, base_g.style.fg);
     }
 }

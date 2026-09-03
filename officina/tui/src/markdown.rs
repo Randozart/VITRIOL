@@ -378,11 +378,6 @@ fn wrap_line(line: &Line, width: usize, hang: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Coalesce a char+style run into spans and push as one wrapped line.
-fn push_chars(out: &mut Vec<Line<'static>>, cur: &mut Vec<(char, Style)>) {
-    push_chars_hang(out, cur, 0, 0);
-}
-
 /// Coalesce a char+style run into spans, prepending `hang` blank spaces
 /// on continuation lines (line_idx > 0), and push as one wrapped line.
 fn push_chars_hang(out: &mut Vec<Line<'static>>, cur: &mut Vec<(char, Style)>, hang: usize, line_idx: usize) {

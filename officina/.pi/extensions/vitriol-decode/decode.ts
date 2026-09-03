@@ -35,6 +35,23 @@ export function parseMetrics(text: string): MetricsCounters | null {
   return { promptTokens: out.promptTokens, decodeTokens: out.decodeTokens, ejected: out.ejected ?? 0 };
 }
 
+/**
+ * Parse /v1/models for the engine's loaded model id. Prefers the OpenAI
+ * shape (`data[0].id`), falls back to the ollama-ish shape
+ * (`models[0].model`). Empty string when unparseable.
+ */
+export function parseLoadedModel(text: string): string {
+  try {
+    const j = JSON.parse(text) as {
+      data?: Array<{ id?: string }>;
+      models?: Array<{ model?: string }>;
+    };
+    return j.data?.[0]?.id ?? j.models?.[0]?.model ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export interface DecodeDelta {
   tps: number;
   tokens: number;

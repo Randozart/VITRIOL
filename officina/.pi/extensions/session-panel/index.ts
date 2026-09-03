@@ -180,6 +180,25 @@ export default function (pi: ExtensionAPI) {
     return lines;
   });
 
+  // P26: Loaded model — the ENGINE's truth (owner request 2026-09-03).
+  // pi's selected model (header) can drift from what the server actually
+  // loaded; when they disagree this row goes warning-orange and names
+  // both, and a one-time notice fires on onset.
+  registerSidebarSection("loaded", 26, () => {
+    const eng = getEngineSnapshot();
+    if (!eng.up || !eng.loaded_model) return undefined;
+    const mismatch = !!modelId && eng.loaded_model !== modelId;
+    if (mismatch) {
+      return [truncate(
+        sc(SAFETY, `loaded ${eng.loaded_model}`)
+          + sc(MUTED, " · pi says ")
+          + sc(SAFETY, modelId),
+        CONTENT_W,
+      )];
+    }
+    return [truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W)];
+  });
+
   // P28: Divider with embedded group header (the Plans group follows)
   registerSidebarSection("div2", 28, () => {
     if (!sidebarEnriched()) return undefined;
@@ -395,9 +414,25 @@ export default function (pi: ExtensionAPI) {
     }
     if (ctx.hasUI) {
       startEnginePolling();
+      let mismatchNotified = false;
       onEngineUpdate(() => {
         // Keep context usage fresh during ingestion (not just on message_end)
         try { ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage; } catch {}
+        // One-time notice on model mismatch onset (owner request
+        // 2026-09-03): the engine's loaded model vs pi's selection.
+        try {
+          const eng = getEngineSnapshot();
+          const mismatch = eng.up && !!eng.loaded_model && !!modelId && eng.loaded_model !== modelId;
+          if (mismatch && !mismatchNotified) {
+            mismatchNotified = true;
+            void (ctx as any)?.ui?.notify?.(
+              `model mismatch: engine loaded ${eng.loaded_model}, pi selected ${modelId}`,
+              "warning",
+            );
+          } else if (!mismatch && mismatchNotified) {
+            mismatchNotified = false; // re-arm on match
+          }
+        } catch {}
         renderSidebar();
       });
     }

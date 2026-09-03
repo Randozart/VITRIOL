@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   busySlots,
+  parseLoadedModel,
   counterDelta,
   fireLoad,
   gpuFireLoad,
@@ -21,6 +22,13 @@ garbage line without number
 describe("parseMetrics", () => {
   it("parses the fork's counter names and ignores everything else", () => {
     expect(parseMetrics(METRICS)).toEqual({ promptTokens: 17500, decodeTokens: 812, ejected: 0 });
+  });
+
+  it("parses the loaded model from /v1/models shapes", () => {
+    expect(parseLoadedModel('{"data":[{"id":"Lapis Occultus"}]}')).toBe("Lapis Occultus");
+    expect(parseLoadedModel('{"models":[{"model":"Qwen3.8-27B"}]}')).toBe("Qwen3.8-27B");
+    expect(parseLoadedModel("not json")).toBe("");
+    expect(parseLoadedModel("{}")).toBe("");
   });
 
   it("parses the sparse-KV ejected counter when present", () => {

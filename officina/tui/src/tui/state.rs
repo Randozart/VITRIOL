@@ -120,10 +120,10 @@ pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMa
     pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
         ("◈ <name>", "coupling — the engine endpoint identity (gold anchor)"),
         ("ctx", "context window fill: tokens used / window size + percent"),
-        ("eng", "live engine rate: tok/s while decoding, idle otherwise"),
+        ("eng", "live engine rate (tok/s / idle); 'N decoded this boot' = engine decode total"),
         ("[>] n / [ ] n", "plan checklist: tasks in progress / open"),
         ("n done", "plan checklist: completed tasks"),
-        ("note f l d", "scratchpad: facts / leads / dead ends, lines used/cap"),
+        ("note", "scratchpad: N facts · N leads · N dead ends, lines used/cap"),
         ("files: +n −n", "recently touched files: lines added / deleted"),
         ("↑ ↓", "session tokens: prompt tokens in / generated out"),
         ("turns", "your prompts this session"),

@@ -168,7 +168,13 @@ export default function (pi: ExtensionAPI) {
       6,
     );
     const line = `${sc(MUTED, "eng ")}${g} ${decoding ? sc(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : sc(MUTED, "idle")}`;
-    return [truncate(line, CONTENT_W)];
+    const lines = [truncate(line, CONTENT_W)];
+    // Boot decode total gets its OWN row (owner request 2026-09-03) —
+    // appended to the rate row it wrapped uglily at 40 cols.
+    if (eng.total > 0) {
+      lines.push(truncate(sc(MUTED, `${fmtTokens(eng.total)} decoded this boot`), CONTENT_W));
+    }
+    return lines;
   });
 
   // P28: Divider with embedded group header (the Plans group follows)
@@ -208,7 +214,16 @@ export default function (pi: ExtensionAPI) {
     if (!sidebarEnriched()) return undefined;
     const s = getScratchpadSummary();
     if (!s) return undefined;
-    const lines: string[] = [truncate(sc(MUTED, "note ") + sc(VIOLET, `${s.facts}f ${s.leads}l ${s.dead}d`) + sc(MUTED, ` · ${s.lines}/${s.cap}`), CONTENT_W)];
+    const lines: string[] = [truncate(
+      sc(MUTED, "note ")
+        + sc(VIOLET, `${s.facts} facts`)
+        + sc(MUTED, " · ")
+        + sc(VIOLET, `${s.leads} lead${s.leads === 1 ? "" : "s"}`)
+        + sc(MUTED, " · ")
+        + sc(VIOLET, `${s.dead} dead`)
+        + sc(MUTED, ` · ${s.lines}/${s.cap}`),
+      CONTENT_W,
+    )];
     const items = getScratchpadItems();
     if (items) {
       for (const f of items.facts.slice(0, 2)) {

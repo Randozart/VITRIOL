@@ -297,6 +297,67 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
 
+    // Quicksilver gauge — single braille-dot column at the chat area's
+    // right edge (owner request 2026-09-03). That column is already
+    // reserved: chat_width = width − 1, so text never touches it.
+    // Thumb position/size maps scroll onto the viewport; hidden when
+    // the session fits in one screen or the watermark is up.
+    {
+        let total = (state.scroll_max as usize) + chat_area.height as usize;
+        let visible = chat_area.height as usize;
+        if total > visible && !state.entries.is_empty() && chat_area.width > 1 {
+            let h = chat_area.height as usize;
+            let thumb_h = ((visible as f64 / total as f64) * h as f64)
+                .round()
+                .max(1.0) as usize;
+            let scroll_pct = if total <= visible {
+                0.0
+            } else {
+                state.scroll as f64 / (total - visible) as f64
+            };
+            let thumb_top = scroll_pct * (h.saturating_sub(thumb_h)) as f64;
+            let thumb_bot = thumb_top + thumb_h as f64;
+            let gx = chat_area.x + chat_area.width - 1;
+            let buffer = frame.buffer_mut();
+
+            for row in 0..h {
+                let fy = row as f64;
+                // Above or below the thumb — empty.
+                if fy + 1.0 < thumb_top || fy > thumb_bot {
+                    continue;
+                }
+                // Braille left-column dots: dot1=0x01, dot2=0x02,
+                // dot3=0x04, dot7=0x40. Full column = 0x47.
+                // Fractional fill maps to dots from the top down.
+                let bits = if fy >= thumb_top && fy + 1.0 <= thumb_bot {
+                    0x47u32 // full cell
+                } else if fy < thumb_top {
+                    // top edge — partial
+                    let frac = (fy + 1.0 - thumb_top).clamp(0.0, 1.0);
+                    let dots = (frac * 4.0).round() as u32;
+                    [0x00, 0x01, 0x03, 0x05, 0x47][dots.min(4) as usize]
+                } else {
+                    // bottom edge — partial
+                    let frac = (thumb_bot - fy).clamp(0.0, 1.0);
+                    let dots = (frac * 4.0).round() as u32;
+                    [0x00, 0x40, 0x44, 0x46, 0x47][dots.min(4) as usize]
+                };
+                if bits == 0 {
+                    continue;
+                }
+                let ch = char::from_u32(0x2800 + bits).unwrap_or('⡇');
+                if let Some(cell) = buffer.cell_mut(ratatui::layout::Position {
+                    x: gx,
+                    y: chat_area.y + row as u16,
+                }) {
+                    cell.set_symbol(&ch.to_string());
+                    cell.set_fg(theme::SILVER);
+                    cell.set_bg(theme::BG);
+                }
+            }
+        }
+    }
+
     // Position badge while scrolled back — top-right of the chat column.
     // Drawn after the chat: the badge itself is text and keeps priority.
     if state.scroll > 0 {

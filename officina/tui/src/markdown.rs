@@ -51,6 +51,12 @@ struct Renderer {
     width: usize,
     /// List stack: None = bullet, Some(start) = ordered with its next index.
     lists: Vec<(Option<u64>, u64)>,
+    /// Accumulated prefix width of all ancestor items (for nested indent).
+    indent: usize,
+    /// Current item's continuation indent column (indent + own prefix width).
+    hang: usize,
+    /// Stack of own prefix widths, parallel to `lists`, for safe pop on End(Item).
+    prefix_widths: Vec<usize>,
     /// Blockquote nesting depth.
     quote: usize,
     /// Inside a fenced/indented code block.
@@ -72,6 +78,9 @@ impl Renderer {
             cur: Vec::new(),
             width: width.max(1),
             lists: Vec::new(),
+            indent: 0,
+            hang: 0,
+            prefix_widths: Vec::new(),
             quote: 0,
             in_code: false,
             heading: None,
@@ -89,6 +98,7 @@ impl Renderer {
         }
         match e {
             E::Start(T::Heading { level, .. }) => {
+                self.gap();
                 self.flush();
                 let h1 = *level == pulldown_cmark::HeadingLevel::H1;
                 self.heading = Some(heading_style(h1));
@@ -97,10 +107,10 @@ impl Renderer {
                 self.heading = None;
                 self.flush();
             }
-            E::Start(T::Paragraph) | E::End(TE::Paragraph) => {
-                if let E::End(_) = e {
-                    self.flush();
-                }
+            E::Start(T::Paragraph) => {}
+            E::End(TE::Paragraph) => {
+                self.flush();
+                self.gap();
             }
             E::Text(s) => self.text_span(s),
             E::Code(s) => self.push(s, code_style()),
@@ -108,9 +118,11 @@ impl Renderer {
             E::HardBreak => self.flush(),
             E::Rule => {
                 self.flush();
+                self.gap();
                 self.cur
                     .push(Span::styled("─".repeat(self.width), theme::muted()));
                 self.flush();
+                self.gap();
             }
             E::Start(T::Strong) => self.inline.push(Modifier::BOLD),
             E::End(TE::Strong) => {
@@ -124,33 +136,57 @@ impl Renderer {
             E::End(TE::Link) => {
                 self.inline.pop();
             }
-            E::Start(T::List(start)) => self.lists.push((*start, start.unwrap_or(0))),
+            E::Start(T::List(_start)) => {
+                if self.lists.is_empty() {
+                    self.gap();
+                }
+                self.lists.push((*_start, _start.unwrap_or(0)));
+            }
             E::End(TE::List(_)) => {
                 self.lists.pop();
+                // No gap here — the next block's Start(List)/End(Paragraph)
+                // etc. will emit a gap if needed. Gap at End(List) would
+                // produce a trailing blank line when a list is the last block.
             }
             E::Start(T::Item) => {
                 self.flush();
-                let (bullet, width) = self.item_prefix();
+                let (bullet, pw) = self.item_prefix();
                 self.cur.push(Span::styled(bullet, theme::muted()));
                 self.cur
-                    .push(Span::styled(" ".repeat(width), theme::text()));
+                    .push(Span::styled(" ".repeat(pw), theme::text()));
+                self.indent += pw;
+                self.hang = self.indent;
+                self.prefix_widths.push(pw);
             }
-            E::End(TE::Item) => self.flush(),
+            E::End(TE::Item) => {
+                self.flush();
+                let pw = self.prefix_widths.pop().unwrap_or(0);
+                self.indent = self.indent.saturating_sub(pw);
+                self.hang = 0;
+            }
             E::Start(T::BlockQuote(_)) => {
                 self.flush();
+                if self.quote == 0 {
+                    self.gap();
+                }
                 self.quote += 1;
             }
             E::End(TE::BlockQuote(_)) => {
                 self.flush();
                 self.quote = self.quote.saturating_sub(1);
+                if self.quote == 0 {
+                    self.gap();
+                }
             }
             E::Start(T::CodeBlock(_)) => {
                 self.flush();
+                self.gap();
                 self.in_code = true;
             }
             E::End(TE::CodeBlock) => {
                 self.in_code = false;
                 self.flush();
+                self.gap();
             }
             E::Start(T::TableHead) => {
                 self.flush();
@@ -253,12 +289,16 @@ impl Renderer {
     }
 
     /// Wrap the current line to `width` and push it onto `out`.
+    /// Hanging indent: when `hang > 0`, the first line wraps to `width`
+    /// (prefix already in cur), continuation lines wrap to `width - hang`
+    /// and are prefixed with `hang` blank spaces (owner request 2026-09-03).
     fn flush(&mut self) {
         if self.cur.is_empty() {
             return;
         }
         let line = Line::from(std::mem::take(&mut self.cur));
-        let mut wrapped = wrap_line(&line, self.width);
+        let hang = self.hang;
+        let mut wrapped = wrap_line(&line, self.width, hang);
         if self.quote > 0 {
             let prefix = "│ ".repeat(self.quote);
             for w in &mut wrapped {
@@ -270,6 +310,18 @@ impl Renderer {
         self.out.extend(wrapped);
     }
 
+    /// Push a blank separator line between blocks (paragraphs, headings,
+    /// code blocks, lists, blockquotes, rules) — but never at document
+    /// start and never if one already exists (owner request 2026-09-03).
+    fn gap(&mut self) {
+        if !self.out.is_empty() && self.cur.is_empty() {
+            if self.out.last().map_or(false, |l: &Line| l.to_string().is_empty()) {
+                return;
+            }
+            self.out.push(Line::from(""));
+        }
+    }
+
     /// Flush any remaining content at end of input.
     fn finish(mut self) -> Vec<Line<'static>> {
         self.flush();
@@ -279,7 +331,11 @@ impl Renderer {
 
 /// Word-wrap a single `Line` into `width`-limited lines, preserving span styles
 /// by coalescing adjacent styled characters with equal styles.
-fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
+///
+/// `hang`: when > 0, the first line wraps to `width` and continuation lines
+/// wrap to `width - hang`, prefixed with `hang` blank spaces (hanging indent
+/// for list items — owner request 2026-09-03).
+fn wrap_line(line: &Line, width: usize, hang: usize) -> Vec<Line<'static>> {
     let chars: Vec<(char, Style)> = line
         .spans
         .iter()
@@ -289,29 +345,51 @@ fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
         return vec![Line::from(vec![])];
     }
 
+    // First line: full width. Continuation lines: width - hang.
+    let first_w = width;
+    let cont_w = width.saturating_sub(hang);
+
     let mut out: Vec<Line<'static>> = Vec::new();
     let mut cur: Vec<(char, Style)> = Vec::new();
     let mut cur_w = 0usize;
-    for (c, style) in chars {
-        if c == ' ' && cur_w >= width {
-            push_chars(&mut out, &mut cur);
+    let mut done = 0usize; // lines already flushed
+    let mut line_budget = first_w;
+
+    for (c, style) in &chars {
+        let c = *c;
+        let style = *style;
+        if c == ' ' && cur_w >= line_budget {
+            push_chars_hang(&mut out, &mut cur, hang, done);
+            done += 1;
+            line_budget = cont_w;
             cur_w = 0;
             continue;
         }
-        if cur_w > 0 && cur_w + 1 > width {
-            push_chars(&mut out, &mut cur);
+        if cur_w > 0 && cur_w + 1 > line_budget {
+            push_chars_hang(&mut out, &mut cur, hang, done);
+            done += 1;
+            line_budget = cont_w;
             cur_w = 0;
         }
         cur.push((c, style));
         cur_w += 1;
     }
-    push_chars(&mut out, &mut cur);
+    push_chars_hang(&mut out, &mut cur, hang, done);
     out
 }
 
 /// Coalesce a char+style run into spans and push as one wrapped line.
 fn push_chars(out: &mut Vec<Line<'static>>, cur: &mut Vec<(char, Style)>) {
+    push_chars_hang(out, cur, 0, 0);
+}
+
+/// Coalesce a char+style run into spans, prepending `hang` blank spaces
+/// on continuation lines (line_idx > 0), and push as one wrapped line.
+fn push_chars_hang(out: &mut Vec<Line<'static>>, cur: &mut Vec<(char, Style)>, hang: usize, line_idx: usize) {
     let mut spans: Vec<Span<'static>> = Vec::new();
+    if hang > 0 && line_idx > 0 {
+        spans.push(Span::styled(" ".repeat(hang), Style::default()));
+    }
     for (c, style) in cur.drain(..) {
         if spans
             .last()
@@ -397,5 +475,83 @@ mod tests {
     #[test]
     fn empty_input_yields_no_lines() {
         assert!(render("", 40).is_empty());
+    }
+
+    // ── 2026-09-03: hanging indent + paragraph gaps ──────────────────────
+
+    #[test]
+    fn list_item_hanging_indent() {
+        // A long item whose text wraps: continuation lines must align
+        // under the item's text start (column 2), not under the bullet.
+        let text = "- this is a very long list item that should definitely wrap at the width boundary\n";
+        let lines = render(text, 30);
+        let strs = text_lines(&lines);
+        // First line has the bullet; continuation lines start with 2 spaces.
+        assert!(strs[0].contains("•"));
+        for s in &strs[1..] {
+            assert!(
+                s.starts_with("  "),
+                "continuation should be indented 2 cols: {:?}",
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_list_hanging_indent() {
+        let text = "1. first item\n2. a very long second item that wraps across multiple lines at the boundary here yes\n";
+        let lines = render(text, 35);
+        let strs = text_lines(&lines);
+        // Second item starts with "2." then wraps.
+        let second_start = strs.iter().position(|s| s.starts_with("2.")).unwrap();
+        // The next line after "2. ..." must start with 3 spaces (indent = len("2.") + 1 = 3).
+        if second_start + 1 < strs.len() {
+            assert!(
+                strs[second_start + 1].starts_with("   "),
+                "ordered continuation indent 3: {:?}",
+                strs[second_start + 1]
+            );
+        }
+    }
+
+    #[test]
+    fn paragraph_gap_between_blocks() {
+        let lines = render("first\n\nsecond\n", 40);
+        let strs = text_lines(&lines);
+        let gap_pos = strs.iter().position(|s| s.is_empty());
+        assert!(gap_pos.is_some(), "blank line between paragraphs: {:?}", strs);
+    }
+
+    #[test]
+    fn no_gap_at_document_start() {
+        let lines = render("hello\n", 40);
+        let strs = text_lines(&lines);
+        assert!(!strs[0].is_empty(), "no leading blank line");
+    }
+
+    #[test]
+    fn no_gap_between_list_items() {
+        let lines = render("- a\n- b\n- c\n", 40);
+        let strs = text_lines(&lines);
+        let blanks: Vec<_> = strs.iter().filter(|s| s.is_empty()).collect();
+        assert!(blanks.is_empty(), "no gaps between list items: {:?}", strs);
+    }
+
+    #[test]
+    fn gap_after_list_before_paragraph() {
+        let lines = render("- item\n\nnext paragraph\n", 40);
+        let strs = text_lines(&lines);
+        let gap_pos = strs.iter().position(|s| s.is_empty());
+        assert!(gap_pos.is_some(), "blank line between list and paragraph: {:?}", strs);
+    }
+
+    #[test]
+    fn code_block_gap() {
+        let lines = render("text\n\n```\ncode\n```\n\nmore\n", 40);
+        let strs = text_lines(&lines);
+        // Should have blank lines before and after the code block.
+        assert!(strs.iter().any(|s| s.is_empty()), "has gap: {:?}", strs);
+        assert!(strs.iter().any(|s| s.contains("code")), "has code");
+        assert!(strs.iter().any(|s| s.contains("text")), "has text");
     }
 }

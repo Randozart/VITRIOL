@@ -507,11 +507,13 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let cands = state.command_candidates();
     if !cands.is_empty() {
         let max_rows = (chat_area.height * 6 / 10).max(6);
-        let popup_h = (cands.len() as u16 + 2).min(max_rows);
+        // +2 rows for the selected-command detail line (owner request
+        // 2026-09-03: menu rows truncate — the detail carries the rest).
+        let popup_h = (cands.len() as u16 + 2).min(max_rows) + 2;
         let popup_area = Rect {
             y: input_area.y.saturating_sub(popup_h),
             height: popup_h,
-            width: area.width.min(60),
+            width: area.width.min(72),
             ..input_area
         };
         render_command_popup(frame, &cands, state.cand_sel, popup_area);
@@ -649,6 +651,42 @@ fn render_command_popup(
     let block = block.title(Span::styled(title, Style::new().fg(theme::MUTED)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Detail line: the selected command's FULL description, wrapped into
+    // the bottom two rows. Local commands read their long form from
+    // LOCAL_COMMANDS; RPC-backed commands use their own description.
+    let detail_rect = Rect {
+        height: 2.min(inner.height),
+        y: inner.y + inner.height.saturating_sub(2),
+        ..inner
+    };
+    let rows_rect = Rect {
+        y: inner.y,
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    let detail = cands
+        .get(sel)
+        .map(|c| {
+            AppState::LOCAL_COMMANDS
+                .iter()
+                .find(|(n, _, _)| *n == c.name)
+                .map(|(_, _, long)| long.to_string())
+                .or_else(|| c.description.clone())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            detail,
+            Style::new().fg(theme::CYAN).bg(theme::PANEL),
+        )))
+        .wrap(Wrap { trim: false })
+        .style(Style::new().bg(theme::PANEL)),
+        detail_rect,
+    );
+
+    let visible = rows_rect.height as usize;
     let skip = if sel + 1 > visible {
         sel + 1 - visible
     } else {
@@ -684,7 +722,7 @@ fn render_command_popup(
             ),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines), rows_rect);
 }
 
 fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {

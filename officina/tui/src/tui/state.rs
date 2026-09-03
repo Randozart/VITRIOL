@@ -182,8 +182,8 @@ pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMa
             push(HelpRowKind::Item, l, r);
         }
         push(HelpRowKind::Header, "COMMANDS", "");
-        for (name, desc) in AppState::LOCAL_COMMANDS {
-            push(HelpRowKind::Item, &format!("/{name}"), desc);
+        for (name, _short, long) in AppState::LOCAL_COMMANDS {
+            push(HelpRowKind::Item, &format!("/{name}"), long);
         }
         rows
     }
@@ -889,21 +889,23 @@ impl AppState {
 
     /// Local (TUI-side) commands — dispatched to RPC directly, never sent
     /// to pi as prompt text. (name, description)
-    pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
-        ("clear", "clear the transcript"),
-        ("compact", "compact the context (optional hints)"),
-        ("diag", "toggle diagnostic overlay"),
-        ("fire", "composer flames (bare = toggle, or on|off|style|tint|prismatic|emerald|alchemy)"),
-        ("glimmer", "watermark glimmer (bare = cycle, or shimmer|breathe|twinkle|off)"),
-        ("model", "cycle the model"),
-        ("new", "start a new session"),
-        ("quit", "quit the TUI (alias /q)"),
-        ("resume", "resume a previous session"),
-        ("settings", "UI settings (bare = list; glimmer|fire <args>)"),
-        ("stats", "refresh session stats"),
-        ("thinking", "thinking level (off..max, bare = cycle)"),
-        ("tools", "tool verbosity (bare = config menu, or <tool> <mode>[!+|-])"),
-        ("help", "sidebar glossary, keys and commands (F1)"),
+    /// (name, short — menu row, long — popup detail line + /help).
+    /// Shorts stay ≤ ~40 cols; longs carry the full usage.
+    pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
+        ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),
+        ("diag", "toggle diagnostics", "/diag or F9 — stderr overlay from the agent process"),
+        ("fire", "composer flames", "/fire [on|off|style|tint|<voice>] — voices: prismatic, emerald, alchemy; tint toggles whether flames discolor standing text"),
+        ("glimmer", "watermark glimmer", "/glimmer [shimmer|breathe|twinkle|off] — bare cycles"),
+        ("help", "glossary + keys + commands", "/help or F1 — the reference modal"),
+        ("model", "cycle the model", "/model — cycles pi's model selection"),
+        ("new", "new session", "/new — fresh session (old one stays resumable)"),
+        ("quit", "quit the TUI", "/quit — deliberate quit; the only other path is ^esc"),
+        ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
+        ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare lists current values"),
+        ("stats", "refresh stats", "/stats — refresh session statistics"),
+        ("thinking", "thinking level", "/thinking [off..max] — bare cycles"),
+        ("tools", "tool verbosity", "/tools [<tool> <mode>[!+|-] | <tool> clear | default <mode>] — modes: line/block/full; bare opens the picker; ctrl+t too"),
     ];
 
     /// Slash-command candidates for the current input (empty if not a
@@ -930,11 +932,11 @@ impl AppState {
                 out.push(c.clone());
             }
         }
-        for (name, desc) in Self::LOCAL_COMMANDS {
+        for (name, short, _long) in Self::LOCAL_COMMANDS {
             if prefix.is_empty() || name.starts_with(prefix) {
                 out.push(crate::rpc::protocol::SlashCommand {
                     name: name.to_string(),
-                    description: Some(desc.to_string()),
+                    description: Some(short.to_string()),
                     source: Some("local".to_string()),
                 });
             }
@@ -994,7 +996,7 @@ impl AppState {
     pub fn is_local_command(&self, msg: &str) -> bool {
         let word = msg.split_whitespace().next().unwrap_or("");
         let word = word.trim_start_matches('/');
-        Self::LOCAL_COMMANDS.iter().any(|(n, _)| *n == word) || word == "config"
+        Self::LOCAL_COMMANDS.iter().any(|(n, _, _)| *n == word) || word == "config"
     }
 
     /// Longest common prefix completion for the current command word.

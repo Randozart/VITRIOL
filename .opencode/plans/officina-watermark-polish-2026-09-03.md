@@ -60,7 +60,21 @@ watermark's left_pad centering then centers the visible stone exactly.
 
 ## Commits
 
-| # | Message |
-|---|---|
-| 1 | `officina: shimmer streak travel — exit fully before rest phase` |
-| 2 | `officina: strip braille blank margins from watermark art` |
+| # | Commit | Notes |
+|---|---|---|
+| 1 | `edf1a22` shimmer streak travel — exit fully before rest phase | sweep_pos/streak_pos/band_i helpers |
+| 2 | `fde66b2` strip braille blank margins from watermark art | assets untouched |
+
+48/48 cargo tests green. Bin installed each stage.
+
+## Outcome notes
+
+- **Test premise correction (Fix A)**: only p=1.0 is the parked position —
+  p<1.0 is mid-sweep and legitimately lights the stone. First test draft
+  asserted zero at p=0.9 (mid-sweep) and failed correctly.
+- **Motif surprise (Fix B)**: stone rows lead with U+2800 (37 on row 1),
+  motto rows lead with 12 ASCII SPACES. The shared-lead minimum must
+  count both blank kinds — 12 (the motto lead is the binding minimum).
+  After strip: stone keeps 25 lead U+2800, motto keeps 0 + its indent.
+- **Measured result**: plain 80→56 cols, motto 82→62 cols; 32/38 rows
+  intact; relative motto-vs-stone offset asserted unchanged by test.

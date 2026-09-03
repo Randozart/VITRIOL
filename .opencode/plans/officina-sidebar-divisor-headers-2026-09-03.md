@@ -60,4 +60,17 @@ Run: `npx vitest --run .pi/extensions` + `npm run typecheck`.
 
 ## Commit
 
-1 commit: `officina: sidebar divisor headers — Plans group restyle`
+| Commit | Notes |
+|---|---|
+| `d9c0635` sidebar divisor headers — Plans group restyle | 519 vitest green, tsc clean |
+
+## Outcome notes
+
+- sc() = `color + txt + RESET` — escape PRECEDES text, so format
+  assertions must run on the ANSI-stripped string (first test draft
+  called `.startsWith` on the raw styled line and failed correctly).
+- `CONTENT_W` / `visibleLen` / `embDiv` exported at module level for
+  tests; importing the module is side-effect-free (the default export's
+  body holds all registration logic).
+- The extension is source-live (no rebuild needed) — takes effect on the
+  next officina launch; no binary reinstall required for this change.

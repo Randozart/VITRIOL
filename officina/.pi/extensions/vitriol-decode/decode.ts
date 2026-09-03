@@ -11,11 +11,14 @@
 export interface MetricsCounters {
   promptTokens: number;
   decodeTokens: number;
+  /** VITRIOL sparse-KV: cells ejected since boot (0 on stock engines). */
+  ejected?: number;
 }
 
 const COUNTER_KEYS: Record<string, keyof MetricsCounters> = {
   "llamacpp:prompt_tokens_total": "promptTokens",
   "llamacpp:n_decode_total": "decodeTokens",
+  "llamacpp:kv_ejected_total": "ejected",
 };
 
 export function parseMetrics(text: string): MetricsCounters | null {
@@ -29,7 +32,7 @@ export function parseMetrics(text: string): MetricsCounters | null {
     out[field] = n;
   }
   if (out.promptTokens === undefined || out.decodeTokens === undefined) return null;
-  return { promptTokens: out.promptTokens, decodeTokens: out.decodeTokens };
+  return { promptTokens: out.promptTokens, decodeTokens: out.decodeTokens, ejected: out.ejected ?? 0 };
 }
 
 export interface DecodeDelta {

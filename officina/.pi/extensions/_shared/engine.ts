@@ -23,6 +23,8 @@ export interface EngineSnapshot {
   ingest: { tps: number; tokens: number };
   /** cumulative prompt tokens since engine boot (for ingestion gauge) */
   cumulativeIngest: number;
+  /** VITRIOL sparse-KV: KV cells ejected since engine boot (0 if unsupported). */
+  ejected: number;
   /** decode tokens since engine boot */
   total: number;
   slots: SlotInfo[];
@@ -42,6 +44,7 @@ let snap: EngineSnapshot = {
   delta: { tps: 0, tokens: 0 },
   ingest: { tps: 0, tokens: 0 },
   cumulativeIngest: 0,
+  ejected: 0,
   total: 0,
   slots: [],
   busy: 0,
@@ -109,7 +112,7 @@ async function poll(): Promise<void> {
     before = null;
     if (snap.up || !polledOnce) {
       polledOnce = true;
-      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0 };
+      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0 };
       notify();
     }
     return;
@@ -130,7 +133,7 @@ async function poll(): Promise<void> {
   const slots = slotsText ? parseSlots(slotsText) : snap.slots;
   const busy = busySlots(slots, delta.tokens);
   // cumulativeIngest = total prompt tokens processed since engine boot
-  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest };
+  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest, ejected: after.ejected ?? 0 };
   polledOnce = true;
   notify();
 }

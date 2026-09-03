@@ -74,7 +74,11 @@ export function renderTaskBlock(tasks: TaskItem[], maxItems = 15): string {
   const lines = shown.map((t) => `${MARKS[t.status]} ${t.id}. ${t.description}`);
   if (tasks.length > maxItems) lines.push(`[+${tasks.length - maxItems} more]`);
   const open = tasks.filter((t) => t.status !== "completed" && t.status !== "cancelled").length;
-  const header = `## Task state (external truth — survives compaction; update with update_tasks)`;
-  const footer = open === 0 ? `All ${tasks.length} task(s) resolved.` : `${tasks.length - open}/${tasks.length} done, ${open} open.`;
+  // Eviction contract (owner request 2026-09-03, context lifecycle plan):
+  // the ENGINE ejects KV entries the model stops attending to. Anything
+  // needed later MUST live here or in the scratchpad — both are
+  // re-injected every turn; conversation itself is ejectable.
+  const header = `## Task state (external truth — survives compaction AND KV eviction; update with update_tasks)`;
+  const footer = open === 0 ? `All ${tasks.length} task(s) resolved.` : `${tasks.length - open}/${tasks.length} done, ${open} open. Anything not written here or to the scratchpad will be evicted.`;
   return `\n\n${header}\n${lines.join("\n")}\n${footer}`;
 }

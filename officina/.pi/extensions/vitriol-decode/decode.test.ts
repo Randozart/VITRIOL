@@ -20,7 +20,12 @@ garbage line without number
 
 describe("parseMetrics", () => {
   it("parses the fork's counter names and ignores everything else", () => {
-    expect(parseMetrics(METRICS)).toEqual({ promptTokens: 17500, decodeTokens: 812 });
+    expect(parseMetrics(METRICS)).toEqual({ promptTokens: 17500, decodeTokens: 812, ejected: 0 });
+  });
+
+  it("parses the sparse-KV ejected counter when present", () => {
+    const m = METRICS + "llamacpp:kv_ejected_total 12000\n";
+    expect(parseMetrics(m)?.ejected).toBe(12000);
   });
 
   it("returns null when a counter is missing (never guesses)", () => {

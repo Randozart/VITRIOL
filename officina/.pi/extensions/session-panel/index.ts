@@ -144,14 +144,17 @@ export default function (pi: ExtensionAPI) {
     return [embDiv("Engine")];
   });
 
-  // P20: Context usage
+  // P20: Context usage (+ the lost ejected-tokens counter, owner request
+  // 2026-09-03 — old-UI parity: how much has been ejected for efficiency)
   registerSidebarSection("ctx", 20, () => {
     if (!ctxUsage || ctxUsage.contextWindow <= 0) return undefined;
     const pct = ctxUsage.percent;
     const g = renderGauge(RAMPS.capacity, Math.min(1, (pct ?? 0) / 100), 6);
     const filled = ctxUsage.tokens != null ? fmtTokens(ctxUsage.tokens) : "--";
     const total = fmtTokens(ctxUsage.contextWindow);
-    const line = `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct.toFixed(1) + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + "/" + total)}`;
+    const ejected = getEngineSnapshot().ejected;
+    const ej = ejected > 0 ? sc(MUTED, " ⤓ ") + sc(SOLVENT, fmtTokens(ejected)) : "";
+    const line = `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct.toFixed(1) + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + "/" + total)}${ej}`;
     return [truncate(line, CONTENT_W)];
   });
 

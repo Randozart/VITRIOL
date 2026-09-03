@@ -197,6 +197,74 @@ fn persist_tools_config(state: &state::AppState) {
     let _ = std::fs::write(&path, format!("{}\n", lines.join("\n")));
 }
 
+/// /tools handler — bare opens the modal; args CLI-set overrides:
+///   /tools write block+     at-least (bumps up when global less verbose)
+///   /tools bash line-       at-most  (caps when global more verbose)
+///   /tools read full!       pinned   (ignores global)
+///   /tools write clear      remove override
+///   /tools default full     set global default
+fn tools_command(state: &mut state::AppState, args: &str) {
+    if args.is_empty() {
+        state.tools_modal_open = true;
+        state.tools_modal_sel = 0;
+        return;
+    }
+    if let Some((name, mode_s)) = args.split_once(' ') {
+        let name = name.trim();
+        let mode_s = mode_s.trim();
+        if name == "default" {
+            match state::ToolVerbosity::parse(mode_s) {
+                Some(m) => {
+                    state.tool_default = m;
+                    state.tools_gen += 1;
+                    persist_tools_config(state);
+                    state.notice = Some((format!("tools default: {}", m.label()), "info".to_string()));
+                }
+                None => tools_usage(state),
+            }
+            return;
+        }
+        if mode_s == "clear" {
+            if state.tool_overrides.remove(name).is_some() {
+                state.tools_gen += 1;
+                persist_tools_config(state);
+                state.notice = Some((format!("{}: override cleared", name), "info".to_string()));
+            } else {
+                state.notice = Some((format!("{}: no override", name), "info".to_string()));
+            }
+            return;
+        }
+        match state::ToolOverride::parse(mode_s) {
+            Some(o) => {
+                state.tool_overrides.insert(name.to_string(), o);
+                state.tools_gen += 1;
+                persist_tools_config(state);
+                state.notice = Some((format!("{}: {}", name, o.encode()), "info".to_string()));
+            }
+            None => tools_usage(state),
+        }
+        return;
+    }
+    // Single word — could be a bare mode (global default) or an unknown tool.
+    if let Some(m) = state::ToolVerbosity::parse(args) {
+        state.tool_default = m;
+        state.tools_gen += 1;
+        persist_tools_config(state);
+        state.notice = Some((format!("tools default: {}", m.label()), "info".to_string()));
+        return;
+    }
+    tools_usage(state);
+}
+
+fn tools_usage(state: &mut state::AppState) {
+    state.entries.push(state::ChatEntry::Diag(
+        "usage: /tools [<tool> <mode>[!|+|-] | <tool> clear | default <mode>]".to_string(),
+    ));
+    state.entries.push(state::ChatEntry::Diag(
+        "modes: line | block | full · strictness: ! pinned, + at-least, - at-most".to_string(),
+    ));
+}
+
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut AppState,
@@ -529,6 +597,13 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.entries.push(state::ChatEntry::Diag(
                     "usage: /settings {glimmer|fire} <args>".to_string(),
                 ));
+                return;
+            }
+            // /tools — tool verbosity config. Bare opens the modal picker;
+            // args do CLI-style sets (never RPC).
+            if msg == "/tools" || msg.starts_with("/tools ") {
+                let args = msg["/tools".len()..].trim();
+                tools_command(state, args);
                 return;
             }
             // Local fixed commands.

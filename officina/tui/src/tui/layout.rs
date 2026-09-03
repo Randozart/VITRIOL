@@ -168,6 +168,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_resume_modal(frame, state, area);
         return;
     }
+    if state.tools_modal_open {
+        render_chat_and_editor(frame, state, area);
+        render_tools_modal(frame, state, area);
+        return;
+    }
     render_chat_and_editor(frame, state, area);
 }
 
@@ -566,6 +571,8 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
         Span::styled("^c/^q quit", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
         Span::styled("f9 stderr", theme::muted()),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled("^v tools", theme::muted()),
     ];
 
     // Widgets present = telemetry path alive. Absence is NOT a fault —
@@ -649,6 +656,88 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     format!(" {}", e.title),
                     Style::new().fg(theme::TEXT).bg(theme::BG),
                 ),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// /tools modal — tool verbosity config, resume-picker styling (owner
+/// request 2026-09-03). Row 0 = global default; rows 1.. = known tools.
+/// enter cycles mode · tab cycles strictness · bksp clears · esc closes.
+fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    use crate::tui::state::{Strictness, ToolOverride};
+    let row_count = crate::tui::state::KNOWN_TOOLS.len() + 1;
+    let h = area.height.min((row_count as u16 + 3).max(9));
+    let w = area.width.min(60);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::BG))
+        .title(Span::styled(
+            format!(" {} tool verbosity ", theme::GLYPH_CRUCIBLE),
+            theme::banner(),
+        ))
+        .title_bottom(Span::styled(
+            " ↑↓ select · enter mode · tab strict · ⌫ clear · esc ",
+            theme::muted(),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let visible = inner.height as usize;
+    let sel = state.tools_modal_sel;
+    let skip = if sel + 1 > visible { sel + 1 - visible } else { 0 };
+
+    let mut lines: Vec<Line> = Vec::new();
+    for row in skip..row_count {
+        let selected = row == sel;
+        let (label, status, status_st): (String, String, Style) = if row == 0 {
+            (
+                "global".to_string(),
+                state.tool_default.label().to_string(),
+                Style::new().fg(theme::GOLD).bg(theme::BG),
+            )
+        } else {
+            let name = crate::tui::state::KNOWN_TOOLS[row - 1];
+            let (status, st) = match state.tool_overrides.get(name) {
+                Some(ToolOverride { mode, strictness }) => {
+                    let word = match strictness {
+                        Strictness::Pinned => "pinned",
+                        Strictness::AtLeast => "at least",
+                        Strictness::AtMost => "at most",
+                    };
+                    (
+                        format!("{} ({})", mode.label(), word),
+                        Style::new().fg(theme::CYAN).bg(theme::BG),
+                    )
+                }
+                None => (
+                    format!("→ {}", state.tool_default.label()),
+                    Style::new().fg(theme::MUTED).bg(theme::BG),
+                ),
+            };
+            (name.to_string(), status, st)
+        };
+        if selected {
+            lines.push(Line::from(Span::styled(
+                trunc(&format!("▸ {:<8} {}", label, status), (inner.width as usize).saturating_sub(1)),
+                Style::new()
+                    .fg(theme::BG)
+                    .bg(theme::GOLD)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {:<8} ", label), Style::new().fg(theme::TEXT).bg(theme::BG)),
+                Span::styled(status, status_st),
             ]));
         }
     }

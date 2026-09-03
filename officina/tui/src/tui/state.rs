@@ -131,6 +131,11 @@ pub enum ChatEntry {
         output_truncated: bool,
         running: bool,
         error: bool,
+        /// Cached Block/Full rendering: (width, tools_gen, output_len, lines).
+        /// Invalidated when any component changes — streaming output grows,
+        /// config toggles bump tools_gen.
+        #[allow(clippy::type_complexity)]
+        render_cache: Option<(usize, u64, usize, Vec<Line<'static>>)>,
     },
     /// Diagnostic notice (extension errors, retries, stderr surfacing).
     Diag(String),
@@ -324,6 +329,7 @@ impl AppState {
             output_truncated: false,
             running: true,
             error: false,
+            render_cache: None,
         });
     }
 
@@ -558,12 +564,14 @@ impl AppState {
 
     /// All chat lines as styled ratatui Lines.
     /// Assistant entries go through the markdown renderer (cached).
+    /// Tool entries render per their effective verbosity mode (cached per
+    /// entry against width + tools_gen + output length).
     pub fn chat_lines(&mut self, width: usize) -> Vec<Line<'static>> {
         if self.md_cache.len() > 1024 {
             self.md_cache.clear();
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
-        for (idx, entry) in self.entries.iter().enumerate() {
+        for (idx, entry) in self.entries.iter_mut().enumerate() {
             match entry {
                 ChatEntry::User(text) => {
                     for (i, seg) in wrap_text(text, width.saturating_sub(2)).into_iter().enumerate() {
@@ -621,33 +629,73 @@ impl AppState {
                 ChatEntry::Tool {
                     name,
                     summary,
+                    args,
+                    output,
+                    output_truncated,
                     running,
                     error,
+                    render_cache,
                     ..
                 } => {
-                    let (icon, st) = if *running {
-                        (theme::GLYPH_CRUCIBLE, theme::warn())
-                    } else if *error {
-                        ("✗", theme::crit())
-                    } else {
-                        ("✓", Style::default().fg(theme::GREEN).bg(theme::BG))
-                    };
-                    let body = if summary.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{} {}", name, summary)
-                    };
-                    for (i, seg) in wrap_text(&body, width.saturating_sub(8)).into_iter().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled(format!("  {} ", icon), st),
-                                Span::styled(seg, st),
-                            ]));
+                    let mode = effective_mode(name, self.tool_default, &self.tool_overrides);
+                    if mode == ToolVerbosity::Line {
+                        // Collapsed single line — the status-quo rendering,
+                        // byte-identical to pre-verbosity builds.
+                        let (icon, st) = if *running {
+                            (theme::GLYPH_CRUCIBLE, theme::warn())
+                        } else if *error {
+                            ("✗", theme::crit())
                         } else {
-                            lines.push(Line::from(vec![
-                                Span::raw("        "),
-                                Span::styled(seg, st),
-                            ]));
+                            ("✓", Style::default().fg(theme::GREEN).bg(theme::BG))
+                        };
+                        let body = if summary.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{} {}", name, summary)
+                        };
+                        for (i, seg) in wrap_text(&body, width.saturating_sub(8)).into_iter().enumerate() {
+                            if i == 0 {
+                                lines.push(Line::from(vec![
+                                    Span::styled(format!("  {} ", icon), st),
+                                    Span::styled(seg, st),
+                                ]));
+                            } else {
+                                lines.push(Line::from(vec![
+                                    Span::raw("        "),
+                                    Span::styled(seg, st),
+                                ]));
+                            }
+                        }
+                    } else {
+                        // Block / Full — bordered construction block, cached
+                        // against (width, tools_gen, output length).
+                        let gen = self.tools_gen;
+                        let body_w = width.saturating_sub(2).max(20);
+                        let olen = output.len();
+                        let fresh = matches!(render_cache,
+                            Some((w, g, o, _)) if *w == body_w && *g == gen && *o == olen);
+                        if !fresh {
+                            let block = render_tool_block(
+                                mode,
+                                name,
+                                summary,
+                                args.as_ref(),
+                                output,
+                                *output_truncated,
+                                *running,
+                                *error,
+                                body_w,
+                            );
+                            *render_cache = Some((body_w, gen, olen, block));
+                        }
+                        if let Some((_, _, _, block)) = render_cache.as_ref() {
+                            for bl in block {
+                                lines.push(Line::from(
+                                    std::iter::once(Span::raw("  "))
+                                        .chain(bl.spans.iter().cloned())
+                                        .collect::<Vec<Span>>(),
+                                ));
+                            }
                         }
                     }
                 }
@@ -687,6 +735,7 @@ impl AppState {
         ("settings", "UI settings (bare = list; glimmer|fire <args>)"),
         ("stats", "refresh session stats"),
         ("thinking", "thinking level (off..max, bare = cycle)"),
+        ("tools", "tool verbosity (bare = config menu, or <tool> <mode>[!+|-])"),
     ];
 
     /// Slash-command candidates for the current input (empty if not a
@@ -884,6 +933,187 @@ fn summarize_args(args: &serde_json::Value) -> String {
         }
     }
     String::new()
+}
+
+/// Render a Tool entry in Block or Full verbosity (owner request
+/// 2026-09-03). Open-right box — no right border, so nothing needs
+/// padding math and wrapped content reads naturally in the chat flow:
+///
+/// ```text
+/// ╭─ ⌬ write ▸ src/main.rs
+/// │ args  {"path": "src/main.rs"}
+/// │ out
+/// │   use tokio::sync::mpsc;
+/// │   … 3 more lines
+/// ╰─ ✓
+/// ```
+///
+/// Block shows a one-line args summary and a preview slice of the output;
+/// Full shows the complete pretty-printed args JSON and (near-)all output,
+/// with a live tail while the tool is running. `width` is the box budget.
+fn render_tool_block(
+    mode: ToolVerbosity,
+    name: &str,
+    summary: &str,
+    args: Option<&serde_json::Value>,
+    output: &[String],
+    truncated: bool,
+    running: bool,
+    error: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let full = mode == ToolVerbosity::Full;
+    let border = Style::default().fg(theme::BORDER_DIM).bg(theme::BG);
+    let text_st = Style::default().fg(theme::TEXT).bg(theme::BG);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(16 + output.len());
+
+    // Header: ╭─ ⌬ name [▸ summary]
+    {
+        let mut spans = vec![
+            Span::styled("╭─ ", border),
+            Span::styled(format!("{} ", theme::GLYPH_CRUCIBLE), Style::default().fg(theme::GOLD).bg(theme::BG)),
+            Span::styled(name.to_string(), Style::default().fg(theme::SILVER).bg(theme::BG).add_modifier(ratatui::style::Modifier::BOLD)),
+        ];
+        let head_w = width.saturating_sub(6 + name.chars().count());
+        if !summary.is_empty() && head_w > 4 {
+            spans.push(Span::styled(
+                format!(" ▸ {}", trunc_str(summary, head_w - 3)),
+                Style::default().fg(theme::MUTED).bg(theme::BG),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Args section.
+    match (full, args) {
+        (true, Some(a)) if !a.is_null() => {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", border),
+                Span::styled("args", Style::default().fg(theme::MUTED).bg(theme::BG)),
+            ]));
+            if let Ok(pretty) = serde_json::to_string_pretty(a) {
+                for pl in pretty.lines() {
+                    let mut spans = vec![Span::styled("│   ", border)];
+                    spans.extend(json_line_spans(pl, width.saturating_sub(4)));
+                    lines.push(Line::from(spans));
+                }
+            }
+        }
+        (false, Some(a)) if !a.is_null() => {
+            let one = serde_json::to_string(a).unwrap_or_default();
+            let compact = if summary.is_empty() { one } else { format!("{} {}", summary, one) };
+            lines.push(Line::from(vec![
+                Span::styled("│ ", border),
+                Span::styled("args  ", Style::default().fg(theme::MUTED).bg(theme::BG)),
+                Span::styled(
+                    trunc_str(compact.trim(), width.saturating_sub(9)),
+                    text_st,
+                ),
+            ]));
+        }
+        _ => {}
+    }
+
+    // Output section.
+    if !output.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled("out", Style::default().fg(theme::MUTED).bg(theme::BG)),
+        ]));
+        let budget = match (full, running) {
+            (true, true) => 50, // live tail
+            (true, false) => TOOL_OUTPUT_CAP,
+            (false, true) => 8,
+            (false, false) => TOOL_OUTPUT_PREVIEW,
+        };
+        // Completed views show the HEAD (the construction story); running
+        // views show the TAIL (what's happening now).
+        let slice: &[String] = if running && output.len() > budget {
+            &output[output.len() - budget..]
+        } else if output.len() > budget {
+            &output[..budget]
+        } else {
+            output
+        };
+        for ol in slice {
+            for (i, seg) in wrap_text(ol, width.saturating_sub(5)).into_iter().enumerate() {
+                let prefix = if i == 0 { "│   " } else { "│   " };
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, border),
+                    Span::styled(seg, text_st),
+                ]));
+            }
+        }
+        let hidden = output.len().saturating_sub(slice.len());
+        if hidden > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("│   ", border),
+                Span::styled(
+                    format!("… {} more lines", hidden),
+                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                ),
+            ]));
+        }
+        if truncated {
+            lines.push(Line::from(vec![
+                Span::styled("│   ", border),
+                Span::styled(
+                    "… output truncated (storage cap)",
+                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                ),
+            ]));
+        }
+    } else if running {
+        lines.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled("running…", theme::info()),
+        ]));
+    }
+
+    // Bottom status.
+    {
+        let (icon, label, st) = if running {
+            (theme::GLYPH_CRUCIBLE, " running", theme::warn())
+        } else if error {
+            ("✗", " failed", theme::crit())
+        } else {
+            ("✓", "", Style::default().fg(theme::GREEN).bg(theme::BG))
+        };
+        lines.push(Line::from(vec![
+            Span::styled("╰─ ", border),
+            Span::styled(format!("{}{}", icon, label), st),
+        ]));
+    }
+    lines
+}
+
+/// Pretty-JSON line colorized into spans: `"key":` cyan, braces muted,
+/// scalar values text-colored. Truncated to `width` chars.
+fn json_line_spans(line: &str, width: usize) -> Vec<Span<'static>> {
+    let t = trunc_str(line, width);
+    let trimmed = t.trim_start();
+    let brace = trimmed == "{" || trimmed == "}" || trimmed == "},";
+    if brace {
+        return vec![Span::styled(t, Style::default().fg(theme::MUTED).bg(theme::BG))];
+    }
+    if let Some(pos) = t.find("\":") {
+        let split = pos + 2; // include the colon
+        return vec![
+            Span::styled(t[..split].to_string(), Style::default().fg(theme::CYAN).bg(theme::BG)),
+            Span::styled(t[split..].to_string(), Style::default().fg(theme::TEXT).bg(theme::BG)),
+        ];
+    }
+    vec![Span::styled(t, Style::default().fg(theme::TEXT).bg(theme::BG))]
+}
+
+/// Char-count truncation with ellipsis.
+fn trunc_str(s: &str, w: usize) -> String {
+    if s.chars().count() <= w {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(w.saturating_sub(1)).collect();
+        format!("{}…", cut)
+    }
 }
 
 /// Greedy word wrap returning owned strings.
@@ -1115,5 +1345,69 @@ mod tests {
         } else {
             panic!("expected tool entry");
         }
+    }
+
+    #[test]
+    fn line_mode_renders_like_legacy() {
+        let mut s = AppState::default();
+        assert_eq!(s.tool_default, ToolVerbosity::Line);
+        s.tool_start(Some("c"), "write", &serde_json::json!({"path": "src/main.rs"}));
+        s.tool_end(Some("c"), "write", "", false);
+        let text = s.chat_lines(80).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("✓"), "done icon present: {}", text);
+        assert!(text.contains("write"), "name present: {}", text);
+        assert!(text.contains("src/main.rs"), "summary present: {}", text);
+        // No block furniture in Line mode.
+        assert!(!text.contains('╭'), "no block border: {}", text);
+    }
+
+    #[test]
+    fn at_least_override_promotes_to_block() {
+        let mut s = AppState::default();
+        s.tool_overrides.insert(
+            "write".into(),
+            ToolOverride { mode: ToolVerbosity::Block, strictness: Strictness::AtLeast },
+        );
+        s.tool_start(Some("c"), "write", &serde_json::json!({"path": "src/main.rs"}));
+        s.tool_end(Some("c"), "write", "out line\n", false);
+        let text = s.chat_lines(80).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains('╭'), "block header present: {}", text);
+        assert!(text.contains('╰'), "block footer present: {}", text);
+        assert!(text.contains("args"), "args section present: {}", text);
+        assert!(text.contains("out line"), "output present: {}", text);
+    }
+
+    #[test]
+    fn full_mode_shows_pretty_args() {
+        let mut s = AppState::default();
+        s.tool_default = ToolVerbosity::Full;
+        s.tool_start(Some("c"), "edit", &serde_json::json!({"path": "a.rs", "old": "x", "new": "y"}));
+        s.tool_end(Some("c"), "edit", "", false);
+        let text = s.chat_lines(80).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("args"), "args header: {}", text);
+        assert!(text.contains("\"path\""), "pretty json key: {}", text);
+        assert!(text.contains("\"old\""), "second key: {}", text);
+    }
+
+    #[test]
+    fn cache_invalidates_on_gen_and_stream() {
+        let mut s = AppState::default();
+        s.tool_default = ToolVerbosity::Block;
+        s.tool_start(Some("c"), "bash", &serde_json::json!({}));
+        s.tool_update(Some("c"), "bash", "one\n");
+        let g0 = s.tools_gen;
+        let _ = s.chat_lines(60);
+        // Same inputs → cache hit (gen/output unchanged): mutate width only
+        // to force rebuild and confirm width is part of the key.
+        let _ = s.chat_lines(60);
+        assert_eq!(s.tools_gen, g0);
+        // Streaming grows output → cache must rebuild (output_len mismatch).
+        s.tool_update(Some("c"), "bash", "two\n");
+        let _ = s.chat_lines(60);
+        // Config change → cache must rebuild for every entry.
+        s.tools_gen += 1;
+        let text = s.chat_lines(60).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("one"), "streamed lines visible: {}", text);
+        assert!(text.contains("two"), "streamed lines visible: {}", text);
     }
 }

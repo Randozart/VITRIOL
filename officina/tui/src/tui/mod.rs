@@ -355,6 +355,53 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 persist_glimmer(state);
                 return;
             }
+            // /settings (alias /config) — consolidated UI settings.
+            if msg.starts_with("/settings") || msg.starts_with("/config") {
+                let start = if msg.starts_with("/settings") { "/settings" } else { "/config" };
+                let rest = msg[start.len()..].trim();
+                if rest.is_empty() {
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "\u{2699} glimmer: {}",
+                        state.glimmer.label(),
+                    )));
+                    let fire_desc = if state.fire_on {
+                        format!("on {}", state.fire_style.label())
+                    } else {
+                        "off".to_string()
+                    };
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "\u{2699} fire: {}",
+                        fire_desc,
+                    )));
+                    state.entries.push(state::ChatEntry::Diag(
+                        "\u{2699} /settings {glimmer|fire} <args>".to_string(),
+                    ));
+                    return;
+                }
+                if let Some((key, args)) = rest.split_once(' ') {
+                    match key {
+                        "glimmer" => {
+                            let label = state.set_glimmer(args);
+                            state.notice =
+                                Some((format!("glimmer: {}", label), "info".to_string()));
+                            persist_glimmer(state);
+                            return;
+                        }
+                        "fire" => {
+                            let label = state.set_fire(args);
+                            state.notice =
+                                Some((format!("fire: {}", label), "info".to_string()));
+                            persist_fire(state);
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+                state.entries.push(state::ChatEntry::Diag(
+                    "usage: /settings {glimmer|fire} <args>".to_string(),
+                ));
+                return;
+            }
             // Local fixed commands.
             match msg.as_str() {
                 "/quit" | "/q" => {

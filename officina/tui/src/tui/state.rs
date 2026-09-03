@@ -490,14 +490,18 @@ impl AppState {
     /// Local (TUI-side) commands — dispatched to RPC directly, never sent
     /// to pi as prompt text. (name, description)
     pub const LOCAL_COMMANDS: &[(&str, &str)] = &[
+        ("clear", "clear the transcript"),
         ("compact", "compact the context (optional hints)"),
+        ("diag", "toggle diagnostic overlay"),
+        ("fire", "composer flames (bare = toggle, or on|off|style|prismatic|emerald|alchemy)"),
+        ("glimmer", "watermark glimmer (bare = cycle, or shimmer|breathe|twinkle|off)"),
         ("model", "cycle the model"),
         ("new", "start a new session"),
+        ("quit", "quit the TUI (alias /q)"),
         ("resume", "resume a previous session"),
+        ("settings", "UI settings (bare = list; glimmer|fire <args>)"),
         ("stats", "refresh session stats"),
         ("thinking", "thinking level (off..max, bare = cycle)"),
-        ("glimmer", "watermark glimmer (bare = cycle, or shimmer|breathe|twinkle|off)"),
-        ("fire", "composer flames (bare = toggle, or on|off|style|prismatic|emerald|alchemy)"),
     ];
 
     /// Slash-command candidates for the current input (empty if not a
@@ -588,7 +592,7 @@ impl AppState {
     pub fn is_local_command(&self, msg: &str) -> bool {
         let word = msg.split_whitespace().next().unwrap_or("");
         let word = word.trim_start_matches('/');
-        Self::LOCAL_COMMANDS.iter().any(|(n, _)| *n == word)
+        Self::LOCAL_COMMANDS.iter().any(|(n, _)| *n == word) || word == "config"
     }
 
     /// Longest common prefix completion for the current command word.

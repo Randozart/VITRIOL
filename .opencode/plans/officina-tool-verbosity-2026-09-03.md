@@ -190,10 +190,30 @@ Loaded on startup. Saved on any change (ctrl+v cycle, /tools set, modal change).
 
 ## Commits
 
-| # | Message | Key files |
+| # | Commit | Key files |
 |---|---|---|
-| 1 | `officina: tool verbosity plumbing — ids, live updates, mode resolution` | `tui/state.rs`, `tui/mod.rs` |
-| 2 | `officina: tool renderers + ctrl+v + /tools config + modal picker` | `tui/state.rs`, `tui/layout.rs`, `tui/mod.rs` |
-| 3 | `officina: green streak in watermark shimmer` | `tui/watermark.rs` |
+| 1 | `1c24230` tool verbosity plumbing — ids, live updates, mode resolution | `tui/state.rs`, `tui/mod.rs` |
+| 2 | `6eae3c5` tool renderers + ctrl+v cycle + /tools config + modal picker | `tui/state.rs`, `tui/layout.rs`, `tui/mod.rs` |
+| 3 | `b583e27` green streak in watermark shimmer | `tui/watermark.rs` |
 
-Each: cargo test → release build → install → plan addendum → commit.
+44/44 cargo tests green. Bin installed each stage.
+
+## Outcome notes
+
+- **ID-matching bug caught by test**: the naive `id_match || name_match`
+  OR-logic let a same-named sibling tool absorb another's streaming text.
+  Final rule: ids must match when both sides carry one; name fallback only
+  for legacy id-less events (`(Some, None) → false` keeps strictness).
+- **Render cache**: per-entry `(width, tools_gen, output_len)` triple —
+  streaming grows output_len (rebuild), config change bumps tools_gen
+  (rebuild all), resize changes width (rebuild). Line mode bypasses cache
+  (byte-identical legacy path).
+- **Modal semantics**: enter on a tool row with no override creates
+  Pinned at global.next() (modal is where you pin); tab cycles
+  Pinned → AtLeast → AtMost; ⌫ clears back to "→ global".
+- **Streak tuning**: first green peak (0x3A,0x6E,0x4A) FAILED the
+  luminance bound (G=110 × 0.7152 outweighed the dimmer R/B) — final
+  peak (0x36,0x68,0x46) sits under the silver sweep's luminance at every
+  intensity, enforced by `streak_peak_luminance_bounded_by_silver`.
+- **Open-right box** for tool blocks: no right border → no padding math,
+  wrapped content flows naturally in chat.

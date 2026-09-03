@@ -138,9 +138,52 @@ pub(crate) fn cell_hash(x: u32, y: u32, step: u32) -> u32 {
 
 /// Non-empty art lines from an embedded asset (trailing blank rows dropped).
 fn art_lines(raw: &'static str) -> Vec<String> {
-    raw.lines()
+    let mut lines: Vec<String> = raw
+        .lines()
         .map(|l| l.trim_end().to_string())
-        .collect::<Vec<_>>()
+        .collect();
+    strip_braille_margins(&mut lines);
+    lines
+}
+
+/// Remove the invisible braille-blank (U+2800) margins hugging the art
+/// (owner request 2026-09-03 — "a lot of whitespace before and after").
+/// `trim_end()` above never sees U+2800: it is not ASCII whitespace, so
+/// each row carries ~12 leading and ~12 trailing blank columns that
+/// widen the rendered block far beyond the visible stone.
+///
+/// Leading: remove only the SHARED minimum blank run across all rows —
+/// uniform column removal shifts every row together, so relative offsets
+/// (the motto's indent against the stone) are mathematically preserved.
+/// Trailing: per-line blank-run trim (left-alignment is unaffected).
+/// Rows are never dropped: the diamond taper IS the logo (measured: every
+/// one of the 32/38 rows carries dots).
+fn strip_braille_margins(lines: &mut [String]) {
+    let is_blank = |ch: char| ch == '⠀' || ch == ' ';
+    let mut min_lead = usize::MAX;
+    for l in lines.iter() {
+        if l.chars().all(is_blank) {
+            continue; // fully blank row imposes no margin
+        }
+        let lead = l.chars().take_while(|c| is_blank(*c)).count();
+        min_lead = min_lead.min(lead);
+    }
+    if min_lead == usize::MAX {
+        return; // all blank — nothing to strip
+    }
+    // (min_lead == 0 → start 0 for every row; the loop still trims trailing.)
+    for l in lines.iter_mut() {
+        let chars: Vec<char> = l.chars().collect();
+        let start = min_lead.min(chars.len()).min(
+            // never eat into a non-blank row's content beyond its own lead
+            chars.iter().take_while(|c| is_blank(**c)).count(),
+        );
+        let mut end = chars.len();
+        while end > start && is_blank(chars[end - 1]) {
+            end -= 1;
+        }
+        *l = chars[start..end].iter().collect();
+    }
 }
 
 /// The watermark art: the stone-with-motto when the window can hold it, the
@@ -377,5 +420,53 @@ mod tests {
         let mid_p = (max_d / 2.0 + SHIMMER_BAND)
             / (max_d + SHIMMER_BAND * 2.0 + SHIMMER_STREAK_OFFSET);
         assert!(band_i(max_d / 2.0, sweep_pos(mid_p, max_d), SHIMMER_BAND) > 0.99);
+    }
+
+    /// Owner request 2026-09-03: strip the invisible braille-blank margins.
+    /// Shared leading columns go; per-row EXTRA leading (the motto's indent)
+    /// must survive — relative offsets are the whole point.
+    #[test]
+    fn strip_removes_shared_margins_but_keeps_relative_offsets() {
+        let mut lines = vec![
+            "⠀⠀⠀⠀⢀⣠⡀⠀".to_string(),   // lead 4, content, trailing blank
+            "⠀⠀⠀⠀⢺⣟⣻⢿⣿".to_string(), // lead 4
+            "⠀⠀⠀⠀⠀⠀⣼⣽".to_string(),   // lead 6 — the "motto" indent
+        ];
+        strip_braille_margins(&mut lines);
+        assert_eq!(lines[0], "⢀⣠⡀");
+        assert_eq!(lines[1], "⢺⣟⣻⢿⣿");
+        assert_eq!(lines[2], "⠀⠀⣼⣽", "extra indent beyond the shared run survives");
+    }
+
+    #[test]
+    fn strip_handles_blank_and_empty_lines() {
+        let mut lines = vec![String::new(), "⠀⠀⠀⠀a b".to_string(), "⠀".to_string()];
+        strip_braille_margins(&mut lines);
+        assert_eq!(lines[0], "");
+        assert_eq!(lines[1], "a b");
+        assert_eq!(lines[2], "");
+    }
+
+    /// The shipped assets: strip tightens the block to the visible art and
+    /// the motto rows keep their indent relative to the stone rows.
+    /// (Note: stone rows lead with U+2800, motto rows with ASCII spaces —
+    /// the shared-lead minimum must count BOTH blank kinds, matching the
+    /// strip's own `is_blank`.)
+    #[test]
+    fn shipped_assets_strip_to_visible_bbox() {
+        let is_blank = |ch: char| ch == '⠀' || ch == ' ';
+        let lead = |l: &str| l.chars().take_while(|c| is_blank(*c)).count();
+        let plain = art_lines(LOGO_RAW);
+        let w = plain.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+        assert!(w < 80, "plain block should tighten below the raw 80, got {}", w);
+        assert_eq!(plain.len(), 32, "no rows dropped — the taper IS the logo");
+        let motto = art_lines(LOGO_MOTTO_RAW);
+        assert_eq!(motto.len(), 38, "no rows dropped from the motto version");
+        // First stone row and first motto row: the motto's offset relative
+        // to the stone is preserved exactly as in the raw asset.
+        let raw: Vec<&str> = LOGO_MOTTO_RAW.lines().collect();
+        let delta_raw = lead(raw[32]) as isize - lead(raw[0]) as isize;
+        let delta_out = lead(&motto[32]) as isize - lead(&motto[0]) as isize;
+        assert_eq!(delta_raw, delta_out, "motto offset relative to stone unchanged");
     }
 }

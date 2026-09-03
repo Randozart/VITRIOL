@@ -344,20 +344,30 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Vec::new()
     };
 
-    // Carved motto in the breathing row (owner request 2026-09-03): the
-    // full V.I.T.R.I.O.L. acrostic when the column allows it, whole words
-    // dropping from the tail as width shrinks. Fresh screens skip it —
-    // the stone's own motto owns that moment. Drawn after the fire so the
-    // carving keeps text priority if flames rise through the gap.
-    if !state.entries.is_empty() {
+    // Gap row: explicit BG paint, ALWAYS (owner request 2026-09-03 — the
+    // terminal background must never peek through below the panels). The
+    // carved motto rides on it when there's room and the screen isn't
+    // fresh; fire dots rising through the gap keep their flame fg because
+    // set_style patches bg only.
+    {
         let gap = Rect {
             y: area.y + chat_area.height,
             height: 1,
             ..area
         };
-        if let Some(m) = motto_for(area.width as usize) {
-            frame.render_widget(Paragraph::new(Line::from(carved(&m))), gap);
+        let motto = if state.entries.is_empty() {
+            None
+        } else {
+            motto_for(area.width as usize)
+        };
+        let mut spans: Vec<Span> = Vec::new();
+        if let Some(m) = motto {
+            spans.push(carved(&m));
         }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::BG)),
+            gap,
+        );
     }
 
     // NO paragraph wrap: chat_lines pre-wraps everything to budget. A
@@ -365,7 +375,16 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // CLIP the transcript (owner bug 2026-09-03: "the console box hides
     // the bottom few rows" — raw code/table lines re-wrapped). Overlong
     // lines now lose one char horizontally instead of hiding history.
-    frame.render_widget(Paragraph::new(view), chat_area);
+    //
+    // EXPLICIT BG (owner request 2026-09-03): the style paints the whole
+    // rect before the lines render — without it, cells no span touched
+    // (blank rows, line tails) show the TERMINAL's own background, and the
+    // console reads as two different darks. set_style patches bg only: the
+    // fresh-screen stone keeps its glyphs and DIM.
+    frame.render_widget(
+        Paragraph::new(view).style(Style::new().bg(theme::BG)),
+        chat_area,
+    );
 
     // Text-tint pass (owner request 2026-09-02: "user text discolors based
     // on the fire beneath it — do the same for AI text"). Unstyled user

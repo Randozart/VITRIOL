@@ -49,3 +49,24 @@ Pure helpers + unit tests:
 
 cargo test (48 + new), vitest 519 + typecheck, release build + install,
 2 commits, outcome notes with hashes.
+
+## Commits
+
+| Commit | Notes |
+|---|---|
+| `465d288` sidebar declutter — header carries session id @ path | 3 layout helper tests |
+| `4249006` /help modal — sidebar glossary, keys, commands | hints row leads with /help |
+
+51 cargo tests, 519 vitest, tsc clean. Bin installed both stages.
+
+## Outcome notes
+
+- Rust: enum/struct items are NOT allowed inside `impl` blocks —
+  HelpRow/HelpRowKind/help_rows live at module level in state.rs and
+  reference `AppState::LOCAL_COMMANDS`.
+- Elide coordinate bug caught by test: `rposition` returns window-
+  relative indices; snapping `cut = pos + 1` (window coords) into a
+  full-path slice produced `…OL`. Correct shrink: `cut -= pos + 1`.
+- Default `AppState.cwd` renders as `.` through `to_string_lossy` —
+  tests set cwd explicitly before asserting label contents.
+- /help closes on esc, enter, or q; scrolls with ↑↓/jk.

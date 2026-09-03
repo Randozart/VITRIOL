@@ -76,3 +76,25 @@ cadence-4 experiments. "Holds on to too much" = no ejection whatsoever.
 Any future engine rebuild: the launcher guard (Stage 2) fails launches
 when sparse is configured but unsupported. AGENTS.md gains a pointer to
 this report if the port (Stage 6) lands.
+
+## Outcome notes (Stages 1-4 executed, 2026-09-03)
+
+| stage | status |
+|---|---|
+| 1 restore | lull engine rebuilt (build archaeology: stale `/usr/bin/nvcc` cache, CUDA-12.9 + `CMAKE_CUDA_HOST_COMPILER=/usr/bin/g++-14`, PIC for vendored httplib, treesitter `-Wno-error=incompatible-pointer-types`); installed into the launcher path over the text-busy old binary via rm+cp (running server keeps its old inode) |
+| 2 launcher | kv.score / kv.score_every keys, 7 export sites, kv_sparse_guard at both launch paths — refuses sparse launches on unsupported engines |
+| 3 counter | `llamacpp:kv_ejected_total` gauge plumbed kv-cache → llama.h API → server metrics → engine.ts → ctx row `⤓ Nk` |
+| 4 contract | task tail carries the eviction contract; scratchpad re-injection verified (existed all along — the gap was motivation, not plumbing) |
+| 5 eager floor | IMPLEMENTED, DEFAULT OFF — VITRIOL_KV_FLOOR / VITRIOL_KV_PROTECT (2048), sweeps ride the probe cadence in vitriol_probe_finish |
+| 6 port to main | STANDING — not executed |
+
+Commit chain: d9dd21c (auto-continue) → 35bbfdd (launcher) → d79f56a
+(counter + contract) → c3ac827 (config/template) + the lull worktree
+edits (uncommitted there intentionally until Stage 6; the worktree is
+the feature's source of truth until the port).
+
+**Restart required**: the running engine holds the old (sparse-less)
+inode; the next engine restart activates sparse + probe + the counter.
+Owner clarification on record: cadence 4 was rejected (aggressive); 16
+is certified and configured. Eager floor stays off until the counter
+shows real ejection behavior (observe before policy).

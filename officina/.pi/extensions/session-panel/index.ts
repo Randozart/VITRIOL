@@ -46,8 +46,10 @@ const SIDEBAR_W = 42;
 // border eats 2 columns (owner report 2026-09-02: 42-wide lines wrapped 2
 // chars onto the next row). The JS split trims 1 pad col — 40 fits both.
 const CONTENT_W = SIDEBAR_W - 2;
+export { CONTENT_W };
 
-const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+// (ANSI-stripped visible width — exported for tests alongside embDiv.)
+export const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
 /** Truncate a styled string to `w` visible cells. Safe for ANSI escape sequences. */
 const truncate = (s: string, w: number): string => {
@@ -74,10 +76,17 @@ const truncate = (s: string, w: number): string => {
 };
 
 // Dividers (owner request 2026-09-02): every section boundary is the full
-// thick rule — the weak hyphen sub-lines are retired ("replace the weaker
-// --- lines with the full blown thick lines between sections").
-const thickDiv = () => sc(MUTED, "─".repeat(CONTENT_W));
-const thinDiv = thickDiv;
+// thick rule. 2026-09-03 revision (owner): the header name lives INSIDE
+// the rule — "have each divisor start with their header name inside of
+// the divisor" — so a divider names the group that follows it, e.g.
+// `── Plans ──────────────`. Name at the start of the rule, padded to
+// exactly CONTENT_W visible columns. Exported for tests.
+export const embDiv = (name: string): string => {
+  const label = ` ${name} `;
+  const lead = "──";
+  const rest = CONTENT_W - visibleLen(lead) - visibleLen(label);
+  return sc(MUTED, lead + label + "─".repeat(Math.max(0, rest)));
+};
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
@@ -142,10 +151,10 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // P13: Thick divider (header / stats boundary)
+  // P13: Divider with embedded group header (engine stats follow)
   registerSidebarSection("div1", 13, () => {
     if (!sidebarEnriched()) return undefined;
-    return [thickDiv()];
+    return [embDiv("Engine")];
   });
 
   // P20: Context usage
@@ -187,16 +196,19 @@ export default function (pi: ExtensionAPI) {
     return [truncate(line, CONTENT_W)];
   });
 
-  // P28: Thin divider (stats / tasks boundary)
+  // P28: Divider with embedded group header (the Plans group follows)
   registerSidebarSection("div2", 28, () => {
     if (!sidebarEnriched()) return undefined;
-    return [thinDiv()];
+    return [embDiv("Plans")];
   });
 
   // P35: Task state — counts + the actual open items (owner request
   // 2026-09-02: "I'd like to see the scratchpad and todo in the sidebar").
   // Items sort open-first (in_progress, pending) via getTaskItems; cap at
-  // 4 lines so the panel keeps its shape.
+  // 4 lines so the panel keeps its shape. 2026-09-03 (owner): the group
+  // NAME moved into the divider (div2 → "── Plans ─…"), so the counts
+  // row drops its inline prefix — the checklist starts on its own row,
+  // nothing sits weirdly after the name.
   registerSidebarSection("tasks", 35, () => {
     if (!sidebarEnriched()) return undefined;
     const summary = getTaskSummary();
@@ -206,7 +218,7 @@ export default function (pi: ExtensionAPI) {
     if (summary.inProgress > 0) parts.push(sc(SAFETY, `[>] ${summary.inProgress}`));
     if (summary.pending > 0) parts.push(sc(MUTED, `[ ] ${summary.pending}`));
     parts.push(sc(SAFETY, `${summary.completed} done`));
-    lines.push(truncate(sc(MUTED, "tasks ") + parts.join(sc(MUTED, " · ")), CONTENT_W));
+    lines.push(truncate(parts.join(sc(MUTED, " · ")), CONTENT_W));
     const items = getTaskItems().filter((t) => t.status === "in_progress" || t.status === "pending");
     for (const t of items.slice(0, 4)) {
       const mark = t.status === "in_progress" ? sc(SAFETY, "[>] ") : sc(MUTED, "[ ] ");
@@ -246,10 +258,10 @@ export default function (pi: ExtensionAPI) {
     ];
   });
 
-  // P42: Thin divider (files / session boundary)
+  // P42: Divider with embedded group header (session/skills follow)
   registerSidebarSection("div3", 42, () => {
     if (!sidebarEnriched()) return undefined;
-    return [thinDiv()];
+    return [embDiv("Session")];
   });
 
   // P45: Session stats
@@ -278,10 +290,10 @@ export default function (pi: ExtensionAPI) {
     return [truncate(sc(MUTED, "ref ") + shown.map((t) => sc(SOLVENT, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${topics.length} injected`), CONTENT_W)];
   });
 
-  // P58: Thin divider (before hints)
+  // P58: Divider with embedded group header (command hints follow)
   registerSidebarSection("div4", 58, () => {
     if (!sidebarEnriched()) return undefined;
-    return [thinDiv()];
+    return [embDiv("Commands")];
   });
 
   // P90: Command hints

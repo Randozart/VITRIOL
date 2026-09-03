@@ -146,7 +146,15 @@ pub const MIN_LEVEL: f64 = 0.04;
 /// Braille density ramp, ember → blaze. The ceiling is ⣷, never ⣿ — full
 /// blocks would punch out the chat text underneath; this stays readable
 /// (owner decision: overlay, "still readable"). Embers use the sparse end.
-const DENSITY: [char; 7] = ['⠀', '⠁', '⠃', '⠇', '⡇', '⣇', '⣷'];
+///
+/// FILL DIRECTION (owner report 2026-09-03: "the individual braille blocks
+/// have their directions inverted"): a rising flame fills each cell from
+/// the BOTTOM — left column lowest-first (dot7 → dot3 → dot2 → dot1 =
+/// ⡀ ⡄ ⡆ ⡇), then the right column bottom-up (+dot8 = ⣇, +dot6 = ⣧),
+/// ending at the full block. The old ramp anchored ⠁⠃⠇ at the cell TOP —
+/// half-filled cells read as dripping downward. All glyphs are common
+/// braille coverage.
+const DENSITY: [char; 8] = ['⠀', '⡀', '⡄', '⡆', '⡇', '⣇', '⣧', '⣷'];
 
 fn hash01(x: u32, y: u32, step: u32) -> f64 {
     (cell_hash(x, y, step) % 1024) as f64 / 1024.0
@@ -250,4 +258,34 @@ pub fn render(
     }
     frame.render_widget(Paragraph::new(lines), area);
     fire_map
+}
+
+#[cfg(test)]
+mod density_tests {
+    use super::*;
+
+    /// Owner report 2026-09-03: individual braille blocks were
+    /// direction-inverted — the ramp anchored at the cell TOP. A rising
+    /// flame fills each cell from the bottom: lowest dot first, monotone
+    /// bit growth, ending at the full block.
+    #[test]
+    fn density_ramp_fills_cells_bottom_up() {
+        let bits = |c: char| (c as u32) - 0x2800;
+        assert_eq!(bits(DENSITY[0]), 0x00); // empty
+        assert_eq!(bits(DENSITY[1]), 0x40); // dot 7 — the lowest-left dot
+        assert_eq!(bits(DENSITY[2]), 0x44); // + dot 3
+        assert_eq!(bits(DENSITY[3]), 0x46); // + dot 2
+        assert_eq!(bits(DENSITY[4]), 0x47); // full left column
+        assert_eq!(bits(DENSITY[5]), 0xC7); // + dot 8 (bottom-right)
+        assert_eq!(bits(DENSITY[6]), 0xE7); // + dot 6
+        // Ceiling: ⣷ = 0xF7 — every dot except the top-right (dot 4). The
+        // original readability rule stands: never the full ⣿ block.
+        assert_eq!(bits(DENSITY[7]), 0xF7);
+        // Monotone: each step only ADDS dots.
+        for w in DENSITY.windows(2) {
+            assert_eq!(bits(w[0]) & bits(w[1]), bits(w[0]), "{:?} → {:?}", w[0], w[1]);
+            assert_ne!(bits(w[0]), bits(w[1]));
+        }
+        assert_eq!(*DENSITY.last().unwrap(), '⣷');
+    }
 }

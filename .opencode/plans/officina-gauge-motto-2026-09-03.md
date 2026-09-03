@@ -63,7 +63,19 @@ Tests: motto_for ladder (full / drops word-for-word / None).
 
 ## Commits
 
-| # | Message |
-|---|---|
-| 1 | `officina: gauge fills bottom-up + transcript rows can't hide` |
-| 2 | `officina: carved VISITA INTERIOREM… motto in gap row + prompt` |
+| # | Commit | Notes |
+|---|---|---|
+| 1 | `7497fd0` gauge fills bottom-up + transcript rows can't hide | gauge_row_bits + paragraph unwrap + 3 source budgets |
+| 2 | `10c93ea` carved VISITA INTERIOREM… motto — gap row + prompt placeholder | motto_for ladder |
+
+60 cargo tests green. Bin installed both stages.
+
+## Outcome notes
+
+- Gauge row arithmetic: edge cell detection is `h − full − row == 1`
+  (row just above the block); `full == h` lights everything with no
+  edge artifact — boundary sweep tested.
+- Sidebar paragraph KEEPS its wrap (sidebar lines are truncate()d to
+  CONTENT_W already; the clip bug was chat-only).
+- Motto ladder test sweeps widths 0..=70 asserting every returned form
+  fits its budget — the shortening rule is enforced, not assumed.

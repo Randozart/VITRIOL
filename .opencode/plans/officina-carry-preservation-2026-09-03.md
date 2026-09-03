@@ -41,3 +41,11 @@ note/tasks, contract rides every context build.
 ## Out of scope (flagged)
 
 Carrying knowledge/small-lane/background-lane abroad — separate decision.
+
+## Outcome (4682b47, 2026-09-03)
+
+Executed as planned: carriage list 4→6 (fn + mirror test), seeded
+contract block on empty task lists, 67 cargo + 520 vitest + tsc clean,
+TUI bin installed. Owner restarts Officina in ontic to activate: tools
+(update_tasks, scratchpad_write), tails with the eviction contract from
+turn 1, sidebar note/tasks sections reading ontic/.officina/.

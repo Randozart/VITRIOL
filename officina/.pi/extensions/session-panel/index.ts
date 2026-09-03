@@ -123,32 +123,19 @@ export default function (pi: ExtensionAPI) {
   };
 
   // ── Sidebar sections (priority order) ─────────────────────────────────
-  // Lower priority number = rendered first (top of sidebar).
+  // Lower priority number = rendered first (top of the sidebar).
+  //
+  // 2026-09-03 declutter (owner redundancy audit): the model row and the
+  // session title row are GONE — the Rust header center carries the model
+  // id and the header right carries the session name/id @ path. The ingest
+  // row is gone — its tok/s duplicated the engine row and its cumulative
+  // token count duplicated the ctx row.
 
-  // P10: Coupling name — no model suffix (owner request 2026-09-02): the
-  // model id renders one row below (P11); the coupling line is coupling-only.
+  // P10: Coupling name — provider identity anchor. No model suffix: the
+  // header owns the model id (owner requests 2026-09-02 + 2026-09-03).
   registerSidebarSection("coupling", 10, () => {
     const couplingFull = couplingDisplay(providerName, modelId, couplings);
     return [truncate(sc(GOLD, "◈ " + couplingFull), CONTENT_W)];
-  });
-
-  // P11: Model name (actual model behind the coupling)
-  registerSidebarSection("model", 11, () => {
-    if (!sidebarEnriched()) return undefined;
-    if (!modelId) return undefined;
-    return [truncate(sc(MUTED, "  " + modelId), CONTENT_W)];
-  });
-
-  // P12: Session title (if named)
-  registerSidebarSection("title", 12, () => {
-    if (!sidebarEnriched()) return undefined;
-    try {
-      const name = (pi as any).getSessionName?.();
-      if (!name) return undefined;
-      return [truncate(sc(MUTED, `"${name}"`), CONTENT_W)];
-    } catch {
-      return undefined;
-    }
   });
 
   // P13: Divider with embedded group header (engine stats follow)
@@ -168,31 +155,19 @@ export default function (pi: ExtensionAPI) {
     return [truncate(line, CONTENT_W)];
   });
 
-  // P22: Ingestion progress (kobold.cpp-style: cumulative tokens + rate)
-  registerSidebarSection("ingest", 22, () => {
-    if (!sidebarEnriched()) return undefined;
-    const eng = getEngineSnapshot();
-    if (!eng.up) return undefined;
-    const ing = eng.ingest;
-    if (!ing || ing.tps < 0.5) return undefined;
-    const g = renderGauge(RAMPS.mercury, Math.min(1, eng.cumulativeIngest / Math.max(1, ctxUsage?.contextWindow ?? 1)), 6);
-    const line = `${sc(MUTED, "ing ")}${g} ${sc(SOLVENT, fmtRate(ing.tps) + " tok/s")}${sc(MUTED, " · " + fmtTokens(eng.cumulativeIngest) + " tokens")}`;
-    return [truncate(line, CONTENT_W)];
-  });
-
-  // P25: Engine throughput
+  // P25: Engine throughput — the ONE live-rate row (2026-09-03 declutter:
+  // slots and engine-boot cumulative tokens dropped as noise; prefill rate
+  // row merged away — during prefill this row carries the rate).
   registerSidebarSection("engine", 25, () => {
     const eng = getEngineSnapshot();
     if (!eng.up) return undefined;
-    const busy = eng.busy;
-    const total = Math.max(eng.slots.length, busy, 1);
-    const decoding = eng.delta.tps > 0 || busy > 0;
+    const decoding = eng.delta.tps > 0 || eng.busy > 0;
     const g = renderGauge(
       decoding ? RAMPS.activity : RAMPS.mercury,
       decoding ? Math.max(0.08, Math.min(1, eng.delta.tps / 25)) : 0.08,
       6,
     );
-    const line = `${sc(MUTED, "eng ")}${g} ${decoding ? sc(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : sc(MUTED, "idle")} ${sc(MUTED, `· ${busy}/${total} · ${fmtTokens(eng.total)}`)}`;
+    const line = `${sc(MUTED, "eng ")}${g} ${decoding ? sc(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : sc(MUTED, "idle")}`;
     return [truncate(line, CONTENT_W)];
   });
 
@@ -264,21 +239,23 @@ export default function (pi: ExtensionAPI) {
     return [embDiv("Session")];
   });
 
-  // P45: Session stats
+  // P45: Session spend — tokens in/out + turns (2026-09-03 declutter:
+  // cwd and session id moved to the Rust header —
+  // `SESSION ID: #… @ ~/path`).
   registerSidebarSection("session", 45, () => {
-    const home = cwd.replace(/^\/home\/[^/]+/, "~");
     return [
-      truncate(`${sc(MUTED, "session · ")}${sc(SOLVENT, home)}${sc(MUTED, "  ·  ")}${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}${sessionId ? sc(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`, CONTENT_W),
+      truncate(`${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}`, CONTENT_W),
     ];
   });
 
-  // P50: Active skills
+  // P50: Recently used tools (relabeled 2026-09-03 — getRecentTools
+  // returns TOOLS; "skills" was a misnomer).
   registerSidebarSection("skills", 50, () => {
     if (!sidebarEnriched()) return undefined;
     const tools = getRecentTools();
     if (tools.length === 0) return undefined;
     const shown = tools.slice(0, 5);
-    return [truncate(sc(MUTED, "skills ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`), CONTENT_W)];
+    return [truncate(sc(MUTED, "tools ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`), CONTENT_W)];
   });
 
   // P55: Knowledge refs

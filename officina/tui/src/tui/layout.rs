@@ -86,6 +86,68 @@ fn composer_title(state: &AppState) -> Option<Vec<Span<'static>>> {
     }
 }
 
+/// `/home/<user>/…` → `~/…` (the sidebar's old convention, moved to the
+/// header with the session identity — 2026-09-03 declutter).
+fn shorten_home(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy().to_string();
+    match s.strip_prefix("/home/") {
+        Some(rest) => match rest.find('/') {
+            Some(i) => format!("~/{}", &rest[i + 1..]),
+            None => "~".to_string(),
+        },
+        None => s,
+    }
+}
+
+/// Header right label: session identity @ working folder.
+/// Named → `"name" @ ~/path`; unnamed with id → `SESSION ID: #xxxxxxxx @ ~/path`;
+/// neither → None.
+fn session_label(state: &AppState) -> Option<String> {
+    let home = shorten_home(&state.cwd);
+    if let Some(name) = state.session_name.as_deref().filter(|n| !n.is_empty()) {
+        return Some(format!("\"{}\" @ {}", name, home));
+    }
+    if !state.session_id.is_empty() {
+        return Some(format!(
+            "SESSION ID: #{} @ {}",
+            &state.session_id[..state.session_id.len().min(8)],
+            home
+        ));
+    }
+    None
+}
+
+/// Fit a session label to `cap` chars: the identity prefix stays intact,
+/// the path after " @ " elides from the LEFT (a path's tail identifies it),
+/// snapping the cut to a `/` component boundary when one is close.
+fn elide_path_tail(label: &str, cap: usize) -> String {
+    let total = label.chars().count();
+    if total <= cap {
+        return label.to_string();
+    }
+    match label.find(" @ ") {
+        Some(i) => {
+            let path: Vec<char> = label[i + 3..].chars().collect();
+            let mut cut = cap.saturating_sub(i + 4).min(path.len());
+            if cut == 0 {
+                return label.chars().take(cap).collect();
+            }
+            // Prefer cutting at a component boundary (/X) when it's close —
+            // `…/VITRIOL` reads better than `…TRIOL`. `pos` is window-
+            // relative: shifting the kept window start to pos+1 shrinks the
+            // kept count by pos+1.
+            if let Some(pos) = path[..cut].iter().rposition(|c| *c == '/') {
+                if cut - pos <= 12 {
+                    cut -= pos + 1;
+                }
+            }
+            let tail: String = path[path.len() - cut..].iter().collect();
+            format!("{} @ …{}", &label[..i], tail)
+        }
+        None => label.chars().take(cap).collect(),
+    }
+}
+
 fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     // Brand line (owner request 2026-09-02): 🜖VITRIOL·OFFICINA lives in the
     // top-left permanently; the agent mode moved to the composer title.
@@ -108,10 +170,9 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
         .as_ref()
         .map(|m| m.id.clone())
         .unwrap_or_default();
-    let right = state
-        .session_name
-        .clone()
-        .unwrap_or_else(|| if state.session_id.is_empty() { String::new() } else { format!("SESSION ID: #{}", &state.session_id[..state.session_id.len().min(8)]) });
+    let right = session_label(state)
+        .map(|l| elide_path_tail(&l, (area.width.saturating_sub(24) as usize).max(16)))
+        .unwrap_or_default();
 
     // Right-align the session label; model id sits before it.
     let right_w = (right.chars().count() + 2) as u16;
@@ -764,4 +825,42 @@ fn split_at_char(s: &str, idx: usize) -> (String, String, String) {
         at.push(' ');
     }
     (before, at, after)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::state::AppState;
+
+    #[test]
+    fn shorten_home_tilde_prefix() {
+        assert_eq!(shorten_home(std::path::Path::new("/home/randozart/Projects/VITRIOL")), "~/Projects/VITRIOL");
+        assert_eq!(shorten_home(std::path::Path::new("/home/randozart")), "~");
+        assert_eq!(shorten_home(std::path::Path::new("/opt/stuff")), "/opt/stuff");
+    }
+
+    #[test]
+    fn session_label_named_unnamed_none() {
+        let mut s = AppState::default();
+        assert_eq!(session_label(&s), None);
+        s.cwd = std::path::PathBuf::from("/home/randozart");
+        s.session_id = "01a06380-1234".into();
+        assert_eq!(session_label(&s).unwrap(), "SESSION ID: #01a06380 @ ~");
+        s.cwd = std::path::PathBuf::from("/home/randozart/Projects/ontic");
+        assert_eq!(session_label(&s).unwrap(), "SESSION ID: #01a06380 @ ~/Projects/ontic");
+        s.session_name = Some("vitriol session".into());
+        assert_eq!(session_label(&s).unwrap(), "\"vitriol session\" @ ~/Projects/ontic");
+    }
+
+    #[test]
+    fn elide_keeps_prefix_and_path_tail() {
+        let l = "SESSION ID: #01a06380 @ ~/Projects/VITRIOL";
+        assert_eq!(elide_path_tail(l, 60), l); // fits — untouched
+        let e = elide_path_tail(l, 34);
+        assert!(e.starts_with("SESSION ID: #01a06380 @ …"), "got {}", e);
+        assert!(e.chars().count() <= 34);
+        assert!(e.ends_with("VITRIOL"), "component preserved: {}", e);
+        // No " @ " separator → hard truncation to the cap.
+        assert_eq!(elide_path_tail("plainlabel", 4), "plai");
+    }
 }

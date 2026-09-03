@@ -112,3 +112,4 @@ alka-executor/vitriol_ce_test
 # officina-native build artifacts
 officina/native/target/
 officina/native/index.node
+node_modules

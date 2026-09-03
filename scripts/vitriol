@@ -287,6 +287,9 @@ semantic_mode = $CFG_SEMANTIC_MODE
 
 [kv]
 # KV cache mode: standard | offload | sparse
+#   sparse probe scoring (context lifecycle, 2026-09-03):
+#   kv.score = probe | off        (scoring feeds eviction; off = blind)
+#   kv.score_every = N            (probe cadence in decode steps, default 16)
 mode = $CFG_KV_MODE
 # KV cache quantization: f16 | q8_0 | q4_0 (affects K cache only)
 quant_mode = $CFG_KV_QUANT

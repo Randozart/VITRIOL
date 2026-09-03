@@ -15,6 +15,27 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 LLAMA_DIR="${PROJECT_DIR}/llama.cpp"
 BINARY="${LLAMA_DIR}/build/bin/llama-cli"
 SERVER_BINARY="${LLAMA_DIR}/build/bin/llama-server"
+
+# Sparse-KV guard (context lifecycle 2026-09-03): a config that requests
+# kv.mode=sparse against an engine built WITHOUT the lull KV code would
+# silently no-op — the KV cache then never ejects (the Aug-31 regression:
+# consolidation dropped lull-kv from main, the rebuild shipped without it,
+# and nothing complained for days). Probe the binary AND its libllama for
+# the sparse entry point; refuse the launch if absent. grep -a works on
+# binaries — no strings(1) dependency.
+kv_sparse_guard() {
+    [ "$KV_MODE" = "sparse" ] || return 0
+    local found=0 f
+    for f in "$SERVER_BINARY" "$LLAMA_DIR"/build/bin/libllama.so*; do
+        [ -f "$f" ] || continue
+        if grep -qa "VITRIOL_KV_MODE" "$f" 2>/dev/null; then found=1; break; fi
+    done
+    if [ "$found" = 0 ]; then
+        echo "VITRIOL: REFUSING launch — config requests kv.mode=sparse but the engine has no sparse-KV code (VITRIOL_KV_MODE absent from $SERVER_BINARY and its libllama)." >&2
+        echo "         Rebuild an engine with lull-kv (VITRIOL-lull worktree) or set kv.mode = standard." >&2
+        exit 1
+    fi
+}
 # 2026-08-29 (CachyOS migration): every LD_LIBRARY_PATH assignment that launches
 # llama-server must APPEND the inherited value (`...${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}`),
 # never clobber it — the CUDA 12 runtime libs resolve from ~/.cuda-libs here, and an
@@ -47,6 +68,11 @@ DEFAULT_TENSOR_SPLIT=""
 DEFAULT_VERBOSE=false
 DEFAULT_MEMORY_MODE="off"
 DEFAULT_KV_MODE="standard"
+# Sparse-KV probe scoring (context lifecycle 2026-09-03): config requests
+# it, the guard enforces the engine actually has it. Cadence default 16
+# (certified; cadence 4 was rejected by the owner — ejected too hard).
+DEFAULT_KV_SCORE=""
+DEFAULT_KV_SCORE_EVERY="16"
 DEFAULT_FROZEN_PROMPT="off"
 DEFAULT_SEMANTIC_MODE="off"
 DEFAULT_KV_QUANT="q4_0"
@@ -163,6 +189,8 @@ parse_config() {
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
                 kv.mode)               CFG_KV_MODE="$val" ;;
+                kv.score)              CFG_KV_SCORE="$val" ;;
+                kv.score_every)        CFG_KV_SCORE_EVERY="$val" ;;
                 kv.frozen_prompt)      CFG_FROZEN_PROMPT="$val" ;;
                 kv.quant_mode)         CFG_KV_QUANT="$val" ;;
                 kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
@@ -429,6 +457,8 @@ config_set() {
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
         memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
         kv.mode)               CFG_KV_MODE="$val" ;;
+        kv.score)              CFG_KV_SCORE="$val" ;;
+        kv.score_every)        CFG_KV_SCORE_EVERY="$val" ;;
         kv.quant_mode)         CFG_KV_QUANT="$val" ;;
         kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
         kv.ubatch_size)        CFG_UBATCH="$val" ;;
@@ -1764,6 +1794,8 @@ case "$CMD" in
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
+        KV_SCORE="${VITRIOL_KV_SCORE:-${CFG_KV_SCORE}}"
+        KV_SCORE_EVERY="${VITRIOL_KV_SCORE_EVERY:-${CFG_KV_SCORE_EVERY}}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
@@ -1790,6 +1822,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # VITRIOL-FINGERPRINT: canonical one-line config identity. Emitted to
         # console and (on real launches) appended to GEN_LOG so any log excerpt
         # answers "what flags produced this?" without archaeology.
+        kv_sparse_guard
         FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "${VITRIOL_KV_MODE:-standard}" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
         # Auto-disable output cache when pinning is active
@@ -1900,6 +1933,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_LRU_MB="$LRU_MB" \
             VITRIOL_MEMORY_MODE="$MEMORY_MODE" \
             VITRIOL_KV_MODE="$KV_MODE" \
+            VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
             VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
             VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2015,6 +2050,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
+        KV_SCORE="${VITRIOL_KV_SCORE:-${CFG_KV_SCORE}}"
+        KV_SCORE_EVERY="${VITRIOL_KV_SCORE_EVERY:-${CFG_KV_SCORE_EVERY}}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
@@ -2032,6 +2069,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
+        kv_sparse_guard
         FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
             "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
@@ -2207,6 +2245,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_KV_SCORE="$KV_SCORE" \
+                    VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2249,6 +2289,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                 env \
                     VITRIOL_MEMORY_MODE=on \
                     VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_KV_SCORE="$KV_SCORE" \
+                    VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2268,6 +2310,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_KV_SCORE="$KV_SCORE" \
+                    VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2329,6 +2373,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_KV_SCORE="$KV_SCORE" \
+                    VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2372,6 +2418,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                 env \
                     VITRIOL_MEMORY_MODE=on \
                     VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_KV_SCORE="$KV_SCORE" \
+                    VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2387,6 +2435,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
+                    VITRIOL_KV_SCORE="$KV_SCORE" \
+                    VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \

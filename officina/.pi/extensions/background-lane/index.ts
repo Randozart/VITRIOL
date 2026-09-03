@@ -133,7 +133,8 @@ export default function (pi: ExtensionAPI) {
     } catch {
       sessionStem = "session";
     }
-    cardsDir = join(ctx.cwd, ".pi", "background", sessionStem);
+    // Branded location (.officina, 2026-09-02) — write-only artifact.
+    cardsDir = join(ctx.cwd, ".officina", "background", sessionStem);
     if (ctx.hasUI) startEnginePolling();
     // one launch attempt per poll tick — the poller is the heartbeat
     setInterval(() => void tryLaunch(), Math.max(1000, Math.floor(cfg.idleMs / 2)));

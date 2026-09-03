@@ -26,6 +26,26 @@ const CUSTOM_TYPE = "lc-tasks";
 
 // Module-level task file path — updated on session_start, read by getTaskSummary.
 let currentTaskFile = join(taskStateConfig().dir, "default.json");
+// Pre-branding location (.pi/tasks) — read fallback only; writes always go
+// canonical (.officina/tasks, branding shim 2026-09-02).
+let legacyTaskFile = join(".pi", "tasks", "default.json");
+
+/** Read a task file; missing/corrupt = empty. */
+function readTasksFile(file: string): TaskItem[] {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { tasks?: unknown };
+    return validateTasks(parsed.tasks ?? []).tasks ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Canonical read with legacy fallback — pre-shim sessions keep their tasks. */
+function readTasksAny(): TaskItem[] {
+  const cur = readTasksFile(currentTaskFile);
+  if (cur.length > 0) return cur;
+  return readTasksFile(legacyTaskFile);
+}
 
 // ── Sidebar data export ──────────────────────────────────────────────────
 export interface TaskSummary {
@@ -38,21 +58,25 @@ export interface TaskSummary {
 
 /** Read the current task file and return a summary. Returns null if no tasks. */
 export function getTaskSummary(): TaskSummary | null {
-  try {
-    const parsed = JSON.parse(readFileSync(currentTaskFile, "utf8")) as { tasks?: unknown };
-    const v = validateTasks(parsed.tasks ?? []);
-    const tasks = v.tasks ?? [];
-    if (tasks.length === 0) return null;
-    return {
-      total: tasks.length,
-      pending: tasks.filter((t) => t.status === "pending").length,
-      inProgress: tasks.filter((t) => t.status === "in_progress").length,
-      completed: tasks.filter((t) => t.status === "completed").length,
-      cancelled: tasks.filter((t) => t.status === "cancelled").length,
-    };
-  } catch {
-    return null;
-  }
+  const tasks = readTasksAny();
+  if (tasks.length === 0) return null;
+  return {
+    total: tasks.length,
+    pending: tasks.filter((t) => t.status === "pending").length,
+    inProgress: tasks.filter((t) => t.status === "in_progress").length,
+    completed: tasks.filter((t) => t.status === "completed").length,
+    cancelled: tasks.filter((t) => t.status === "cancelled").length,
+  };
+}
+
+/** Raw task items (content, not just counts) for sidebar display.
+ *  Open items first (in_progress, then pending), then the rest. */
+export function getTaskItems(): TaskItem[] {
+  return readTasksAny().sort((a, b) => rankOf(a.status) - rankOf(b.status));
+}
+
+function rankOf(s: TaskItem["status"]): number {
+  return s === "in_progress" ? 0 : s === "pending" ? 1 : 2;
 }
 
 /** Session stem used as the task filename (cross-session visibility for Hermes). */
@@ -67,17 +91,13 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_start", async (_event, ctx) => {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
-    currentTaskFile = join(cfg.dir, `${sessionFileStem(sm?.getSessionFile?.())}.json`);
+    const stem = sessionFileStem(sm?.getSessionFile?.());
+    currentTaskFile = join(cfg.dir, `${stem}.json`);
+    legacyTaskFile = join(".pi", "tasks", `${stem}.json`);
   });
 
   function readTasks(): TaskItem[] {
-    try {
-      const parsed = JSON.parse(readFileSync(currentTaskFile, "utf8")) as { tasks?: unknown };
-      const v = validateTasks(parsed.tasks ?? []);
-      return v.tasks ?? [];
-    } catch {
-      return []; // no file yet / corrupt — inject nothing, keep working
-    }
+    return readTasksAny();
   }
 
   pi.registerTool({

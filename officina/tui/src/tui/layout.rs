@@ -37,15 +37,68 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 
 // ── Header ────────────────────────────────────────────────────────────────
 
+/// Canonical mode → (alchemical symbol, color): the moon metal for PLAN,
+/// the sun metal for BUILD (owner request 2026-09-02). Custom modes → None.
+fn mode_chip(label: &str) -> Option<(&'static str, ratatui::style::Color)> {
+    match label.to_ascii_uppercase().as_str() {
+        "PLAN" => Some(("☽", theme::SILVER)),
+        "BUILD" => Some(("☉", theme::GOLD)),
+        _ => None,
+    }
+}
+
+/// Chip spans: bold symbol+label in the mode color, greyed "· tab" hint.
+/// `bg` sets the backdrop (BG for header use, PANEL for the composer title).
+fn mode_spans(
+    symbol: &str,
+    label: &str,
+    color: ratatui::style::Color,
+    bg: ratatui::style::Color,
+) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(
+            format!("{} {}", symbol, label),
+            Style::new().fg(color).bg(bg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · tab to switch mode", Style::new().fg(theme::MUTED).bg(bg)),
+    ]
+}
+
+/// The composer title: the active agent mode (owner request 2026-09-02 —
+/// the chip lives above the prompt box, not in the header). None until the
+/// agent-mode widget reports in → titleless border.
+fn composer_title(state: &AppState) -> Option<Vec<Span<'static>>> {
+    let label = state.agent_mode_label.as_deref()?;
+    if label.is_empty() {
+        return None;
+    }
+    match mode_chip(label) {
+        Some((symbol, color)) => Some(mode_spans(symbol, label, color, theme::PANEL)),
+        // Custom mode: the widget's own badge glyph, gold chip.
+        None => {
+            let glyph = state
+                .agent_mode_glyph
+                .clone()
+                .unwrap_or_else(|| theme::GLYPH_VITRIOL.to_string());
+            Some(mode_spans(&glyph, label, theme::GOLD, theme::PANEL))
+        }
+    }
+}
+
 fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
+    // Brand line (owner request 2026-09-02): 🜖VITRIOL·OFFICINA lives in the
+    // top-left permanently; the agent mode moved to the composer title.
     let mut left = vec![Span::styled(
-        format!("{} officina", theme::GLYPH_VITRIOL),
+        "🜖 VITRIOL·OFFICINA",
         theme::banner(),
     )];
     if state.is_streaming {
+        // Light yellow, the informational voice (owner request 2026-09-02):
+        // same tint the engine TUI uses for "prompt-eval …" — the process
+        // is moving. Orange stays reserved for genuine warnings.
         left.push(Span::styled(
             format!("  {} working", theme::GLYPH_FIRE),
-            theme::warn(),
+            theme::info(),
         ));
     }
 
@@ -57,7 +110,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     let right = state
         .session_name
         .clone()
-        .unwrap_or_else(|| if state.session_id.is_empty() { String::new() } else { format!("#{}", &state.session_id[..state.session_id.len().min(8)]) });
+        .unwrap_or_else(|| if state.session_id.is_empty() { String::new() } else { format!("SESSION ID: #{}", &state.session_id[..state.session_id.len().min(8)]) });
 
     // Right-align the session label; model id sits before it.
     let right_w = (right.chars().count() + 2) as u16;
@@ -120,7 +173,8 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
 fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
-    // Fresh screen → the stone rises, lifted four rows clear of the editor.
+    // Fresh screen → the stone rises, lifted four rows clear of the editor,
+    // centered in the space it occupies, glimmering (mode: /glimmer).
     if state.entries.is_empty() {
         crate::watermark::render(
             frame,
@@ -128,6 +182,8 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 height: area.height.saturating_sub(4),
                 ..area
             },
+            state.started.elapsed().as_millis(),
+            state.glimmer,
         );
         // still render the editor below the watermark area
     }
@@ -152,28 +208,112 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     if state.is_streaming {
         lines.push(Line::from(vec![
-            Span::styled("ai ▸ ", Style::default().fg(theme::CYAN).bg(theme::BG)),
             Span::styled(
-                format!("{} working…", theme::GLYPH_FIRE),
-                theme::warn(),
+                format!("{} ", theme::GLYPH_AI),
+                Style::default().fg(theme::GOLD).bg(theme::BG),
             ),
+            // Light yellow to match the header (owner request 2026-09-02 —
+            // the informational voice, like the engine TUI's prompt-eval).
+            Span::styled("working…", theme::info()),
         ]));
     }
     if state.is_compacting {
+        // Compaction is a status, not a warning — informational voice.
         lines.push(Line::from(Span::styled(
             format!("  {} compacting context…", theme::GLYPH_ALEMBIC),
-            theme::warn(),
+            theme::info(),
         )));
     }
 
     let visible = chat_area.height as usize;
-    let start = lines.len().saturating_sub(visible);
+
+    // Scrollback (owner request 2026-09-02): `scroll` counts rows back
+    // from the live tail; the renderer owns the clamp because only it
+    // knows the true line count. Streaming output keeps flowing beneath a
+    // scrolled-back view (offset-from-bottom anchoring).
+    let total = lines.len();
+    let max_scroll = total.saturating_sub(visible) as u16;
+    state.scroll_max = max_scroll;
+    if state.scroll > max_scroll {
+        state.scroll = max_scroll;
+    }
+    let start = total.saturating_sub(visible + state.scroll as usize);
     let view: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    // Composer flames (owner request 2026-09-02): braille alchemical fire
+    // rising from the editor's top edge; intensity = GPU load (low-passed
+    // in the run loop). /fire toggles it. TEXT PRIORITY (owner request,
+    // after live testing): the fire is drawn BEFORE the chat so the
+    // transcript renders on top — flames read as a backdrop, visible only
+    // in the gaps, never over a character.
+    let fire_rows = if state.fire_on {
+        crate::fire::rows_for(state.fire_level)
+    } else {
+        0
+    };
+    let fire_map = if fire_rows > 0 && fire_rows as u16 <= chat_area.height {
+        crate::fire::render(
+            frame,
+            Rect {
+                y: input_area.y.saturating_sub(fire_rows as u16),
+                height: fire_rows as u16,
+                ..input_area
+            },
+            state.started.elapsed().as_millis(),
+            state.fire_level,
+            state.fire_style,
+        )
+    } else {
+        Vec::new()
+    };
 
     frame.render_widget(
         Paragraph::new(view).wrap(Wrap { trim: false }),
         chat_area,
     );
+
+    // Text-tint pass (owner request 2026-09-02: "user text discolors based
+    // on the fire beneath it — do the same for AI text"). Unstyled user
+    // spans already inherit the flame fg via ratatui's style-patch
+    // semantics; markdown-styled AI spans don't. Walk the fire map and
+    // force the flame color onto any text glyph inside the strip — flames
+    // lend their color to everything standing in them.
+    if !fire_map.is_empty() {
+        let fire_y = input_area.y.saturating_sub(fire_rows as u16);
+        let buffer = frame.buffer_mut();
+        for (ry, map_row) in fire_map.iter().enumerate() {
+            for (cx, c) in map_row.iter().enumerate() {
+                if let Some(color) = c {
+                    if let Some(cell) = buffer.cell_mut(ratatui::layout::Position {
+                        x: input_area.x + cx as u16,
+                        y: fire_y + ry as u16,
+                    }) {
+                        if cell.symbol() != " " {
+                            cell.set_fg(*color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Position badge while scrolled back — top-right of the chat column.
+    // Drawn after the chat: the badge itself is text and keeps priority.
+    if state.scroll > 0 {
+        let badge = format!(" ↑ {}/{} ", state.scroll, max_scroll);
+        let bw = badge.chars().count() as u16;
+        if chat_area.width > bw {
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(badge, theme::muted()))).alignment(Alignment::Right),
+                Rect {
+                    x: chat_area.x,
+                    width: chat_area.width,
+                    height: 1,
+                    ..chat_area
+                },
+            );
+        }
+    }
 
     // Autocomplete popup floats above the editor
     let cands = state.command_candidates();
@@ -189,7 +329,9 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_command_popup(frame, &cands, state.cand_sel, popup_area);
     }
 
-    // Editor — rounded, PANEL bg; border reflects state (vitriol-tui panel anatomy)
+    // Editor — rounded, PANEL bg; border reflects state (vitriol-tui panel
+    // anatomy). Title carries the active agent mode (owner request
+    // 2026-09-02); titleless until the widget reports in.
     let border_style = if state.is_streaming {
         Style::new().fg(theme::COLD_BLUE)
     } else if !cands.is_empty() {
@@ -197,10 +339,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         Style::new().fg(theme::BORDER_DIM)
     };
-    let input_block = panel(
-        Span::styled(" officina ", theme::banner()),
-        border_style,
-    );
+    let mut input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(theme::PANEL));
+    if let Some(title) = composer_title(state) {
+        input_block = input_block.title(Line::from(title));
+    }
     let inner = input_block.inner(input_area);
     frame.render_widget(input_block, input_area);
 
@@ -221,20 +367,25 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    // Rounded neutral panel, dim border, gold title — panel_neutral equivalent.
+    // Rounded neutral panel, dim border — no title (owner request
+    // 2026-09-02: brand lives in the header, mode in the composer title).
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(theme::BORDER_DIM))
-        .style(Style::new().bg(theme::PANEL))
-        .title(Span::styled(" sidebar ", Style::default().fg(theme::GOLD)))
-        .title_bottom(Span::styled(" officina ", theme::muted()));
+        .style(Style::new().bg(theme::PANEL));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let mut lines: Vec<Line> = Vec::new();
     for widget in &state.widgets {
         if widget.lines.is_empty() {
+            continue;
+        }
+        // agent-mode lives in the composer title now; engine-fire is the
+        // flames' raw data feed — neither is sidebar content (owner request
+        // 2026-09-02). Both widgets are still received and parsed.
+        if widget.key == "agent-mode" || widget.key == "engine-fire" {
             continue;
         }
         if !lines.is_empty() {
@@ -356,11 +507,14 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
         Span::styled("f9 stderr", theme::muted()),
     ];
 
-    // Widgets present = telemetry path alive; else warn like vitriol-tui.
+    // Widgets present = telemetry path alive. Absence is NOT a fault —
+    // bare projects have no officina extensions — so the hint is muted
+    // gray, not an orange "stack unreachable" false alarm (owner report
+    // 2026-09-02, launched in Projects/ontic).
     if state.widgets.is_empty() {
         spans.push(Span::styled(
-            "  ·  stack unreachable — no agent telemetry",
-            theme::warn(),
+            "  ·  no telemetry",
+            Style::new().fg(theme::MUTED).bg(theme::BG),
         ));
     } else if let Some((msg, _)) = &state.notice {
         spans.push(Span::styled(
@@ -438,17 +592,6 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
-}
-
-// ── Panel helper (vitriol-tui anatomy) ────────────────────────────────────
-
-fn panel<'a>(title: Span<'a>, border: Style) -> Block<'a> {
-    Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border)
-        .style(Style::new().bg(theme::PANEL))
-        .title(title)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

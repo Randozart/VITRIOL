@@ -83,7 +83,9 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (def.enterDirective) enterDirectivePending = def.enterDirective;
-    ctx?.ui?.notify?.(`${def.label} mode: ${def.hint}`, "info");
+    // No notify here (owner request 2026-09-02): the mode chip above the
+    // prompt box + border tint already announce the switch; the footer
+    // notice duplicated it as noise.
     applyModeTheme();
     renderIndicator();
   };

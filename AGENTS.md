@@ -22,6 +22,10 @@
 4. Include exact command output, tensor shapes, and error messages in reports.
 5. Update the anchored summary in each session with progress, blockers, and decisions.
 
+## Workflow
+
+1. **Git commit after every stage**: each completed feature or fix gets its own commit immediately — no batching, no "commit at the end". If a stage is done and tests pass, commit it before starting the next stage.
+
 ## Code Conventions
 
 - This is a fork of `ggml-org/llama.cpp` with VITRIOL modifications. **`main` is the canonical daily-driver branch in BOTH repos** (consolidated 2026-09-01 — see `.opencode/plans/branch-consolidation-2026-09-01.md`). Outer repo: all feature work lives on `main` (was `officina`). Inner fork (`llama.cpp/`): `main` is the live line ported onto ggml-org upstream (was `vitriol-ku`); `vitriol` is the frozen pre-port archive, `master` tracks the fork's published state. `lull-kv` lives in the `VITRIOL-lull` worktree.

@@ -9,7 +9,8 @@
 //
 // Provenance: original work, this repo; parsers from vitriol-decode/decode.ts
 // (own; this repo, Apache-2.0 OR MIT).
-import { busySlots, counterDelta, parseMetrics, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
+import { execFile } from "node:child_process";
+import { busySlots, counterDelta, gpuFireLoad, parseMetrics, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8279";
 const DEFAULT_POLL_MS = 700;
@@ -26,6 +27,10 @@ export interface EngineSnapshot {
   total: number;
   slots: SlotInfo[];
   busy: number;
+  /** GPU fire load in [0,1] — power.draw/power.limit, max across GPUs
+   *  (composer flames, owner request 2026-09-02); null when nvidia-smi
+   *  is absent or has not answered yet. */
+  gpuLoad: number | null;
 }
 
 type Listener = () => void;
@@ -40,7 +45,42 @@ let snap: EngineSnapshot = {
   total: 0,
   slots: [],
   busy: 0,
+  gpuLoad: null,
 };
+
+// ── GPU fire load (composer flames, owner request 2026-09-02) ────────────
+// One nvidia-smi spawn per poll tick rides the existing 700ms loop. The
+// exec is fire-and-forget: the next poll() reads the freshest completed
+// answer, so a slow nvidia-smi never delays telemetry. ENOENT latches off
+// (no NVIDIA driver → stop spawning forever). Never throws (observability
+// contract).
+let nvidiaMissing = false;
+let gpuLoadLatest: number | null = null;
+
+function pollNvidiaSmi(): void {
+  if (nvidiaMissing) return;
+  execFile(
+    "nvidia-smi",
+    ["--query-gpu=power.draw,power.limit,utilization.gpu", "--format=csv,noheader,nounits"],
+    { timeout: 1500 },
+    (err, stdout) => {
+      if (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") nvidiaMissing = true;
+        return;
+      }
+      let load = 0;
+      let saw = false;
+      for (const line of stdout.split("\n")) {
+        const cols = line.split(",").map((s) => Number(s.trim()));
+        const [p, lim, util] = cols;
+        if (!Number.isFinite(p) || !Number.isFinite(lim) || lim <= 0) continue;
+        saw = true;
+        load = Math.max(load, gpuFireLoad(p, lim, Number.isFinite(util) ? util : -1));
+      }
+      if (saw) gpuLoadLatest = load;
+    },
+  );
+}
 
 async function fetchText(url: string, timeoutMs: number): Promise<string | null> {
   try {
@@ -62,6 +102,7 @@ let base = "";
 let pollMs = DEFAULT_POLL_MS;
 
 async function poll(): Promise<void> {
+  pollNvidiaSmi();
   const now = Date.now();
   const metricsText = await fetchText(`${base}/metrics`, pollMs);
   if (metricsText === null) {
@@ -89,7 +130,7 @@ async function poll(): Promise<void> {
   const slots = slotsText ? parseSlots(slotsText) : snap.slots;
   const busy = busySlots(slots, delta.tokens);
   // cumulativeIngest = total prompt tokens processed since engine boot
-  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy };
+  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest };
   polledOnce = true;
   notify();
 }

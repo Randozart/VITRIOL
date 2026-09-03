@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   busySlots,
   counterDelta,
+  fireLoad,
+  gpuFireLoad,
   fmtRate,
   fmtTokens,
   parseMetrics,
@@ -110,5 +112,54 @@ describe("busySlots (two-source busy truth)", () => {
   it("idle only when nothing flagged AND no token movement", () => {
     expect(busySlots([{ id: 0, busy: false }], 0)).toBe(0);
     expect(busySlots([], 0)).toBe(0);
+  });
+});
+
+describe("gpuFireLoad", () => {
+  it("reads idle desktop draw as no fire", () => {
+    expect(gpuFireLoad(60, 240, 2)).toBeLessThan(0.05);
+  });
+
+  it("scales with power draw past the idle baseline", () => {
+    const mid = gpuFireLoad(140, 240, 60);
+    const high = gpuFireLoad(220, 240, 98);
+    expect(mid).toBeGreaterThan(0.2);
+    expect(high).toBeGreaterThan(mid);
+    expect(high).toBeLessThanOrEqual(1);
+  });
+
+  it("clamps and rejects nonsense", () => {
+    expect(gpuFireLoad(500, 240, 120)).toBe(1);
+    expect(gpuFireLoad(-1, 240, 50)).toBe(0);
+    expect(gpuFireLoad(60, 0, 50)).toBe(0);
+  });
+
+  it("dead zone: tiny idle draws stay dark", () => {
+    expect(gpuFireLoad(8, 180, 4)).toBe(0); // this host's real idle reading
+    expect(gpuFireLoad(60, 240, 6)).toBe(0);
+  });
+});
+
+describe("fireLoad", () => {
+  const base = { up: true, busy: 0, slotCount: 2, tps: 0, ingestTps: 0, gpuLoad: null };
+
+  it("engine down = no fire", () => {
+    expect(fireLoad({ ...base, up: false, gpuLoad: 0.8 })).toBe(0);
+  });
+
+  it("prefers real GPU load when available", () => {
+    expect(fireLoad({ ...base, gpuLoad: 0.73 })).toBeCloseTo(0.73);
+  });
+
+  it("activity proxy: busy slots light a mid fire", () => {
+    expect(fireLoad({ ...base, busy: 1 })).toBeGreaterThanOrEqual(0.55);
+  });
+
+  it("activity proxy: prefill spikes fire", () => {
+    expect(fireLoad({ ...base, ingestTps: 1200 })).toBe(1);
+  });
+
+  it("proxy is idle with no activity", () => {
+    expect(fireLoad(base)).toBe(0);
   });
 });

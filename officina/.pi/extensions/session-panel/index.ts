@@ -6,10 +6,10 @@ import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_share
 import { RAMPS, renderGauge } from "../vitriol-decode/braille.ts";
 import { fmtRate, fmtTokens } from "../vitriol-decode/decode.ts";
 import { registerSidebarSection, onSidebarUpdate, renderAllSections, sidebarEnriched, sc, SIDEBAR_COLORS } from "../_shared/sidebar.ts";
-import { getTaskSummary } from "../task-state/index.ts";
+import { getTaskSummary, getTaskItems } from "../task-state/index.ts";
 import { getRecentTools } from "../skill-inject/index.ts";
 import { getLastTopics } from "../knowledge-inject/index.ts";
-import { getScratchpadSummary } from "../scratchpad/index.ts";
+import { getScratchpadSummary, getScratchpadItems } from "../scratchpad/index.ts";
 
 // session-panel v4 (2026-09-01): sidebar section coordinator.
 //
@@ -40,7 +40,12 @@ const VIOLET = SIDEBAR_COLORS.VIOLET;
 const MUTED = SIDEBAR_COLORS.MUTED;
 const RESET = SIDEBAR_COLORS.RESET;
 const SUBSTRATE = fgSeq("substrate");
+const TEXT = fgSeq("text");
 const SIDEBAR_W = 42;
+// Content width inside the panel chrome: the Rust TUI sidebar's rounded
+// border eats 2 columns (owner report 2026-09-02: 42-wide lines wrapped 2
+// chars onto the next row). The JS split trims 1 pad col — 40 fits both.
+const CONTENT_W = SIDEBAR_W - 2;
 
 const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
@@ -68,8 +73,11 @@ const truncate = (s: string, w: number): string => {
   return out;
 };
 
-const thickDiv = () => sc(MUTED, "─".repeat(SIDEBAR_W));
-const thinDiv = () => sc(MUTED, "· ".repeat(Math.floor(SIDEBAR_W / 2)));
+// Dividers (owner request 2026-09-02): every section boundary is the full
+// thick rule — the weak hyphen sub-lines are retired ("replace the weaker
+// --- lines with the full blown thick lines between sections").
+const thickDiv = () => sc(MUTED, "─".repeat(CONTENT_W));
+const thinDiv = thickDiv;
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
@@ -108,17 +116,18 @@ export default function (pi: ExtensionAPI) {
   // ── Sidebar sections (priority order) ─────────────────────────────────
   // Lower priority number = rendered first (top of sidebar).
 
-  // P10: Coupling name
+  // P10: Coupling name — no model suffix (owner request 2026-09-02): the
+  // model id renders one row below (P11); the coupling line is coupling-only.
   registerSidebarSection("coupling", 10, () => {
-    const couplingFull = couplingDisplay(providerName, modelId, couplings, modelId);
-    return [truncate(sc(GOLD, "◈ " + couplingFull), SIDEBAR_W)];
+    const couplingFull = couplingDisplay(providerName, modelId, couplings);
+    return [truncate(sc(GOLD, "◈ " + couplingFull), CONTENT_W)];
   });
 
   // P11: Model name (actual model behind the coupling)
   registerSidebarSection("model", 11, () => {
     if (!sidebarEnriched()) return undefined;
     if (!modelId) return undefined;
-    return [truncate(sc(MUTED, "  " + modelId), SIDEBAR_W)];
+    return [truncate(sc(MUTED, "  " + modelId), CONTENT_W)];
   });
 
   // P12: Session title (if named)
@@ -127,7 +136,7 @@ export default function (pi: ExtensionAPI) {
     try {
       const name = (pi as any).getSessionName?.();
       if (!name) return undefined;
-      return [truncate(sc(MUTED, `"${name}"`), SIDEBAR_W)];
+      return [truncate(sc(MUTED, `"${name}"`), CONTENT_W)];
     } catch {
       return undefined;
     }
@@ -147,7 +156,7 @@ export default function (pi: ExtensionAPI) {
     const filled = ctxUsage.tokens != null ? fmtTokens(ctxUsage.tokens) : "--";
     const total = fmtTokens(ctxUsage.contextWindow);
     const line = `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct.toFixed(1) + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + "/" + total)}`;
-    return [truncate(line, SIDEBAR_W)];
+    return [truncate(line, CONTENT_W)];
   });
 
   // P22: Ingestion progress (kobold.cpp-style: cumulative tokens + rate)
@@ -159,7 +168,7 @@ export default function (pi: ExtensionAPI) {
     if (!ing || ing.tps < 0.5) return undefined;
     const g = renderGauge(RAMPS.mercury, Math.min(1, eng.cumulativeIngest / Math.max(1, ctxUsage?.contextWindow ?? 1)), 6);
     const line = `${sc(MUTED, "ing ")}${g} ${sc(SOLVENT, fmtRate(ing.tps) + " tok/s")}${sc(MUTED, " · " + fmtTokens(eng.cumulativeIngest) + " tokens")}`;
-    return [truncate(line, SIDEBAR_W)];
+    return [truncate(line, CONTENT_W)];
   });
 
   // P25: Engine throughput
@@ -175,7 +184,7 @@ export default function (pi: ExtensionAPI) {
       6,
     );
     const line = `${sc(MUTED, "eng ")}${g} ${decoding ? sc(SAFETY, fmtRate(eng.delta.tps) + " tok/s") : sc(MUTED, "idle")} ${sc(MUTED, `· ${busy}/${total} · ${fmtTokens(eng.total)}`)}`;
-    return [truncate(line, SIDEBAR_W)];
+    return [truncate(line, CONTENT_W)];
   });
 
   // P28: Thin divider (stats / tasks boundary)
@@ -184,24 +193,45 @@ export default function (pi: ExtensionAPI) {
     return [thinDiv()];
   });
 
-  // P35: Task state summary
+  // P35: Task state — counts + the actual open items (owner request
+  // 2026-09-02: "I'd like to see the scratchpad and todo in the sidebar").
+  // Items sort open-first (in_progress, pending) via getTaskItems; cap at
+  // 4 lines so the panel keeps its shape.
   registerSidebarSection("tasks", 35, () => {
     if (!sidebarEnriched()) return undefined;
     const summary = getTaskSummary();
     if (!summary) return undefined;
+    const lines: string[] = [];
     const parts: string[] = [];
     if (summary.inProgress > 0) parts.push(sc(SAFETY, `[>] ${summary.inProgress}`));
     if (summary.pending > 0) parts.push(sc(MUTED, `[ ] ${summary.pending}`));
     parts.push(sc(SAFETY, `${summary.completed} done`));
-    return [truncate(sc(MUTED, "tasks ") + parts.join(sc(MUTED, " · ")), SIDEBAR_W)];
+    lines.push(truncate(sc(MUTED, "tasks ") + parts.join(sc(MUTED, " · ")), CONTENT_W));
+    const items = getTaskItems().filter((t) => t.status === "in_progress" || t.status === "pending");
+    for (const t of items.slice(0, 4)) {
+      const mark = t.status === "in_progress" ? sc(SAFETY, "[>] ") : sc(MUTED, "[ ] ");
+      lines.push(truncate("  " + mark + sc(TEXT, t.description), CONTENT_W));
+    }
+    return lines;
   });
 
-  // P36: Scratchpad summary
+  // P36: Scratchpad — summary + the actual open lines (facts, then leads;
+  // owner request 2026-09-02). Cap at 4 content lines.
   registerSidebarSection("scratchpad", 36, () => {
     if (!sidebarEnriched()) return undefined;
     const s = getScratchpadSummary();
     if (!s) return undefined;
-    return [truncate(sc(MUTED, "note ") + sc(VIOLET, `${s.facts}f ${s.leads}l ${s.dead}d`) + sc(MUTED, ` · ${s.lines}/${s.cap}`), SIDEBAR_W)];
+    const lines: string[] = [truncate(sc(MUTED, "note ") + sc(VIOLET, `${s.facts}f ${s.leads}l ${s.dead}d`) + sc(MUTED, ` · ${s.lines}/${s.cap}`), CONTENT_W)];
+    const items = getScratchpadItems();
+    if (items) {
+      for (const f of items.facts.slice(0, 2)) {
+        lines.push(truncate("  " + sc(VIOLET, "▪ ") + sc(TEXT, f), CONTENT_W));
+      }
+      for (const l of items.leads.slice(0, 2)) {
+        lines.push(truncate("  " + sc(SOLVENT, "→ ") + sc(TEXT, l), CONTENT_W));
+      }
+    }
+    return lines;
   });
 
   // P40: Files touched
@@ -212,7 +242,7 @@ export default function (pi: ExtensionAPI) {
       truncate(`${sc(MUTED, "files: ")}${files.map(([p, f]) => {
         const counts = f.add || f.del ? ` ${sc(SAFETY, "+" + f.add)} ${sc(SUBSTRATE, "−" + f.del)}` : "";
         return sc(VIOLET, shortPath(p)) + counts;
-      }).join(sc(MUTED, "  "))}`, SIDEBAR_W),
+      }).join(sc(MUTED, "  "))}`, CONTENT_W),
     ];
   });
 
@@ -226,7 +256,7 @@ export default function (pi: ExtensionAPI) {
   registerSidebarSection("session", 45, () => {
     const home = cwd.replace(/^\/home\/[^/]+/, "~");
     return [
-      truncate(`${sc(MUTED, "session · ")}${sc(SOLVENT, home)}${sc(MUTED, "  ·  ")}${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}${sessionId ? sc(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`, SIDEBAR_W),
+      truncate(`${sc(MUTED, "session · ")}${sc(SOLVENT, home)}${sc(MUTED, "  ·  ")}${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}${sessionId ? sc(MUTED, ` · ${sessionId.slice(0, 8)}`) : ""}`, CONTENT_W),
     ];
   });
 
@@ -236,7 +266,7 @@ export default function (pi: ExtensionAPI) {
     const tools = getRecentTools();
     if (tools.length === 0) return undefined;
     const shown = tools.slice(0, 5);
-    return [truncate(sc(MUTED, "skills ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`), SIDEBAR_W)];
+    return [truncate(sc(MUTED, "skills ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`), CONTENT_W)];
   });
 
   // P55: Knowledge refs
@@ -245,7 +275,7 @@ export default function (pi: ExtensionAPI) {
     const topics = getLastTopics();
     if (topics.length === 0) return undefined;
     const shown = topics.slice(0, 4);
-    return [truncate(sc(MUTED, "ref ") + shown.map((t) => sc(SOLVENT, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${topics.length} injected`), SIDEBAR_W)];
+    return [truncate(sc(MUTED, "ref ") + shown.map((t) => sc(SOLVENT, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${topics.length} injected`), CONTENT_W)];
   });
 
   // P58: Thin divider (before hints)
@@ -256,7 +286,7 @@ export default function (pi: ExtensionAPI) {
 
   // P90: Command hints
   registerSidebarSection("hints", 90, () => {
-    return [truncate(sc(MUTED, "/resume · /tree · /history · /mode"), SIDEBAR_W)];
+    return [truncate(sc(MUTED, "/resume · /tree · /history · /mode"), CONTENT_W)];
   });
 
   // ── Render coordinator ────────────────────────────────────────────────

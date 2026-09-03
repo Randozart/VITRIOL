@@ -6,7 +6,7 @@
 // stderr drains into a DiagLog ring buffer (must drain — an unread pipe
 // fills at ~64KiB and blocks the subprocess).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,44 @@ pub enum WireMessage {
 pub struct DiagLog {
     lines: Arc<Mutex<Vec<String>>>,
     cap: usize,
+}
+
+/// Extension directories carried into foreign projects (see spawn doc).
+/// Root is derived from the pi binary location —
+/// `<officina>/node_modules/.bin/pi` → `<officina>/.pi/extensions` — so a
+/// relocated checkout keeps working. Empty when the session dir does its
+/// own extension discovery (the officina project itself, or any project
+/// with a `.pi/extensions` of its own: no double-loading).
+fn officina_extensions_to_carry(cli_path: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    // Vendor (.pi) or branded (.officina) extension discovery present →
+    // the project curates its own experience; carry nothing (no double
+    // load). Branding shim: 2026-09-02.
+    if cwd.join(".pi").join("extensions").is_dir()
+        || cwd.join(".officina").join("extensions").is_dir()
+    {
+        return out;
+    }
+    // .bin/pi → node_modules → <officina>
+    let officina = match cli_path
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+    {
+        Some(p) => p.to_path_buf(),
+        None => return out,
+    };
+    let exts = officina.join(".pi").join("extensions");
+    if !exts.is_dir() {
+        return out;
+    }
+    for name in ["llama-cpp-provider", "agent-mode", "vitriol-decode", "session-panel"] {
+        let dir = exts.join(name);
+        if dir.is_dir() {
+            out.push(dir);
+        }
+    }
+    out
 }
 
 impl DiagLog {
@@ -70,12 +108,35 @@ impl RpcBridge {
     /// trust dialog, and untrusted means pi silently skips project extensions
     /// AND project settings (verified 2026-09-02: without -a → 0 setWidgets,
     /// model "unknown"; with -a → 23 setWidgets, 15 extension commands).
+    ///
+    /// Officina extensions travel with the TUI (owner request 2026-09-02:
+    /// "shouldn't officina be reachable from any project folder, so long as
+    /// VITRIOL is running?"). A bare project has no `.pi/extensions` of its
+    /// own, so nothing would register the `llamacpp` provider (owner bug
+    /// report 2026-09-02: prompt failed abroad with "No API key found" —
+    /// pi fell back to stock google) and the mode chip / composer fire /
+    /// sidebar panel would never arrive. Those are loaded explicitly via
+    /// `-e` whenever the session dir doesn't do its own extension
+    /// discovery. llama-cpp-provider resolves its models.json via
+    /// import.meta.url, so it is cwd-independent. session-panel rides the
+    /// RPC setWidget fallback (its setSidebar path doesn't exist on pi's
+    /// RPC surface), giving foreign projects the full sidebar: coupling,
+    /// ctx, eng, scratchpad notes, tasks, files, hints. Deliberately NOT
+    /// loaded abroad: knowledge-inject / task-state / skill-inject /
+    /// phase-model et al. — they inject or display VITRIOL-workflow
+    /// context and would poison a foreign project (session-panel only
+    /// imports their pure data getters, which stay empty without them).
     pub async fn spawn(cli_path: &Path, cwd: &Path) -> Result<Self> {
-        let mut child = Command::new("node")
+        let mut command = Command::new("node");
+        command
             .arg(cli_path)
             .arg("--mode")
             .arg("rpc")
-            .arg("-a")
+            .arg("-a");
+        for ext in officina_extensions_to_carry(cli_path, cwd) {
+            command.arg("-e").arg(ext);
+        }
+        let mut child = command
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -225,5 +286,50 @@ impl RpcBridge {
     pub async fn kill(&mut self) -> Result<()> {
         self.child.kill().await.context("failed to kill subprocess")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carries_officina_extensions_into_bare_projects() {
+        // Fake officina checkout: <root>/node_modules/.bin/pi + .pi/extensions.
+        let root = std::env::temp_dir().join(format!("officina-carry-{}", std::process::id()));
+        let bin = root.join("node_modules").join(".bin");
+        let exts = root.join(".pi").join("extensions");
+        for name in ["llama-cpp-provider", "agent-mode", "vitriol-decode", "session-panel"] {
+            std::fs::create_dir_all(exts.join(name)).unwrap();
+        }
+        std::fs::create_dir_all(&bin).unwrap();
+        let pi = bin.join("pi");
+        std::fs::write(&pi, "#!/bin/sh\n").unwrap();
+
+        // Bare project → all carried.
+        let bare = std::env::temp_dir().join(format!("officina-bare-{}", std::process::id()));
+        std::fs::create_dir_all(&bare).unwrap();
+        let carried = officina_extensions_to_carry(&pi, &bare);
+        assert_eq!(carried.len(), 4);
+        assert!(carried.iter().all(|p| p.starts_with(&exts)));
+
+        // Project with its own .pi/extensions → nothing carried (no double load).
+        let own = std::env::temp_dir().join(format!("officina-own-{}", std::process::id()));
+        std::fs::create_dir_all(own.join(".pi").join("extensions")).unwrap();
+        assert!(officina_extensions_to_carry(&pi, &own).is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&bare);
+        let _ = std::fs::remove_dir_all(&own);
+    }
+
+    #[test]
+    fn carries_nothing_without_officina_tree() {
+        let bare = std::env::temp_dir().join(format!("officina-noroot-{}", std::process::id()));
+        std::fs::create_dir_all(&bare).unwrap();
+        let fake_pi = bare.join("pi");
+        std::fs::write(&fake_pi, "#!/bin/sh\n").unwrap();
+        assert!(officina_extensions_to_carry(&fake_pi, &bare).is_empty());
+        let _ = std::fs::remove_dir_all(&bare);
     }
 }

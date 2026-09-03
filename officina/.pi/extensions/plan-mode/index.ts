@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { honey, muted as gray } from "../_shared/vitriolum.ts";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { injectionResult } from "../_shared/inject.ts";
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
@@ -18,7 +18,10 @@ import { PlanStatus } from "./status.ts";
 
 // Approved plans are persisted project-locally so they survive the planning
 // session and can be picked up later by the user-initiated /implement command.
-const APPROVED_PLAN_FILE = join(".pi", "approved-plan.md");
+// Branded location (.officina, 2026-09-02). Reads fall back to the
+// pre-branding .pi path so older sessions keep resolving.
+const APPROVED_PLAN_FILE = join(".officina", "approved-plan.md");
+const LEGACY_APPROVED_PLAN_FILE = join(".pi", "approved-plan.md");
 
 const APPROVE_CHOICE = "Approve plan";
 const KEEP_PLANNING_CHOICE = "Keep planning (don't implement)";
@@ -671,7 +674,10 @@ export default function (pi: ExtensionAPI) {
     description: "Implement the last approved plan in a fresh session",
 
     handler: async (_args, ctx) => {
-      const planFile = join(ctx.cwd, APPROVED_PLAN_FILE);
+      // Canonical first; pre-branding sessions fall back to .pi.
+      const canonical = join(ctx.cwd, APPROVED_PLAN_FILE);
+      const legacy = join(ctx.cwd, LEGACY_APPROVED_PLAN_FILE);
+      const planFile = existsSync(canonical) || !existsSync(legacy) ? canonical : legacy;
 
       await handleImplement({
         cwd: ctx.cwd,

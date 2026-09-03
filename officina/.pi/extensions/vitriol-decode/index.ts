@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fmtRate, fmtTokens } from "./decode.ts";
+import { fireLoad, fmtRate, fmtTokens } from "./decode.ts";
 import { RAMPS, renderGauge } from "./braille.ts";
 import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
 
@@ -36,6 +36,22 @@ export default function (pi: ExtensionAPI) {
   const render = () => {
     if (!ui) return; // no session context yet; engine updates render once bound
     const last = getEngineSnapshot();
+    // Machine-readable fire load for the Rust TUI's composer flames (owner
+    // request 2026-09-02). Raw number, no styling — the TUI parses it and
+    // filters the widget from display. Emitted even when the engine is
+    // down (FIRE 0.000) so the flames fade out honestly. The JS UI's own
+    // flames never materialized; this line only matters across RPC.
+    if (process.env.OFFICINA_FIRE !== "0") {
+      const load = fireLoad({
+        up: last.up,
+        busy: last.busy,
+        slotCount: last.slots.length,
+        tps: last.delta.tps,
+        ingestTps: last.ingest.tps,
+        gpuLoad: last.gpuLoad,
+      });
+      ui.setWidget("engine-fire", [`FIRE ${load.toFixed(3)}`], { placement: "belowEditor" });
+    }
     if (!last.up) {
       ui.setWidget("vitriol-decode", [
         `◈ VITRIOL  engine down (tris up to start)`,

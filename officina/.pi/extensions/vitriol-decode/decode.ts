@@ -94,3 +94,54 @@ export function busySlots(slots: SlotInfo[], deltaTokens: number): number {
   if (flagged > 0 || deltaTokens > 0) return Math.max(1, flagged);
   return 0;
 }
+
+// ── Composer-fire load math (owner request 2026-09-02) ───────────────────
+// The Rust TUI's braille flames rise from the prompt box with GPU load.
+// Pure math here (testable); engine.ts owns the nvidia-smi poll that feeds
+// the numbers, vitriol-decode/index.ts the widget emission.
+
+/**
+ * Fire load in [0,1] from ONE GPU's nvidia-smi numbers.
+ * Primary: power.draw over power.limit, with the idle baseline subtracted —
+ * a desktop Pascal/Ada card idles around a quarter of its power cap, and
+ * that must read as "no fire". Utilization is the secondary signal
+ * (true 0 at idle), discounted slightly so it never outruns the power arc.
+ */
+export function gpuFireLoad(powerW: number, limitW: number, utilPct: number): number {
+  if (!(limitW > 0) || !(powerW >= 0)) return 0;
+  const IDLE_FRAC = 0.25;
+  const byPower = (powerW / limitW - IDLE_FRAC) / (1 - IDLE_FRAC);
+  const byUtil = utilPct >= 0 ? (utilPct / 100) * 0.95 : 0;
+  const raw = Math.max(byPower, byUtil);
+  // Dead zone: desktop background tasks (idle util spikes, tiny draws)
+  // must not read as embers.
+  return raw < 0.06 ? 0 : Math.min(1, raw);
+}
+
+export interface FireLoadInput {
+  up: boolean;
+  busy: number;
+  slotCount: number;
+  tps: number;
+  ingestTps: number;
+  /** max-across-GPU load from the nvidia-smi poll; null when unavailable */
+  gpuLoad: number | null;
+}
+
+/**
+ * Flame intensity in [0,1]: real GPU draw when known, otherwise an
+ * activity proxy (step-like by nature — decode t/s is flat while decoding).
+ */
+export function fireLoad(snap: FireLoadInput): number {
+  if (!snap.up) return 0;
+  if (snap.gpuLoad != null) return Math.min(1, Math.max(0, snap.gpuLoad));
+  const total = Math.max(snap.slotCount, snap.busy, 1);
+  return Math.min(
+    1,
+    Math.max(
+      snap.busy > 0 ? 0.55 : 0,
+      Math.min(1, snap.tps / 15),
+      Math.min(1, snap.ingestTps / 500),
+    ),
+  );
+}

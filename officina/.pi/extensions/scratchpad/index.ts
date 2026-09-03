@@ -58,6 +58,19 @@ export function getScratchpadSummary(): { lines: number; cap: number; facts: num
   }
 }
 
+/** Scratchpad CONTENT for sidebar display: the actual open lines —
+ *  facts (evidence) and leads (open threads), each already one line.
+ *  Null when the notebook is empty. */
+export function getScratchpadItems(): { facts: string[]; leads: string[] } | null {
+  try {
+    const doc = readDoc();
+    if (totalLines(doc) === 0) return null;
+    return { facts: doc.facts, leads: doc.leads };
+  } catch {
+    return null;
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   if (!cfg.enabled) return;
 

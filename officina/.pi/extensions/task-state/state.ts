@@ -29,7 +29,7 @@ export function taskStateConfig(env: NodeJS.ProcessEnv = process.env): TaskState
   return {
     enabled: env.TRIS_NO_TASK_STATE !== "1",
     maxItems: 15,
-    dir: env.TRIS_TASKS_DIR || ".pi/tasks",
+    dir: env.TRIS_TASKS_DIR || ".officina/tasks",
   };
 }
 

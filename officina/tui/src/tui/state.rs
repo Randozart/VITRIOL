@@ -76,11 +76,36 @@ pub struct AppState {
 
     /// Agent mode tracking — the widget's own "/mode <next>" hint (Tab).
     pub agent_mode: Option<String>,
+    /// Current mode label (e.g. "BUILD") + badge glyph, parsed from the same
+    /// widget — drives the header mode chip (owner request 2026-09-02).
+    pub agent_mode_label: Option<String>,
+    pub agent_mode_glyph: Option<String>,
     #[allow(dead_code)]
     pub agent_modes: Vec<String>,
 
     // UI state
     pub should_quit: bool,
+
+    /// Watermark glimmer animation mode (owner request 2026-09-02) —
+    /// /glimmer cycles it; persistence lives in the run loop.
+    pub glimmer: crate::watermark::GlimmerMode,
+    /// Composer fire (owner request 2026-09-02): GPU-load-driven braille
+    /// flames above the prompt box. `fire_target` is the last `engine-fire`
+    /// widget reading; `fire_level` is the low-passed display value;
+    /// `fire_on` is the /fire toggle; `fire_style` the color voice
+    /// (default emerald — owner request, same session).
+    pub fire_on: bool,
+    pub fire_style: crate::fire::FireStyle,
+    pub fire_target: f64,
+    pub fire_level: f64,
+    /// Session clock — drives the glimmer phase (elapsed ms).
+    pub started: std::time::Instant,
+
+    /// Scrollback: rows scrolled back from the live tail (owner request
+    /// 2026-09-02 — PgUp/PgDn/wheel through session history). 0 = pinned
+    /// to the newest output. Clamped to `scroll_max` by the chat renderer.
+    pub scroll: u16,
+    pub scroll_max: u16,
 
     // Markdown render cache: (entry_index, text_len, width) → lines.
     // Finished entries parse once; the growing tail re-renders per frame.
@@ -112,8 +137,18 @@ impl Default for AppState {
             cand_sel: 0,
             cwd: std::path::PathBuf::from("."),
             agent_mode: None,
+            agent_mode_label: None,
+            agent_mode_glyph: None,
             agent_modes: Vec::new(),
             should_quit: false,
+            glimmer: crate::watermark::GlimmerMode::Shimmer,
+            fire_on: true,
+            fire_style: crate::fire::FireStyle::default(),
+            fire_target: 0.0,
+            fire_level: 0.0,
+            started: std::time::Instant::now(),
+            scroll: 0,
+            scroll_max: 0,
             md_cache: HashMap::new(),
         }
     }
@@ -187,6 +222,19 @@ impl AppState {
         if key == "agent-mode" {
             self.parse_agent_mode(&lines);
         }
+        if key == "engine-fire" {
+            // Machine-readable load line from vitriol-decode: "FIRE 0.731".
+            // Not sidebar content — the flames are the display.
+            for line in &lines {
+                let plain = strip_ansi(line);
+                if let Some(rest) = plain.strip_prefix("FIRE ") {
+                    if let Ok(v) = rest.trim().parse::<f64>() {
+                        self.fire_target = v.clamp(0.0, 1.0);
+                    }
+                }
+            }
+            return;
+        }
         if let Some(w) = self.widgets.iter_mut().find(|w| w.key == key) {
             w.lines = lines;
         } else {
@@ -198,13 +246,29 @@ impl AppState {
     }
 
     /// Parse the agent-mode widget. The line format (agent-mode.ts) is
-    /// "▪ BUILD · hint · TAB / /mode <next>" — the trailing hint names the
-    /// NEXT mode directly, which is exactly what Tab needs. (There is no
-    /// "agent mode: X" text in the widget; that string only appears in
-    /// notify footers.)
+    /// "▪ BUILD · hint · TAB / /mode <next>" (loud directive modes:
+    /// "► PLAN MODE — hint · TAB / /mode <next>") — the trailing hint names
+    /// the NEXT mode directly, which is exactly what Tab needs, and the
+    /// second whitespace token is the CURRENT mode label (owner request
+    /// 2026-09-02: header mode chip). (There is no "agent mode: X" text in
+    /// the widget; that string only appears in notify footers.)
     fn parse_agent_mode(&mut self, lines: &[String]) {
         for line in lines {
             let plain = strip_ansi(line);
+            // Current mode: first token is the badge glyph, second the label.
+            let mut tokens = plain.split_whitespace();
+            if let (Some(glyph), Some(label)) = (tokens.next(), tokens.next()) {
+                let label = label.trim_end_matches("MODE").trim();
+                if !label.is_empty()
+                    && label
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    self.agent_mode_label = Some(label.to_string());
+                    self.agent_mode_glyph = Some(glyph.to_string());
+                }
+            }
+            // Next mode: the trailing bare word after "/mode ".
             if let Some(idx) = plain.rfind("/mode ") {
                 let next = plain[idx + "/mode ".len()..].trim().to_string();
                 // Token must be a bare mode name (letters/dashes).
@@ -226,6 +290,88 @@ impl AppState {
         self.agent_mode.clone()
     }
 
+    /// Cycle the watermark glimmer (Shimmer → Breathe → Twinkle → Off).
+    /// Returns the new mode's label for the notify line.
+    pub fn cycle_glimmer(&mut self) -> &'static str {
+        self.glimmer = self.glimmer.next();
+        self.glimmer.label()
+    }
+
+    /// /glimmer handler: bare argument cycles, a named mode sets directly.
+    /// Unknown names are ignored (returns current). Returns the new label.
+    pub fn set_glimmer(&mut self, args: &str) -> &'static str {
+        let args = args.trim();
+        if args.is_empty() {
+            return self.cycle_glimmer();
+        }
+        if let Some(m) = crate::watermark::GlimmerMode::parse(args) {
+            self.glimmer = m;
+        }
+        self.glimmer.label()
+    }
+
+    /// /fire handler: bare argument toggles, "on"/"off" set directly, a
+    /// style name (emerald|alchemy) switches the color voice, bare "style"
+    /// cycles it. Returns the new state for the notify line.
+    pub fn set_fire(&mut self, args: &str) -> String {
+        let args = args.trim();
+        match args {
+            "" => self.fire_on = !self.fire_on,
+            "on" | "1" | "true" => self.fire_on = true,
+            "off" | "0" | "false" => {
+                self.fire_on = false;
+                self.fire_target = 0.0;
+            }
+            "style" => self.fire_style = self.fire_style.next(),
+            word => {
+                if let Some(s) = crate::fire::FireStyle::parse(word) {
+                    self.fire_style = s;
+                    self.fire_on = true;
+                }
+                // unknown words ignored
+            }
+        }
+        if !self.fire_on {
+            "off".to_string()
+        } else {
+            self.fire_style.label().to_string()
+        }
+    }
+
+    /// Advance the fire's low-pass — exponential smoothing with a ≈0.33 s
+    /// time constant, so the flame breathes at the same tempo regardless of
+    /// frame rate.
+    pub fn step_fire(&mut self, dt_secs: f64) {
+        if !self.fire_on {
+            self.fire_target = 0.0;
+        }
+        let k = 1.0 - (-dt_secs / 0.33).exp();
+        self.fire_level += (self.fire_target - self.fire_level) * k;
+        if self.fire_level < crate::fire::MIN_LEVEL {
+            self.fire_level = 0.0;
+        }
+    }
+
+    // ── Scrollback (owner request 2026-09-02) ────────────────────────────
+
+    pub fn scroll_up(&mut self, rows: u16) {
+        self.scroll = self.scroll.saturating_add(rows).min(self.scroll_max.max(self.scroll));
+    }
+
+    pub fn scroll_down(&mut self, rows: u16) {
+        self.scroll = self.scroll.saturating_sub(rows);
+    }
+
+    /// Jump to the oldest visible content (renderer clamps to scroll_max).
+    pub fn scroll_home(&mut self) {
+        self.scroll = u16::MAX;
+    }
+
+    /// Back to the live tail.
+    pub fn scroll_end(&mut self) {
+        self.scroll = 0;
+    }
+
     /// Drop the markdown render cache (on transcript clear/rehydrate).
     pub fn md_cache_clear(&mut self) {
         self.md_cache.clear();
@@ -241,15 +387,15 @@ impl AppState {
         for (idx, entry) in self.entries.iter().enumerate() {
             match entry {
                 ChatEntry::User(text) => {
-                    for (i, seg) in wrap_text(text, width.saturating_sub(6)).into_iter().enumerate() {
+                    for (i, seg) in wrap_text(text, width.saturating_sub(2)).into_iter().enumerate() {
                         if i == 0 {
                             lines.push(Line::from(vec![
-                                Span::styled("you▸ ", Style::default().fg(theme::GREEN)),
+                                Span::styled(format!("{} ", theme::GLYPH_USER), Style::default().fg(theme::GREEN)),
                                 Span::raw(seg),
                             ]));
                         } else {
                             lines.push(Line::from(vec![
-                                Span::raw("      "),
+                                Span::raw("  "),
                                 Span::raw(seg),
                             ]));
                         }
@@ -273,9 +419,12 @@ impl AppState {
                         let mut spans: Vec<Span> = Vec::with_capacity(ml.spans.len() + 1);
                         if first {
                             first = false;
-                            spans.push(Span::styled("ai ▸ ", Style::default().fg(theme::CYAN)));
+                            spans.push(Span::styled(
+                                format!("{} ", theme::GLYPH_AI),
+                                Style::default().fg(theme::GOLD),
+                            ));
                         } else {
-                            spans.push(Span::raw("      ".to_string()));
+                            spans.push(Span::raw("  ".to_string()));
                         }
                         spans.extend(ml.spans);
                         lines.push(Line::from(spans));
@@ -347,6 +496,8 @@ impl AppState {
         ("resume", "resume a previous session"),
         ("stats", "refresh session stats"),
         ("thinking", "thinking level (off..max, bare = cycle)"),
+        ("glimmer", "watermark glimmer (bare = cycle, or shimmer|breathe|twinkle|off)"),
+        ("fire", "composer flames (bare = toggle, or on|off|style|prismatic|emerald|alchemy)"),
     ];
 
     /// Slash-command candidates for the current input (empty if not a
@@ -588,4 +739,75 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_agent_mode_captures_current_and_next() {
+        let mut s = AppState::default();
+        s.parse_agent_mode(&["\x1b[1m\x1b[38;2;46;161m▪ BUILD\x1b[0m · writes unlocked · TAB / /mode plan\x1b[0m".to_string()]);
+        assert_eq!(s.agent_mode_label.as_deref(), Some("BUILD"));
+        assert_eq!(s.agent_mode_glyph.as_deref(), Some("▪"));
+        assert_eq!(s.agent_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn parse_agent_mode_handles_loud_directive_format() {
+        let mut s = AppState::default();
+        s.parse_agent_mode(&["► PLAN MODE — research only · TAB / /mode build".to_string()]);
+        assert_eq!(s.agent_mode_label.as_deref(), Some("PLAN"));
+        assert_eq!(s.agent_mode_glyph.as_deref(), Some("►"));
+        assert_eq!(s.agent_mode.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn glimmer_cycles_and_sets() {
+        let mut s = AppState::default();
+        assert_eq!(s.set_glimmer("off"), "off");
+        assert_eq!(s.set_glimmer(""), "shimmer"); // cycles off → shimmer
+        assert_eq!(s.set_glimmer("breathe"), "breathe");
+        assert_eq!(s.set_glimmer("nonsense"), "breathe"); // unknown ignored
+    }
+
+    #[test]
+    fn fire_widget_parses_and_low_passes() {
+        let mut s = AppState::default();
+        s.set_widget("engine-fire", vec!["FIRE 0.800".to_string()]);
+        assert!((s.fire_target - 0.8).abs() < 1e-9);
+        s.step_fire(1.0); // one full time-constant
+        assert!(s.fire_level > 0.5 && s.fire_level < 0.8);
+        s.set_widget("engine-fire", vec!["\x1b[31mFIRE 1.500\x1b[0m".to_string()]);
+        assert!((s.fire_target - 1.0).abs() < 1e-9); // clamped
+    }
+
+    #[test]
+    fn fire_toggle_and_kill() {
+        let mut s = AppState::default();
+        assert_eq!(s.set_fire(""), "off"); // default on → toggle off
+        assert_eq!(s.set_fire("on"), "prismatic"); // default voice
+        assert_eq!(s.set_fire("nonsense"), "prismatic"); // unknown ignored
+        s.fire_target = 0.9;
+        assert_eq!(s.set_fire("off"), "off");
+        assert_eq!(s.fire_target, 0.0); // kill kills the target too
+        assert_eq!(s.fire_level, 0.0); // below MIN after step target zero
+        s.step_fire(1.0);
+        assert_eq!(s.fire_level, 0.0);
+    }
+
+    #[test]
+    fn fire_style_switch_and_cycle() {
+        let mut s = AppState::default();
+        assert_eq!(s.fire_style, crate::fire::FireStyle::Pulse); // prismatic default
+        assert_eq!(s.set_fire("pulse"), "prismatic"); // legacy alias
+        assert_eq!(s.set_fire("alchemy"), "alchemy");
+        assert!(s.fire_on); // naming a style ignites
+        // Cycle order: prismatic → emerald → alchemy → prismatic.
+        assert_eq!(s.set_fire("style"), "prismatic");
+        assert_eq!(s.set_fire("style"), "emerald");
+        assert_eq!(s.set_fire("emerald"), "emerald");
+        assert_eq!(s.set_fire("style"), "alchemy");
+    }
 }

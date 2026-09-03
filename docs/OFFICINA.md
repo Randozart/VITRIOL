@@ -15,6 +15,25 @@ engine's native programming environment. Source of truth:
 through to the scaffold CLI: `-p "one-shot"`, `-c` continue, `-r` resume).
 OFFICINA_DIR overrides the location for non-standard installs.
 
+## Project branding: `.officina` vs `.pi` (2026-09-02)
+
+Two namespaces, two owners:
+
+- **`.pi/`** — the ENGINE's dir. pi-coding-agent's upstream discovery
+  convention (extensions, skills, themes, settings) plus the pinned
+  runtime hooks. Never renamed — forking the vendor convention breaks
+  discovery and upstream sync.
+- **`.officina/`** — OUR per-project artifacts, written by officina's own
+  extensions: `SCRATCHPAD.md` (hot notebook), `tasks/<session>.json`
+  (task state), `approved-plan.md` (plan-mode), `background/<stem>/`
+  (review cards). Reads fall back to the old `.pi/...` locations so
+  pre-shim sessions keep resolving; writes always go canonical.
+
+The TUI bridge (`officina/tui`) treats a project with either
+`.pi/extensions` or `.officina/extensions` as self-curating and carries
+no foreign extensions into it; bare projects get the officina core
+(agent-mode, vitriol-decode, session-panel) loaded explicitly.
+
 ## What's inside (officina/)
 
 - `officina.mjs` — entry: pins pi-coding-agent (Apache-2.0 library),

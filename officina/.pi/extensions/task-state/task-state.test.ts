@@ -14,7 +14,7 @@ describe("taskStateConfig", () => {
     const cfg = taskStateConfig({});
     expect(cfg.enabled).toBe(true);
     expect(cfg.maxItems).toBe(15);
-    expect(cfg.dir).toBe(".pi/tasks");
+    expect(cfg.dir).toBe(".officina/tasks"); // branding shim 2026-09-02
     expect(taskStateConfig({ TRIS_NO_TASK_STATE: "1" }).enabled).toBe(false);
   });
 });

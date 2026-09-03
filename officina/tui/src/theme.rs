@@ -38,8 +38,10 @@ pub const LIGHT_YELLOW: Color = Color::Rgb(0xFF, 0xE0, 0x66);
 pub const DEEP_RED: Color = Color::Rgb(0x8A, 0x15, 0x15);
 /// Dark teal — activity ramp start.
 pub const DARK_TEAL: Color = Color::Rgb(0x0B, 0x5E, 0x4C);
-/// Mercury silver — pulse ramp start.
-pub const MERCURY: Color = Color::Rgb(0x55, 0x60, 0x6E);
+    /// Mercury silver — pulse ramp start.
+    pub const MERCURY: Color = Color::Rgb(0x55, 0x60, 0x6E);
+    /// Bright silver — PLAN mode (the moon metal, owner request 2026-09-02).
+    pub const SILVER: Color = Color::Rgb(0xC0, 0xC7, 0xCF);
 /// Watermark tint — the stone rising (brightened 2026-09-02 per owner:
 /// #1c2634 was nearly invisible on BG; #2a3a52 reads as faint stone).
 pub const WATERMARK: Color = Color::Rgb(0x2A, 0x3A, 0x52);
@@ -56,6 +58,12 @@ pub const GLYPH_FIRE: &str = "🜂";
 pub const GLYPH_ALEMBIC: &str = "⚗";
 /// Diagnostics: SULFUR (U+1F70D) — vitriolic. Fallback: ⚠
 pub const GLYPH_SULFUR: &str = "🜍";
+/// The AI correspondent: PHILOSOPHERS SULFUR (U+1F70E) — the stone's soul
+/// (owner request 2026-09-02; no dedicated Philosopher's Stone codepoint
+/// exists in Unicode 16 — verified by name scan). Fallback: 🜀 Quintessence.
+pub const GLYPH_AI: &str = "🜎";
+/// The human correspondent: MERCURY ☿ (U+263F) — wide font coverage.
+pub const GLYPH_USER: &str = "☿";
 /// Tool running: CRUCIBLE (U+1F765) — matter being worked. Fallback: ⚙
 pub const GLYPH_CRUCIBLE: &str = "🝥";
 /// Reserved: QUINTESSENCE (U+1F700) — scratchpad label, when wired.

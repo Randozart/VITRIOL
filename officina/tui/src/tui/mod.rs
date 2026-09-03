@@ -24,24 +24,28 @@ use self::state::AppState;
 pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    // Mouse capture: wheel scrolling through session history (owner request
+    // 2026-09-02). Trade-off: terminals usually need Shift+drag to select
+    // text while captured.
+    execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = AppState::default();
     state.cwd = cwd;
+    load_glimmer(&mut state);
+    load_fire(&mut state);
     let mut rx = bridge.start_reader();
 
-    // Dedicated keyboard task: crossterm EventStream → channel. Never poll
-    // from the select! loop — concurrent event::poll calls race and eat keys.
-    let (key_tx, mut key_rx) = tokio::sync::mpsc::unbounded_channel::<KeyEvent>();
+    // Dedicated input task: crossterm EventStream → channel. Never poll
+    // from the select! loop — concurrent event::poll calls race and eat
+    // keys. Keys AND mouse both route through here (wheel = scrollback).
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     tokio::spawn(async move {
         let mut stream = EventStream::new();
         while let Some(Ok(ev)) = stream.next().await {
-            if let Event::Key(key) = ev {
-                if key_tx.send(key).is_err() {
-                    break;
-                }
+            if input_tx.send(ev).is_err() {
+                break;
             }
         }
     });
@@ -51,24 +55,109 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     let _ = bridge.request(RpcCommand::GetMessages { id: None }).await;
     let _ = bridge.request(RpcCommand::GetCommands { id: None }).await;
 
-    let result = run_loop(&mut terminal, &mut state, &mut rx, &mut key_rx, bridge).await;
-
+    let result = run_loop(&mut terminal, &mut state, &mut rx, &mut input_rx, bridge).await;
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+    // Mouse capture OFF before the alternate screen exit (reverse order).
+    execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
 
     result
+}
+
+// ── Glimmer persistence (owner request 2026-09-02) ───────────────────────
+// OFFICINA_GLIMMER env > ~/.vitriol/officina/tui-glimmer file > Shimmer.
+
+fn glimmer_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+        .join(".vitriol")
+        .join("officina")
+        .join("tui-glimmer")
+}
+
+fn load_glimmer(state: &mut AppState) {
+    if let Ok(m) = std::env::var("OFFICINA_GLIMMER") {
+        if let Some(g) = crate::watermark::GlimmerMode::parse(m.trim()) {
+            state.glimmer = g;
+            return;
+        }
+    }
+    if let Ok(s) = std::fs::read_to_string(glimmer_path()) {
+        if let Some(g) = crate::watermark::GlimmerMode::parse(s.trim()) {
+            state.glimmer = g;
+        }
+    }
+}
+
+fn persist_glimmer(state: &AppState) {
+    if let Some(dir) = glimmer_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(glimmer_path(), format!("{}\n", state.glimmer.label()));
+}
+
+// ── Fire persistence (owner request 2026-09-02) ──────────────────────────
+// OFFICINA_FIRE / OFFICINA_FIRE_STYLE env > ~/.vitriol/officina/tui-fire
+// ("<on|off> <style>"; bare on/off lines from earlier builds stay valid)
+// > on + emerald.
+
+fn fire_path() -> std::path::PathBuf {
+    glimmer_path().with_file_name("tui-fire")
+}
+
+fn load_fire(state: &mut AppState) {
+    if std::env::var("OFFICINA_FIRE").map(|v| v == "0").unwrap_or(false) {
+        state.fire_on = false;
+    }
+    if let Ok(s) = std::env::var("OFFICINA_FIRE_STYLE") {
+        if let Some(style) = crate::fire::FireStyle::parse(s.trim()) {
+            state.fire_style = style;
+        }
+    }
+    if let Ok(src) = std::fs::read_to_string(fire_path()) {
+        let mut words = src.split_whitespace();
+        if let Some(w) = words.next() {
+            match w {
+                "off" | "0" => state.fire_on = false,
+                "on" | "1" => state.fire_on = true,
+                _ => {}
+            }
+        }
+        if let Some(w) = words.next() {
+            if let Some(style) = crate::fire::FireStyle::parse(w) {
+                state.fire_style = style;
+            }
+        } else if let Some(style) = crate::fire::FireStyle::parse(src.trim()) {
+            // A lone style word means "on, this voice".
+            state.fire_style = style;
+            state.fire_on = true;
+        }
+    }
+}
+
+fn persist_fire(state: &AppState) {
+    if let Some(dir) = fire_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let line = if state.fire_on {
+        format!("on {}", state.fire_style.label())
+    } else {
+        "off".to_string()
+    };
+    let _ = std::fs::write(fire_path(), format!("{}\n", line));
 }
 
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut AppState,
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<WireMessage>,
-    key_rx: &mut tokio::sync::mpsc::UnboundedReceiver<KeyEvent>,
+    input_rx: &mut tokio::sync::mpsc::UnboundedReceiver<Event>,
     bridge: &mut RpcBridge,
 ) -> Result<()> {
-    let mut refresh =
-        tokio::time::interval(Duration::from_millis(500)); // redraw heartbeat
-
+    let mut last_frame = std::time::Instant::now();
     loop {
         if state.show_diag {
             state.diag_view = bridge
@@ -82,18 +171,34 @@ async fn run_loop(
                 })
                 .collect();
         }
+        // Fire low-pass — dt-based so the flame breathes at the same tempo
+        // at 2 fps and 11 fps alike.
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(last_frame).as_secs_f64();
+        last_frame = now;
+        state.step_fire(dt);
         terminal.draw(|frame| render(frame, state))?;
 
+        // Dynamic redraw cadence: fresh screens (glimmer) and live fires
+        // animate at ~11 fps; busy screens ride the 500 ms heartbeat.
+        let delay = if state.entries.is_empty() || state.fire_level > 0.0 {
+            Duration::from_millis(90)
+        } else {
+            Duration::from_millis(500)
+        };
+
         tokio::select! {
-            maybe_key = key_rx.recv() => {
-                match maybe_key {
-                    Some(key) => {
+            maybe_input = input_rx.recv() => {
+                match maybe_input {
+                    Some(Event::Key(key)) => {
                         handle_key(key, state, bridge).await;
                         if state.should_quit {
                             terminal.draw(|frame| render(frame, state))?;
                             break;
                         }
                     }
+                    Some(Event::Mouse(m)) => handle_mouse(m, state).await,
+                    Some(_) => {} // resize / focus events — next draw picks them up
                     None => break, // input stream ended
                 }
             }
@@ -121,8 +226,9 @@ async fn run_loop(
                     }
                 }
             }
-            _ = refresh.tick() => {
+            _ = tokio::time::sleep(delay) => {
                 // heartbeat redraw — keeps streaming indicator/gauges alive
+                // (90 ms on fresh screens so the watermark glimmer animates)
             }
         }
     }
@@ -217,12 +323,36 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         KeyCode::Down => {
             state.cycle_candidate(true);
         }
+        // Scrollback (owner request 2026-09-02): PgUp/PgDn page through
+        // session history.
+        KeyCode::PageUp => {
+            state.scroll_up(20);
+        }
+        KeyCode::PageDown => {
+            state.scroll_down(20);
+        }
         KeyCode::Enter => {
             // Resume modal open → handled above (modal key capture).
             let msg = std::mem::take(&mut state.input);
             state.cursor = 0;
             state.cand_sel = 0;
             if msg.is_empty() {
+                return;
+            }
+            // /fire — pure-local UI state (composer flames); never RPC.
+            if msg == "/fire" || msg.starts_with("/fire ") {
+                let args = msg["/fire".len()..].trim();
+                let label = state.set_fire(args);
+                state.notice = Some((format!("fire: {}", label), "info".to_string()));
+                persist_fire(state);
+                return;
+            }
+            // /glimmer — pure-local UI state (watermark glimmer); never RPC.
+            if msg == "/glimmer" || msg.starts_with("/glimmer ") {
+                let args = msg["/glimmer".len()..].trim();
+                let label = state.set_glimmer(args);
+                state.notice = Some((format!("glimmer: {}", label), "info".to_string()));
+                persist_glimmer(state);
                 return;
             }
             // Local fixed commands.
@@ -264,6 +394,9 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     return;
                 }
             }
+            // Sending returns the view to the live tail — you came here to
+            // watch the reply.
+            state.scroll = 0;
             // Local RPC commands — dispatched directly, never prompt text.
             // Slash invocations don't echo into the chat log.
             if state.is_local_command(&msg) {
@@ -344,8 +477,22 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.cursor += 1;
             }
         }
-        KeyCode::Home => state.cursor = 0,
-        KeyCode::End => state.cursor = state.input.chars().count(),
+        // Home/End: cursor movement while typing; history jump when the
+        // input is empty (oldest / live tail).
+        KeyCode::Home => {
+            if state.input.is_empty() {
+                state.scroll_home();
+            } else {
+                state.cursor = 0;
+            }
+        }
+        KeyCode::End => {
+            if state.input.is_empty() {
+                state.scroll_end();
+            } else {
+                state.cursor = state.input.chars().count();
+            }
+        }
         _ => {
             if let KeyCode::Char(c) = key.code {
                 if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
@@ -355,6 +502,15 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 }
             }
         }
+    }
+}
+
+async fn handle_mouse(m: crossterm::event::MouseEvent, state: &mut AppState) {
+    use crossterm::event::MouseEventKind;
+    match m.kind {
+        MouseEventKind::ScrollUp => state.scroll_up(3),
+        MouseEventKind::ScrollDown => state.scroll_down(3),
+        _ => {} // clicks / drags are not TUI concerns
     }
 }
 

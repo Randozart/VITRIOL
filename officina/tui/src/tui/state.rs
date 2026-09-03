@@ -1131,22 +1131,28 @@ fn render_tool_block(
     width: usize,
 ) -> Vec<Line<'static>> {
     let full = mode == ToolVerbosity::Full;
-    let border = Style::default().fg(theme::BORDER_DIM).bg(theme::BG);
-    let text_st = Style::default().fg(theme::TEXT).bg(theme::BG);
+    // The panel is an OPAQUE PLATE (owner request 2026-09-03: fire must
+    // not interrupt it — "it stands apart from the background"). Every
+    // span carries bg(PANEL) and every line pads to `width`, so flame
+    // cells cannot show through gaps and the tint pass skips the surface.
+    let surf = theme::PANEL;
+    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
+    let text_st = Style::default().fg(theme::TEXT).bg(surf);
+    let muted_st = Style::default().fg(theme::MUTED).bg(surf);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(16 + output.len());
 
     // Header: ╭─ ⌬ name [▸ summary]
     {
         let mut spans = vec![
             Span::styled("╭─ ", border),
-            Span::styled(format!("{} ", theme::GLYPH_CRUCIBLE), Style::default().fg(theme::GOLD).bg(theme::BG)),
-            Span::styled(name.to_string(), Style::default().fg(theme::SILVER).bg(theme::BG).add_modifier(ratatui::style::Modifier::BOLD)),
+            Span::styled(format!("{} ", theme::GLYPH_CRUCIBLE), Style::default().fg(theme::GOLD).bg(surf)),
+            Span::styled(name.to_string(), Style::default().fg(theme::SILVER).bg(surf).add_modifier(ratatui::style::Modifier::BOLD)),
         ];
         let head_w = width.saturating_sub(6 + name.chars().count());
         if !summary.is_empty() && head_w > 4 {
             spans.push(Span::styled(
                 format!(" ▸ {}", trunc_str(summary, head_w - 3)),
-                Style::default().fg(theme::MUTED).bg(theme::BG),
+                muted_st,
             ));
         }
         lines.push(Line::from(spans));
@@ -1157,7 +1163,7 @@ fn render_tool_block(
         (true, Some(a)) if !a.is_null() => {
             lines.push(Line::from(vec![
                 Span::styled("│ ", border),
-                Span::styled("args", Style::default().fg(theme::MUTED).bg(theme::BG)),
+                Span::styled("args", muted_st),
             ]));
             if let Ok(pretty) = serde_json::to_string_pretty(a) {
                 for pl in pretty.lines() {
@@ -1172,7 +1178,7 @@ fn render_tool_block(
             let compact = if summary.is_empty() { one } else { format!("{} {}", summary, one) };
             lines.push(Line::from(vec![
                 Span::styled("│ ", border),
-                Span::styled("args  ", Style::default().fg(theme::MUTED).bg(theme::BG)),
+                Span::styled("args  ", muted_st),
                 Span::styled(
                     trunc_str(compact.trim(), width.saturating_sub(9)),
                     text_st,
@@ -1186,7 +1192,7 @@ fn render_tool_block(
     if !output.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("│ ", border),
-            Span::styled("out", Style::default().fg(theme::MUTED).bg(theme::BG)),
+            Span::styled("out", muted_st),
         ]));
         let budget = match (full, running) {
             (true, true) => 50, // live tail
@@ -1218,7 +1224,7 @@ fn render_tool_block(
                 Span::styled("│   ", border),
                 Span::styled(
                     format!("… {} more lines", hidden),
-                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                    muted_st,
                 ),
             ]));
         }
@@ -1227,25 +1233,25 @@ fn render_tool_block(
                 Span::styled("│   ", border),
                 Span::styled(
                     "… output truncated (storage cap)",
-                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                    muted_st,
                 ),
             ]));
         }
     } else if running {
         lines.push(Line::from(vec![
             Span::styled("│ ", border),
-            Span::styled("running…", theme::info()),
+            Span::styled("running…", Style::default().fg(theme::LIGHT_YELLOW).bg(surf)),
         ]));
     }
 
     // Bottom status.
     {
         let (icon, label, st) = if running {
-            (theme::GLYPH_CRUCIBLE, " running", theme::warn())
+            (theme::GLYPH_CRUCIBLE, " running", Style::default().fg(theme::ORANGE).bg(surf))
         } else if error {
-            ("✗", " failed", theme::crit())
+            ("✗", " failed", Style::default().fg(theme::RED).bg(surf))
         } else {
-            ("✓", "", Style::default().fg(theme::GREEN).bg(theme::BG))
+            ("✓", "", Style::default().fg(theme::GREEN).bg(surf))
         };
         lines.push(Line::from(vec![
             Span::styled("╰─ ", border),
@@ -1253,25 +1259,42 @@ fn render_tool_block(
         ]));
     }
     lines
+        .into_iter()
+        .map(|l| pad_panel(l, width))
+        .collect()
+}
+
+/// Pad a tool-block line to `width` with PANEL-surfaced spaces — the last
+/// inch of every row is panel too, so nothing burns through the plate.
+fn pad_panel(mut line: Line<'static>, width: usize) -> Line<'static> {
+    let w: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if w < width {
+        line.spans.push(Span::styled(
+            " ".repeat(width - w),
+            Style::default().bg(theme::PANEL),
+        ));
+    }
+    line
 }
 
 /// Pretty-JSON line colorized into spans: `"key":` cyan, braces muted,
 /// scalar values text-colored. Truncated to `width` chars.
 fn json_line_spans(line: &str, width: usize) -> Vec<Span<'static>> {
+    let surf = theme::PANEL;
     let t = trunc_str(line, width);
     let trimmed = t.trim_start();
     let brace = trimmed == "{" || trimmed == "}" || trimmed == "},";
     if brace {
-        return vec![Span::styled(t, Style::default().fg(theme::MUTED).bg(theme::BG))];
+        return vec![Span::styled(t, Style::default().fg(theme::MUTED).bg(surf))];
     }
     if let Some(pos) = t.find("\":") {
         let split = pos + 2; // include the colon
         return vec![
-            Span::styled(t[..split].to_string(), Style::default().fg(theme::CYAN).bg(theme::BG)),
-            Span::styled(t[split..].to_string(), Style::default().fg(theme::TEXT).bg(theme::BG)),
+            Span::styled(t[..split].to_string(), Style::default().fg(theme::CYAN).bg(surf)),
+            Span::styled(t[split..].to_string(), Style::default().fg(theme::TEXT).bg(surf)),
         ];
     }
-    vec![Span::styled(t, Style::default().fg(theme::TEXT).bg(theme::BG))]
+    vec![Span::styled(t, Style::default().fg(theme::TEXT).bg(surf))]
 }
 
 /// Char-count truncation with ellipsis.
@@ -1591,5 +1614,56 @@ mod tests {
         let text = s.chat_lines(60).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
         assert!(text.contains("one"), "streamed lines visible: {}", text);
         assert!(text.contains("two"), "streamed lines visible: {}", text);
+    }
+}
+
+#[cfg(test)]
+mod panel_tests {
+    use super::*;
+
+    /// Owner request 2026-09-03: the tool panel is an opaque plate — fire
+    /// renders AROUND it, never through it. Every line fills its width and
+    /// every span carries the PANEL surface.
+    #[test]
+    fn tool_block_is_an_opaque_panel() {
+        let lines = render_tool_block(
+            ToolVerbosity::Block,
+            "edit",
+            "/home/x/docs/GUARDS.md",
+            Some(&serde_json::json!({ "path": "/home/x/docs/GUARDS.md", "edits": [1] })),
+            &["Successfully replaced 1 block(s).".to_string()],
+            false,
+            false,
+            false,
+            40,
+        );
+        assert!(lines.len() >= 4, "header + args + out + status: {}", lines.len());
+        for l in &lines {
+            let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert_eq!(w, 40, "panel line fills its width: {:?}", l.to_string());
+            for s in &l.spans {
+                assert_eq!(s.style.bg, Some(theme::PANEL), "span bg: {:?}", s.content);
+            }
+        }
+    }
+
+    #[test]
+    fn running_tool_block_is_also_opaque() {
+        let lines = render_tool_block(
+            ToolVerbosity::Full,
+            "bash",
+            "",
+            Some(&serde_json::json!({ "command": "cargo test" })),
+            &[],
+            false,
+            true,
+            false,
+            40,
+        );
+        for l in &lines {
+            let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert_eq!(w, 40);
+            assert!(l.spans.iter().all(|s| s.style.bg == Some(theme::PANEL)));
+        }
     }
 }

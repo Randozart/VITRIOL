@@ -412,7 +412,10 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         x: input_area.x + cx as u16,
                         y: fire_y + ry as u16,
                     }) {
-                        if cell.symbol() != " " {
+                        // PANEL-surfaced cells (tool blocks) are opaque
+                        // plates standing IN the fire, not of it — the
+                        // flames never discolor them.
+                        if cell.symbol() != " " && cell.bg != theme::PANEL {
                             cell.set_fg(*color);
                         }
                     }

@@ -178,3 +178,29 @@ Key facts:
 - MTP only works if `qwen35_mtp` arch string exists in `src/llama-arch.cpp` (fixed 2026-08-18). Symptom when broken: `unknown override architecture: 'qwen35_mtp'` + `speculative=none`.
 - 262K + MTP does NOT fit (Pascal compute buffers). Drop MTP for 262K.
 - [STALE?] opencode provider entries `qwen38-mtp`/`qwen38-262k` in `~/.config/opencode/opencode.jsonc` predate the 2026-08-24 certifications — verify before relying on them. Hermes-agent uses `~/.hermes/config.yaml` ("Lapis Occultus" → qwen38-master endpoint).
+
+## Context lifecycle (sparse KV + preservation) — 2026-09-03
+
+The daily-driver engine runs **sparse KV eviction with attention-probe
+scoring** (lull-kv feature; see
+`.opencode/plans/officina-context-lifecycle-2026-09-03.md` — includes the
+Aug-31 silent-no-op regression post-mortem).
+
+- **Restart the engine via the unit, never bare `serve`**:
+  `systemctl --user restart vitriol-server.service`. The unit is protected
+  (oom-shield raises big consumers' oom_score_adj; Restart=always). Bare
+  `vitriol serve` from a shell spawns an oom-elevated, kill-first server —
+  the launcher now REFUSES this when the unit is active.
+- Probe keys (profile `[kv]`, launcher-enforced): `score = probe`,
+  `score_every = 16`. Cadence 4 is REJECTED (owner-tested: ejected too
+  aggressively). `VITRIOL_KV_FLOOR` (eager sweep) exists but defaults OFF.
+- **Checkpoint flag name is engine-dependent**: the lull engine wants
+  `--checkpoint-every-n-tokens N`; main-tree builds used
+  `--checkpoint-min-step N`. The launcher currently emits the lull name.
+- **Counter**: `llamacpp:kv_ejected_total` (/metrics) — surfaced as
+  `⤓ Nk` in Officina's ctx row. Preservation layer: scratchpad +
+  task-state tails re-inject every turn and are carried abroad by the
+  TUI bridge; task tail states the eviction contract.
+- **Stage 6 standing**: port lull-kv → main (llama-kv-cache divergence +
+  `vitriol-kv-probe.*` + the slot save/restore endpoints — the autosave
+  sidecar currently logs `HTTP 501` skips on lull engines).

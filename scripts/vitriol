@@ -36,6 +36,25 @@ kv_sparse_guard() {
         exit 1
     fi
 }
+
+# Protected-serve guard (context lifecycle 2026-09-03): bare 'serve' from
+# an oom-elevated shell scope spawns a kill-first server (the Aug-31-era
+# OOM deaths — unprotected instances die before the unit's). When the
+# managing unit exists AND is active, delegate to it. The unit's own
+# ExecStart runs this same command and is exempt via its cgroup.
+serve_unit_guard() {
+    local unit="$HOME/.config/systemd/user/vitriol-server.service"
+    [ -f "$unit" ] || return 0
+    grep -qa "vitriol-server.service" /proc/self/cgroup 2>/dev/null && return 0
+    if systemctl --user is-active --quiet vitriol-server.service 2>/dev/null; then
+        echo "VITRIOL: REFUSING bare serve — vitriol-server.service is already managing the engine." >&2
+        echo "         Use: systemctl --user restart vitriol-server.service" >&2
+        echo "         (the unit is protected: oom-shield + Restart=always; a bare serve would be oom-elevated and die first)" >&2
+        exit 1
+    fi
+    echo "VITRIOL: note — unit file present but service inactive; running UNPROTECTED (no oom-shield lifecycle)." >&2
+    echo "         Consider: systemctl --user enable --now vitriol-server.service" >&2
+}
 # 2026-08-29 (CachyOS migration): every LD_LIBRARY_PATH assignment that launches
 # llama-server must APPEND the inherited value (`...${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}`),
 # never clobber it — the CUDA 12 runtime libs resolve from ~/.cuda-libs here, and an
@@ -2073,6 +2092,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
         kv_sparse_guard
+        serve_unit_guard
         FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
             "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")

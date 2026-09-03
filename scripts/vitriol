@@ -2218,7 +2218,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # Checkpoint interval: create checkpoints every 2048 tokens during prefill.
         # Combined with the LCP-boundary checkpoint (added at keep_first), this ensures
         # the next request's common prefix always lands within ~2048 tokens of a checkpoint.
-        CKPT_ARGS="--checkpoint-min-step ${CKPT_EVERY:-2048}"
+        # 2026-09-03: flag remapped for the lull engine (--checkpoint-min-step
+        # is the main-tree name; lull wants --checkpoint-every-n-tokens).
+        CKPT_ARGS="--checkpoint-every-n-tokens ${CKPT_EVERY:-2048}"
         # Flash Attention is required for V cache quantization and generally faster
         FA_ARGS="-fa on"
         # Prefill optimization flags

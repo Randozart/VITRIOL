@@ -68,8 +68,11 @@ describe("renderTaskBlock", () => {
     expect(block).toContain("[+5 more]");
   });
 
-  it("empty list renders empty block (injection skipped)", () => {
-    expect(renderTaskBlock([])).toBe("");
+  it("empty list renders the seeded eviction contract (2026-09-03)", () => {
+    const block = renderTaskBlock([]);
+    expect(block).toContain("no tasks yet");
+    expect(block).toContain("evicted from context");
+    expect(block).toContain("update_tasks");
   });
 
   it("fits the ~200-token budget on a full 15-item list", () => {

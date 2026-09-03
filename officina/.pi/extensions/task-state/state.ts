@@ -69,7 +69,12 @@ const MARKS: Record<TaskItem["status"], string> = {
  * Empty list renders "" (injection skipped by injectionResult).
  */
 export function renderTaskBlock(tasks: TaskItem[], maxItems = 15): string {
-  if (tasks.length === 0) return "";
+  // Empty list no longer skips injection (owner request 2026-09-03): the
+  // eviction CONTRACT must reach the model from turn 1, or nothing
+  // motivates the first update_tasks call.
+  if (tasks.length === 0) {
+    return `\n\n## Task state (external truth — survives compaction AND KV eviction; update with update_tasks)\n(no tasks yet — persist your plan here; anything not written here or to the scratchpad will be evicted from context)`;
+  }
   const shown = tasks.slice(0, maxItems);
   const lines = shown.map((t) => `${MARKS[t.status]} ${t.id}. ${t.description}`);
   if (tasks.length > maxItems) lines.push(`[+${tasks.length - maxItems} more]`);

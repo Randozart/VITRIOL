@@ -63,7 +63,18 @@ fn officina_extensions_to_carry(cli_path: &Path, cwd: &Path) -> Vec<PathBuf> {
     if !exts.is_dir() {
         return out;
     }
-    for name in ["llama-cpp-provider", "agent-mode", "vitriol-decode", "session-panel"] {
+    // Preservation extensions ride too (2026-09-03): task-state +
+    // scratchpad are the context-lifecycle preservation layer — without
+    // them abroad, the agent has no update_tasks/scratchpad_write tools
+    // and the eviction contract never reaches it.
+    for name in [
+        "llama-cpp-provider",
+        "agent-mode",
+        "vitriol-decode",
+        "session-panel",
+        "task-state",
+        "scratchpad",
+    ] {
         let dir = exts.join(name);
         if dir.is_dir() {
             out.push(dir);
@@ -299,7 +310,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("officina-carry-{}", std::process::id()));
         let bin = root.join("node_modules").join(".bin");
         let exts = root.join(".pi").join("extensions");
-        for name in ["llama-cpp-provider", "agent-mode", "vitriol-decode", "session-panel"] {
+        for name in ["llama-cpp-provider", "agent-mode", "vitriol-decode", "session-panel", "task-state", "scratchpad"] {
             std::fs::create_dir_all(exts.join(name)).unwrap();
         }
         std::fs::create_dir_all(&bin).unwrap();
@@ -310,7 +321,7 @@ mod tests {
         let bare = std::env::temp_dir().join(format!("officina-bare-{}", std::process::id()));
         std::fs::create_dir_all(&bare).unwrap();
         let carried = officina_extensions_to_carry(&pi, &bare);
-        assert_eq!(carried.len(), 4);
+        assert_eq!(carried.len(), 6);
         assert!(carried.iter().all(|p| p.starts_with(&exts)));
 
         // Project with its own .pi/extensions → nothing carried (no double load).

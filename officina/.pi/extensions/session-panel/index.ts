@@ -180,23 +180,27 @@ export default function (pi: ExtensionAPI) {
     return lines;
   });
 
-  // P26: Loaded model — the ENGINE's truth (owner request 2026-09-03).
-  // pi's selected model (header) can drift from what the server actually
-  // loaded; when they disagree this row goes warning-orange and names
-  // both, and a one-time notice fires on onset.
+  // P26: Loaded model — the ENGINE's truth (owner request 2026-09-03):
+  // alias + the underlying GGUF beside it. pi's selected model (header)
+  // can drift from what the server actually loaded; when pi's string
+  // matches NEITHER the alias NOR the loaded path's basename, this row
+  // goes warning-orange, names both, and a one-time notice fires on onset.
   registerSidebarSection("loaded", 26, () => {
     const eng = getEngineSnapshot();
     if (!eng.up || !eng.loaded_model) return undefined;
-    const mismatch = !!modelId && eng.loaded_model !== modelId;
-    if (mismatch) {
+    const base = eng.loaded_path.split("/").pop()?.replace(/\.gguf$/i, "") ?? "";
+    const aligned = !!modelId
+      && (modelId === eng.loaded_model || modelId === eng.loaded_path || modelId === base);
+    if (!aligned && modelId) {
       return [truncate(
         sc(SAFETY, `loaded ${eng.loaded_model}`)
-          + sc(MUTED, " · pi says ")
+          + sc(MUTED, " ⚠ pi says ")
           + sc(SAFETY, modelId),
         CONTENT_W,
       )];
     }
-    return [truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W)];
+    const detail = base ? sc(MUTED, " · ") + sc(SOLVENT, base) : "";
+    return [truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model) + detail, CONTENT_W)];
   });
 
   // P28: Divider with embedded group header (the Plans group follows)

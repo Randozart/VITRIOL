@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   busySlots,
   parseLoadedModel,
+  parseModelPath,
   counterDelta,
   fireLoad,
   gpuFireLoad,
@@ -29,6 +30,12 @@ describe("parseMetrics", () => {
     expect(parseLoadedModel('{"models":[{"model":"Qwen3.8-27B"}]}')).toBe("Qwen3.8-27B");
     expect(parseLoadedModel("not json")).toBe("");
     expect(parseLoadedModel("{}")).toBe("");
+  });
+
+  it("parses the loaded model path from /props", () => {
+    expect(parseModelPath('{"model_path":"/home/x/Downloads/Qwen3.8-27B-Q3_K_M.gguf"}')).toBe("/home/x/Downloads/Qwen3.8-27B-Q3_K_M.gguf");
+    expect(parseModelPath("{}")).toBe("");
+    expect(parseModelPath("garbage")).toBe("");
   });
 
   it("parses the sparse-KV ejected counter when present", () => {

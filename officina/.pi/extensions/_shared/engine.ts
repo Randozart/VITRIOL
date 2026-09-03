@@ -10,7 +10,7 @@
 // Provenance: original work, this repo; parsers from vitriol-decode/decode.ts
 // (own; this repo, Apache-2.0 OR MIT).
 import { execFile } from "node:child_process";
-import { busySlots, counterDelta, gpuFireLoad, parseLoadedModel, parseMetrics, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
+import { busySlots, counterDelta, gpuFireLoad, parseLoadedModel, parseMetrics, parseModelPath, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8279";
 const DEFAULT_POLL_MS = 700;
@@ -27,6 +27,8 @@ export interface EngineSnapshot {
   ejected: number;
   /** The model id the ENGINE actually loaded (alias), "" when unknown. */
   loaded_model: string;
+  /** The loaded model's file path (from /props), "" when unknown. */
+  loaded_path: string;
   /** decode tokens since engine boot */
   total: number;
   slots: SlotInfo[];
@@ -48,6 +50,7 @@ let snap: EngineSnapshot = {
   cumulativeIngest: 0,
   ejected: 0,
   loaded_model: "",
+  loaded_path: "",
   total: 0,
   slots: [],
   busy: 0,
@@ -115,7 +118,7 @@ async function poll(): Promise<void> {
     before = null;
     if (snap.up || !polledOnce) {
       polledOnce = true;
-      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "" };
+      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "" };
       notify();
     }
     return;
@@ -140,8 +143,10 @@ async function poll(): Promise<void> {
   // from pi's selected-model label.
   const modelsText = await fetchText(`${base}/v1/models`, pollMs);
   const loaded_model = modelsText !== null ? parseLoadedModel(modelsText) : snap.loaded_model;
+  const propsText = await fetchText(`${base}/props`, pollMs);
+  const loaded_path = propsText !== null ? parseModelPath(propsText) : snap.loaded_path;
   // cumulativeIngest = total prompt tokens processed since engine boot
-  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model };
+  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path };
   polledOnce = true;
   notify();
 }

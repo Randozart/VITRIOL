@@ -52,6 +52,19 @@ export function parseLoadedModel(text: string): string {
   }
 }
 
+/**
+ * Parse /props for the loaded model's file path (top-level `model_path`).
+ * Empty string when absent/unparseable.
+ */
+export function parseModelPath(text: string): string {
+  try {
+    const j = JSON.parse(text) as { model_path?: string };
+    return j.model_path ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export interface DecodeDelta {
   tps: number;
   tokens: number;

@@ -88,6 +88,30 @@ fn lerp8(base: u8, peak: u8, t: f64) -> u8 {
     (base as f64 + (peak as f64 - base as f64) * t).round() as u8
 }
 
+// ── Shimmer geometry (pure, shared with tests) ────────────────────────────
+
+/// Sweep crest position for cycle fraction `p` in [0,1] over stone depth
+/// `max_d`. Travel budget includes the streak offset so BOTH bands exit
+/// the stone before the rest phase (owner bug 2026-09-03: the streak's
+/// budget was never extended — it parked at d_max−1 mid-stone, and since
+/// only the bottom rows reach those diagonals it glowed as a horizontal
+/// dash through the whole stillness window).
+fn sweep_pos(p: f64, max_d: f64) -> f64 {
+    p * (max_d + SHIMMER_BAND * 2.0 + SHIMMER_STREAK_OFFSET) - SHIMMER_BAND
+}
+
+/// The emerald streak trails the silver crest at a fixed gap.
+fn streak_pos(sweep: f64) -> f64 {
+    sweep - SHIMMER_STREAK_OFFSET
+}
+
+/// Band intensity at diagonal `d` from crest `c` — linear falloff over
+/// `band`, squared for a soft shoulder.
+fn band_i(d: f64, c: f64, band: f64) -> f64 {
+    let i = (1.0 - (d - c).abs() / band).clamp(0.0, 1.0);
+    i * i
+}
+
 /// Mix WATERMARK toward a peak tint by fraction `t` in [0, 1].
 fn glint_color(peak: (u8, u8, u8), t: f64) -> ratatui::style::Color {
     let (base_r, base_g, base_b) = (0x2A, 0x3A, 0x52); // theme::WATERMARK
@@ -185,10 +209,10 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
             // period), then stillness while the phase wraps around.
             let cycle = t.fract();
             let p = (cycle / SHIMMER_SWEEP_FRAC).min(1.0);
-            let pos = p * (max_d + SHIMMER_BAND * 2.0) - SHIMMER_BAND;
+            let pos = sweep_pos(p, max_d);
             // The emerald streak rides the same phase, trailing the silver
             // crest (owner request 2026-09-03).
-            let pos_g = pos - SHIMMER_STREAK_OFFSET;
+            let pos_g = streak_pos(pos);
             lines
                 .iter()
                 .enumerate()
@@ -200,14 +224,8 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
                     let mut cur: Option<(f64, bool)> = None;
                     for (col, ch) in l.chars().enumerate() {
                         let d = (col + row * 2) as f64;
-                        let i_s = {
-                            let i = (1.0 - (d - pos).abs() / SHIMMER_BAND).clamp(0.0, 1.0);
-                            i * i
-                        };
-                        let i_g = {
-                            let i = (1.0 - (d - pos_g).abs() / SHIMMER_STREAK_BAND).clamp(0.0, 1.0);
-                            i * i
-                        };
+                        let i_s = band_i(d, pos, SHIMMER_BAND);
+                        let i_g = band_i(d, pos_g, SHIMMER_STREAK_BAND);
                         // Green wins where it's clearly present and at
                         // least as bright as the silver — the streak reads
                         // as its own light, not a tint on the sweep.
@@ -332,5 +350,32 @@ mod tests {
         let base_s = glint_span2("a", 0.01, false);
         let base_g = glint_span2("a", 0.01, true);
         assert_eq!(base_s.style.fg, base_g.style.fg);
+    }
+
+    /// Owner bug 2026-09-03 ("horizontal streak"): the streak's travel was
+    /// never extended for its offset, so at rest it parked at the stone's
+    /// deepest diagonals — which only the bottom rows reach, reading as a
+    /// horizontal dash through the whole stillness window. Both bands must
+    /// be fully off the stone during rest, and genuinely sweep it mid-cycle.
+    #[test]
+    fn shimmer_and_streak_fully_exit_before_rest() {
+        let (width, show) = (80.0f64, 38.0f64);
+        let max_d = width + show * 2.0; // travel basis used by render
+        let d_max = max_d - 3.0; // deepest live cell (corner col/row)
+        // The PARKED position (p clamps to 1.0 for the whole rest phase —
+        // 55% of the cycle) must be fully off-stone for both bands.
+        // (p < 1.0 is mid-sweep: bands legitimately transit the stone.)
+        let pos = sweep_pos(1.0, max_d);
+        assert_eq!(band_i(d_max, pos, SHIMMER_BAND), 0.0, "silver parked");
+        assert_eq!(
+            band_i(d_max, streak_pos(pos), SHIMMER_STREAK_BAND),
+            0.0,
+            "streak parked"
+        );
+        // Mid-sweep the crest truly crosses the stone: at the cycle fraction
+        // that places the crest mid-stone, the center cell burns at full.
+        let mid_p = (max_d / 2.0 + SHIMMER_BAND)
+            / (max_d + SHIMMER_BAND * 2.0 + SHIMMER_STREAK_OFFSET);
+        assert!(band_i(max_d / 2.0, sweep_pos(mid_p, max_d), SHIMMER_BAND) > 0.99);
     }
 }

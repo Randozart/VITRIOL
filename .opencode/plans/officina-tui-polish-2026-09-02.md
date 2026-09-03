@@ -254,3 +254,11 @@ Owner follow-ups after seeing the first build, all implemented + shipped to
     it post-paint, forcing the flame color onto every non-space text glyph
     inside the strip — AI, tool, and diag lines all catch fire color when
     standing in flames. 25 cargo tests green; bin installed 23:51.
+16. **Fill-up gauge + breathing rows (f5286b9, owner feedback after live
+    use)**: the quicksilver gauge is no longer a moving thumb — it is a
+    depth column that fills from the bottom as you scroll up: empty at
+    the live tail, full when scrolled to the oldest line; the fractional
+    top edge lights lower braille dots first (mercury rising). Layout
+    gained one breathing row between header and body and one between
+    transcript and prompt box (text previously flowed straight into the
+    editor; the flames now rise through the gap row). 48 tests green.

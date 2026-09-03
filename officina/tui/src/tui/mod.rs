@@ -335,7 +335,26 @@ async fn run_loop(
                         }
                     }
                     Some(WireMessage::Event(event)) => {
-                        handle_event(state, &event.event_type, &event.fields);
+                        let auto_continue = handle_event(state, &event.event_type, &event.fields);
+                        if auto_continue {
+                            // Guarded auto-continue (owner choice B, plan
+                            // officina-compaction-continue-2026-09-03): a
+                            // threshold compaction ends the run by design
+                            // (pi: "user continues manually") — we pick the
+                            // work back up, once per compaction.
+                            let _ = bridge
+                                .request(RpcCommand::Prompt {
+                                    id: None,
+                                    message: CONTINUE_PROMPT.to_string(),
+                                    images: None,
+                                    streaming_behavior: None,
+                                })
+                                .await;
+                            state.notice = Some((
+                                "auto-continued after compaction".to_string(),
+                                "info".to_string(),
+                            ));
+                        }
                     }
                     Some(WireMessage::ExtensionUiRequest(req)) => {
                         handle_ui_request(state, &req.method, &req.fields, bridge).await;
@@ -1064,7 +1083,15 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
     false
 }
 
-fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Value) {
+/// One shot of the compaction auto-continue (owner choice B): sent once
+/// per threshold compaction. Deliberately generic — the model knows what
+/// it was doing; we just hand it back the wheel.
+const CONTINUE_PROMPT: &str =
+    "Continue the open work — pick up exactly where you left off.";
+
+/// Handle one agent event. Returns true when the run loop should submit
+/// the compaction auto-continue (see CONTINUE_PROMPT).
+fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Value) -> bool {
     match event_type {
         "agent_start" => state.is_streaming = true,
         "agent_end" | "agent_settled" => {
@@ -1188,8 +1215,63 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         "auto_retry_end" => {
             state.entries.push(state::ChatEntry::Diag("retry settled".to_string()));
         }
-        "compaction_start" => state.is_compacting = true,
-        "compaction_end" => state.is_compacting = false,
+        "compaction_start" => {
+            state.is_compacting = true;
+            // Re-arm the one-shot auto-continue for THIS compaction.
+            state.compaction_auto_armed = true;
+        }
+        "compaction_end" => {
+            state.is_compacting = false;
+            let reason = fields.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+            let will_retry = fields.get("willRetry").and_then(|v| v.as_bool()).unwrap_or(false);
+            let aborted = fields.get("aborted").and_then(|v| v.as_bool()).unwrap_or(false);
+            let err = fields
+                .get("errorMessage")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            if let Some(e) = err {
+                // Overflow-recovery failures carried this silently before —
+                // the owner saw "compacted and stopped" with no explanation.
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "compaction failed: {}",
+                    e
+                )));
+            } else {
+                let result = fields.get("result");
+                let before = result
+                    .and_then(|r| r.get("tokensBefore"))
+                    .and_then(|v| v.as_u64());
+                let after = result
+                    .and_then(|r| r.get("estimatedTokensAfter"))
+                    .and_then(|v| v.as_u64());
+                let nums = match (before, after) {
+                    (Some(b), Some(a)) => format!(" {} → {} tok", b, a),
+                    _ => String::new(),
+                };
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "context compacted{} ({}){}",
+                    nums,
+                    reason,
+                    if will_retry { " — auto-retry follows" } else { "" },
+                )));
+            }
+            // Pick-the-work-back-up: threshold compactions end the run BY
+            // DESIGN (pi agent-session.js: "user continues manually") — fire
+            // the one-shot continuation. Overflow compactions already
+            // auto-retry; aborted/failed ones have nothing to continue.
+            let fire = !aborted
+                && !will_retry
+                && err.is_none()
+                && reason == "threshold"
+                && state.compaction_auto_armed;
+            state.compaction_auto_armed = false;
+            if fire {
+                state.entries.push(state::ChatEntry::Diag(
+                    "picking the work back up…".to_string(),
+                ));
+                return true;
+            }
+        }
         "model_select" => {
             if let Ok(m) = serde_json::from_value::<crate::rpc::protocol::Model>(
                 fields.get("model").cloned().unwrap_or(serde_json::Value::Null),
@@ -1203,6 +1285,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         }
         _ => {}
     }
+    false
 }
 
 async fn handle_ui_request(
@@ -1384,5 +1467,88 @@ mod replay_tests {
         assert!(!tools[0].0, "historic tool is complete, not spinning");
         assert!(!tools[0].1);
         assert_eq!(tools[0].2, vec!["wrote 12 lines"], "output replayed");
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+
+    fn ev(json: serde_json::Value) -> serde_json::Value {
+        json
+    }
+
+    #[test]
+    fn threshold_compaction_fires_auto_continue_once() {
+        let mut s = AppState::default();
+        // Start arms the one-shot.
+        assert!(!handle_event(
+            &mut s,
+            "compaction_start",
+            &ev(serde_json::json!({ "reason": "threshold" }))
+        ));
+        assert!(s.compaction_auto_armed);
+        assert!(s.is_compacting);
+        // Threshold end with token numbers → fire + diag with numbers.
+        let fired = handle_event(
+            &mut s,
+            "compaction_end",
+            &ev(serde_json::json!({
+                "reason": "threshold", "aborted": false, "willRetry": false,
+                "result": { "tokensBefore": 81000, "estimatedTokensAfter": 32000 }
+            })),
+        );
+        assert!(fired, "threshold compaction picks the work back up");
+        assert!(!s.compaction_auto_armed, "consumed");
+        assert!(!s.is_compacting);
+        // A second end without a new start does NOT fire again.
+        assert!(!handle_event(
+            &mut s,
+            "compaction_end",
+            &ev(serde_json::json!({ "reason": "threshold", "willRetry": false }))
+        ));
+        // The transcript explains what happened.
+        let diag: Vec<String> = s
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                state::ChatEntry::Diag(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(diag.iter().any(|d| d.contains("81000 → 32000 tok")), "{:?}", diag);
+        assert!(diag.iter().any(|d| d.contains("picking the work back up")));
+    }
+
+    #[test]
+    fn overflow_and_failure_compactions_do_not_fire() {
+        let mut s = AppState::default();
+        // Overflow: pi auto-retries on its own — we must not double-fire.
+        handle_event(&mut s, "compaction_start", &ev(serde_json::json!({})));
+        assert!(!handle_event(
+            &mut s,
+            "compaction_end",
+            &ev(serde_json::json!({ "reason": "overflow", "willRetry": true }))
+        ));
+        // Failed compaction: errorMessage present, nothing to continue.
+        handle_event(&mut s, "compaction_start", &ev(serde_json::json!({})));
+        assert!(!handle_event(
+            &mut s,
+            "compaction_end",
+            &ev(serde_json::json!({
+                "reason": "overflow", "aborted": false, "willRetry": false,
+                "errorMessage": "Context overflow recovery failed"
+            }))
+        ));
+        // …but the failure is SURFACED now (it used to vanish).
+        let diag: Vec<String> = s
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                state::ChatEntry::Diag(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(diag.iter().any(|d| d.contains("compaction failed: Context overflow recovery failed")));
     }
 }

@@ -309,6 +309,10 @@ pub struct AppState {
     pub help_open: bool,
     pub help_sel: usize,
 
+    /// Compaction auto-continue guard (owner choice B, 2026-09-03): armed
+    /// on compaction_start, consumed by ONE threshold compaction_end.
+    pub compaction_auto_armed: bool,
+
     // Text selection (owner request 2026-09-03): drag with the left
     // button across the transcript; ^c copies the selected rows. Screen
     // coords; clamped against last_chat_area at render/extract time.
@@ -373,6 +377,7 @@ impl Default for AppState {
             tools_modal_sel: 0,
             help_open: false,
             help_sel: 0,
+            compaction_auto_armed: false,
             sel_anchor: None,
             sel_head: None,
             last_chat_area: None,

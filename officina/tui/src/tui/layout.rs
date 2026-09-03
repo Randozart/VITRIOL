@@ -344,10 +344,12 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Vec::new()
     };
 
-    frame.render_widget(
-        Paragraph::new(view).wrap(Wrap { trim: false }),
-        chat_area,
-    );
+    // NO paragraph wrap: chat_lines pre-wraps everything to budget. A
+    // paragraph-level re-wrap would push rows off the bottom and SILENTLY
+    // CLIP the transcript (owner bug 2026-09-03: "the console box hides
+    // the bottom few rows" — raw code/table lines re-wrapped). Overlong
+    // lines now lose one char horizontally instead of hiding history.
+    frame.render_widget(Paragraph::new(view), chat_area);
 
     // Text-tint pass (owner request 2026-09-02: "user text discolors based
     // on the fire beneath it — do the same for AI text"). Unstyled user
@@ -414,24 +416,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 0.0
             };
             let fill = frac * h as f64;
-            let full_rows = fill.floor() as usize;
-            let edge = fill - full_rows as f64; // fractional top edge of the mercury column
             let gx = chat_area.x + chat_area.width - 1;
             let buffer = frame.buffer_mut();
 
             for row in 0..h {
-                // Braille left-column dots: dot1=0x01 (top), dot2=0x02,
-                // dot3=0x04, dot7=0x40 (bottom). Full column = 0x47.
-                // The column rises from the bottom, so the edge cell's
-                // partial fill lights lower dots first.
-                let bits = if row < full_rows {
-                    0x47u32
-                } else if row == full_rows && edge > 0.01 {
-                    let dots = (edge * 4.0).round() as u32;
-                    [0x00, 0x40, 0x44, 0x46, 0x47][dots.min(4) as usize]
-                } else {
+                let bits = gauge_row_bits(row, h, fill);
+                if bits == 0 {
                     continue;
-                };
+                }
                 let ch = char::from_u32(0x2800 + bits).unwrap_or('⡇');
                 if let Some(cell) = buffer.cell_mut(ratatui::layout::Position {
                     x: gx,
@@ -830,6 +822,27 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
+/// Braille left-column bits for one quicksilver gauge row. The mercury
+/// column is BOTTOM-anchored: it rises from the chat area's bottom edge as
+/// you scroll up (owner correction 2026-09-03 — the first implementation
+/// indexed rows from the top and filled downward). The partial edge cell
+/// sits just above the filled block; its lower dots light first
+/// (dot7=0x40, dot3=0x04, dot2=0x02, dot1=0x01; full column 0x47).
+fn gauge_row_bits(row: usize, h: usize, fill: f64) -> u32 {
+    let f = fill.clamp(0.0, h as f64);
+    let full = f.floor() as usize;
+    let edge = f - full as f64;
+    if row >= h - full {
+        0x47 // filled block — the bottom `full` rows
+    } else if h - full - row == 1 && edge > 0.01 {
+        // the cell just above the block: partial fill rises through it
+        let dots = (edge * 4.0).round() as u32;
+        [0x00, 0x40, 0x44, 0x46, 0x47][dots.min(4) as usize]
+    } else {
+        0
+    }
+}
+
 /// /help modal — sidebar glossary, keys, commands (owner request
 /// 2026-09-03). Commands render FROM AppState::LOCAL_COMMANDS so they
 /// cannot drift. ↑↓/jk scrolls, esc/enter/q closes.
@@ -958,5 +971,36 @@ mod tests {
         assert!(e.ends_with("VITRIOL"), "component preserved: {}", e);
         // No " @ " separator → hard truncation to the cap.
         assert_eq!(elide_path_tail("plainlabel", 4), "plai");
+    }
+}
+
+#[cfg(test)]
+mod gauge_tests {
+    use super::gauge_row_bits;
+
+    #[test]
+    fn gauge_rises_from_the_bottom() {
+        // Empty — nothing lit anywhere.
+        for row in 0..10 {
+            assert_eq!(gauge_row_bits(row, 10, 0.0), 0);
+        }
+        // fill 3 of 10 — ONLY the bottom three rows, full cells.
+        for row in 0..7 {
+            assert_eq!(gauge_row_bits(row, 10, 3.0), 0, "row {row} must stay dark");
+        }
+        for row in 7..10 {
+            assert_eq!(gauge_row_bits(row, 10, 3.0), 0x47);
+        }
+        // Fractional fill — the edge cell sits just ABOVE the block, lower
+        // dots first: fill 3.5 → row 6 partial with two lowest dots (0x44).
+        assert_eq!(gauge_row_bits(6, 10, 3.5), 0x44);
+        assert_eq!(gauge_row_bits(5, 10, 3.5), 0);
+        // Quarter fill — bottom dot only, in the bottom-most row.
+        assert_eq!(gauge_row_bits(9, 10, 0.25), 0x40);
+        assert_eq!(gauge_row_bits(8, 10, 0.25), 0);
+        // Completely full — every row, no edge cell artifacts.
+        for row in 0..10 {
+            assert_eq!(gauge_row_bits(row, 10, 10.0), 0x47);
+        }
     }
 }

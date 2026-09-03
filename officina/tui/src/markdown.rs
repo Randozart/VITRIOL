@@ -218,8 +218,19 @@ impl Renderer {
         match e {
             pulldown_cmark::Event::Text(s) => {
                 for line in s.lines() {
+                    // Truncate to width — unwrapped code lines used to
+                    // re-wrap in the paragraph and push transcript rows off
+                    // the bottom (owner bug 2026-09-03). One visual row per
+                    // source line, `…` marks the loss.
+                    let n = line.chars().count();
+                    let shown = if n > self.width {
+                        let cut: String = line.chars().take(self.width.saturating_sub(1)).collect();
+                        format!("{cut}…")
+                    } else {
+                        line.to_string()
+                    };
                     self.out.push(Line::from(Span::styled(
-                        line.to_string(),
+                        shown,
                         code_block_style(),
                     )));
                 }
@@ -272,10 +283,16 @@ impl Renderer {
             return;
         }
         let sep = if self.row_head { "┃" } else { "│" };
-        self.cur.push(Span::styled(
-            self.row_cells.join(&format!(" {sep} ")),
-            theme::text(),
-        ));
+        let joined = self.row_cells.join(&format!(" {sep} "));
+        // Fit to width — wide tables used to re-wrap in the paragraph and
+        // clip the transcript's bottom rows (owner bug 2026-09-03).
+        let shown = if joined.chars().count() > self.width {
+            let cut: String = joined.chars().take(self.width.saturating_sub(1)).collect();
+            format!("{cut}…")
+        } else {
+            joined
+        };
+        self.cur.push(Span::styled(shown, theme::text()));
         self.flush();
     }
 
@@ -298,7 +315,14 @@ impl Renderer {
         }
         let line = Line::from(std::mem::take(&mut self.cur));
         let hang = self.hang;
-        let mut wrapped = wrap_line(&line, self.width, hang);
+        // Blockquote prefix is added AFTER wrapping — reserve its 2 columns
+        // so prefixed lines never exceed width (owner bug 2026-09-03).
+        let budget = if self.quote > 0 {
+            self.width.saturating_sub(2)
+        } else {
+            self.width
+        };
+        let mut wrapped = wrap_line(&line, budget, hang);
         if self.quote > 0 {
             let prefix = "│ ".repeat(self.quote);
             for w in &mut wrapped {
@@ -548,5 +572,42 @@ mod tests {
         assert!(strs.iter().any(|s| s.is_empty()), "has gap: {:?}", strs);
         assert!(strs.iter().any(|s| s.contains("code")), "has code");
         assert!(strs.iter().any(|s| s.contains("text")), "has text");
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    /// Owner bug 2026-09-03: raw code lines re-wrapped in the paragraph and
+    /// pushed transcript rows off the bottom. Every rendered line must fit.
+    #[test]
+    fn long_code_lines_truncate_not_wrap() {
+        let code = "x".repeat(300);
+        let md = format!("```\n{code}\n```\n");
+        let lines = render(&md, 40);
+        assert_eq!(lines.len(), 1, "one source line = one visual line");
+        assert!(lines[0].width() <= 40, "line width {}", lines[0].width());
+        assert!(lines[0].to_string().ends_with('…'), "loss marked");
+    }
+
+    #[test]
+    fn wide_table_rows_fit_width() {
+        let cells = vec!["a".repeat(15), "b".repeat(15), "c".repeat(15)];
+        let md = format!("| {} | {} | {} |\n", cells[0], cells[1], cells[2]);
+        let lines = render(&md, 30);
+        for l in &lines {
+            assert!(l.width() <= 30, "table line width {}", l.width());
+        }
+    }
+
+    #[test]
+    fn blockquote_prefix_never_exceeds_width() {
+        let text = format!("> {}\n", "word ".repeat(30));
+        let lines = render(&text, 30);
+        assert!(!lines.is_empty());
+        for l in &lines {
+            assert!(l.width() <= 30, "quote line width {}", l.width());
+        }
     }
 }

@@ -35,6 +35,7 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     state.cwd = cwd;
     load_glimmer(&mut state);
     load_fire(&mut state);
+    load_tools_config(&mut state);
     let mut rx = bridge.start_reader();
 
     // Dedicated input task: crossterm EventStream → channel. Never poll
@@ -150,6 +151,52 @@ fn persist_fire(state: &AppState) {
     let _ = std::fs::write(fire_path(), format!("{}\n", line));
 }
 
+// ── Tool verbosity persistence (owner request 2026-09-03) ─────────────────
+// ~/.vitriol/officina/tui-tools — one directive per line:
+//   default <mode>
+//   <tool_name> <mode>[!|+|-]
+
+fn tools_path() -> std::path::PathBuf {
+    glimmer_path().with_file_name("tui-tools")
+}
+
+fn load_tools_config(state: &mut state::AppState) {
+    let path = tools_path();
+    if let Ok(src) = std::fs::read_to_string(&path) {
+        for line in src.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("default ") {
+                if let Some(mode) = state::ToolVerbosity::parse(rest.trim()) {
+                    state.tool_default = mode;
+                }
+            } else if let Some((name, mode_s)) = line.split_once(' ') {
+                let name = name.trim().to_string();
+                let mode_s = mode_s.trim();
+                if mode_s == "clear" {
+                    state.tool_overrides.remove(&name);
+                } else if let Some(o) = state::ToolOverride::parse(mode_s) {
+                    state.tool_overrides.insert(name, o);
+                }
+            }
+        }
+    }
+}
+
+fn persist_tools_config(state: &state::AppState) {
+    let path = tools_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut lines = vec![format!("default {}", state.tool_default.label())];
+    for (name, o) in &state.tool_overrides {
+        lines.push(format!("{} {}", name, o.encode()));
+    }
+    let _ = std::fs::write(&path, format!("{}\n", lines.join("\n")));
+}
+
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut AppState,
@@ -243,6 +290,74 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /tools modal captures navigation while open.
+    if state.tools_modal_open {
+        let row_count = state::KNOWN_TOOLS.len() + 1; // + global row
+        match key.code {
+            KeyCode::Esc => state.tools_modal_open = false,
+            KeyCode::Up => state.tools_modal_sel = state.tools_modal_sel.saturating_sub(1),
+            KeyCode::Down => {
+                if state.tools_modal_sel + 1 < row_count {
+                    state.tools_modal_sel += 1;
+                }
+            }
+            KeyCode::Enter => {
+                // Row 0 = global default; rows 1.. = known tools.
+                if state.tools_modal_sel == 0 {
+                    state.tool_default = state.tool_default.next();
+                } else {
+                    let name = state::KNOWN_TOOLS[state.tools_modal_sel - 1];
+                    match state.tool_overrides.get_mut(name) {
+                        Some(o) => {
+                            o.mode = o.mode.next();
+                        }
+                        None => {
+                            // First press: start at global, bumped one step,
+                            // pinned — the modal is where you pin tools.
+                            let start = state.tool_default.next();
+                            state.tool_overrides.insert(
+                                name.to_string(),
+                                state::ToolOverride {
+                                    mode: start,
+                                    strictness: state::Strictness::Pinned,
+                                },
+                            );
+                        }
+                    }
+                }
+                state.tools_gen += 1;
+                persist_tools_config(state);
+            }
+            // Tab cycles strictness on a tool row (global row: no-op).
+            KeyCode::Tab => {
+                if state.tools_modal_sel > 0 {
+                    let name = state::KNOWN_TOOLS[state.tools_modal_sel - 1];
+                    if let Some(o) = state.tool_overrides.get_mut(name) {
+                        o.strictness = match o.strictness {
+                            state::Strictness::Pinned => state::Strictness::AtLeast,
+                            state::Strictness::AtLeast => state::Strictness::AtMost,
+                            state::Strictness::AtMost => state::Strictness::Pinned,
+                        };
+                        state.tools_gen += 1;
+                        persist_tools_config(state);
+                    }
+                }
+            }
+            // Backspace/Delete clears the override on a tool row.
+            KeyCode::Backspace | KeyCode::Delete => {
+                if state.tools_modal_sel > 0 {
+                    let name = state::KNOWN_TOOLS[state.tools_modal_sel - 1];
+                    if state.tool_overrides.remove(name).is_some() {
+                        state.tools_gen += 1;
+                        persist_tools_config(state);
+                    }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // /resume modal captures navigation while open.
     if state.resume_open {
         match key.code {
@@ -296,6 +411,20 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_quit = true;
+        }
+        // ctrl+v — cycle global tool verbosity (owner request 2026-09-03:
+        // V for verbose). Line → Block → Full → Line. Persisted.
+        KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.tool_default = state.tool_default.next();
+            state.tools_gen += 1;
+            let label = state.tool_default.label();
+            state.notice = Some((format!("tools: {}", label), "info".to_string()));
+            persist_tools_config(state);
+        }
+        // ctrl+t — /tools modal picker (owner request 2026-09-03).
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.tools_modal_open = !state.tools_modal_open;
+            state.tools_modal_sel = 0;
         }
         KeyCode::F(9) => {
             state.show_diag = !state.show_diag;
@@ -699,13 +828,63 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         }
         "tool_execution_start" => {
             let name = fields.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool");
+            let tool_call_id = fields.get("toolCallId").and_then(|v| v.as_str());
             let args = fields.get("args").cloned().unwrap_or(serde_json::Value::Null);
-            state.tool_start(name, &args);
+            state.tool_start(tool_call_id, name, &args);
+        }
+        "tool_execution_update" => {
+            let name = fields.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool");
+            let tool_call_id = fields.get("toolCallId").and_then(|v| v.as_str());
+            // partialResult can be a string or an object with a "content" array.
+            let text = fields
+                .get("partialResult")
+                .and_then(|v| v.get("content"))
+                .and_then(|c| {
+                    // Extract text from content array: [{type:"text", text:"..."}]
+                    if let Some(arr) = c.as_array() {
+                        Some(
+                            arr.iter()
+                                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    } else {
+                        c.as_str().map(String::from)
+                    }
+                })
+                .or_else(|| fields.get("partialResult").and_then(|v| v.as_str()).map(String::from))
+                .unwrap_or_default();
+            state.tool_update(tool_call_id, name, &text);
         }
         "tool_execution_end" => {
             let name = fields.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool");
+            let tool_call_id = fields.get("toolCallId").and_then(|v| v.as_str());
             let is_err = fields.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
-            state.tool_end(name, is_err);
+            // Extract result text from result.content[]
+            let result_text = fields
+                .get("result")
+                .and_then(|r| r.get("content"))
+                .and_then(|c| {
+                    if let Some(arr) = c.as_array() {
+                        Some(
+                            arr.iter()
+                                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        )
+                    } else {
+                        c.as_str().map(String::from)
+                    }
+                })
+                .or_else(|| {
+                    fields
+                        .get("result")
+                        .and_then(|r| r.get("output"))
+                        .and_then(|o| o.as_str())
+                        .map(String::from)
+                })
+                .unwrap_or_default();
+            state.tool_end(tool_call_id, name, &result_text, is_err);
         }
         "extension_error" => {
             let path = fields.get("extensionPath").and_then(|v| v.as_str()).unwrap_or("?");

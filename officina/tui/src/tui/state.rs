@@ -9,6 +9,113 @@ use ratatui::text::Span;
 use crate::rpc::protocol::{Model, RpcCommand};
 use crate::theme;
 
+// ── Tool verbosity (owner request 2026-09-03) ────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ToolVerbosity {
+    Line = 0,
+    Block = 1,
+    Full = 2,
+}
+
+impl ToolVerbosity {
+    pub const ALL: [ToolVerbosity; 3] = [ToolVerbosity::Line, ToolVerbosity::Block, ToolVerbosity::Full];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ToolVerbosity::Line => "line",
+            ToolVerbosity::Block => "block",
+            ToolVerbosity::Full => "full",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<ToolVerbosity> {
+        Self::ALL.iter().copied().find(|m| m.label() == s)
+    }
+
+    pub fn next(self) -> ToolVerbosity {
+        let i = Self::ALL.iter().position(|m| *m == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    pub fn max(self, other: ToolVerbosity) -> ToolVerbosity {
+        if self > other { self } else { other }
+    }
+
+    pub fn min(self, other: ToolVerbosity) -> ToolVerbosity {
+        if self < other { self } else { other }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strictness {
+    /// Always this mode, ignores global.
+    Pinned,
+    /// At-least: effective = max(global, mode).
+    AtLeast,
+    /// At-most: effective = min(global, mode).
+    AtMost,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ToolOverride {
+    pub mode: ToolVerbosity,
+    pub strictness: Strictness,
+}
+
+impl ToolOverride {
+    /// Encode as "block!" / "block+" / "block-" for persistence.
+    pub fn encode(self) -> String {
+        let suffix = match self.strictness {
+            Strictness::Pinned => "!",
+            Strictness::AtLeast => "+",
+            Strictness::AtMost => "-",
+        };
+        format!("{}{}", self.mode.label(), suffix)
+    }
+
+    /// Parse "block!" / "block+" / "block-"
+    pub fn parse(s: &str) -> Option<ToolOverride> {
+        let (mode_s, suffix) = if s.ends_with('!') {
+            (&s[..s.len() - 1], '!')
+        } else if s.ends_with('+') {
+            (&s[..s.len() - 1], '+')
+        } else if s.ends_with('-') {
+            (&s[..s.len() - 1], '-')
+        } else {
+            (s, '+') // bare mode = at-least (the user's default)
+        };
+        let mode = ToolVerbosity::parse(mode_s)?;
+        let strictness = match suffix {
+            '!' => Strictness::Pinned,
+            '+' => Strictness::AtLeast,
+            '-' => Strictness::AtMost,
+            _ => Strictness::AtLeast,
+        };
+        Some(ToolOverride { mode, strictness })
+    }
+}
+
+/// Resolve effective tool verbosity given global default + per-tool overrides.
+pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMap<String, ToolOverride>) -> ToolVerbosity {
+    match overrides.get(tool_name) {
+        None => global,
+        Some(o) => match o.strictness {
+            Strictness::Pinned => o.mode,
+            Strictness::AtLeast => global.max(o.mode),
+            Strictness::AtMost => global.min(o.mode),
+        },
+    }
+}
+
+/// Known pi tool names for the modal picker.
+pub const KNOWN_TOOLS: &[&str] = &["bash", "read", "write", "edit", "find", "grep", "ls"];
+
+/// Output cap at ingest (sliced at render for Block/Line).
+const TOOL_OUTPUT_CAP: usize = 2000;
+/// Block preview lines.
+const TOOL_OUTPUT_PREVIEW: usize = 30;
+
 /// One rendered chat entry.
 #[derive(Debug, Clone)]
 pub enum ChatEntry {
@@ -16,8 +123,12 @@ pub enum ChatEntry {
     Assistant(String),
     Thinking(String),
     Tool {
+        tool_call_id: Option<String>,
         name: String,
         summary: String,
+        args: Option<serde_json::Value>,
+        output: Vec<String>,
+        output_truncated: bool,
         running: bool,
         error: bool,
     },
@@ -98,6 +209,15 @@ pub struct AppState {
     pub fire_style: crate::fire::FireStyle,
     pub fire_target: f64,
     pub fire_level: f64,
+
+    // Tool verbosity (owner request 2026-09-03)
+    pub tool_default: ToolVerbosity,
+    pub tool_overrides: HashMap<String, ToolOverride>,
+    /// Generation counter — bumped on any config change; invalidates render caches.
+    pub tools_gen: u64,
+    // /tools modal picker
+    pub tools_modal_open: bool,
+    pub tools_modal_sel: usize,
     /// Session clock — drives the glimmer phase (elapsed ms).
     pub started: std::time::Instant,
 
@@ -146,6 +266,11 @@ impl Default for AppState {
             fire_style: crate::fire::FireStyle::default(),
             fire_target: 0.0,
             fire_level: 0.0,
+            tool_default: ToolVerbosity::Line,
+            tool_overrides: HashMap::new(),
+            tools_gen: 0,
+            tools_modal_open: false,
+            tools_modal_sel: 0,
             started: std::time::Instant::now(),
             scroll: 0,
             scroll_max: 0,
@@ -187,28 +312,82 @@ impl AppState {
         self.entries.push(ChatEntry::User(text));
     }
 
-    /// Tool execution started — add a running tool entry.
-    pub fn tool_start(&mut self, name: &str, args: &serde_json::Value) {
+    /// Tool execution started — add a running tool entry with full args.
+    pub fn tool_start(&mut self, tool_call_id: Option<&str>, name: &str, args: &serde_json::Value) {
         let summary = summarize_args(args);
         self.entries.push(ChatEntry::Tool {
+            tool_call_id: tool_call_id.map(String::from),
             name: name.to_string(),
             summary,
+            args: Some(args.clone()),
+            output: Vec::new(),
+            output_truncated: false,
             running: true,
             error: false,
         });
     }
 
-    /// Tool execution finished — mark the matching running entry.
-    pub fn tool_end(&mut self, name: &str, error: bool) {
+    /// Live streaming update from tool_execution_update — appends partial
+    /// output to the matching running entry (bash live output, etc.).
+    pub fn tool_update(&mut self, tool_call_id: Option<&str>, name: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
         for e in self.entries.iter_mut().rev() {
             if let ChatEntry::Tool {
+                tool_call_id: ref id,
+                name: n,
+                output,
+                output_truncated,
+                running,
+                ..
+            } = e
+            {
+                // Both sides have ids → ids must match (same-name tools run
+                // concurrently). Legacy events without an id → name fallback.
+                let matched = match (tool_call_id, id.as_deref()) {
+                    (Some(cid), Some(eid)) => cid == eid,
+                    (Some(_), None) => false,
+                    (None, _) => n == name,
+                };
+                if matched && *running {
+                    for line in text.lines() {
+                        if output.len() < TOOL_OUTPUT_CAP {
+                            output.push(line.to_string());
+                        } else {
+                            *output_truncated = true;
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Tool execution finished — match by toolCallId first, name fallback.
+    pub fn tool_end(&mut self, tool_call_id: Option<&str>, name: &str, result_text: &str, error: bool) {
+        // Append result text to output.
+        if !result_text.is_empty() {
+            self.tool_update(tool_call_id, name, result_text);
+        }
+        // Mark complete.
+        for e in self.entries.iter_mut().rev() {
+            if let ChatEntry::Tool {
+                tool_call_id: ref id,
                 name: n,
                 running,
                 error: e_err,
                 ..
             } = e
             {
-                if n == name && *running {
+                // Same matching rule as tool_update: ids when both sides
+                // have them, name only as legacy fallback.
+                let matched = match (tool_call_id, id.as_deref()) {
+                    (Some(cid), Some(eid)) => cid == eid,
+                    (Some(_), None) => false,
+                    (None, _) => n == name,
+                };
+                if matched && *running {
                     *running = false;
                     *e_err = error;
                     return;
@@ -439,7 +618,13 @@ impl AppState {
                         ]));
                     }
                 }
-                ChatEntry::Tool { name, summary, running, error } => {
+                ChatEntry::Tool {
+                    name,
+                    summary,
+                    running,
+                    error,
+                    ..
+                } => {
                     let (icon, st) = if *running {
                         (theme::GLYPH_CRUCIBLE, theme::warn())
                     } else if *error {
@@ -813,5 +998,122 @@ mod tests {
         assert_eq!(s.set_fire("style"), "emerald");
         assert_eq!(s.set_fire("emerald"), "emerald");
         assert_eq!(s.set_fire("style"), "alchemy");
+    }
+
+    // ── Tool verbosity (owner request 2026-09-03) ────────────────────────
+
+    #[test]
+    fn tool_verbosity_order_and_cycle() {
+        assert!(ToolVerbosity::Line < ToolVerbosity::Block);
+        assert!(ToolVerbosity::Block < ToolVerbosity::Full);
+        assert_eq!(ToolVerbosity::Line.next(), ToolVerbosity::Block);
+        assert_eq!(ToolVerbosity::Full.next(), ToolVerbosity::Line);
+        assert_eq!(ToolVerbosity::parse("block"), Some(ToolVerbosity::Block));
+        assert_eq!(ToolVerbosity::parse("nope"), None);
+        assert_eq!(ToolVerbosity::Line.max(ToolVerbosity::Full), ToolVerbosity::Full);
+        assert_eq!(ToolVerbosity::Full.min(ToolVerbosity::Line), ToolVerbosity::Line);
+    }
+
+    #[test]
+    fn tool_override_parse_encode_roundtrip() {
+        for (s, mode, strict) in [
+            ("block!", ToolVerbosity::Block, Strictness::Pinned),
+            ("full+", ToolVerbosity::Full, Strictness::AtLeast),
+            ("line-", ToolVerbosity::Line, Strictness::AtMost),
+            ("block", ToolVerbosity::Block, Strictness::AtLeast), // bare = at-least
+        ] {
+            let o = ToolOverride::parse(s).unwrap();
+            assert_eq!(o.mode, mode);
+            assert_eq!(o.strictness, strict);
+        }
+        assert!(ToolOverride::parse("wat").is_none());
+        // Round-trip.
+        for s in ["block!", "full+", "line-"] {
+            let o = ToolOverride::parse(s).unwrap();
+            assert_eq!(o.encode(), s);
+        }
+    }
+
+    #[test]
+    fn effective_mode_resolution_matrix() {
+        let mut ov: HashMap<String, ToolOverride> = HashMap::new();
+        ov.insert(
+            "write".into(),
+            ToolOverride { mode: ToolVerbosity::Block, strictness: Strictness::AtLeast },
+        );
+        ov.insert(
+            "bash".into(),
+            ToolOverride { mode: ToolVerbosity::Block, strictness: Strictness::AtMost },
+        );
+        ov.insert(
+            "read".into(),
+            ToolOverride { mode: ToolVerbosity::Full, strictness: Strictness::Pinned },
+        );
+        let g = ToolVerbosity::Line;
+        // AtLeast bumps up when global less verbose.
+        assert_eq!(effective_mode("write", g, &ov), ToolVerbosity::Block);
+        // AtMost caps when global more verbose.
+        assert_eq!(effective_mode("bash", ToolVerbosity::Full, &ov), ToolVerbosity::Block);
+        // Pinned ignores global both ways.
+        assert_eq!(effective_mode("read", g, &ov), ToolVerbosity::Full);
+        assert_eq!(effective_mode("read", ToolVerbosity::Full, &ov), ToolVerbosity::Full);
+        // No override → global.
+        assert_eq!(effective_mode("grep", g, &ov), ToolVerbosity::Line);
+    }
+
+    #[test]
+    fn tool_start_update_end_by_id() {
+        let mut s = AppState::default();
+        s.tool_start(Some("call-1"), "write", &serde_json::json!({"path": "a.rs"}));
+        s.tool_start(Some("call-2"), "write", &serde_json::json!({"path": "b.rs"}));
+        // Two same-named tools running — id must disambiguate.
+        s.tool_update(Some("call-1"), "write", "line one\nline two\n");
+        s.tool_update(Some("call-2"), "write", "other\n");
+        s.tool_end(Some("call-2"), "write", "final\n", false);
+        // call-2 complete with output; call-1 still running with its own.
+        let states: Vec<(bool, Vec<String>)> = s
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                ChatEntry::Tool { output, running, .. } => Some((*running, output.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(states.len(), 2);
+        assert!(states[0].0, "call-1 still running");
+        assert_eq!(states[0].1, vec!["line one", "line two"]);
+        assert!(!states[1].0, "call-2 done");
+        assert_eq!(states[1].1, vec!["other", "final"]);
+    }
+
+    #[test]
+    fn tool_end_falls_back_to_name_match() {
+        let mut s = AppState::default();
+        // No id available (legacy events) → name fallback.
+        s.tool_start(None, "bash", &serde_json::json!({"command": "ls"}));
+        s.tool_end(None, "bash", "", true);
+        let done = s
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                ChatEntry::Tool { running, error, .. } => Some((*running, *error)),
+                _ => None,
+            })
+            .next();
+        assert_eq!(done, Some((false, true)));
+    }
+
+    #[test]
+    fn tool_output_cap_marks_truncated() {
+        let mut s = AppState::default();
+        s.tool_start(Some("c"), "bash", &serde_json::json!({}));
+        let flood = (0..(TOOL_OUTPUT_CAP + 50)).map(|i| format!("l{}", i)).collect::<Vec<_>>().join("\n");
+        s.tool_update(Some("c"), "bash", &flood);
+        if let Some(ChatEntry::Tool { output, output_truncated, .. }) = s.entries.last() {
+            assert_eq!(output.len(), TOOL_OUTPUT_CAP);
+            assert!(output_truncated);
+        } else {
+            panic!("expected tool entry");
+        }
     }
 }

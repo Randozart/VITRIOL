@@ -211,12 +211,10 @@ fn render_gauge(frame: &mut Frame, state: &AppState, chat_area: Rect) {
 
 ## Commit plan
 
-| # | Commit message | Key files |
+| # | Commit | Key files |
 |---|---|---|
-| 1 | `officina: /settings command + complete LOCAL_COMMANDS list` | `tui/mod.rs`, `tui/state.rs` |
-| 2 | `officina: markdown hanging indents + paragraph gaps` | `tui/markdown.rs` |
-| 3 | `officina: quicksilver braille gauge scrollbar` | `tui/layout.rs` |
+| 1 | `8843e3a` officina: /settings command + complete LOCAL_COMMANDS list | `tui/mod.rs`, `tui/state.rs` |
+| 2 | `a1d932d` officina: markdown hanging indents + paragraph gaps | `tui/markdown.rs` |
+| 3 | `d83bf90` officina: quicksilver braille gauge scrollbar | `tui/layout.rs` |
 
-Each: `cargo test` → `cargo build --release` → `cp target/release/officina ~/.local/bin/` → append plan addendum → commit.
-
-**Plan doc:** `.opencode/plans/officina-tui-settings-md-gauge-2026-09-03.md` (this file).
+32/32 cargo tests green across all three. Bin installed each stage.

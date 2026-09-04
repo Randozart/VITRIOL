@@ -1628,3 +1628,21 @@ arc: `.opencode/plans/mtp-flag-drift-postmortem-2026-09-03.md`.
 **Lesson**: config files are flag carriers; a config edit is a
 flag-drift event. Fingerprint now emits `spec=<type>:<n_max>` (and
 `--dry-run` is exempt from the serve guard).
+
+## 2026-09-04 — Depth-with-MTP re-certification (live operating point)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-09-04 |
+| **Commits** | `4e24eb0` (plan), this report |
+| **Config** | Q3_K_M, ts 22,14, q4_0 KV, ub 64, c 81920, MTP n=1, resident (= blessed fp) |
+| **Status** | ✅ cert complete; MTP depth attribution isolated |
+
+Depth ladder (exact-fill, 3×64 decode at depth, sparse eviction active):
+13,025 tok → **12.66 t/s** · 26,049 → **11.16** · 36,257 → **10.45**;
+prefill 179→161 t/s. MTP-off arm at 26K: **8.54** → **MTP = +31% at
+depth** (shallow was +40%). VRAM flat through 36K (dev0 9,269→9,359).
+vs Aug-24 cert (no-MTP, tq3_0, 26,10): retarget costs ~10% at depth,
+MTP pays it back ×3. Wall >36K not re-probed (bare-serve fragility —
+one transient SIGKILL mid-cert; repro passed clean). Report:
+`.opencode/plans/depth-recert-report-2026-09-04.md`.

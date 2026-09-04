@@ -174,7 +174,13 @@ ts 22,14 no-MTP 11.79 → +MTP n=1 **16.46 t/s (+40%)**; era ts 27,9 +MTP 14.69.
 8-31 config retarget silently dropped `[spec]` from `~/.vitriol/config` (the exact
 flag-drift the fingerprint doctrine warns about) and cost 40% for weeks. Restored;
 live unit benches **16.49 t/s** — new operating point. `[spec] type=mtp draft_n_max=1`
-is now load-bearing in the live config. Depth behavior with MTP not re-certified.
+is now load-bearing in the live config. **Depth re-certified 2026-09-04**
+(see `.opencode/plans/depth-recert-report-2026-09-04.md`): MTP on, q4_0
+KV, ts 22,14 — 12.66 / 11.16 / 10.45 t/s at 13K / 26K / 36K filled;
+MTP-off arm at 26K = 8.54 → **+31% at depth**. Prefill 179→161 t/s
+across the ladder. Wall not re-probed (Aug-24 wall 54,692 on tq3_0/26,10
+remains the reference); one transient bare-serve SIGKILL during the cert
+reinforces restart-via-unit.
 Sweep: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`.
 Deep-context certification: `.opencode/plans/lull-certification-report-2026-08-24.md`.
 

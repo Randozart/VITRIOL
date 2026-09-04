@@ -445,9 +445,12 @@ export default function (pi: ExtensionAPI) {
         try { ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage; } catch {}
         // One-time notice on model mismatch onset (owner request
         // 2026-09-03): the engine's loaded model vs pi's selection.
+        // Uses modelMatchesLoaded (2026-09-04) — the raw !== fired on
+        // aligned sessions whose id is the GGUF filename.
         try {
           const eng = getEngineSnapshot();
-          const mismatch = eng.up && !!eng.loaded_model && !!modelId && eng.loaded_model !== modelId;
+          const mismatch = eng.up && !!eng.loaded_model && !!modelId
+            && !modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
           if (mismatch && !mismatchNotified) {
             mismatchNotified = true;
             void (ctx as any)?.ui?.notify?.(

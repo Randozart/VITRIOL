@@ -1,0 +1,3 @@
+name=qwen38-intel-sycl
+description=Qwen3.8-27B Q4_K_M on Intel Arc B390 via SYCL (oneAPI, Level Zero, XMX). BENCHMARK WINNER over Vulkan: pp512 233.07 t/s, tg64 5.23 t/s (ub2048, fa=auto, q8_0 KV, t8). MODE=off (resident, shared LPDDR5X). Requires: source /opt/intel/oneapi/setvars.sh before launch. Build: scripts/build-llama-server.sh --backend sycl -> build-sycl/bin/llama-server. Certified shallow (p512/n64) 2026-09-04; depth not yet certified. q4_0 KV NOT supported on qwen35 hybrid (context creation fails) - use q8_0.
+created=2026-09-04

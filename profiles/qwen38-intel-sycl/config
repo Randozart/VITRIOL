@@ -1,0 +1,61 @@
+# VITRIOL Configuration — Qwen3.8-27B on Intel Arc B390 (SYCL) — WINNER
+# Target: Panther Lake iGPU via oneAPI SYCL backend (Level Zero, XMX)
+# Created: 2026-09-04
+#
+# Benchmarked winner over Vulkan on this host (2026-09-04, llama-bench,
+# Q4_K_M, ngl 99, t 8, r 2):
+#   SYCL  ub2048 fa=auto q8_0 KV: pp512 233.07 t/s | tg64 5.23 t/s
+#   Vulkan ub2048 fa=auto f16 KV: pp512 135.85 t/s | tg64 4.26 t/s
+#   CPU-only (ngl 0):             pp512  51.13 t/s | tg64 2.32 t/s
+#
+# Requires oneAPI env at launch:
+#   source /opt/intel/oneapi/setvars.sh
+#
+# Build with: ./scripts/build-llama-server.sh --backend sycl
+# (produces build-sycl/bin/llama-server)
+
+[gpu]
+device = 0
+
+[model]
+path = ~/Downloads/Qwen3.8-27B-Q4_K_M.gguf
+context = 32768
+threads = 8
+ngl = 99
+alias = Arc B390 SYCL
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8080
+parallel = 1
+cache_ram = 0
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+frozen_prompt = off
+# q8_0 KV measured fastest on SYCL (tg 5.23 vs 5.02 f16) and WORKS here —
+# q4_0 KV fails on the qwen35 hybrid arch (llama-bench context creation error).
+quant_mode = q8_0
+quant_mode_v = q8_0
+# ubatch 2048: pp 233 vs 49 at default 512 (4.8x). ub 4096 regresses (199 pp).
+ubatch_size = 2048
+flash_attn = auto
+checkpoint_every_n_tokens = 0
+
+lookup_tokens = 0
+engine.mode = native
+chimera.mode = sycl

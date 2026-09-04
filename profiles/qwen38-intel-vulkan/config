@@ -1,0 +1,57 @@
+# VITRIOL Configuration — Qwen3.8-27B on Intel Arc B390 (Vulkan)
+# Target: Panther Lake iGPU via Vulkan backend (Mesa 26.2.1, ANV, KHR_coopmat)
+# Created: 2026-09-03, benchmark-retuned: 2026-09-04
+#
+# Superseded by qwen38-intel-sycl (SYCL won: 233 vs 136 pp512, 5.23 vs 4.26 tg64).
+# Kept as fallback backend.
+#
+# Measured (llama-bench, Q4_K_M, ngl 99, t 8, r 2, 2026-09-04):
+#   ub2048 fa=auto:  pp512 135.85 t/s | tg64 4.26 t/s
+#   ub2048 fa=off:   pp512 100.17 t/s | tg64 3.43 t/s
+#   ub512 (default): pp512  49.05 t/s | tg64 1.74 t/s
+#   t16: regresses (E-core interference). CPU-only ngl0: 51.13 / 2.32.
+#
+# q4_0 KV NOT supported on qwen35 hybrid (context creation fails).
+
+[gpu]
+device = 0
+
+[model]
+path = ~/Downloads/Qwen3.8-27B-Q4_K_M.gguf
+context = 32768
+threads = 8
+ngl = 99
+alias = Arc B390
+
+[vitriol]
+mode = off
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8080
+parallel = 1
+cache_ram = 0
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+frozen_prompt = off
+quant_mode = f16
+quant_mode_v = f16
+ubatch_size = 2048
+flash_attn = auto
+checkpoint_every_n_tokens = 0
+
+lookup_tokens = 0
+engine.mode = native
+chimera.mode = vulkan

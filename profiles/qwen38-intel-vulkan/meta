@@ -1,0 +1,4 @@
+name=qwen38-intel-vulkan
+description=Qwen3.8-27B Q4_K_M on Intel Arc B390 (Vulkan backend, Mesa 26.2.1). FALLBACK - SYCL profile is faster. Measured 2026-09-04: pp512 135.85 t/s, tg64 4.26 t/s (ub2048, fa=auto, f16 KV, t8). MODE=off (resident). q4_0 KV unsupported on qwen35 hybrid. Needs no oneAPI env - plain launch.
+created=2026-09-03
+retuned=2026-09-04

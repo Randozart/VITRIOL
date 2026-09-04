@@ -45,6 +45,8 @@ kv_sparse_guard() {
 serve_unit_guard() {
     local unit="$HOME/.config/systemd/user/vitriol-server.service"
     [ -f "$unit" ] || return 0
+    # --dry-run prints config and launches nothing — always exempt.
+    $DRY_RUN && return 0
     grep -qa "vitriol-server.service" /proc/self/cgroup 2>/dev/null && return 0
     if systemctl --user is-active --quiet vitriol-server.service 2>/dev/null; then
         echo "VITRIOL: REFUSING bare serve — vitriol-server.service is already managing the engine." >&2
@@ -1845,8 +1847,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # console and (on real launches) appended to GEN_LOG so any log excerpt
         # answers "what flags produced this?" without archaeology.
         kv_sparse_guard
-        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
-            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "${VITRIOL_KV_MODE:-standard}" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
+        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s' \
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "${VITRIOL_KV_MODE:-standard}" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
             OUTPUT_CACHE="off"
@@ -2093,9 +2095,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
         kv_sparse_guard
         serve_unit_guard
-        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s' \
+        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s' \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
-            "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}")
+            "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"

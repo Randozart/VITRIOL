@@ -322,7 +322,7 @@ def main():
                 except Exception as e:
                     log(f"pre-bounce save failed (continuing): {e}")
                 subprocess.run(
-                    ["systemctl", "--user", "restart",
+                    [*SYSTEMCTL, "restart",
                      "vitriol-server.service"],
                     check=False)
                 last_pid = None

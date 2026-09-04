@@ -43,19 +43,22 @@ kv_sparse_guard() {
 # managing unit exists AND is active, delegate to it. The unit's own
 # ExecStart runs this same command and is exempt via its cgroup.
 serve_unit_guard() {
+    # User unit (legacy) or system unit (hardening 2026-09-04) both count.
     local unit="$HOME/.config/systemd/user/vitriol-server.service"
-    [ -f "$unit" ] || return 0
+    local sunit="/etc/systemd/system/vitriol-server.service"
+    { [ -f "$unit" ] || [ -f "$sunit" ]; } || return 0
     # --dry-run prints config and launches nothing — always exempt.
     $DRY_RUN && return 0
     grep -qa "vitriol-server.service" /proc/self/cgroup 2>/dev/null && return 0
-    if systemctl --user is-active --quiet vitriol-server.service 2>/dev/null; then
+    if systemctl is-active --quiet vitriol-server.service 2>/dev/null \
+        || systemctl --user is-active --quiet vitriol-server.service 2>/dev/null; then
         echo "VITRIOL: REFUSING bare serve — vitriol-server.service is already managing the engine." >&2
-        echo "         Use: systemctl --user restart vitriol-server.service" >&2
-        echo "         (the unit is protected: oom-shield + Restart=always; a bare serve would be oom-elevated and die first)" >&2
+        echo "         Use: systemctl restart vitriol-server.service (or --user for the user unit)" >&2
+        echo "         (the unit is protected: OOMScoreAdjust + Restart=always; a bare serve would be oom-elevated and die first)" >&2
         exit 1
     fi
     echo "VITRIOL: note — unit file present but service inactive; running UNPROTECTED (no oom-shield lifecycle)." >&2
-    echo "         Consider: systemctl --user enable --now vitriol-server.service" >&2
+    echo "         Consider: systemctl enable --now vitriol-server.service" >&2
 }
 
 # ── Launch Fingerprint Journal (2026-09-03 doctrine) ──────────────

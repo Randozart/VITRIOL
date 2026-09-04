@@ -210,6 +210,10 @@ Aug-31 silent-no-op regression post-mortem).
 - Probe keys (profile `[kv]`, launcher-enforced): `score = probe`,
   `score_every = 16`. Cadence 4 is REJECTED (owner-tested: ejected too
   aggressively). `VITRIOL_KV_FLOOR` (eager sweep) exists but defaults OFF.
+- **`vis=on` in the fingerprint means cold restarts**: multimodal
+  (`--mmproj`) gates slot save/restore (501); persistence requires a
+  text-only engine. The live config dropped mmproj 2026-09-04 for this
+  reason — the sidecar probes capability once and stays silent when off.
 - **Checkpoint flag name is engine-dependent**: the lull engine wants
   `--checkpoint-every-n-tokens N`; main-tree builds used
   `--checkpoint-min-step N`. The launcher currently emits the lull name.
@@ -218,5 +222,11 @@ Aug-31 silent-no-op regression post-mortem).
   task-state tails re-inject every turn and are carried abroad by the
   TUI bridge; task tail states the eviction contract.
 - **Stage 6 standing**: port lull-kv → main (llama-kv-cache divergence +
-  `vitriol-kv-probe.*` + the slot save/restore endpoints — the autosave
-  sidecar currently logs `HTTP 501` skips on lull engines).
+  `vitriol-kv-probe.*`). Slot save/restore RESOLVED 2026-09-04: the
+  endpoints exist in lull (server-context.cpp post_slots) — they were
+  gated by the multimodal engine (`--mmproj` → 501 "not supported by
+  multimodal"), which also silenced the entire persistence chain (startup
+  restore, 300s autosave, proactive bounce). mmproj dropped from the live
+  config; warm-resume verified (3/3 SIGKILL cycles restored the slot
+  checkpoint in ~300ms). Re-enable vision anytime via `model.mmproj` —
+  persistence shuts back off while it's loaded.

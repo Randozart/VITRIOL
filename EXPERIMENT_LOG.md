@@ -1666,3 +1666,24 @@ cache. Load test: 91/91 scrapes during a 128-tok generation, median
 rebuilt (lull-kv) + installed into the launcher path; unit restarted,
 fingerprint matches blessed. Report:
 `.opencode/plans/engine-metrics-nonblocking-2026-09-04.md`.
+
+## 2026-09-04 (3) — Automatic session resume: persistence chain unblocked (mmproj gate removed)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-09-04 |
+| **Status** | ✅ warm-resume live; verified 3/3 SIGKILL cycles |
+
+Root cause: the full resilience chain (startup restore / 300s autosave /
+proactive bounce) was written but dead — the engine's `--mmproj` put it
+in multimodal mode, and lull gates slot save/restore with 501 "not
+supported by multimodal" (mtmd state can't round-trip the token-sequence
+file). The AGENTS.md "501 on lull engines" note mis-attributed it to
+missing endpoints — they exist, multimodal gates them.
+Fix: dropped `model.mmproj` (owner: no image input; ~800MB VRAM freed,
+vision re-enables any time). Sidecar gained a one-shot capability probe
+(no more 501 spam). Verified: fresh `slot0.bin` save (168 tok, 160MB),
+3/3 SIGKILL cycles → auto-restart → `restored slot0.bin: 168 tokens
+(~300ms)`. Client-side prefix-match efficiency (pi cache_prompt +
+cache-idle-slots) left as a real-session measurement. Report:
+`.opencode/plans/session-resume-automatic-2026-09-04.md`.

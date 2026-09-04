@@ -62,6 +62,26 @@ def log(msg):
     print(f"[slot-persist {time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
 
+# Persistence capability probe (2026-09-04): a multimodal engine (--mmproj)
+# gates slot save/restore with 501 "not supported by multimodal", which made
+# every tick spam that line while cold-restarting. Tri-state: None = unknown
+# (probe once), True = works, False = confirmed 501 -> skip silently.
+PERSIST_OK = None
+
+
+def persist_ok() -> bool | None:
+    return PERSIST_OK
+
+
+def mark_persist(ok: bool):
+    global PERSIST_OK
+    if PERSIST_OK is None or ok != PERSIST_OK:
+        PERSIST_OK = ok
+        log("slot persistence " + ("works (warm restarts on)" if ok
+                                    else "UNAVAILABLE — engine refuses 501 "
+                                         "(multimodal?); cold restarts only"))
+
+
 def post(path, body):
     req = urllib.request.Request(
         BASE + path,
@@ -91,6 +111,8 @@ def wait_health(timeout=1800):
 
 def restore_all():
     """Restore slot{N}.bin into slot N. Tolerates missing/invalid files."""
+    if PERSIST_OK is False:
+        return  # confirmed 501 — silent (logged once at probe)
     if not os.path.isdir(SAVE_DIR):
         return
     try:
@@ -109,10 +131,14 @@ def restore_all():
             log(f"restored {fname}: {res.get('n_restored', '?')} tokens "
                 f"({res.get('timings', {}).get('restore_ms', '?')} ms)")
         except urllib.error.HTTPError as e:
-            log(f"restore {fname} rejected: HTTP {e.code} "
-                f"(model changed? stale state?) — skipping")
+            if e.code == 501 and PERSIST_OK is None:
+                mark_persist(False)  # probe once, then go quiet
+            if PERSIST_OK is not False:
+                log(f"restore {fname} rejected: HTTP {e.code} "
+                    f"(model changed? stale state?) — skipping")
         except Exception as e:
-            log(f"restore {fname} failed: {e}")
+            if PERSIST_OK is not False:
+                log(f"restore {fname} failed: {e}")
 
 
 def activity_signature():
@@ -146,6 +172,8 @@ def save_idle(last_sig):
     1 KiB stub (observed 2026-08-26 07:00:59). So every save lands in
     slotN.tmp.bin first and only replaces slotN.bin if it carries tokens —
     or the previous checkpoint was itself trivial."""
+    if PERSIST_OK is False:
+        return  # confirmed 501 — silent
     sig = activity_signature()
     if sig is not None and last_sig.get("sig") == sig:
         return  # silent skip: counters frozen, checkpoints already current
@@ -182,7 +210,10 @@ def save_idle(last_sig):
         except urllib.error.HTTPError as e:
             # server refused the save (e.g. slot was reset); keep any
             # existing checkpoint — stale-but-warm beats gone
-            log(f"save {fname} skipped: HTTP {e.code}")
+            if e.code == 501 and PERSIST_OK is None:
+                mark_persist(False)
+            if PERSIST_OK is not False:
+                log(f"save {fname} skipped: HTTP {e.code}")
             ok = False
         except Exception as e:
             log(f"save {fname} failed: {e}")

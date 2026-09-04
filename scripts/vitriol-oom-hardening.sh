@@ -111,8 +111,9 @@ EOF
 echo "==> [C] polkit rule (randozart may manage only the two VITRIOL units)"
 cat > /etc/polkit-1/rules.d/10-vitriol.rules <<EOF
 polkit.addRule(function (action, subject) {
-  if (action.id === "org.freedesktop.systemd1.manage-units" &&
-      subject.user === "randozart" &&
+  if (subject.user === "randozart" &&
+      (action.id === "org.freedesktop.systemd1.manage-units" ||
+       action.id === "org.freedesktop.systemd1.manage-unit-files") &&
       (action.lookup("unit") === "vitriol-server.service" ||
        action.lookup("unit") === "vitriol-autosave.service")) {
     return polkit.Result.YES;

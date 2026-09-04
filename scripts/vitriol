@@ -42,6 +42,14 @@ kv_sparse_guard() {
 # OOM deaths — unprotected instances die before the unit's). When the
 # managing unit exists AND is active, delegate to it. The unit's own
 # ExecStart runs this same command and is exempt via its cgroup.
+unit_scope() {
+    # "system" (hardening 2026-09-04) | "user" (legacy, retired) | "none".
+    # File-based so the check needs no polkit; a bare `systemctl cat` would.
+    if [ -f /etc/systemd/system/vitriol-server.service ]; then echo system; return; fi
+    if [ -f "$HOME/.config/systemd/user/vitriol-server.service" ]; then echo user; return; fi
+    echo none
+}
+
 serve_unit_guard() {
     # User unit (legacy) or system unit (hardening 2026-09-04) both count.
     local unit="$HOME/.config/systemd/user/vitriol-server.service"
@@ -1590,6 +1598,8 @@ usage() {
   vitriol ledger-ingest <f>  append a consumer usage report (ex-tris)
   vitriol perms-sync         mirror safety.permissions (ex-tris)
   vitriol status             validate + live engine probe (ex-tris)
+  vitriol stop               stop the running server (unit-aware, sticky)
+  vitriol service <cmd>      enable|disable|start|stop|restart|status the engine service
   vitriol help               this message
 
 Run options:
@@ -2677,14 +2687,27 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         STOPPED=false
 
         # Under a systemd manager, raw kills lose: Restart=always resurrects
-        # within 5 s. Explicit `systemctl --user stop` is sticky — no restart.
+        # within 5 s. Explicit `systemctl [--user] stop` is sticky — no restart.
         # Exception: when invoked BY the unit itself (ExecStartPre), stopping
         # our own unit would deadlock — fall through to pidfile cleanup only.
-        if [[ -z "${INVOCATION_ID:-}" ]] && systemctl --user cat vitriol-server.service >/dev/null 2>&1; then
-            echo "→ Stopping via systemd (sticky, no auto-restart)..."
-            systemctl --user stop vitriol-autosave.service 2>/dev/null || true
-            systemctl --user stop vitriol-server.service || true
-            STOPPED=true
+        # 2026-09-04: scope-aware (system scope since the hardening migration;
+        # --user was the legacy layout). Sidecar FIRST so its hang-watchdog
+        # cannot force-restart the engine mid-stop.
+        scope=$(unit_scope)
+        if [[ -z "${INVOCATION_ID:-}" ]] && [[ "$scope" != "none" ]]; then
+            echo "→ Stopping via systemd ($scope scope, sticky, no auto-restart)..."
+            if [[ "$scope" == "system" ]]; then
+                systemctl stop vitriol-autosave.service 2>/dev/null || true
+                if ! systemctl stop vitriol-server.service 2>/dev/null; then
+                    echo "  ✗ could not stop vitriol-server.service (polkit missing? run as root)" >&2
+                else
+                    STOPPED=true
+                fi
+            else
+                systemctl --user stop vitriol-autosave.service 2>/dev/null || true
+                systemctl --user stop vitriol-server.service || true
+                STOPPED=true
+            fi
             # still sweep strays from non-unit launches below if pidfiles remain
         fi
 
@@ -2728,6 +2751,46 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             pkill -f "llama-server.*Qwen3" 2>/dev/null && echo "  ✓ llama-server stopped" || true
             pkill -f "vitriol_shim" 2>/dev/null && echo "  ✓ VITRIOL shim stopped" || true
         fi
+        ;;
+
+    service)
+        # Manage the engine as a service (systemd units). System scope since
+        # the hardening migration (2026-09-04); randozart manages these two
+        # units via the polkit rule in /etc/polkit-1/rules.d/10-vitriol.rules.
+        shift
+        case "${1:-status}" in
+            enable)
+                systemctl enable --now vitriol-server.service vitriol-autosave.service
+                ;;
+            disable)
+                systemctl disable --now vitriol-server.service vitriol-autosave.service
+                ;;
+            start)
+                systemctl start vitriol-server.service  # sidecar follows via Wants
+                ;;
+            stop)
+                systemctl stop vitriol-autosave.service 2>/dev/null || true
+                systemctl stop vitriol-server.service
+                ;;
+            restart)
+                systemctl restart vitriol-server.service vitriol-autosave.service
+                ;;
+            status)
+                for u in vitriol-server.service vitriol-autosave.service; do
+                    printf '%-24s %-9s %s\n' "$u" \
+                        "$(systemctl is-active "$u" 2>/dev/null || echo unknown)" \
+                        "$(systemctl is-enabled "$u" 2>/dev/null || echo unknown)"
+                done
+                EP=$(pgrep -f "llama-server -m" | head -1)
+                if [[ -n "$EP" ]]; then
+                    echo "engine pid $EP: adj=$(cat /proc/$EP/oom_score_adj 2>/dev/null) cg=$(cut -c1-40 /proc/$EP/cgroup 2>/dev/null)"
+                else
+                    echo "engine: not running"
+                fi
+                curl -s -m 2 http://127.0.0.1:8279/health 2>/dev/null || echo "engine health: unreachable"
+                ;;
+            *) echo "usage: vitriol service <enable|disable|start|stop|restart|status>" ;;
+        esac
         ;;
 
     bench)

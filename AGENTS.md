@@ -13,11 +13,12 @@
    zram-only box (no disk swap) + swappiness 150 swaps the engine's cold
    host pages; swapped pages dominate OOM badness. Trimmed: `--ctx-checkpoints
    4` (RAM ring of in-slot KV copies — 32 default is multi-GB; 0 FORBIDDEN),
-   `--cache-ram 256`, `--cache-idle-slots` off (host KV backup). VmSwap
-   1.5GB -> 51MB. `ckpts=` rides the fingerprint. See
-   `.opencode/plans/oom-reservoir-trim-2026-09-04.md`. Remaining (sudo):
-   16G disk swapfile + a system-scope unit for a real negative
-   OOMScoreAdjust.
+   `--cache-ram 256`, `--cache-idle-slots` off (host KV backup). VmSwap 1.5GB -> 51MB. `ckpts=` rides the fingerprint. Hardened
+   2026-09-04: 16G /swapfile (btrfs NOCOW — fallocate holes make swapon
+   fail) + SYSTEM-scope units — the engine's `oom_score_adj` is now a real
+   -500 (last OOM victim), verified. Report + root script:
+   `.opencode/plans/oom-reservoir-trim-2026-09-04.md`,
+   `scripts/vitriol-oom-hardening.sh` (re-run idempotently as root).
 
 4. **Flag provenance (mandatory)**: every launch emits a `VITRIOL-FINGERPRINT:` line (launcher, server main, and runners). Every benchmark RESULT embeds full argv. Every report/log excerpt must be traceable to its fingerprint — silent flag drift is a review blocker. Profile files under `profiles/` are canonical config sources. **Config keys are flags too** (2026-09-03: the 8-31 retarget silently dropped `[spec]` from `~/.vitriol/config`, costing 40% decode for weeks — see `.opencode/plans/mtp-flag-drift-postmortem-2026-09-03.md`). Any config write must be followed by a fingerprint diff against the previous one; speed-bearing keys (`[spec]`, `[kv] score*`, `ts`, `ubatch`) are provenance-bearing. The fingerprint carries `spec=<type>:<n_max>` since 2026-09-03 — `spec=none:0` on a 27B launch is a red flag.
 
@@ -215,10 +216,13 @@ scoring** (lull-kv feature; see
 Aug-31 silent-no-op regression post-mortem).
 
 - **Restart the engine via the unit, never bare `serve`**:
-  `systemctl --user restart vitriol-server.service`. The unit is protected
-  (oom-shield raises big consumers' oom_score_adj; Restart=always). Bare
-  `vitriol serve` from a shell spawns an oom-elevated, kill-first server —
-  the launcher now REFUSES this when the unit is active.
+  `systemctl restart vitriol-server.service` (**SYSTEM scope since
+  2026-09-04** — the engine runs under `/etc/systemd/system/` with a REAL
+  `OOMScoreAdjust=-500`, effective `oom_score_adj` -500, i.e. the last OOM
+  victim; the legacy user units are retired, files kept as
+  `*.service.disabled`). The launcher REFUSES bare `vitriol serve` while
+  either unit file is present and the service is active. A polkit rule
+  lets randozart manage exactly the two vitriol units.
 - Probe keys (profile `[kv]`, launcher-enforced): `score = probe`,
   `score_every = 16`. Cadence 4 is REJECTED (owner-tested: ejected too
   aggressively). `VITRIOL_KV_FLOOR` (eager sweep) exists but defaults OFF.

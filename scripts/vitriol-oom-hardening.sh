@@ -11,16 +11,26 @@
 #                                 restart calls target the system unit via
 #                                 VITRIOL_SYSTEMCTL=systemctl)
 #      - polkit rule letting randozart manage exactly those two units
-#      - the old USER units are stopped + disabled (files retained as
-#        reference; re-enabling them would fight the system units)
+#      - the USER units are STOPPED, DISABLED, and their files moved aside
+#        (vitriol-server.service -> .disabled) so they can never load again.
+#        NOTE: this script runs as ROOT, so the user manager must be reached
+#        via runuser + XDG_RUNTIME_DIR — a bare `systemctl --user` as root
+#        silently talks to a nonexistent root user bus and is a no-op.
 #
-# Idempotent: safe to re-run. Verifies at the end.
+# Idempotent: safe to re-run. Verifies at the end and FAILS if the engine
+# is not under the system unit with oom_score_adj -500.
 
 set -euo pipefail
 
 USER_HOME="$(getent passwd randozart | cut -d: -f6)"
+USER_UID="$(getent passwd randozart | cut -d: -f3)"
 UNIT=vitriol-server.service
 AUTO=vitriol-autosave.service
+
+# Reach the USER systemd manager from a root context.
+user_sysctl() {
+  runuser -u randozart -- env XDG_RUNTIME_DIR="/run/user/${USER_UID}" systemctl --user "$@"
+}
 
 echo "==> [B] disk swapfile"
 if ! swapon --show=NAME | grep -q '^/swapfile'; then
@@ -42,11 +52,18 @@ else
   echo "    /swapfile already active"
 fi
 
-echo "==> [C] system-scope units"
-# Stop + disable the legacy USER units first (engine + sidecar).
-systemctl --user stop  "$UNIT" "$AUTO" 2>/dev/null || true
-systemctl --user disable "$UNIT" "$AUTO" 2>/dev/null || true
+echo "==> [C] retire the USER units (stop + disable + move files aside)"
+user_sysctl stop  "$UNIT" "$AUTO" 2>/dev/null || true
+user_sysctl disable "$UNIT" "$AUTO" 2>/dev/null || true
+for f in "$UNIT" "$AUTO"; do
+  if [ -f "$USER_HOME/.config/systemd/user/$f" ]; then
+    mv "$USER_HOME/.config/systemd/user/$f" "$USER_HOME/.config/systemd/user/$f.disabled"
+    echo "    moved $USER_HOME/.config/systemd/user/$f -> .disabled"
+  fi
+done
+user_sysctl daemon-reload 2>/dev/null || true
 
+echo "==> [C] system-scope units"
 cat > /etc/systemd/system/$UNIT <<EOF
 [Unit]
 Description=VITRIOL llama-server (Lapis Occultus, dual-slot) — SYSTEM scope
@@ -108,10 +125,21 @@ systemctl enable --now $AUTO $UNIT
 
 echo "==> verify"
 sleep 6
-echo "engine: $(systemctl is-active $UNIT)"
-echo "sidecar: $(systemctl is-active $AUTO)"
+echo "system engine: $(systemctl is-active $UNIT)"
+echo "system sidecar: $(systemctl is-active $AUTO)"
+echo "user units: $(user_sysctl is-active $UNIT $AUTO 2>/dev/null | tr '\n' ' ')"
 EP=$(pgrep -f "llama-server -m" | head -1)
 if [ -n "$EP" ]; then
-  echo "engine oom_score_adj: $(cat /proc/$EP/oom_score_adj)  (expect -500)"
+  ADJ="$(cat /proc/$EP/oom_score_adj)"
+  CG="$(cat /proc/$EP/cgroup)"
+  echo "engine pid $EP adj=$ADJ cgroup=$CG"
+  if [ "$ADJ" != "-500" ] || ! echo "$CG" | grep -q "system.slice/vitriol-server.service"; then
+    echo "!!! FAIL: engine is not under the system unit with adj -500"
+    exit 1
+  fi
+  echo "    OK: engine protected (last OOM victim)"
+else
+  echo "!!! FAIL: no engine process found"
+  exit 1
 fi
 swapon --show=NAME,SIZE,USED

@@ -1712,3 +1712,24 @@ updated. Kernel oom_score accounting on this box is cgroup-charged
 actual reclaimable footprint. Remaining (sudo): 16G disk swapfile +
 system-scope unit for real negative OOMScoreAdjust. Report:
 `.opencode/plans/oom-reservoir-trim-2026-09-04.md`.
+
+## 2026-09-04 (5) — OOM hardening COMPLETE: 16G disk swap + SYSTEM-scope units
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-09-04 |
+| **Status** | ✅ swap + system unit live; engine oom_score_adj = -500 verified |
+
+Migration hit one real snag: the root-run hardening script's
+`systemctl --user` calls were a silent no-op (root has no user bus), so
+the USER unit stayed enabled and its ExecStartPre `vitriol stop` kept
+killing the system engine — a unit fight with no stable engine. Fixed:
+user units stopped + disabled + moved aside (`*.service.disabled`),
+system units confirmed owning the engine. Engine pid cgroup
+`/system.slice/vitriol-server.service`, `oom_score_adj=-500` (real
+negative — the LAST OOM victim, instead of the clamped +100 first).
+/swapfile 16G active (btrfs NOCOW; fallocate holes rejected by swapon —
+fixed to chattr +C + dd). Sidecar (system scope) restored the slot in
+301ms. User engine's adj had been the +100 clamp — the whole reason it
+won every OOM. Script now runs the user manager via runuser+XDG_RUNTIME_DIR
+and FAILS unless the engine is in the system cgroup with -500.

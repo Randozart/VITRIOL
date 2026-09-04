@@ -45,20 +45,27 @@ victim). Smoke test: 17.5 t/s decode, MTP live. Journal flagged all
 three deltas (`ckpts: new→4`, `cram: 1024→256`, `cis: new→0`); blessed
 updated.
 
-## Remaining (needs sudo — snippets in this report's PR or prepared)
+## Completion (B + C done 2026-09-04)
 
-**B. Disk swapfile (16G)** — zram is RAM-backed; disk swap is not. Real
-reclaim headroom → the kernel swaps to disk instead of killing.
-Highest single leverage:
-```
-sudo fallocate -l 16G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-```
+**B. 16G /swapfile active** (btrfs NOCOW via chattr +C before writing;
+fallocate holes = "swapon Invalid argument" on btrfs — fixed in the
+script). /proc/swaps: /dev/zram0 (15.6G, prio 100) + /swapfile (16G,
+prio -2). Disk swap gives the kernel real reclaim headroom.
 
-**C. System-scope unit** — effective `OOMScoreAdjust=-500` (real
-negative) so the engine is the LAST victim, and CAP_IPC_LOCK hints die
-with it. Migration of the user unit's env/paths/slot-dir ownership.
+**C. SYSTEM-scope units live and verified:**
+- engine pid cgroup = `/system.slice/vitriol-server.service`,
+  `oom_score_adj = -500` (real negative — last OOM victim)
+- vitriol-autosave.service also system scope; slot restore verified
+  (301ms) under the new scope
+- user units retired: stopped, disabled, unit files moved to
+  `*.service.disabled`; the root script's original `systemctl --user`
+  calls were a silent no-op (root has no user bus) — fixed to
+  `runuser -u randozart -- env XDG_RUNTIME_DIR=/run/user/<uid>
+  systemctl --user`; the script now FAILS loudly unless the engine is in
+  the system cgroup with adj -500
+- polkit rule lets randozart manage exactly the two vitriol units;
+  the sidecar's restarts target the system bus via
+  `VITRIOL_SYSTEMCTL=systemctl`
 
 ## Doctrine updates (AGENTS.md)
 
@@ -66,3 +73,5 @@ with it. Migration of the user unit's env/paths/slot-dir ownership.
   4 = reservoir-trimmed, 0 forbidden.
 - cache-idle-slots off / cache-ram 256 are part of the blessed
   operating point.
+- Restart-via-unit is now SYSTEM scope: `systemctl restart
+  vitriol-server.service` (--user is the retired legacy).

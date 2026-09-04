@@ -155,25 +155,89 @@ export default async function (pi: ExtensionAPI) {
     });
   }
 
-  // Auto-sync model identity: at session start, override pi's model selection
-  // with the engine's actual alias. This ensures the header always shows the
-  // engine's truth — no manual /model needed. When the engine was unreachable
-  // at startup (engineAlias empty), this is a no-op — defaultModel is the
-  // fallback. pi.setModel() persists the alias to settings.json, so
-  // defaultModel becomes self-healing across sessions.
-  if (!probeDisabled) {
-    pi.on("session_start", async (_event, ctx) => {
-      const alias = llamacpp?.engineAlias;
-      if (!alias) return;
-      const current = (ctx as { model?: { id?: string } }).model?.id;
-      if (current === alias) return;
-      const model = (ctx as { modelRegistry?: { find?: (p: string, id: string) => unknown } })
-        .modelRegistry?.find?.("llamacpp", alias);
-      if (!model) return;
-      const ok = await pi.setModel(model as never);
-      if (ok) {
-        ctx.ui?.notify?.(`model synced: ${alias}`, "info");
+  // Auto-sync model identity: override pi's model selection with the
+  // engine's actual alias so the header always shows the engine's truth.
+  // pi.setModel() persists the alias to settings.json — defaultModel
+  // self-heals across sessions.
+  //
+  // Hardened 2026-09-04 (model-sync-hardening plan): the original one-shot
+  // session_start sync silently no-op'd when the engine was unreachable at
+  // spawn or the session ctx lacked a modelRegistry — the session then kept
+  // a stale selection for its whole lifetime (ontic mismatch, 2026-09-04).
+  // Now: bounded retry (immediate + every 5s, max 12 attempts) until
+  // setModel sticks, re-armed on every session_start (resume paths). If the
+  // engine was down at registration, the retry also re-fetches /v1/models
+  // and registers the alias entry before selecting it.
+  if (!probeDisabled && llamacpp) {
+    type SyncCtx = {
+      model?: { id?: string };
+      modelRegistry?: { find?: (p: string, id: string) => unknown };
+      ui?: { notify?: (m: string, level?: string) => void };
+    };
+    let syncTimer: ReturnType<typeof setInterval> | undefined;
+    let syncTries = 0;
+    let lastCtx: SyncCtx | undefined;
+
+    const syncOnce = async (): Promise<boolean> => {
+      const lc = llamacpp!;
+      let alias = lc.engineAlias;
+      if (!alias) {
+        // Engine was down at provider registration — try to discover now.
+        try {
+          const resp = await fetch(`${lc.baseUrl}/v1/models`, { signal: AbortSignal.timeout(3000) });
+          if (resp.ok) {
+            const data = await resp.json();
+            alias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
+            if (alias && !lc.models.some((m) => m.id === alias)) {
+              lc.models = [...lc.models, fillModelDefaults({ id: alias, name: alias }, "llamacpp", lc.models.length)];
+              pi.registerProvider("llamacpp", {
+                baseUrl: lc.baseUrl,
+                apiKey: lc.apiKey,
+                api: lc.api,
+                models: lc.models,
+              });
+            }
+            lc.engineAlias = alias;
+          }
+        } catch {
+          return false; // engine still unreachable — keep retrying
+        }
+        if (!alias) return false;
       }
+      const ctx = lastCtx;
+      const current = ctx?.model?.id;
+      if (current === alias) return true; // aligned
+      const model = ctx?.modelRegistry?.find?.("llamacpp", alias);
+      if (!model) return false; // registry not ready yet — keep retrying
+      const ok = await pi.setModel(model as never);
+      if (ok) ctx?.ui?.notify?.(`model synced: ${alias}`, "info");
+      return !!ok;
+    };
+
+    const stopSync = () => {
+      if (syncTimer) {
+        clearInterval(syncTimer);
+        syncTimer = undefined;
+      }
+    };
+
+    const armSync = (ctx: SyncCtx) => {
+      lastCtx = ctx;
+      if (syncTimer) return; // already retrying
+      syncTries = 0;
+      void syncOnce().then((done) => {
+        if (done) stopSync();
+      });
+      syncTimer = setInterval(() => {
+        syncTries += 1;
+        void syncOnce().then((done) => {
+          if (done || syncTries >= 12) stopSync();
+        });
+      }, 5000);
+    };
+
+    pi.on("session_start", (_event, ctx) => {
+      armSync(ctx as SyncCtx);
     });
   }
 }

@@ -81,6 +81,28 @@ const truncate = (s: string, w: number): string => {
 // the divisor" — so a divider names the group that follows it, e.g.
 // `── Plans ──────────────`. Name at the start of the rule, padded to
 // exactly CONTENT_W visible columns. Exported for tests.
+/**
+ * Which pi model-id strings count as aligned with the engine's loaded
+ * model (2026-09-04): the alias, the loaded path, the loaded FILENAME
+ * (pi's natural id — `Qwen3.8-27B-Q3_K_M.gguf`), or the stripped
+ * basename. Empty modelId never matches.
+ */
+export function modelMatchesLoaded(
+  modelId: string,
+  loaded_model: string,
+  loaded_path: string,
+): boolean {
+  if (!modelId) return false;
+  const fname = loaded_path.split("/").pop() ?? "";
+  const base = fname.replace(/\.gguf$/i, "");
+  return (
+    modelId === loaded_model
+    || modelId === loaded_path
+    || modelId === fname
+    || modelId === base
+  );
+}
+
 export const embDiv = (name: string): string => {
   const label = ` ${name} `;
   const lead = "──";
@@ -189,8 +211,7 @@ export default function (pi: ExtensionAPI) {
     const eng = getEngineSnapshot();
     if (!eng.up || !eng.loaded_model) return undefined;
     const base = eng.loaded_path.split("/").pop()?.replace(/\.gguf$/i, "") ?? "";
-    const aligned = !!modelId
-      && (modelId === eng.loaded_model || modelId === eng.loaded_path || modelId === base);
+    const aligned = modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
     if (!aligned && modelId) {
       return [truncate(
         sc(SAFETY, `loaded ${eng.loaded_model}`)

@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { requestSidebarUpdate } from "../_shared/sidebar.ts";
 import {
   applyUpdate,
   emptyDoc,
@@ -105,6 +106,7 @@ export default function (pi: ExtensionAPI) {
       }
       const total = totalLines(v.doc);
       emitHarnessEvent(harnessEvent("lc-scratchpad", "updated", { detail: `${total}/${cfg.cap} lines` }));
+      requestSidebarUpdate(); // live refresh (2026-09-04) — see task-state note
       return {
         content: [{
           type: "text" as const,

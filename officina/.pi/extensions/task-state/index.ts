@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { requestSidebarUpdate } from "../_shared/sidebar.ts";
 import { renderTaskBlock, taskStateConfig, validateTasks, type TaskItem } from "./state.ts";
 
 // task-state — external task list (R2.4 / REPORT-02 step 9, Claude Code
@@ -134,6 +135,10 @@ export default function (pi: ExtensionAPI) {
       }
       const done = (v.tasks ?? []).filter((t) => t.status === "completed").length;
       emitHarnessEvent(harnessEvent("lc-tasks", "updated", { detail: `${done}/${(v.tasks ?? []).length} done` }));
+      // Live sidebar refresh (2026-09-04): the harness event above is a passive
+      // log; the sidebar's task section only re-renders when asked. Mutators of
+      // sidebar-visible state request the update after persisting.
+      requestSidebarUpdate();
       return { content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${currentTaskFile}` }], details: {} };
     },
   });

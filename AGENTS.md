@@ -32,6 +32,7 @@
 - The VITRIOL predictor is in `ggml/src/ggml-cuda/vitriol-cuda-integration.cpp`.
 - The server context checkpoint logic is in `tools/server/server-context.cpp`.
 - All VITRIOL env vars are prefixed with `VITRIOL_`.
+- **Sidebar-refresh contract (2026-09-04)**: any extension whose TOOL mutates sidebar-visible state (task list, scratchpad — anything surfaced by session-panel's `registerSidebarSection`) MUST call `requestSidebarUpdate()` (from `_shared/sidebar.ts`) after persisting. The `emitHarnessEvent` records are a passive audit log — they never signal the sidebar. Regression test: `.pi/extensions/task-state/sidebar-refresh.test.ts`.
 
 ## Vendor Patch Rule (2026-09-01 incident — do not repeat)
 

@@ -24,14 +24,20 @@ AUTO=vitriol-autosave.service
 
 echo "==> [B] disk swapfile"
 if ! swapon --show=NAME | grep -q '^/swapfile'; then
-  if [ ! -f /swapfile ]; then
-    fallocate -l 16G /swapfile
-    chmod 600 /swapfile
-    mkswap /swapfile >/dev/null
+  rm -f /swapfile  # drop any failed/partial sparse file
+  truncate -s 0 /swapfile
+  # btrfs requires NOCOW on a fresh empty file BEFORE writing, and the file
+  # must not be sparse (fallocate holes -> swapon "Invalid argument").
+  FS="$(findmnt -no FSTYPE -T "$USER_HOME" 2>/dev/null || true)"
+  if [ "$FS" = "btrfs" ]; then
+    chattr +C /swapfile
   fi
+  dd if=/dev/zero of=/swapfile bs=1M count=16384 status=progress conv=fsync
+  chmod 600 /swapfile
+  mkswap /swapfile >/dev/null
   swapon /swapfile
   grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-  echo "    /swapfile on"
+  echo "    /swapfile on ($FS)"
 else
   echo "    /swapfile already active"
 fi

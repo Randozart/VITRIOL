@@ -8,6 +8,17 @@
 
 3. **Always kill stale servers** with `killall -9 llama-server` before starting a new one.
 
+   **OOM discipline (2026-09-04)**: the engine's host-memory reservoir
+   made it the system's OOM-kill kingpin (5 kills in one day) — a
+   zram-only box (no disk swap) + swappiness 150 swaps the engine's cold
+   host pages; swapped pages dominate OOM badness. Trimmed: `--ctx-checkpoints
+   4` (RAM ring of in-slot KV copies — 32 default is multi-GB; 0 FORBIDDEN),
+   `--cache-ram 256`, `--cache-idle-slots` off (host KV backup). VmSwap
+   1.5GB -> 51MB. `ckpts=` rides the fingerprint. See
+   `.opencode/plans/oom-reservoir-trim-2026-09-04.md`. Remaining (sudo):
+   16G disk swapfile + a system-scope unit for a real negative
+   OOMScoreAdjust.
+
 4. **Flag provenance (mandatory)**: every launch emits a `VITRIOL-FINGERPRINT:` line (launcher, server main, and runners). Every benchmark RESULT embeds full argv. Every report/log excerpt must be traceable to its fingerprint — silent flag drift is a review blocker. Profile files under `profiles/` are canonical config sources. **Config keys are flags too** (2026-09-03: the 8-31 retarget silently dropped `[spec]` from `~/.vitriol/config`, costing 40% decode for weeks — see `.opencode/plans/mtp-flag-drift-postmortem-2026-09-03.md`). Any config write must be followed by a fingerprint diff against the previous one; speed-bearing keys (`[spec]`, `[kv] score*`, `ts`, `ubatch`) are provenance-bearing. The fingerprint carries `spec=<type>:<n_max>` since 2026-09-03 — `spec=none:0` on a 27B launch is a red flag.
 
 5. **Window ≠ depth**: KV is allocated for the whole window at load. Context claims must state FILLED token counts (see lull-certification-report Addenda 5–6).

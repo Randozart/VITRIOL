@@ -1687,3 +1687,28 @@ vision re-enables any time). Sidecar gained a one-shot capability probe
 (~300ms)`. Client-side prefix-match efficiency (pi cache_prompt +
 cache-idle-slots) left as a real-session measurement. Report:
 `.opencode/plans/session-resume-automatic-2026-09-04.md`.
+
+## 2026-09-04 (4) — OOM kill investigation + host-reservoir trim
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-09-04 |
+| **Status** | ✅ root-caused; reservoir trimmed (VmSwap 1.5GB→51MB); sudo steps remain |
+
+5 OOM kills of llama-server today (12:43/14:37/15:34/16:36/16:50); kernel
+journal retains only ~9h so "never before" is unprovable (AGENTS.md
+documents Aug-31-era OOMs of unprotected serves). Process set was NOT the
+delta (Discord Aug 30, opencode Sep 2). Engine was the top zram-swap
+holder (1.5GB settled, ~10GB at kill → oom_score ~767) driven by the
+lull checkpoint ring (32 in-RAM KV copies/slot at 82K ctx) + cache-ram
+1024 + cache-idle-slots host KV backup, swapped by swappiness=150 on a
+zram-only box. Trim: `kv.ctx_checkpoints` 32→4 (new launcher key +
+`--ctx-checkpoints` flag + `ckpts=` fingerprint field), `server.cache_ram`
+1024→256, `server.cache_idle_slots` off (single-slot; idle KV stays warm
+in VRAM). Measured VmSwap 1.5GB→51MB; oom_score 771 now below shielded
+node's 803; smoke 17.5 t/s. Journal flagged the 3 deltas; blessed
+updated. Kernel oom_score accounting on this box is cgroup-charged
+(3MB proc scored 803) — the oom-shield's adj raises matter less than
+actual reclaimable footprint. Remaining (sudo): 16G disk swapfile +
+system-scope unit for real negative OOMScoreAdjust. Report:
+`.opencode/plans/oom-reservoir-trim-2026-09-04.md`.

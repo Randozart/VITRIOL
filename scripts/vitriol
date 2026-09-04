@@ -97,7 +97,7 @@ compute_fingerprint() {
     # Canonical fingerprint body — the ONLY printf for it. Args:
     # model-basename ts ctx kv_k kv_v ub mode engine ckpt lru sparse
     # score pool_reset spec_type spec_draft_n_max parallel
-    printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s par=%s' "$@"
+    printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s ckpts=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s par=%s' "$@"
 }
 
 config_fingerprint() {
@@ -109,7 +109,7 @@ config_fingerprint() {
     fp=$(compute_fingerprint \
         "$(basename "${CFG_MODEL:-?}")" "${CFG_TENSOR_SPLIT:-none}" "${CFG_CTX:-?}" \
         "${CFG_KV_QUANT}" "${CFG_KV_QUANT_V}" "${CFG_UBATCH:-256}" \
-        "${CFG_MODE}" "${CFG_ENGINE_MODE}" "${CFG_CKPT_EVERY:-2048}" "${CFG_LRU_MB:-0}" \
+        "${CFG_MODE}" "${CFG_ENGINE_MODE}" "${CFG_CKPT_EVERY:-2048}" "${CFG_CKPT_RING:-4}" "${CFG_LRU_MB:-0}" \
         "${CFG_KV_MODE}" "${CFG_KV_SCORE:-off}" "0" \
         "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}" "${CFG_PARALLEL:-1}")
     # Mirror the serve path's conditional fields so blessed-vs-launch
@@ -235,6 +235,11 @@ DEFAULT_LOOKUP=0
 DEFAULT_ENGINE_MODE="vitriol-dma"
 DEFAULT_SPEC_TYPE=""
 DEFAULT_CKPT_EVERY="2048"
+# RAM checkpoint-ring depth per slot (host-memory reservoir trim 2026-09-04):
+# 32 full-KV copies per slot at 82K ctx is multi-GB of swappable host pages,
+# inflating engine OOM badness (oom_score ~767). 4 is plenty for MTP
+# draft rollback; 0 is FORBIDDEN (heap corruption, AGENTS.md).
+DEFAULT_CKPT_RING="4"
 DEFAULT_SPEC_DRAFT_N_MAX=0
 DEFAULT_SPEC_DRAFT_MODEL=""
 # 2026-08-30: vision projector (mmproj) — model.mmproj profile key, VITRIOL_MMPROJ env.
@@ -290,6 +295,7 @@ CFG_EXPERT_COUNT="$DEFAULT_EXPERT_COUNT"
 CFG_MODEL_ALIAS="$DEFAULT_MODEL_ALIAS"
 CFG_MMPROJ="$DEFAULT_MMPROJ"
 CFG_CKPT_EVERY="$DEFAULT_CKPT_EVERY"
+CFG_CKPT_RING="$DEFAULT_CKPT_RING"
 CFG_OUTPUT_CACHE="$DEFAULT_OUTPUT_CACHE"
 CFG_PREDICTIVE_PREFETCH="$DEFAULT_PREDICTIVE_PREFETCH"
 CFG_PIN_FIRST_N_LAYERS="$DEFAULT_PIN_FIRST_N_LAYERS"
@@ -357,6 +363,7 @@ parse_config() {
                 kv.ubatch_size)        CFG_UBATCH="$val" ;;
         kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
                 kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
+        kv.ctx_checkpoints)      CFG_CKPT_RING="$val" ;;
                 lookup_tokens)         CFG_LOOKUP="$val" ;;
                 engine.mode)             CFG_ENGINE_MODE="$val" ;;
                 spec.type)             CFG_SPEC_TYPE="$val" ;;
@@ -440,6 +447,9 @@ parallel = $CFG_PARALLEL
 slot_context = $CFG_SLOT_CONTEXT
 slot_save_path = $CFG_SLOT_SAVE_PATH
 cache_ram = $CFG_CACHE_RAM
+# Idle-slot KV -> host RAM (on | off). OFF = host-memory trim 2026-09-04:
+# the host KV backup was a swappable reservoir inflating engine OOM badness.
+cache_idle_slots = $CFG_CACHE_IDLE_SLOTS
 # Custom Jinja chat template file (empty = use model's embedded template)
 chat_template = $CFG_CHAT_TEMPLATE
 
@@ -470,6 +480,8 @@ frozen_prompt = $CFG_FROZEN_PROMPT
 ubatch_size = $CFG_UBATCH
 # Slot checkpoint cadence (lull engine: --checkpoint-every-n-tokens)
 checkpoint_every_n_tokens = $CFG_CKPT_EVERY
+# RAM checkpoint-ring depth per slot (4; 0 forbidden) — host-memory trim 2026-09-04
+ctx_checkpoints = $CFG_CKPT_RING
 
 [engine]
 # Execution mode: vitriol-dma | native
@@ -637,6 +649,7 @@ config_set() {
         kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
         kv.ubatch_size)        CFG_UBATCH="$val" ;;
         kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
+        kv.ctx_checkpoints)      CFG_CKPT_RING="$val" ;;
         lookup_tokens)          CFG_LOOKUP="$val" ;;
         engine.mode)           CFG_ENGINE_MODE="$val" ;;
         spec.type)             CFG_SPEC_TYPE="$val" ;;
@@ -1990,13 +2003,14 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         CHIMERA_MODE="${CLI_CHIMERA_MODE:-${CFG_CHIMERA_MODE}}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
+        CKPT_RING="${CFG_CKPT_RING:-4}"
 
         # VITRIOL-FINGERPRINT: canonical one-line config identity. Emitted to
         # console and (on real launches) appended to GEN_LOG so any log excerpt
         # answers "what flags produced this?" without archaeology.
         kv_sparse_guard
         FINGERPRINT=$(compute_fingerprint \
-            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2242,10 +2256,11 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
+        CKPT_RING="${CFG_CKPT_RING:-4}"
         kv_sparse_guard
         serve_unit_guard
         FINGERPRINT=$(compute_fingerprint \
-            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB" \
             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
@@ -2393,6 +2408,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # 2026-09-03: flag remapped for the lull engine (--checkpoint-min-step
         # is the main-tree name; lull wants --checkpoint-every-n-tokens).
         CKPT_ARGS="--checkpoint-every-n-tokens ${CKPT_EVERY:-2048}"
+        # RAM checkpoint-ring depth (host-memory trim 2026-09-04): cap the
+        # per-slot full-KV copies; 4 suffices for MTP rollback, 0 forbidden.
+        CKPTS_ARGS="--ctx-checkpoints ${CKPT_RING:-4}"
         # Flash Attention is required for V cache quantization and generally faster
         FA_ARGS="-fa on"
         # Prefill optimization flags
@@ -2456,7 +2474,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
-                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
                             "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
@@ -2521,7 +2539,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
-                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
                         "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/server.pid"
@@ -2583,7 +2601,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         "${MMPROJ_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
-                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS &
+                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS &
                 LLAMA_PID=$!
                 echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
 
@@ -2646,7 +2664,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \
-                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CACHE_ARGS \
+                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
                     "$@"
             fi
         fi

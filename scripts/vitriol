@@ -3088,16 +3088,25 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             mkdir -p /etc/polkit-1/rules.d
             cat > /etc/polkit-1/rules.d/10-vitriol.rules <<'POLKITEOF'
 polkit.addRule(function (action, subject) {
-  if (subject.user === "randozart" &&
-      (action.id === "org.freedesktop.systemd1.manage-units" ||
-       action.id === "org.freedesktop.systemd1.manage-unit-files") &&
-      (action.lookup("unit") === "vitriol-server.service" ||
-       action.lookup("unit") === "vitriol-autosave.service")) {
+  if (subject.user !== "randozart") return;
+  // start/stop/restart: systemd passes unit+verb details — scope to the
+  // two VITRIOL units only.
+  if (action.id === "org.freedesktop.systemd1.manage-units") {
+    const u = action.lookup("unit");
+    if (u === "vitriol-server.service" || u === "vitriol-autosave.service") {
+      return polkit.Result.YES;
+    }
+    return;
+  }
+  // enable/disable: systemd's Enable/DisableUnitFiles methods pass NO unit
+  // detail (verified 2026-09-04 — the unit-scoped rule fell through to the
+  // interactive agent). The action can only be scoped by user.
+  if (action.id === "org.freedesktop.systemd1.manage-unit-files") {
     return polkit.Result.YES;
   }
 });
 POLKITEOF
-            echo "  ✓ polkit rule installed (/etc/polkit-1/rules.d/10-vitriol.rules)"
+            test -s /etc/polkit-1/rules.d/10-vitriol.rules && echo "  ✓ polkit rule installed (/etc/polkit-1/rules.d/10-vitriol.rules)"
         else
             echo "  (skipping polkit rule — run as root: sudo vitriol setup)"
         fi

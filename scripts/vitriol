@@ -4,7 +4,7 @@
 # Usage:
 #   vitriol run              launch inference
 #   vitriol config           interactive config TUI
-#   vitriol setup            set CAP_IPC_LOCK capability
+#   vitriol setup            set CAP_IPC_LOCK capability + engine-service polkit rule (root)
 #   vitriol help             this message
 
 set -euo pipefail
@@ -1578,7 +1578,7 @@ usage() {
   vitriol config edit        open config in $EDITOR
   vitriol config set <key> <val>  set a config value
   vitriol calibrate [--quick] [--model <path>]  auto-tune config for this hardware+model
-  vitriol setup              set CAP_IPC_LOCK capability
+  vitriol setup              set CAP_IPC_LOCK capability + engine-service polkit rule (root)
   vitriol tui                terminal ops dashboard (Ratatui, auto-builds first run)
   vitriol install [--prefix DIR] [--no-build]  symlink vitriol onto your PATH
   vitriol uninstall          remove the install-script symlinks
@@ -3076,6 +3076,30 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         BENCH_BINARY="${BUILD_DIR}/llama-bench"
         if [[ -x "$BENCH_BINARY" ]]; then
             setup_caps "$BENCH_BINARY"
+        fi
+
+        # Engine-service polkit rule (2026-09-04): lets randozart manage ONLY
+        # the two vitriol units on the SYSTEM bus — this is what makes
+        # `vitriol service enable|disable|start|stop|restart` work without
+        # sudo. Covers BOTH systemd actions: manage-units (start/stop/restart)
+        # and manage-unit-files (enable/disable) — the latter is the one that
+        # timed out against an absent polkit agent when missing.
+        if [[ $EUID -eq 0 ]]; then
+            mkdir -p /etc/polkit-1/rules.d
+            cat > /etc/polkit-1/rules.d/10-vitriol.rules <<'POLKITEOF'
+polkit.addRule(function (action, subject) {
+  if (subject.user === "randozart" &&
+      (action.id === "org.freedesktop.systemd1.manage-units" ||
+       action.id === "org.freedesktop.systemd1.manage-unit-files") &&
+      (action.lookup("unit") === "vitriol-server.service" ||
+       action.lookup("unit") === "vitriol-autosave.service")) {
+    return polkit.Result.YES;
+  }
+});
+POLKITEOF
+            echo "  ✓ polkit rule installed (/etc/polkit-1/rules.d/10-vitriol.rules)"
+        else
+            echo "  (skipping polkit rule — run as root: sudo vitriol setup)"
         fi
         ;;
 

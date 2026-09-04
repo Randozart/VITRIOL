@@ -1646,3 +1646,23 @@ vs Aug-24 cert (no-MTP, tq3_0, 26,10): retarget costs ~10% at depth,
 MTP pays it back ×3. Wall >36K not re-probed (bare-serve fragility —
 one transient SIGKILL mid-cert; repro passed clean). Report:
 `.opencode/plans/depth-recert-report-2026-09-04.md`.
+
+## 2026-09-04 (2) — phantom "engine down" during generation root-caused; /metrics non-blocking
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-09-04 |
+| **Commits** | `7596ba0` (part A), lull-kv `9c568a7d9` (part B), llama.cpp main `009915688` (mirror) |
+| **Status** | ✅ root-caused, fixed both sides, load-verified |
+
+Root cause: lull /metrics queue-waits (SERVER_TASK_TYPE_METRICS blocked
+on rd.next) — the patched mainloop starves the queue for whole
+generations, so every telemetry scrape stalled past the poll's 700ms
+timeout → TUI flipped "engine down" while generation proceeded.
+Part A: poll tri-state (stalled = alive-but-busy, down = refused);
+Engine row shows ⏳ busy. Part B: bounded ~1.2s scrape + last-good
+cache. Load test: 91/91 scrapes during a 128-tok generation, median
+64ms, max 1.74s (cache fallback), zero failures. Engine binary
+rebuilt (lull-kv) + installed into the launcher path; unit restarted,
+fingerprint matches blessed. Report:
+`.opencode/plans/engine-metrics-nonblocking-2026-09-04.md`.

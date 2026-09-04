@@ -51,17 +51,35 @@ def fetch(url: str, want_sha: str, out_path: str, log_every_mb: int) -> bool:
         attempt += 1
         try:
             have = os.path.getsize(out_path) if os.path.exists(out_path) else 0
-            headers = {"Range": f"bytes={have}-"} if have else {}
+            if total and have > total:
+                # Oversized partial: an earlier resume appended a duplicate
+                # body (server ignored Range). Corrupt - restart.
+                print(f"[corrupt] {out_path}: {have} > expected {total}, "
+                      f"restarting", flush=True)
+                os.remove(out_path)
+                have = 0
+            use_range = have > 0
+            headers = {"Range": f"bytes={have}-"} if use_range else {}
             req = urllib.request.Request(url, headers=headers)
+            resp = urllib.request.urlopen(req, timeout=STALL_TIMEOUT)
+            if use_range and resp.status != 206:
+                # CDN ignored the Range header and will send a full body
+                # from byte 0. Appending would duplicate data - restart.
+                print(f"[restart] {out_path}: status {resp.status} for "
+                      f"ranged request, restarting", flush=True)
+                resp.close()
+                os.remove(out_path)
+                have = 0
+                resp = urllib.request.urlopen(urllib.request.Request(url),
+                                              timeout=STALL_TIMEOUT)
             mode = "ab" if have else "wb"
             t0 = time.time()
             last_data = time.time()
             got_since_mark = 0
             next_mark = log_every_mb << 20
-            with urllib.request.urlopen(req, timeout=STALL_TIMEOUT) as r, \
-                 open(out_path, mode) as f:
+            with resp, open(out_path, mode) as f:
                 while True:
-                    chunk = r.read(CHUNK)
+                    chunk = resp.read(CHUNK)
                     if not chunk:
                         break
                     f.write(chunk)
@@ -79,6 +97,17 @@ def fetch(url: str, want_sha: str, out_path: str, log_every_mb: int) -> bool:
                     last_data = time.time()
             ok = True
             break
+        except urllib.error.HTTPError as e:
+            if e.code == 416 and total and \
+                    os.path.exists(out_path) and \
+                    os.path.getsize(out_path) >= total:
+                # Ranged request at/past EOF - treat as complete.
+                ok = True
+                break
+            wait = min(2 ** attempt, 60)
+            print(f"[retry {attempt}] {type(e).__name__}: {e} "
+                  f"(wait {wait}s)", flush=True)
+            time.sleep(wait)
         except Exception as e:
             wait = min(2 ** attempt, 60)
             print(f"[retry {attempt}] {type(e).__name__}: {e} "

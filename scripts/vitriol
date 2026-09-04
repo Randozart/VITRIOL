@@ -3084,9 +3084,17 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # sudo. Covers BOTH systemd actions: manage-units (start/stop/restart)
         # and manage-unit-files (enable/disable) — the latter is the one that
         # timed out against an absent polkit agent when missing.
-        if [[ $EUID -eq 0 ]]; then
-            mkdir -p /etc/polkit-1/rules.d
-            cat > /etc/polkit-1/rules.d/10-vitriol.rules <<'POLKITEOF'
+        # Self-sudo like setup_caps: `vitriol setup` runs unprivileged and
+        # prompts for the sudo password for the root-only steps. (sudo
+        # cannot find `vitriol` directly — ~/.local/bin isn't in sudo's
+        # secure_path — so a bare `sudo vitriol setup` fails with command
+        # not found; this keeps the single-command UX.)
+        if ! command -v sudo &>/dev/null; then
+            echo "  ERROR: sudo not found (needed for the polkit rule)"
+            exit 1
+        fi
+        sudo mkdir -p /etc/polkit-1/rules.d
+        sudo tee /etc/polkit-1/rules.d/10-vitriol.rules > /dev/null <<'POLKITEOF'
 polkit.addRule(function (action, subject) {
   if (subject.user !== "randozart") return;
   // start/stop/restart: systemd passes unit+verb details — scope to the
@@ -3106,10 +3114,7 @@ polkit.addRule(function (action, subject) {
   }
 });
 POLKITEOF
-            test -s /etc/polkit-1/rules.d/10-vitriol.rules && echo "  ✓ polkit rule installed (/etc/polkit-1/rules.d/10-vitriol.rules)"
-        else
-            echo "  (skipping polkit rule — run as root: sudo vitriol setup)"
-        fi
+        echo "  ✓ polkit rule installed (/etc/polkit-1/rules.d/10-vitriol.rules)"
         ;;
 
     validate|lanes|budget|ledger-ingest|perms-sync|status)

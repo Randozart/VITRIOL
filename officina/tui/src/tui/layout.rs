@@ -346,26 +346,18 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     // Gap row: explicit BG paint, ALWAYS (owner request 2026-09-03 — the
     // terminal background must never peek through below the panels). The
-    // carved motto rides on it when there's room and the screen isn't
-    // fresh; fire dots rising through the gap keep their flame fg because
-    // set_style patches bg only.
+    // carved motto used to ride here (removed 2026-09-04 as redundant —
+    // the backcronym lives in the input placeholder; the row stays an
+    // empty breathing gap). Fire dots rising through the gap keep their
+    // flame fg because set_style patches bg only.
     {
         let gap = Rect {
             y: area.y + chat_area.height,
             height: 1,
             ..area
         };
-        let motto = if state.entries.is_empty() {
-            None
-        } else {
-            motto_for(area.width as usize)
-        };
-        let mut spans: Vec<Span> = Vec::new();
-        if let Some(m) = motto {
-            spans.push(carved(&m));
-        }
         frame.render_widget(
-            Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::BG)),
+            Paragraph::new(Line::from(Vec::<Span>::new())).style(Style::new().bg(theme::BG)),
             gap,
         );
     }
@@ -395,16 +387,19 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     //
     // 2026-09-03: `/fire tint off` keeps text its original color — EXCEPT
     // the carved motto (owner: "make the VISITA INTERIOREM text still
-    // discolor as the one exception"). The motto lives in the gap row,
+    // discolor as the one exception"). The motto lived in the gap row,
     // which is the fire strip's bottom row — so with tint off, only that
-    // row is walked.
+    // row was walked.
+    // 2026-09-04: the carved motto is gone (redundant with the input
+    // placeholder); with no glyphs in the gap row, tint-off now leaves
+    // every fire row alone.
     if !fire_map.is_empty() {
         let tint_all = state.fire_tint;
         let fire_y = input_area.y.saturating_sub(fire_rows as u16);
         let buffer = frame.buffer_mut();
         for (ry, map_row) in fire_map.iter().enumerate() {
-            if !tint_all && ry + 1 != fire_map.len() {
-                continue; // the one exception: only the motto's row still tints
+            if !tint_all {
+                continue; // no motto exception anymore — tint off = text untouched
             }
             for (cx, c) in map_row.iter().enumerate() {
                 if let Some(color) = c {
@@ -970,15 +965,6 @@ fn motto_for(width: usize) -> Option<String> {
 }
 
 /// Carved ink — the same faint cut as the watermark stone.
-fn carved(text: &str) -> Span<'static> {
-    Span::styled(
-        text.to_string(),
-        Style::new()
-            .fg(theme::WATERMARK)
-            .add_modifier(Modifier::DIM),
-    )
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Braille left-column bits for one quicksilver gauge row. The mercury

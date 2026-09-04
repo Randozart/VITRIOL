@@ -57,6 +57,139 @@ serve_unit_guard() {
     echo "VITRIOL: note — unit file present but service inactive; running UNPROTECTED (no oom-shield lifecycle)." >&2
     echo "         Consider: systemctl --user enable --now vitriol-server.service" >&2
 }
+
+# ── Launch Fingerprint Journal (2026-09-03 doctrine) ──────────────
+# Every launch appends 'LAUNCH <iso> <fingerprint>' to
+# ~/.vitriol/fingerprint.log and diffs against the previous launch AND
+# the blessed operating point. Deltas print VITRIOL-FLAG-DELTA and
+# NEVER block a launch. --dry-run reviews without writing.
+# Born from the MTP flag-drift incident (2026-08-31 -> 09-03, +40%
+# decode lost for weeks): see .opencode/plans/mtp-flag-drift-postmortem-2026-09-03.md
+FP_LOG="${FP_LOG:-$HOME/.vitriol/fingerprint.log}"
+FP_LAST="${FP_LAST:-$HOME/.vitriol/fingerprint.last}"
+FP_BLESSED="${FP_BLESSED:-$HOME/.vitriol/fingerprint.blessed}"
+
+_fp_delta() {
+    # Per-field diff of two fingerprint lines: 'key: old -> new'.
+    local oldfp="$1" newfp="$2"
+    local -A oldf newf
+    local kv k
+    for kv in $oldfp; do oldf[${kv%%=*}]=${kv#*=}; done
+    for kv in $newfp; do newf[${kv%%=*}]=${kv#*=}; done
+    local -a seen=()
+    for kv in $newfp; do
+        k=${kv%%=*}
+        if [[ " ${seen[*]-} " == *" $k "* ]]; then continue; fi
+        seen+=("$k")
+        local ov="${oldf[$k]:-}" nv="${newf[$k]:-}"
+        if [[ -z "$ov" && -n "$nv" ]]; then echo "  $k: <new> -> $nv"
+        elif [[ "$ov" != "$nv" ]]; then echo "  $k: $ov -> $nv"
+        fi
+    done
+    # NOTE: if-block, not `[[ ]] &&` — a short-circuited loop body under
+    # set -e makes the for-loop return 1 and kills the script silently.
+    for k in "${!oldf[@]}"; do
+        if [[ -z "${newf[$k]:-}" ]]; then echo "  $k: ${oldf[$k]} -> <dropped>"; fi
+    done
+}
+
+compute_fingerprint() {
+    # Canonical fingerprint body — the ONLY printf for it. Args:
+    # model-basename ts ctx kv_k kv_v ub mode engine ckpt lru sparse
+    # score pool_reset spec_type spec_draft_n_max
+    printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s' "$@"
+}
+
+config_fingerprint() {
+    # Fingerprint from the CONFIG FILE ALONE (no CLI, no env). Used by
+    # 'config bless'. Launches with CLI/env overrides will legitimately
+    # differ — the blessed-delta makes that visible, not an error.
+    parse_config
+    local fp
+    fp=$(compute_fingerprint \
+        "$(basename "${CFG_MODEL:-?}")" "${CFG_TENSOR_SPLIT:-none}" "${CFG_CTX:-?}" \
+        "${CFG_KV_QUANT}" "${CFG_KV_QUANT_V}" "${CFG_UBATCH:-256}" \
+        "${CFG_MODE}" "${CFG_ENGINE_MODE}" "${CFG_CKPT_EVERY:-2048}" "${CFG_LRU_MB:-0}" \
+        "${CFG_KV_MODE}" "${CFG_KV_SCORE:-off}" "0" \
+        "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}")
+    # Mirror the serve path's conditional fields so blessed-vs-launch
+    # diffs stay clean (only REAL differences show up).
+    [[ -n "${CFG_SLOT_CONTEXT:-}" ]] && fp="$fp slots=$CFG_SLOT_CONTEXT"
+    [[ -n "${CFG_SLOT_SAVE_PATH:-}" ]] && fp="$fp ssp=1"
+    [[ -n "${CFG_CACHE_RAM:-}" ]] && fp="$fp cram=$CFG_CACHE_RAM"
+    [[ -n "${CFG_CHAT_TEMPLATE:-}" ]] && fp="$fp ct=$(basename "$CFG_CHAT_TEMPLATE")"
+    [[ -n "${CFG_MMPROJ:-}" && -f "${CFG_MMPROJ:-}" ]] && fp="$fp vis=on"
+    [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && fp="$fp cis=0"
+    printf '%s' "$fp"
+}
+
+config_journal() {
+    # Mutation record for config commands: CONFIG-EDIT <iso> <detail>.
+    printf 'CONFIG-EDIT %s %s\n' "$(date -Is)" "$1" >> "$FP_LOG"
+}
+
+fingerprint_journal() {
+    local prev="" bfp="" bdate=""
+    [[ -f "$FP_LAST" ]] && prev=$(head -1 "$FP_LAST" 2>/dev/null)
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        if [[ -n "$prev" && "$prev" != "$FINGERPRINT" ]]; then
+            echo "VITRIOL-FLAG-DELTA (projected — dry-run writes nothing):"
+            _fp_delta "$prev" "$FINGERPRINT"
+        fi
+    else
+        if [[ -n "$prev" && "$prev" != "$FINGERPRINT" ]]; then
+            echo "VITRIOL-FLAG-DELTA: launch flags changed since previous launch:"
+            _fp_delta "$prev" "$FINGERPRINT"
+        fi
+        printf 'LAUNCH %s %s\n' "$(date -Is)" "$FINGERPRINT" >> "$FP_LOG"
+        printf '%s' "$FINGERPRINT" > "$FP_LAST"
+    fi
+    if [[ -f "$FP_BLESSED" ]]; then
+        bfp=$(head -1 "$FP_BLESSED" 2>/dev/null)
+        bdate=$(sed -n 2p "$FP_BLESSED" 2>/dev/null)
+        if [[ -n "$bfp" && "$bfp" != "$FINGERPRINT" ]]; then
+            echo "VITRIOL-FLAG-DELTA: differs from BLESSED operating point (blessed ${bdate:-?}):"
+            _fp_delta "$bfp" "$FINGERPRINT"
+        fi
+    fi
+}
+
+config_bless() {
+    mkdir -p "$(dirname "$FP_BLESSED")"
+    local fp
+    fp=$(config_fingerprint)
+    printf '%s\n%s\n' "$fp" "$(date -Is)" > "$FP_BLESSED"
+    echo "✓ Blessed operating point pinned ($(date -Is)):"
+    echo "  $fp"
+}
+
+config_unbless() {
+    if [[ -f "$FP_BLESSED" ]]; then
+        rm -f "$FP_BLESSED"
+        echo "✓ Blessed operating point cleared"
+    else
+        echo "No blessed operating point pinned (vitriol config bless)"
+    fi
+}
+
+config_blessed() {
+    if [[ ! -f "$FP_BLESSED" ]]; then
+        echo "No blessed operating point pinned (vitriol config bless)"
+        return 1
+    fi
+    local bfp bdate cfp
+    bfp=$(head -1 "$FP_BLESSED")
+    bdate=$(sed -n 2p "$FP_BLESSED")
+    echo "Blessed operating point (pinned $bdate):"
+    echo "  $bfp"
+    cfp=$(config_fingerprint)
+    if [[ "$bfp" == "$cfp" ]]; then
+        echo "  config matches blessed ✓"
+    else
+        echo "  config DIFFERS from blessed:"
+        _fp_delta "$bfp" "$cfp"
+    fi
+}
 # 2026-08-29 (CachyOS migration): every LD_LIBRARY_PATH assignment that launches
 # llama-server must APPEND the inherited value (`...${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}`),
 # never clobber it — the CUDA 12 runtime libs resolve from ~/.cuda-libs here, and an
@@ -101,6 +234,7 @@ DEFAULT_KV_QUANT_V="f16"
 DEFAULT_LOOKUP=0
 DEFAULT_ENGINE_MODE="vitriol-dma"
 DEFAULT_SPEC_TYPE=""
+DEFAULT_CKPT_EVERY="2048"
 DEFAULT_SPEC_DRAFT_N_MAX=0
 DEFAULT_SPEC_DRAFT_MODEL=""
 # 2026-08-30: vision projector (mmproj) — model.mmproj profile key, VITRIOL_MMPROJ env.
@@ -137,6 +271,8 @@ CFG_CACHE_IDLE_SLOTS="${CFG_CACHE_IDLE_SLOTS:-on}"
 CFG_CHAT_TEMPLATE=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
+CFG_KV_SCORE="$DEFAULT_KV_SCORE"
+CFG_KV_SCORE_EVERY="$DEFAULT_KV_SCORE_EVERY"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
 CFG_SEMANTIC_MODE="$DEFAULT_SEMANTIC_MODE"
 CFG_KV_QUANT="$DEFAULT_KV_QUANT"
@@ -151,6 +287,9 @@ CFG_MMPROJ="$DEFAULT_MMPROJ"
 CFG_SPEC_DRAFT_DEVICE="$DEFAULT_SPEC_DRAFT_DEVICE"
 CFG_SPEC_DRAFT_NGL="$DEFAULT_SPEC_DRAFT_NGL"
 CFG_EXPERT_COUNT="$DEFAULT_EXPERT_COUNT"
+CFG_MODEL_ALIAS="$DEFAULT_MODEL_ALIAS"
+CFG_MMPROJ="$DEFAULT_MMPROJ"
+CFG_CKPT_EVERY="$DEFAULT_CKPT_EVERY"
 CFG_OUTPUT_CACHE="$DEFAULT_OUTPUT_CACHE"
 CFG_PREDICTIVE_PREFETCH="$DEFAULT_PREDICTIVE_PREFETCH"
 CFG_PIN_FIRST_N_LAYERS="$DEFAULT_PIN_FIRST_N_LAYERS"
@@ -263,6 +402,10 @@ threads = $CFG_THREADS
 ngl = $CFG_NGL
 # Expert count override (0 = model default, 4-8 recommended)
 expert_count = $CFG_EXPERT_COUNT
+# Name reported via /v1/models (pi model-sync identity) — LOAD-BEARING
+alias = $CFG_MODEL_ALIAS
+# Vision projector GGUF (empty = text-only) — LOAD-BEARING
+mmproj = $CFG_MMPROJ
 
 [vitriol]
 # Operation mode: stream | sync | async | off
@@ -312,6 +455,10 @@ semantic_mode = $CFG_SEMANTIC_MODE
 #   kv.score = probe | off        (scoring feeds eviction; off = blind)
 #   kv.score_every = N            (probe cadence in decode steps, default 16)
 mode = $CFG_KV_MODE
+#   sparse probe scoring (context lifecycle, 2026-09-03): probe | off
+score = $CFG_KV_SCORE
+#   probe cadence in decode steps (default 16; 4 rejected — ejected too hard)
+score_every = $CFG_KV_SCORE_EVERY
 # KV cache quantization: f16 | q8_0 | q4_0 (affects K cache only)
 quant_mode = $CFG_KV_QUANT
 # V cache quantization: f16 (default, safe) | q8_0 | q4_0 (RISK: quantizing V causes garbage output)
@@ -321,6 +468,8 @@ quant_mode_v = $CFG_KV_QUANT_V
 frozen_prompt = $CFG_FROZEN_PROMPT
 # Physical batch size (default 256, lower = less VRAM for compute buffers)
 ubatch_size = $CFG_UBATCH
+# Slot checkpoint cadence (lull engine: --checkpoint-every-n-tokens)
+checkpoint_every_n_tokens = $CFG_CKPT_EVERY
 
 [engine]
 # Execution mode: vitriol-dma | native
@@ -458,6 +607,7 @@ config_set() {
         gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
         model.path)            CFG_MODEL="$val" ;;
                 model.mmproj)          CFG_MMPROJ="$val" ;;
+        model.alias)           CFG_MODEL_ALIAS="$val" ;;
         model.context)         CFG_CTX="$val" ;;
         model.threads)         CFG_THREADS="$val" ;;
         model.ngl)             CFG_NGL="$val" ;;
@@ -498,6 +648,7 @@ config_set() {
         *) echo "Unknown key: $key"; return 1 ;;
     esac
     write_config
+    config_journal "set $key=$val"
     echo "✓ $key = $val"
 }
 
@@ -567,6 +718,7 @@ profiles_load() {
     cp "${profile_dir}/config" "$CONFIG_FILE"
     # Reload config into CFG_ vars
     parse_config
+    config_journal "load-profile $name"
     echo ""
     echo "✓ Profile '${name}' loaded"
     echo "  Restart the server to apply: vitriol stop && vitriol serve"
@@ -1847,8 +1999,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # console and (on real launches) appended to GEN_LOG so any log excerpt
         # answers "what flags produced this?" without archaeology.
         kv_sparse_guard
-        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s' \
-            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "${VITRIOL_KV_MODE:-standard}" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
+        FINGERPRINT=$(compute_fingerprint \
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
+        fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
             OUTPUT_CACHE="off"
@@ -2095,15 +2248,16 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
         kv_sparse_guard
         serve_unit_guard
-        FINGERPRINT=$(printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s' \
+        FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
-            "$KV_MODE" "${VITRIOL_KV_SCORE:-off}" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
+            "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
         [[ -n "${CHAT_TEMPLATE:-}" ]] && FINGERPRINT="$FINGERPRINT ct=$(basename "$CHAT_TEMPLATE")"
         [[ ${#MMPROJ_ARGS[@]} -gt 0 ]] && FINGERPRINT="$FINGERPRINT vis=on"
         [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && FINGERPRINT="$FINGERPRINT cis=0"
+        fingerprint_journal
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
@@ -2794,6 +2948,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             list)  profiles_list ;;
             delete) shift; profiles_delete "$1" ;;
             diff)  shift; profiles_diff "$1" ;;
+            bless)   config_bless ;;
+            blessed) config_blessed ;;
+            unbless) config_unbless ;;
             *)     tui_main_menu ;;
         esac
         ;;

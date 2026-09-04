@@ -81,3 +81,25 @@ must be followed by a fingerprint check against the previous one.**
   predates this restoration; decode-at-depth with MTP may differ).
 - IQ4_XS verdict unchanged (14.9 shallow / 8.07 @ 32.4K depth) — but
   the driver now outruns it everywhere, so the upgrade case is dead.
+
+## ADDENDUM 2 (2026-09-04): the guard shipped with a landmine — and caught four more losses
+
+**The landmine**: `_fp_delta`'s loop bodies used `[[ test ]] && cmd` under
+the launcher's `set -euo pipefail`. A short-circuited final iteration
+makes the for-loop inherit status 1 → errexit → silent death of the
+launcher. Every serve while blessed ≠ current exited 1;
+`vitriol-server.service` crash-looped ~20 min (a4d2807 fixes: if-blocks).
+
+**The vindication**: fixing it required regenerating the config via
+`config set` — and the journal immediately exposed that `write_config`'s
+template never emitted FIVE load-bearing keys: `kv.score`,
+`kv.score_every`, `model.alias` (the pi model-sync identity!), `model.mmproj`
+(vision), and `kv.checkpoint_every_n_tokens`. The 8-31 retarget may have
+been only the first time this class of loss happened — any regeneration
+silently dropped them. All five now emit from the template, the live
+values are restored, and `config blessed` matches the running launch.
+
+**Doctrine reinforced**: the journal worked exactly as designed —
+CONFIG-EDIT trail + FLAG-DELTA made both the landmine and the five-key
+loss impossible to miss. Passive logs alone would have recorded both
+without flagging either.

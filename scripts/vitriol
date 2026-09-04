@@ -2694,7 +2694,14 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # --user was the legacy layout). Sidecar FIRST so its hang-watchdog
         # cannot force-restart the engine mid-stop.
         scope=$(unit_scope)
-        if [[ -z "${INVOCATION_ID:-}" ]] && [[ "$scope" != "none" ]]; then
+        # In-unit guard: when THIS process is the unit's own ExecStartPre
+        # (vitriol stop inside the unit's cgroup), stopping our own unit
+        # would deadlock — fall through to pidfile cleanup only. cgroup is
+        # the precise test (2026-09-04: INVOCATION_ID was too broad — every
+        # systemd-scope shell, e.g. a konsole tab, carries one, so a manual
+        # vitriol stop silently skipped the systemd stop and the engine
+        # stayed up).
+        if ! grep -qa "vitriol-server.service" /proc/self/cgroup 2>/dev/null && [[ "$scope" != "none" ]]; then
             echo "→ Stopping via systemd ($scope scope, sticky, no auto-restart)..."
             if [[ "$scope" == "system" ]]; then
                 systemctl stop vitriol-autosave.service 2>/dev/null || true

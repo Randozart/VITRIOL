@@ -3069,8 +3069,18 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         if [[ -x "$BINARY" ]]; then
             setup_caps "$BINARY"
         fi
-        if [[ -x "$SERVER_BINARY" ]]; then
-            setup_caps "$SERVER_BINARY"
+        # The SERVER (engine) deliberately does NOT get CAP_IPC_LOCK
+        # (2026-09-04). A file-capable binary runs AT_SECURE, and glibc then
+        # IGNORES LD_LIBRARY_PATH — which is exactly how the launcher feeds
+        # the engine its libllama*.so set. A cap'd llama-server died in the
+        # system unit with 'cannot open shared object file: libllama-common.so.0'
+        # while the same binary ran fine from a shell. AGENTS.md already calls
+        # the cap optional on this host (CUDA pinned allocations don't count
+        # against RLIMIT_MEMLOCK). Clear any cap setup previously applied.
+        if [[ -x "$SERVER_BINARY" ]] && getcap "$SERVER_BINARY" | grep -q cap_ipc_lock; then
+            echo "→ Removing CAP_IPC_LOCK from llama-server (AT_SECURE breaks its lib loading)"
+            sudo setcap -r "$SERVER_BINARY"
+            getcap "$SERVER_BINARY" || true
         fi
         # Also set caps on llama-bench if it exists
         BENCH_BINARY="${BUILD_DIR}/llama-bench"

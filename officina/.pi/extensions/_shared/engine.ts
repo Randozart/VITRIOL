@@ -29,6 +29,9 @@ export interface EngineSnapshot {
   loaded_model: string;
   /** The loaded model's file path (from /props), "" when unknown. */
   loaded_path: string;
+  /** True when the engine answers TCP but queue-backed endpoints stall
+   * (generation in flight) — alive-but-busy, NOT down. */
+  stalled: boolean;
   /** decode tokens since engine boot */
   total: number;
   slots: SlotInfo[];
@@ -51,6 +54,7 @@ let snap: EngineSnapshot = {
   ejected: 0,
   loaded_model: "",
   loaded_path: "",
+  stalled: false,
   total: 0,
   slots: [],
   busy: 0,
@@ -91,16 +95,35 @@ function pollNvidiaSmi(): void {
   );
 }
 
-async function fetchText(url: string, timeoutMs: number): Promise<string | null> {
+export type FetchOutcome = { kind: "ok"; text: string } | { kind: "stalled" } | { kind: "down" };
+
+/**
+ * Map a fetch failure to stalled-vs-down. Abort (our timeout) after the
+ * TCP connection succeeded = the engine is ALIVE but the endpoint
+ * stalled (queue-backed /metrics and /slots block during generation).
+ * Refused/reset/unreachable = nothing usable is listening = down.
+ * (2026-09-04: /metrics queue-waited behind active generation, every
+ * scrape timed out, and the poll read the timeouts as "engine down".)
+ */
+export function classifyFetchError(err: unknown): "stalled" | "down" {
+  const code = (err as { cause?: { code?: string } })?.cause?.code ?? "";
+  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+    return "down";
+  }
+  if (err instanceof Error && err.name === "AbortError") return "stalled";
+  return "down";
+}
+
+async function fetchText(url: string, timeoutMs: number): Promise<FetchOutcome> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
     const res = await fetch(url, { signal: ctrl.signal });
     clearTimeout(t);
-    if (!res.ok) return null;
-    return await res.text();
-  } catch {
-    return null;
+    if (!res.ok) return { kind: "down" };
+    return { kind: "ok", text: await res.text() };
+  } catch (err) {
+    return { kind: classifyFetchError(err) };
   }
 }
 
@@ -109,21 +132,26 @@ let lastPoll = 0;
 let polledOnce = false;
 let base = "";
 let pollMs = DEFAULT_POLL_MS;
+// Endpoint fetch timeout — rides short stalls; poll CADENCE stays pollMs.
+const HTTP_TIMEOUT_MS = 1500;
 
 async function poll(): Promise<void> {
   pollNvidiaSmi();
   const now = Date.now();
-  const metricsText = await fetchText(`${base}/metrics`, pollMs);
-  if (metricsText === null) {
+  const metrics = await fetchText(`${base}/metrics`, HTTP_TIMEOUT_MS);
+  if (metrics.kind !== "ok") {
     before = null;
-    if (snap.up || !polledOnce) {
-      polledOnce = true;
-      snap = { ...snap, up: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "" };
-      notify();
+    polledOnce = true;
+    if (metrics.kind === "down") {
+      snap = { ...snap, up: false, stalled: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "" };
+    } else {
+      // alive-but-busy: queue-backed endpoint didn't answer in time
+      snap = { ...snap, up: true, stalled: true };
     }
+    notify();
     return;
   }
-  const after = parseMetrics(metricsText);
+  const after = parseMetrics(metrics.text);
   if (!after) return;
   const seconds = lastPoll ? (now - lastPoll) / 1000 : 0;
   const delta = counterDelta(before, after, seconds);
@@ -135,18 +163,21 @@ async function poll(): Promise<void> {
   };
   before = after;
   lastPoll = now;
-  const slotsText = await fetchText(`${base}/slots`, pollMs);
-  const slots = slotsText ? parseSlots(slotsText) : snap.slots;
+  const slotsOut = await fetchText(`${base}/slots`, HTTP_TIMEOUT_MS);
+  const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : snap.slots;
   const busy = busySlots(slots, delta.tokens);
   // The ENGINE's loaded model (owner request 2026-09-03): /v1/models
   // reports the alias of whatever the server actually loaded — distinct
   // from pi's selected-model label.
-  const modelsText = await fetchText(`${base}/v1/models`, pollMs);
-  const loaded_model = modelsText !== null ? parseLoadedModel(modelsText) : snap.loaded_model;
-  const propsText = await fetchText(`${base}/props`, pollMs);
-  const loaded_path = propsText !== null ? parseModelPath(propsText) : snap.loaded_path;
+  const modelsOut = await fetchText(`${base}/v1/models`, HTTP_TIMEOUT_MS);
+  const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : snap.loaded_model;
+  const propsOut = await fetchText(`${base}/props`, HTTP_TIMEOUT_MS);
+  const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : snap.loaded_path;
+  // Secondary endpoints queue-wait by design (/slots) — their stall is the
+  // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
+  const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
   // cumulativeIngest = total prompt tokens processed since engine boot
-  snap = { up: true, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path };
+  snap = { up: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path };
   polledOnce = true;
   notify();
 }

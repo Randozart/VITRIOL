@@ -186,6 +186,11 @@ export default function (pi: ExtensionAPI) {
   registerSidebarSection("engine", 25, () => {
     const eng = getEngineSnapshot();
     if (!eng.up) return undefined;
+    // Alive-but-busy (2026-09-04): queue-backed endpoints stall while a
+    // generation runs — show busy, never phantom-down.
+    if (eng.stalled) {
+      return [truncate(sc(SOLVENT, "⏳ engine busy — generating"), CONTENT_W)];
+    }
     const decoding = eng.delta.tps > 0 || eng.busy > 0;
     const g = renderGauge(
       decoding ? RAMPS.activity : RAMPS.mercury,

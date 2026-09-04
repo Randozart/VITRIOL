@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  fillModelDefaults,
   formatContextWindow,
   loadProviders,
   probeContextWindow,
@@ -55,9 +56,11 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // Captured so the model_select hook below can re-register llamacpp with a new
-  // window after a llama-swap swap (see issue #54).
+  // window after a llama-swap swap (see issue #54). engineAlias holds the
+  // model the engine is actually serving (from /v1/models), used by the
+  // session_start handler to auto-sync pi's header to the engine's truth.
   let llamacpp:
-    | { baseUrl: string; apiKey: string; api: string; models: ProviderModelEntry[]; registeredCtx?: number }
+    | { baseUrl: string; apiKey: string; api: string; models: ProviderModelEntry[]; registeredCtx?: number; engineAlias?: string }
     | undefined;
 
   for (const [name, entry] of Object.entries(result.providers)) {
@@ -75,6 +78,29 @@ export default async function (pi: ExtensionAPI) {
       }
     }
 
+    // Auto-detect the engine's loaded model alias via /v1/models. Adds the
+    // alias to the registered models list so pi recognizes it as valid, and
+    // the session_start handler below calls pi.setModel() to override pi's
+    // static defaultModel with the engine's truth. When the engine is
+    // unreachable the fetch fails silently — pi falls back to defaultModel.
+    let engineAlias = "";
+    if (name === "llamacpp") {
+      try {
+        const resp = await fetch(`${entry.baseUrl}/v1/models`, {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          engineAlias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
+          if (engineAlias && !models.some((m) => m.id === engineAlias)) {
+            models = [...models, fillModelDefaults({ id: engineAlias, name: engineAlias }, name, models.length)];
+          }
+        }
+      } catch {
+        // Engine unreachable — defaultModel from settings is the fallback.
+      }
+    }
+
     pi.registerProvider(name, {
       baseUrl: entry.baseUrl,
       apiKey: entry.apiKey,
@@ -89,6 +115,7 @@ export default async function (pi: ExtensionAPI) {
         api: entry.api,
         models,
         registeredCtx: models[0]?.contextWindow,
+        engineAlias,
       };
     }
   }
@@ -125,6 +152,28 @@ export default async function (pi: ExtensionAPI) {
 
       const from = change.from !== undefined ? formatContextWindow(change.from) : "?";
       ctx?.ui?.notify?.(`context window updated ${from} → ${formatContextWindow(change.to)}`, "info");
+    });
+  }
+
+  // Auto-sync model identity: at session start, override pi's model selection
+  // with the engine's actual alias. This ensures the header always shows the
+  // engine's truth — no manual /model needed. When the engine was unreachable
+  // at startup (engineAlias empty), this is a no-op — defaultModel is the
+  // fallback. pi.setModel() persists the alias to settings.json, so
+  // defaultModel becomes self-healing across sessions.
+  if (!probeDisabled) {
+    pi.on("session_start", async (_event, ctx) => {
+      const alias = llamacpp?.engineAlias;
+      if (!alias) return;
+      const current = (ctx as { model?: { id?: string } }).model?.id;
+      if (current === alias) return;
+      const model = (ctx as { modelRegistry?: { find?: (p: string, id: string) => unknown } })
+        .modelRegistry?.find?.("llamacpp", alias);
+      if (!model) return;
+      const ok = await pi.setModel(model as never);
+      if (ok) {
+        ctx.ui?.notify?.(`model synced: ${alias}`, "info");
+      }
     });
   }
 }

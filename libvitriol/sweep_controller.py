@@ -147,13 +147,13 @@ def start_server(model_path: str, cfg: SweepConfig, port: int = SWEEP_PORT) -> s
         "VITRIOL_MODE": "stream",
         "VITRIOL_PIN_FIRST_N_LAYERS": str(cfg.pin),
         "VITRIOL_LRU_MB": "0",
-        "VITRIOL_KV_QUANT": "q4_0",
+        "VITRIOL_KV_QUANT": "tq3_0",
         "VITRIOL_ENGINE_MODE": "vitriol-dma",
         "VITRIOL_MODEL_PATH": model_path,
         "LD_LIBRARY_PATH": f"{LLAMA_DIR / 'build' / 'bin'}:{env.get('LD_LIBRARY_PATH', '')}",
     })
 
-    kv_cache_args = ["--cache-type-k", "q4_0"]
+    kv_cache_args = ["--cache-type-k", "tq3_0", "--cache-type-v", "tq3_0"]
     spec_args = []
     if cfg.mtp > 0:
         # Use the model itself as draft for MTP
@@ -308,7 +308,7 @@ def main():
 
         try:
             # Benchmark
-            url = "http://127.0.0.1:8280"
+            url = f"http://127.0.0.1:{SWEEP_PORT}"
             result = benchmark_server(url, BENCH_PROMPT)
             result.config = cfg
 

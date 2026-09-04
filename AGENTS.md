@@ -129,16 +129,18 @@ applies, but the records are kept as-is for accuracy.)
 
 Model: `~/Downloads/Qwen3.8-27B-Q3_K_M.gguf` (unsloth, qwen35 arch, embedded MTP head).
 
-**LIVE CONFIG (2026-08-31 retarget)**: `~/.vitriol/config` runs `-ts 22,14`
-(2 more layers to the 1070 Ti for 3060 display headroom at ctx 81920,
-`--parallel 2`). The 26,10 / 27,9 splits below are the OLDER profile
+**LIVE CONFIG (blessed 2026-09-04)**: `~/.vitriol/config` runs `-ts 22,14`
+(2 more layers to the 1070 Ti for 3060 display headroom), ctx 81920,
+`parallel = 1`, q4_0 KV, `[spec] type=mtp draft_n_max=1` — pinned via
+`vitriol config bless`; launch fingerprints carry `spec=` and `par=`
+since 2026-09-04. The 26,10 / 27,9 splits below are the OLDER profile
 history — do not quote them as the current operating point.
 
 Saved VITRIOL profiles (load with `vitriol config load <name>`):
 
 | profile | ctx | MTP | t/s | notes |
 |---|---|---|---|---|
-| `qwen38-mtp-131k` | 49152 | n=1 | ~14.1 shallow-bench | **default/winner**, ts 27,9 (26,10 on merged base), q4k/q4v; meta: "131K OOMs ~45-61K tokens on this dual-GPU pair" |
+| `qwen38-mtp-131k` | 49152 | n=1 | ~14.1 shallow-bench | SUPERSEDED by the live config as daily driver; ts 27,9 (26,10 on merged base), q4k/q4v; meta: "131K OOMs ~45-61K tokens on this dual-GPU pair" |
 | `qwen38-262k` | 262144 | off | ~11.0 | max native ctx, ts 24,12, q4k/q4v |
 
 Depth-filled reality (2026-08-24 certification, merged base, chunked/single-shot
@@ -152,7 +154,7 @@ Addenda 5–6):
   (independent of KV bits; NOT fixed by GGML_CUDA_NO_VMM=1). Window ≠ usable
   depth: shallow-bench numbers do not certify filled-context operation.
 
-Recommended working config (certified): `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64
+Recommended working config (certified): `-ngl 99 -ts 22,14 --main-gpu 0 -ub 64
 --cache-type-k tq3_0 --cache-type-v tq3_0` (TurboQuant KV = 3.5 bpw, −22% vs q4_0;
 per-device overrides via `VITRIOL_KV_QUANT[_K|_V]_GPU<d>`). Add
 `--spec-type mtp --spec-draft-n-max 1` for the 49k-window profile.
@@ -161,7 +163,7 @@ Master deep-context profile: `vitriol config load qwen38-master`
 VITRIOL_POOL_RESET=1 first — certified 96,836 tok @ 11.32 t/s).
 
 Required flags (all wired into `scripts/vitriol` config now):
-`-ngl 99 -ts 26,10 --main-gpu 0 -ub 64 --cache-type-k tq3_0 --cache-type-v tq3_0 --spec-type mtp --spec-draft-n-max 1`
+`-ngl 99 -ts 22,14 --main-gpu 0 -ub 64 --cache-type-k q4_0 --cache-type-v q4_0 --spec-type mtp --spec-draft-n-max 1` (the blessed live point; depth-certified 2026-09-04 — see the MTP CORRECTION below)
 
 MTP draft depth: n_max must be **1** (re-confirmed 2026-08-24: n=2 → 12.71 vs n=1 → 14.05
 t/s shallow-bench). Depth>=2 regresses because chained MTP-head drafts drift (acceptance
@@ -191,7 +193,7 @@ Key facts:
   asymmetric overrides exist via `VITRIOL_KV_QUANT[_K|_V]_GPU<d>` (llama-kv-cache.cpp).
 - MTP only works if `qwen35_mtp` arch string exists in `src/llama-arch.cpp` (fixed 2026-08-18). Symptom when broken: `unknown override architecture: 'qwen35_mtp'` + `speculative=none`.
 - 262K + MTP does NOT fit (Pascal compute buffers). Drop MTP for 262K.
-- [STALE?] opencode provider entries `qwen38-mtp`/`qwen38-262k` in `~/.config/opencode/opencode.jsonc` predate the 2026-08-24 certifications — verify before relying on them. Hermes-agent uses `~/.hermes/config.yaml` ("Lapis Occultus" → qwen38-master endpoint).
+- opencode provider entries `qwen38-mtp`/`qwen38-262k` in `~/.config/opencode/opencode.jsonc`: VERIFIED 2026-09-04 as functional-but-stale — their description strings cite the pre-retarget config (ts 26,10, ctx 49152), but the model string is cosmetic (llama-server serves its loaded model regardless), so the entries work against the live engine. Refresh descriptions at leisure. Hermes-agent uses `~/.hermes/config.yaml` ("Lapis Occultus" → qwen38-master endpoint).
 
 ## Context lifecycle (sparse KV + preservation) — 2026-09-03
 

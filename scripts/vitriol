@@ -96,8 +96,8 @@ _fp_delta() {
 compute_fingerprint() {
     # Canonical fingerprint body — the ONLY printf for it. Args:
     # model-basename ts ctx kv_k kv_v ub mode engine ckpt lru sparse
-    # score pool_reset spec_type spec_draft_n_max
-    printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s' "$@"
+    # score pool_reset spec_type spec_draft_n_max parallel
+    printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s par=%s' "$@"
 }
 
 config_fingerprint() {
@@ -111,7 +111,7 @@ config_fingerprint() {
         "${CFG_KV_QUANT}" "${CFG_KV_QUANT_V}" "${CFG_UBATCH:-256}" \
         "${CFG_MODE}" "${CFG_ENGINE_MODE}" "${CFG_CKPT_EVERY:-2048}" "${CFG_LRU_MB:-0}" \
         "${CFG_KV_MODE}" "${CFG_KV_SCORE:-off}" "0" \
-        "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}")
+        "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}" "${CFG_PARALLEL:-1}")
     # Mirror the serve path's conditional fields so blessed-vs-launch
     # diffs stay clean (only REAL differences show up).
     [[ -n "${CFG_SLOT_CONTEXT:-}" ]] && fp="$fp slots=$CFG_SLOT_CONTEXT"
@@ -1568,10 +1568,6 @@ usage() {
                              harness in the current directory (local-inference
                              tuned; engine telemetry in the editor). Args pass
                              through to the scaffold CLI (e.g. -p "one-shot").
-  vitriol officina [args]    the VITRIOL coding workshop: full-screen agent
-                             harness in the current directory (local-inference
-                             tuned; engine telemetry in the editor). Args pass
-                             through to the scaffold CLI (e.g. -p "one-shot").
   vitriol validate           harness config gate (ex-tris)
   vitriol lanes              GPU lane report (ex-tris)
   vitriol budget             allocation vs measured ledger (ex-tris)
@@ -2000,7 +1996,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         # answers "what flags produced this?" without archaeology.
         kv_sparse_guard
         FINGERPRINT=$(compute_fingerprint \
-            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
+            "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2250,7 +2246,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         serve_unit_guard
         FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$LRU_MB" \
-            "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}")
+            "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"

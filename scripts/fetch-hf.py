@@ -37,11 +37,17 @@ def fetch(url: str, want_sha: str, out_path: str, log_every_mb: int) -> bool:
         total = int(r.headers.get("Content-Length", 0))
     if total and have == total:
         print(f"[skip] {out_path} already complete ({total} bytes)")
-    elif have:
-        print(f"[resume] {out_path} at {have}/{total}")
+        complete = True
+    else:
+        if have:
+            print(f"[resume] {out_path} at {have}/{total}")
+        complete = False
 
     attempt = 0
-    while attempt < MAX_RETRIES:
+    ran = False
+    ok = complete  # skipped-complete files go straight to verification
+    while not ok and attempt < MAX_RETRIES:
+        ran = True
         attempt += 1
         try:
             have = os.path.getsize(out_path) if os.path.exists(out_path) else 0
@@ -71,13 +77,14 @@ def fetch(url: str, want_sha: str, out_path: str, log_every_mb: int) -> bool:
                     if time.time() - last_data > STALL_TIMEOUT:
                         raise TimeoutError("stall")
                     last_data = time.time()
+            ok = True
             break
         except Exception as e:
             wait = min(2 ** attempt, 60)
             print(f"[retry {attempt}] {type(e).__name__}: {e} "
                   f"(wait {wait}s)", flush=True)
             time.sleep(wait)
-    else:
+    if ran and not ok:
         print(f"[FAIL] {out_path}: retries exhausted")
         return False
 

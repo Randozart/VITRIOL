@@ -1,11 +1,14 @@
-# VITRIOL Panther Lake MoE sweep - model manifest 2026-09-04
+# VITRIOL Panther Lake MoE sweep - model manifest 2026-09-04 (rev 2)
 # url|sha256|output_path   (sha256 = HF tree-API lfs.oid)
-# Order: resident-sweep models first, NVMe-streaming experiment last.
+# Rev 2: GLM-5.3-Flash UD-IQ2_XXS swapped out for Qwen3.8-Flash-Next
+# UD-Q2_K_XL (79GB, ~200B-A5B, better streaming economics per 2026-09-04
+# research). GLM-5.3 shard1+partial shard2 remain on disk unreferenced.
+# Completed+verified 2026-09-04: GLM-4.7-Flash Q4_K, gpt-oss-20b MXFP4,
+# eagle3 draft, Qwen3-Next-80B IQ4_XS.
 https://huggingface.co/ggml-org/GLM-4.7-Flash-GGUF/resolve/main/GLM-4.7-Flash-Q4_K.gguf|b6019edc5fbe37d3660d2e994d16c839a7855a6f03362c5dcf8142ba479cd0d2|~/models/GLM-4.7-Flash-Q4_K.gguf
 https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf|27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901|~/models/gpt-oss-20b-MXFP4.gguf
 https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/eagle3-gpt-oss-20b-Q8_0.gguf|6955f98a701e97a8c969f3ff33be8ba17b35bd60e5ac96258d2c42d710c7d63f|~/models/eagle3-gpt-oss-20b-Q8_0.gguf
 https://huggingface.co/bartowski/Qwen_Qwen3-Next-80B-A3B-Instruct-GGUF/resolve/main/Qwen_Qwen3-Next-80B-A3B-Instruct-IQ4_XS.gguf|aad0274ba78815ad2b443badf8a9cda3fc944273b0857327f3753667b0656de2|~/models/Qwen3-Next-80B-A3B-Instruct-IQ4_XS.gguf
-https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf|d9605eec5aa2c14fc9ccff1ba3341a1e9a1476b08714d41cd43d0e10a4db3f7a|~/models/GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf
-https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf|d51a3d9ca05022d53e71753df75ee64ed5fd4e47655650ae023e9717b3ec158d|~/models/GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf
-https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf|89180f13784dc1128586b98adf1ca876279881a20bc4f01747703ce352563372|~/models/GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf
-https://huggingface.co/unsloth/GLM-5.3-Flash-GGUF/resolve/main/UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf|9e0ef47daa1fdffce3cf2ac1594ce4634d176ad018be6e692729757f38d5fbf6|~/models/GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf
+https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf|a4f3b21e77353999829f2f767e9ac21ce9c71d29a74f2cc9eda48c9bf23c8b86|~/models/Qwen3.8-Flash-Next-UD-Q2_K_XL-00001-of-00003.gguf
+https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00002-of-00003.gguf|2e3bf1ee7d2a04e261e9f342a2d968f696cce5941d082b0e434deb9b1edc12c6|~/models/Qwen3.8-Flash-Next-UD-Q2_K_XL-00002-of-00003.gguf
+https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/resolve/main/UD-Q2_K_XL/Qwen3.8-Flash-Next-UD-Q2_K_XL-00003-of-00003.gguf|ec8c106759fdf4f463039c34c0707718d7d8908d53d892bd4f002e71620803f9|~/models/Qwen3.8-Flash-Next-UD-Q2_K_XL-00003-of-00003.gguf

@@ -1584,3 +1584,47 @@ finish E-KV-0, resume E2c (mmvq sm_61 audit at 66%-vs-81% finding).
 - `runtime/build-patch.mjs` (divider in gap)
 - `runtime/patched/interactive-mode.officina.js` (regenerated)
 - `.opencode/plans/ratatui-tui-port-2026-09-02.md` (new plan)
+
+## 2026-09-03 — Model census + IQ4_XS calibration + MTP flag-drift discovery
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-09-03 |
+| **Commits** | `bc57245` (sweep fix), `8ce8af4` (census report), `7f3b2d2` (MTP correction) |
+| **Models** | 27B quad: Q3_K_M / UD-IQ4_XS / UD-Q4_K_S (+Mellum2-12B MoE census); 9B pair + Q3_K_XL deleted (owner, disk) |
+| **Status** | ✅ census + ⚠️ IQ4_XS benched + ✅ MTP regression root-caused & fixed |
+
+### Census (vitriol-calibrate, GGUF-tensor-derived weights)
+
+Q3_K_M 9,350 MiB · IQ4_XS 13,804 MiB · Q4_K_S 14,620 MiB (93.9% usable
+VRAM at ctx 8192 alone — no depth headroom, not benched) · Mellum 7,340 MiB.
+
+### IQ4_XS pin sweep (sweep_controller, ctx 32768, ub 128, ts 26,10, tq3_0 KV)
+
+pin 0/4/8/12/16 → 14.90/14.85/14.91/14.87/14.89 t/s — **flat** (dense
+model; pinning is an MoE-only lever). En-route bug: benchmark URL
+hardcoded to port 8280 vs servers on 8290 — every "connection refused"
+sweep traced there; fixed + KV flags moved to production tq3_0 K+V.
+
+### IQ4_XS depth probe (ctx 49152, ub 64, resident, prefill_probe)
+
+Load ~30s · prefill 16.2K @ 254 t/s, 32.4K @ 216 t/s · decode 3×64 at
+32,385 filled: **8.07 t/s** (8.04–8.08) · VRAM after: dev0 2,215 free.
+Verdict: matches Q3_K_M shallow (14.9 vs 14.05), 12% slower at depth,
+shallower wall → Q3_K_M stays the deep-context driver; IQ4_XS is the
+quality pick under ~30-35K tokens.
+
+### MTP flag-drift (owner challenge: "it used to run faster")
+
+Live engine benched 11.55 t/s vs 14.05 era → A/B (build/bin, Q3_K_M,
+c 81920, q4_0 KV, ub 64, 3×64 shallow):
+ts 22,14 no-MTP **11.79** → ts 22,14 + MTP n=1 **16.46** → ts 27,9 + MTP
+**14.69**. Root cause: 8-31 config retarget dropped `[spec]` from
+`~/.vitriol/config`; "zero benefit" doctrine (35B MoE, n≥2) had
+generalized wrongly to the 27B dense n=1. Restored; live unit **16.49
+t/s** — new operating point (+43% vs drifted, +17% vs era best). Full
+arc: `.opencode/plans/mtp-flag-drift-postmortem-2026-09-03.md`.
+
+**Lesson**: config files are flag carriers; a config edit is a
+flag-drift event. Fingerprint now emits `spec=<type>:<n_max>` (and
+`--dry-run` is exempt from the serve guard).

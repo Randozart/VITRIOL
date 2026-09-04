@@ -164,9 +164,17 @@ Required flags (all wired into `scripts/vitriol` config now):
 `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64 --cache-type-k tq3_0 --cache-type-v tq3_0 --spec-type mtp --spec-draft-n-max 1`
 
 MTP draft depth: n_max must be **1** (re-confirmed 2026-08-24: n=2 → 12.71 vs n=1 → 14.05
-t/s shallow-bench). Zero measurable end-to-end benefit on this hardware (2026-05-25 sweep +
-2026-08-24 recheck) — omit unless A/B-ing. Depth>=2 regresses because chained MTP-head drafts
-drift (acceptance decays) and each costs ~8 ms.
+t/s shallow-bench). Depth>=2 regresses because chained MTP-head drafts drift (acceptance
+decays) and each costs ~8 ms.
+
+**MTP CORRECTION (2026-09-03 A/B — supersedes the "zero benefit" note)**: the
+"zero measurable benefit" doctrine (2026-05-25, 35B MoE + n≥2 sweeps) does NOT hold for
+the 27B dense with n=1. Controlled A/B (same binary/model, shallow 3×64):
+ts 22,14 no-MTP 11.79 → +MTP n=1 **16.46 t/s (+40%)**; era ts 27,9 +MTP 14.69. The
+8-31 config retarget silently dropped `[spec]` from `~/.vitriol/config` (the exact
+flag-drift the fingerprint doctrine warns about) and cost 40% for weeks. Restored;
+live unit benches **16.49 t/s** — new operating point. `[spec] type=mtp draft_n_max=1`
+is now load-bearing in the live config. Depth behavior with MTP not re-certified.
 Sweep: `.opencode/plans/qwen38-phase-d-bottleneck-2026-08-19.md`.
 Deep-context certification: `.opencode/plans/lull-certification-report-2026-08-24.md`.
 

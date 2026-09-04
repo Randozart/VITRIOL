@@ -69,3 +69,30 @@ depth. Mellum remains the lightweight/MoE outlier (unbenched).
 Follow-up if wanted: full depth certification of IQ4_XS (chunked fill
 toward the wall, like lull-phase0) — expect the wall below Q3_K_M's
 54.7K given 4.4 GiB less weight headroom.
+
+## ADDENDUM (2026-09-03, later): the owner was right — it DID run faster
+
+Owner challenge: "we used to manage almost 82k at Q4, and it used to run
+faster." Two findings:
+
+1. **82K never left**: the live unit runs `-c 81920` q4_0 KV on Q3_K_M
+   right now. My table above compared the NEW IQ4_XS (4.4 GiB heavier —
+   cannot hold the 82K window on this pair). Standing caveat unchanged:
+   window ≠ filled depth (Aug-24: big windows bottom out ~45-61K filled).
+
+2. **The speed regression was real: −18%** (14.05 era → 11.55 live).
+   Controlled A/B (build/bin, Q3_K_M, c 81920, q4_0 KV, ub 64, 3×64
+   shallow):
+
+   | config | t/s |
+   |---|---|
+   | ts 22,14, no MTP (drifted live config) | 11.79 |
+   | ts 22,14 + MTP n=1 | **16.46** |
+   | ts 27,9 + MTP n=1 (era config) | 14.69 |
+
+   Root cause: the 8-31 retarget silently dropped the `[spec]` section
+   from `~/.vitriol/config` — MTP gone for weeks. Restored; live unit
+   through systemd benches **16.49 t/s**. The old ts 27,9 is dominated
+   by ts 22,14 once MTP is back. AGENTS.md MTP doctrine corrected.
+   IQ4_XS verdict stands (14.9 shallow, 8.07 @ 32.4K depth) — but the
+   driver now clearly outruns it shallow AND at depth.

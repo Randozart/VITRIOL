@@ -7,8 +7,8 @@ import { requestSidebarUpdate } from "../_shared/sidebar.ts";
 import { renderTaskBlock, taskStateConfig, validateTasks, type TaskItem } from "./state.ts";
 
 // task-state — external task list (R2.4 / REPORT-02 step 9, Claude Code
-// TodoWrite pattern). The list lives in .pi/tasks/<session>.json (written by
-// a tool call, never by conversation) and is re-injected as a tail message
+// TodoWrite pattern). The list lives in .officina/tasks/<session>.json (written
+// by a tool call, never by conversation) and is re-injected as a tail message
 // before EVERY LLM call — so it survives mid-run compaction by construction:
 // it is re-read from disk, not from history.
 //
@@ -27,9 +27,6 @@ const CUSTOM_TYPE = "lc-tasks";
 
 // Module-level task file path — updated on session_start, read by getTaskSummary.
 let currentTaskFile = join(taskStateConfig().dir, "default.json");
-// Pre-branding location (.pi/tasks) — read fallback only; writes always go
-// canonical (.officina/tasks, branding shim 2026-09-02).
-let legacyTaskFile = join(".pi", "tasks", "default.json");
 
 /** Read a task file; missing/corrupt = empty. */
 function readTasksFile(file: string): TaskItem[] {
@@ -41,11 +38,11 @@ function readTasksFile(file: string): TaskItem[] {
   }
 }
 
-/** Canonical read with legacy fallback — pre-shim sessions keep their tasks. */
+/** Read the current session's task file. No cross-session fallback — each
+ *  session owns its own list. The legacy .pi/tasks/ bridge outlived its
+ *  purpose (writes have gone to .officina/tasks/ since 2026-09-02). */
 function readTasksAny(): TaskItem[] {
-  const cur = readTasksFile(currentTaskFile);
-  if (cur.length > 0) return cur;
-  return readTasksFile(legacyTaskFile);
+  return readTasksFile(currentTaskFile);
 }
 
 // ── Sidebar data export ──────────────────────────────────────────────────
@@ -94,7 +91,6 @@ export default function (pi: ExtensionAPI) {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
     const stem = sessionFileStem(sm?.getSessionFile?.());
     currentTaskFile = join(cfg.dir, `${stem}.json`);
-    legacyTaskFile = join(".pi", "tasks", `${stem}.json`);
   });
 
   function readTasks(): TaskItem[] {
@@ -134,7 +130,10 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: `update_tasks could not persist: ${(e as Error).message}` }], details: {}, isError: true };
       }
       const done = (v.tasks ?? []).filter((t) => t.status === "completed").length;
-      emitHarnessEvent(harnessEvent("lc-tasks", "updated", { detail: `${done}/${(v.tasks ?? []).length} done` }));
+      emitHarnessEvent(harnessEvent("lc-tasks", "updated", {
+        detail: `${done}/${(v.tasks ?? []).length} done`,
+        session: currentTaskFile.split("/").pop()?.replace(/\.json$/, ""),
+      }));
       // Live sidebar refresh (2026-09-04): the harness event above is a passive
       // log; the sidebar's task section only re-renders when asked. Mutators of
       // sidebar-visible state request the update after persisting.
@@ -144,6 +143,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event) => {
+    // Guard: session_start hasn't fired yet → currentTaskFile is still the
+    // module-init default. Don't inject stale tasks from a previous session's
+    // default.json — return nothing so the model starts with a clean slate.
+    if (currentTaskFile.endsWith("/default.json")) return undefined;
     const block = renderTaskBlock(readTasks(), cfg.maxItems);
     if (!block) return undefined;
     if (lastCopyIsCurrent(event.messages, block)) return undefined;

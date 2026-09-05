@@ -23,7 +23,7 @@ describe("scratchpadConfig", () => {
   it("defaults and kill switch", () => {
     const c = scratchpadConfig({});
     expect(c.enabled).toBe(true);
-    expect(c.cap).toBe(120);
+    expect(c.cap).toBe(512);
     expect(c.dir).toBe(".officina");
     expect(c.maxLineChars).toBe(200);
     expect(scratchpadConfig({ OFFICINA_SCRATCHPAD: "0" }).enabled).toBe(false);

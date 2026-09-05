@@ -31,7 +31,7 @@ import {
 // replaced wholesale, so "no longer relevant" means "leave it out of the
 // next write of that section".
 //
-// Kill switch: OFFICINA_SCRATCHPAD=0. Cap: OFFICINA_SCRATCHPAD_CAP (120).
+// Kill switch: OFFICINA_SCRATCHPAD=0. Cap: OFFICINA_SCRATCHPAD_CAP (512).
 
 const CUSTOM_TYPE = "lc-scratchpad";
 const FILE_NAME = "SCRATCHPAD.md";

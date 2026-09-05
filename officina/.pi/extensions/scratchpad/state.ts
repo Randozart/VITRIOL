@@ -24,7 +24,7 @@ export interface ScratchpadConfig {
 
 export function scratchpadConfig(env: NodeJS.ProcessEnv = process.env): ScratchpadConfig {
   const capNum = Number(env.OFFICINA_SCRATCHPAD_CAP);
-  const cap = Number.isFinite(capNum) && capNum >= 0 ? capNum : 120;
+  const cap = Number.isFinite(capNum) && capNum >= 0 ? capNum : 512;
   return {
     enabled: env.OFFICINA_SCRATCHPAD !== "0",
     cap: Math.max(10, Math.floor(cap)),

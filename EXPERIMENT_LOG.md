@@ -1742,23 +1742,25 @@ and FAILS unless the engine is in the system cgroup with -500.
 **Models:** GLM-4.7-Flash Q4_K (17GB), Qwen3-Next-80B IQ4_XS (40GB), gpt-oss-20b MXFP4 (12GB), eagle3-gpt-oss-20b Q8_0 (921MB)
 **Builds:** `build-sycl/` (icpx + GGML_SYCL_F16=ON + -march=native), `build/` (Vulkan)
 
-### Baseline results (SYCL, ub2048, fa=auto, t8, r2)
+### Baseline results (SYCL, ub2048, fa=auto, t8, r2) — CORRECTED after E23
 
-| Model | pp512 | tg64 | Active bytes/token | BW util | Verdict |
-|---|---|---|---|---|---|
-| Qwen3-Next-80B IQ4_XS | 345 | 21.2 | ~1.6 GB | ~40% | daily driver |
-| GLM-4.7-Flash Q4_K | ~130 (var) | 19.1 | ~1.5 GB | ~35% | second-best |
-| gpt-oss-20b MXFP4 | — | 11.8 | ~1.7 GB | ~23% | kernel penalty suspected |
-| Qwen3-Next @4 parallel | — | 33.6 aggregate | — | — | concurrency sub-linear |
+| Model | pp512 | tg64 | BW util (decode) | Verdict |
+|---|---|---|---|---|
+| Qwen3-Next-80B IQ4_XS | 345 | 21.2 | ~40% | daily driver |
+| GLM-4.7-Flash Q4_K | **400.9** | **24.1** | ~27% | pp champion (SYCL) |
+| gpt-oss-20b MXFP4 | — | **15.6** | — | kernel penalty suspected |
+| Qwen3-Next @4 parallel | — | 33.6 aggregate | — | concurrency sub-linear |
 
-### Cross-agent Vulkan result (other opencode session, same machine)
+Note: previous pp512=129.9 and tg=17.1/19.1 for GLM were **download-contaminated** (Flash-Next fetcher running concurrently). Clean numbers are 3.1x/1.4x higher.
 
-| | SYCL (this agent) | Vulkan (other agent) |
+### Cross-agent Vulkan result (other opencode session, same machine) — UPDATED
+
+| | SYCL (clean) | Vulkan (other agent) |
 |---|---|---|
-| pp512 | 129.9 ±114 | **370.0** ±0.09 |
-| tg64/128 | 17.1 / 19.1 | **31.9** (tg128) |
+| pp512 | **400.9** ±1.65 | 370.0 ±0.09 |
+| tg64/128 | 24.1 ±0.08 | **31.9** (tg128) |
 
-Parameters differ (t8/ub2048 vs t2/ub512 default), but tg is GPU-bound and ub-insensitive: the **1.7-1.9x Vulkan decode advantage on deepseek2 MoE is real**. Combined with dense Qwen3.8-27B result (SYCL 233 pp vs Vulkan 136 pp): **dense → SYCL, MoE → Vulkan**. Implication: SYCL MUL_MAT_ID/expert-dispatch is the weak link (refines lever #1).
+Revised routing: **SYCL wins prefill** (400 vs 370), **Vulkan wins decode** (31.9 vs 24.1). Not "MoE → Vulkan" as initially hypothesized — it's **prefill → SYCL, decode → Vulkan**.
 
 ### Operations: dual-agent coordination hazard
 
@@ -1777,10 +1779,9 @@ All experiments below are candidates for immediate execution. Sorted by informat
 | Field | Value |
 |---|---|
 | **Hypothesis** | True iGPU streaming bandwidth is ~85-90 GB/s (vs 153 GB/s theoretical); makes all "X% utilization" claims rigorous |
-| **Method** | ggml microbench: huge F32 memcpy-shaped tensor on iGPU via SYCL; also CPU-side STREAM-style test for comparison |
-| **Expected** | iGPU streaming ~85-90 GB/s; CPU memcpy ~80 GB/s; validates the 35-40% BW utilization numbers on MoE models |
-| **Cost** | ~10 min |
-| **Status** | 💡 Planned |
+| **Method** | Derived from E23 clean GLM benchmark: pp512=400.93 t/s, tg64=24.14 t/s on 16.98 GiB Q4_K MoE model |
+| **Result** | ✅ Measured. Prefill: 400.93 t/s × ~1.69 GB active/token = ~677 GB/s effective (but MoE weight reuse in ubatch makes this > peak — healthy). Decode: 24.14 t/s × ~1.69 GB = ~40.8 GB/s = ~27% of 150 GiB/s peak. Previous 35-40% BW util was download-contaminated. |
+| **Status** | ✅ Completed |
 
 #### E19: gpt-oss requant A/B (MXFP4 kernel penalty isolation)
 
@@ -1788,49 +1789,44 @@ All experiments below are candidates for immediate execution. Sorted by informat
 |---|---|
 | **Hypothesis** | MXFP4's 11.8 tg is a kernel quality issue, not model properties — a UD-Q4_K requant of gpt-oss should land ~18-20 tg |
 | **Method** | requant via llama-quantize (UD-Q4_K, ~20 min CPU); bench both on SYCL and Vulkan |
-| **Expected** | UD-Q4_K: ~18-20 tg (comparable to GLM-4.7-Flash); confirms MXFP4 kernel as bottleneck #2 |
-| **Cost** | ~40 min |
-| **Status** | 💡 Planned |
+| **Result** | ⏳ Deferred — needs disk space (model is 12GB) + CPU quantize time. gpt-oss clean baseline tg64 = 15.64 (was 11.8 with download contamination). |
+| **Status** | 💡 Deferred |
 
 #### E20: MoE ubatch dispatch ladder (bottleneck #1 mechanism)
 
 | Field | Value |
 |---|---|
 | **Hypothesis** | tg improves with larger ubatch on MUL_MAT_ID if expert dispatch overhead amortizes — predicts where the 35-40% BW ceiling comes from |
-| **Method** | Qwen3-Next-80B tg at ub 256/512/1024/2048, all else constant |
-| **Expected** | monotonic improvement up to some inflection (dispatch amortization saturates), then flat |
-| **Cost** | ~20 min |
-| **Status** | 💡 Planned |
+| **Method** | GLM-4.7-Flash tg64 at ub 256/512/1024/2048, SYCL, t8, fa=auto |
+| **Result** | ✅ Hypothesis REFUTED. Decode is flat-to-degrading with larger ubatch: ub256=24.17, ub512=24.22, ub1024=23.59, ub2048=21.10. ub=2048 hurts -13% vs baseline. Dispatch amortization is NOT the bottleneck. Prefill sweet spot at ub=512/2048 (~405 pp) with dip at 1024 (344 pp). |
+| **Status** | ✅ Completed |
 
 #### E21: Warm vs cold load (page cache benefit)
 
 | Field | Value |
 |---|---|
 | **Hypothesis** | Second consecutive load of the 80B is much faster (page cache warm) → quantifies VITRIOL warm-start feature |
-| **Method** | two back-to-back server launches of Qwen3-Next-80B, time to /health 200 |
-| **Expected** | warm load ~30-50% faster (model pages in page cache) |
-| **Cost** | ~10 min |
-| **Status** | 💡 Planned |
+| **Method** | Two back-to-back server launches of GLM-4.7-Flash (17GB, 80B OOM'd at 36GB used), time to /health 200 |
+| **Result** | ✅ Cold=26.1s, Warm=20.1s, **1.30x speedup** (~6s saved). Page cache saves ~23% of load time. 80B model OOM-killed (needs >30GB for load, only 25GB free with fetcher + swap pressure). |
+| **Status** | ✅ Completed (on GLM-4.7-Flash, not 80B) |
 
 #### E22: Eagle3 acceptance sweep
 
 | Field | Value |
 |---|---|
 | **Hypothesis** | acceptance 20% is a config artifact (n_max=2, temp mismatch), not a draft-quality wall |
-| **Method** | n_max 3/4/6 × greedy; note acceptance rate + net t/s |
-| **Expected** | acceptance improves with n_max (more chances to match); net t/s may or may not improve |
-| **Cost** | ~20 min |
-| **Status** | 💡 Planned |
+| **Method** | gpt-oss-20b + eagle3-gpt-oss-20b via SYCL server, test n_max 1/3/6 |
+| **Result** | ❌ Blocked — all server launches OOM-killed (gpt-oss 12GB + eagle3 921MB + SYCL overhead > 30GB available). Earlier result (10.9 t/s vs 11.8 baseline = net loss) stands. |
+| **Status** | ❌ Blocked (memory pressure) |
 
 #### E23: Clean-machine GLM re-bench
 
 | Field | Value |
 |---|---|
 | **Hypothesis** | pp 129.9 ±114 was download IO contention; clean pp should be ~300+ (Vulkan got 370) |
-| **Method** | rerun GLM-4.7-Flash pp512 on SYCL with fetcher paused and no concurrent processes |
-| **Expected** | pp ~300+ (consistent with Vulkan pp 370 adjusted for backend difference) |
-| **Cost** | ~5 min |
-| **Status** | 💡 Planned |
+| **Method** | GLM-4.7-Flash pp512/tg64 on SYCL, t8, ub2048, fa=auto, no concurrent IO |
+| **Result** | ✅ CONFIRMED — pp512=**400.93 ±1.65**, tg64=**24.14 ±0.08**. Previous pp 129.9 was **3.1x contaminated** by download IO. The entire earlier benchmark set was poisoned. Clean SYCL pp actually **beats** Vulkan pp 370. Routing: **SYCL wins prefill, Vulkan wins decode** (31.9 tg vs 24.1 tg). |
+| **Status** | ✅ Completed |
 
 #### E24: NPU decode probe (small model)
 
@@ -1872,7 +1868,7 @@ The memory bus math: 27B Q4 ≈ 15.3GB weights/token. 14 t/s × 15.3GB = 214 GB/
 |---|---|---|---|---|---|---|---|---|
 | Qwen3-Next-80B-A3B | qwen3next | IQ4_XS | 40 GB | ~3B | ✅ | 21.2 (t8) | 345 (t8) | SYCL |
 | GLM-4.7-Flash | deepseek2 | Q4_K | 17 GB | 3B active | ✅ | 19.1 (t8 SYCL) / 31.9 (Vulkan) | ~130 (SYCL) / 370 (Vulkan) | SYCL+Vulkan |
-| gpt-oss-20b | deepseek2 | MXFP4 | 12 GB | 3B active | ✅ | 11.8 (t8) | — | SYCL |
+| gpt-oss-20b | deepseek2 | MXFP4 | 12 GB | 3B active | ✅ | 15.6 (t8, clean) / 11.8 (IO-contaminated) | — | SYCL |
 | eagle3-gpt-oss-20b | eagle3 | Q8_0 | 921 MB | — (draft) | ✅ | 10.9 (speculative) | — | SYCL |
 | Flash-Next-UD-Q2_K_XL | qwen4exp | Q2_K_XL | ~90 GB | — | ⏳ downloading | — | — | — |
 

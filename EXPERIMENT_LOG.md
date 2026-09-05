@@ -1733,3 +1733,149 @@ fixed to chattr +C + dd). Sidecar (system scope) restored the slot in
 301ms. User engine's adj had been the +100 clamp — the whole reason it
 won every OOM. Script now runs the user manager via runuser+XDG_RUNTIME_DIR
 and FAILS unless the engine is in the system cgroup with -500.
+
+---
+
+## 2026-09-05 — Panther Lake sweep + cross-agent findings + planned experiments
+
+**Session:** 2026-09-04 → 2026-09-05 (laptop, Arc B390 iGPU, SYCL/Vulkan)
+**Models:** GLM-4.7-Flash Q4_K (17GB), Qwen3-Next-80B IQ4_XS (40GB), gpt-oss-20b MXFP4 (12GB), eagle3-gpt-oss-20b Q8_0 (921MB)
+**Builds:** `build-sycl/` (icpx + GGML_SYCL_F16=ON + -march=native), `build/` (Vulkan)
+
+### Baseline results (SYCL, ub2048, fa=auto, t8, r2)
+
+| Model | pp512 | tg64 | Active bytes/token | BW util | Verdict |
+|---|---|---|---|---|---|
+| Qwen3-Next-80B IQ4_XS | 345 | 21.2 | ~1.6 GB | ~40% | daily driver |
+| GLM-4.7-Flash Q4_K | ~130 (var) | 19.1 | ~1.5 GB | ~35% | second-best |
+| gpt-oss-20b MXFP4 | — | 11.8 | ~1.7 GB | ~23% | kernel penalty suspected |
+| Qwen3-Next @4 parallel | — | 33.6 aggregate | — | — | concurrency sub-linear |
+
+### Cross-agent Vulkan result (other opencode session, same machine)
+
+| | SYCL (this agent) | Vulkan (other agent) |
+|---|---|---|
+| pp512 | 129.9 ±114 | **370.0** ±0.09 |
+| tg64/128 | 17.1 / 19.1 | **31.9** (tg128) |
+
+Parameters differ (t8/ub2048 vs t2/ub512 default), but tg is GPU-bound and ub-insensitive: the **1.7-1.9x Vulkan decode advantage on deepseek2 MoE is real**. Combined with dense Qwen3.8-27B result (SYCL 233 pp vs Vulkan 136 pp): **dense → SYCL, MoE → Vulkan**. Implication: SYCL MUL_MAT_ID/expert-dispatch is the weak link (refines lever #1).
+
+### Operations: dual-agent coordination hazard
+
+Two opencode agents running concurrently on the same host. Shared hazards: ~/models/, ports 8080/8081, bare `killall -9 llama-server`. Proposed protocol: fixed port ranges per agent, PID-scoped kills only, single fetcher process.
+
+### Operations: fetch-hf.py Range-resume bug (FIXED)
+
+HF CDN ignores Range header on redirect → appends duplicate data → size overshoot → rejection. Wasted 79GB+ on Flash-Next shards 2+3. Fix: HTTP 206 vs 200 detection + oversized-partial guard. Fix committed (4493c91) and pushed. Shard1 (11MB) preserved; shards 2+3 re-downloading at ~21 MiB/s.
+
+### Planned experiments (logged 2026-09-05)
+
+All experiments below are candidates for immediate execution. Sorted by information-per-minute.
+
+#### E18: Bandwidth ceiling microbenchmark
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | True iGPU streaming bandwidth is ~85-90 GB/s (vs 153 GB/s theoretical); makes all "X% utilization" claims rigorous |
+| **Method** | ggml microbench: huge F32 memcpy-shaped tensor on iGPU via SYCL; also CPU-side STREAM-style test for comparison |
+| **Expected** | iGPU streaming ~85-90 GB/s; CPU memcpy ~80 GB/s; validates the 35-40% BW utilization numbers on MoE models |
+| **Cost** | ~10 min |
+| **Status** | 💡 Planned |
+
+#### E19: gpt-oss requant A/B (MXFP4 kernel penalty isolation)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | MXFP4's 11.8 tg is a kernel quality issue, not model properties — a UD-Q4_K requant of gpt-oss should land ~18-20 tg |
+| **Method** | requant via llama-quantize (UD-Q4_K, ~20 min CPU); bench both on SYCL and Vulkan |
+| **Expected** | UD-Q4_K: ~18-20 tg (comparable to GLM-4.7-Flash); confirms MXFP4 kernel as bottleneck #2 |
+| **Cost** | ~40 min |
+| **Status** | 💡 Planned |
+
+#### E20: MoE ubatch dispatch ladder (bottleneck #1 mechanism)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | tg improves with larger ubatch on MUL_MAT_ID if expert dispatch overhead amortizes — predicts where the 35-40% BW ceiling comes from |
+| **Method** | Qwen3-Next-80B tg at ub 256/512/1024/2048, all else constant |
+| **Expected** | monotonic improvement up to some inflection (dispatch amortization saturates), then flat |
+| **Cost** | ~20 min |
+| **Status** | 💡 Planned |
+
+#### E21: Warm vs cold load (page cache benefit)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | Second consecutive load of the 80B is much faster (page cache warm) → quantifies VITRIOL warm-start feature |
+| **Method** | two back-to-back server launches of Qwen3-Next-80B, time to /health 200 |
+| **Expected** | warm load ~30-50% faster (model pages in page cache) |
+| **Cost** | ~10 min |
+| **Status** | 💡 Planned |
+
+#### E22: Eagle3 acceptance sweep
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | acceptance 20% is a config artifact (n_max=2, temp mismatch), not a draft-quality wall |
+| **Method** | n_max 3/4/6 × greedy; note acceptance rate + net t/s |
+| **Expected** | acceptance improves with n_max (more chances to match); net t/s may or may not improve |
+| **Cost** | ~20 min |
+| **Status** | 💡 Planned |
+
+#### E23: Clean-machine GLM re-bench
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | pp 129.9 ±114 was download IO contention; clean pp should be ~300+ (Vulkan got 370) |
+| **Method** | rerun GLM-4.7-Flash pp512 on SYCL with fetcher paused and no concurrent processes |
+| **Expected** | pp ~300+ (consistent with Vulkan pp 370 adjusted for backend difference) |
+| **Cost** | ~5 min |
+| **Status** | 💡 Planned |
+
+#### E24: NPU decode probe (small model)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | NPU Series 3 (50 TOPS) decodes a 0.5-1.5B OpenVINO-converted model at competitive t/s at a fraction of the power — establishes if NPU earns a VITRIOL phase |
+| **Method** | convert a small model (e.g. Qwen3-0.6B) via optimum-intel/NNCF to OpenVINO IR; run decode via OpenVINO GenAI on NPU; compare t/s and perf/W vs iGPU SYCL |
+| **Expected** | NPU decode t/s competitive for small models; power advantage confirmed; establishes Phase 7 path for kiosk ambient tasks |
+| **Cost** | moderate (OpenVINO GenAI installed; small model conversion ~30 min) |
+| **Status** | 💡 Planned, blocked on OpenVINO GenAI HETERO support verification |
+
+#### E25: Shared-bus contention measurement
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | iGPU LLM decode degrades X% when NPU runs a concurrent task — quantifies "one straw" claim for kiosk design |
+| **Method** | run iGPU LLM decode (GLM-4.7-Flash), measure tg; simultaneously run NPU task (e.g. STT via whisper-OpenVINO); measure tg delta |
+| **Expected** | tg degradation <10% (shared bus contention is real but modest for moderate NPU workloads) |
+| **Cost** | requires E24 (NPU path) first |
+| **Status** | 💡 Planned, blocked on E24 |
+
+#### E26: Backend routing A/B matrix
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | dense → SYCL, MoE → Vulkan holds under same-params conditions → becomes a VITRIOL profile rule (`chimera.mode` per arch) |
+| **Method** | GLM-4.7-Flash, Qwen3-Next-80B, gpt-oss-20b × {Vulkan, SYCL} × {ub512, ub2048}, t=8, f16 KV, r=2 |
+| **Expected** | MoE models win on Vulkan; dense models win on SYCL; produces a backend-routing table for profiles |
+| **Cost** | ~45 min |
+| **Status** | 💡 Planned, requires other-agent port coordination |
+
+### Standing fact: dense 27B @ 14 t/s is physically impossible on Panther Lake
+
+The memory bus math: 27B Q4 ≈ 15.3GB weights/token. 14 t/s × 15.3GB = 214 GB/s required. PTL LPDDR5X is ~153 GB/s theoretical, ~85-90 effective. No engine configuration (HETERO, GPU+NPU, any backend) can exceed the bus ceiling. Splitting iGPU+NPU does not add bandwidth — they share the same LPDDR5X. Our measured MoE models beat 14 t/s because MoE active parameters per token are far smaller (1-3B active vs 27B dense).
+
+### Models tested on Panther Lake (2026-09-04/05)
+
+| Model | Arch | Quant | Size | Expert active | Tested | Best tg | Best pp | Backend |
+|---|---|---|---|---|---|---|---|---|
+| Qwen3-Next-80B-A3B | qwen3next | IQ4_XS | 40 GB | ~3B | ✅ | 21.2 (t8) | 345 (t8) | SYCL |
+| GLM-4.7-Flash | deepseek2 | Q4_K | 17 GB | 3B active | ✅ | 19.1 (t8 SYCL) / 31.9 (Vulkan) | ~130 (SYCL) / 370 (Vulkan) | SYCL+Vulkan |
+| gpt-oss-20b | deepseek2 | MXFP4 | 12 GB | 3B active | ✅ | 11.8 (t8) | — | SYCL |
+| eagle3-gpt-oss-20b | eagle3 | Q8_0 | 921 MB | — (draft) | ✅ | 10.9 (speculative) | — | SYCL |
+| Flash-Next-UD-Q2_K_XL | qwen4exp | Q2_K_XL | ~90 GB | — | ⏳ downloading | — | — | — |
+
+### Flash-Next download status (2026-09-05 ~21:30)
+
+Shard1 (11MB) verified ✓. Shards 2+3 re-downloading after fetch-hf.py fix (~21 MiB/s, ~1.7h remaining). Blocked on completion for same-sweep comparison.

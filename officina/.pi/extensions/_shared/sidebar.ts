@@ -22,8 +22,19 @@ interface SidebarSection {
   render: SidebarSectionFn;
 }
 
-const sections = new Map<string, SidebarSection>();
-const updateListeners = new Set<() => void>();
+// globalThis-backed singletons (2026-09-04): in RPC mode pi loads each
+// extension via a separate jiti instance (moduleCache: false), which creates
+// a fresh module scope per extension. Without globalThis, task-state's
+// requestSidebarUpdate() fires on its copy's empty updateListeners Set while
+// session-panel's listener lives on a different copy's Set — the sidebar
+// never refreshes on tool writes.
+const sections: Map<string, SidebarSection> =
+  (globalThis as any).__officinaSidebarSections ??
+  ((globalThis as any).__officinaSidebarSections = new Map<string, SidebarSection>());
+
+const updateListeners: Set<() => void> =
+  (globalThis as any).__officinaSidebarListeners ??
+  ((globalThis as any).__officinaSidebarListeners = new Set<() => void>());
 
 // ── Sidebar visibility tracking ──────────────────────────────────────────
 // OfficinaSplit auto-hides the sidebar below MIN_COLS (100). When hidden,

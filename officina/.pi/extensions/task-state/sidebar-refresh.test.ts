@@ -7,11 +7,12 @@ import { join } from "node:path";
 // state (task list, scratchpad) call requestSidebarUpdate() after persisting.
 // Regression: update_tasks / scratchpad_write previously only appended a
 // passive JSONL event, so the sidebar stayed stale until an unrelated
-// refresh (engine poll / message_end). Spied via module mock; config dirs
-// are pointed at tmp dirs through env BEFORE the modules load (dynamic
-// import), so the tests never touch a real project's state.
-
-vi.mock("../_shared/sidebar.ts", () => ({ requestSidebarUpdate: vi.fn() }));
+// refresh (engine poll / message_end).
+//
+// 2026-09-04 fix: globalThis-backed singletons in _shared/sidebar.ts ensure
+// the listener registered by session-panel is visible to task-state/scratchpad
+// even when jiti loads each extension in a separate module scope. The old mock
+// hid this bug — these tests now verify the REAL cross-module notification.
 
 interface ToolLike {
   execute(id: string, input: unknown): Promise<{ content?: Array<{ text?: string }>; isError?: boolean }>;
@@ -31,20 +32,25 @@ function fakePi(): { pi: Record<string, unknown>; tools: Record<string, ToolLike
 
 describe("task-state → sidebar refresh contract", () => {
   let dir: string;
+  let unsub: (() => void) | undefined;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "taskstate-sidebar-"));
     process.env.TRIS_TASKS_DIR = dir;
   });
   afterEach(() => {
+    unsub?.();
+    unsub = undefined;
     delete process.env.TRIS_TASKS_DIR;
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("update_tasks requests a sidebar update after a successful persist", async () => {
+  it("update_tasks fires the real sidebar listener after a successful persist", async () => {
+    const { onSidebarUpdate } = await import("../_shared/sidebar.ts");
     const mod = await import("./index.ts");
-    const { requestSidebarUpdate } = await import("../_shared/sidebar.ts");
-    const mocked = vi.mocked(requestSidebarUpdate);
-    mocked.mockClear();
+
+    let fired = 0;
+    unsub = onSidebarUpdate(() => { fired++; });
+
     const { pi, tools } = fakePi();
     mod.default(pi as never);
     const out = await tools["update_tasks"].execute("1", {
@@ -52,40 +58,47 @@ describe("task-state → sidebar refresh contract", () => {
     });
     expect(out.isError).toBeFalsy();
     expect(String(out.content?.[0]?.text ?? "")).toContain("task state saved");
-    expect(mocked).toHaveBeenCalledTimes(1);
+    expect(fired).toBe(1);
   });
 
-  it("update_tasks does NOT request a sidebar update when validation fails", async () => {
+  it("update_tasks does NOT fire the sidebar listener when validation fails", async () => {
+    const { onSidebarUpdate } = await import("../_shared/sidebar.ts");
     const mod = await import("./index.ts");
-    const { requestSidebarUpdate } = await import("../_shared/sidebar.ts");
-    const mocked = vi.mocked(requestSidebarUpdate);
-    mocked.mockClear();
+
+    let fired = 0;
+    unsub = onSidebarUpdate(() => { fired++; });
+
     const { pi, tools } = fakePi();
     mod.default(pi as never);
     const out = await tools["update_tasks"].execute("1", {
       tasks: [{ status: "pending" }], // missing description → rejected
     });
     expect(out.isError).toBe(true);
-    expect(mocked).not.toHaveBeenCalled();
+    expect(fired).toBe(0);
   });
 });
 
 describe("scratchpad → sidebar refresh contract", () => {
   let dir: string;
+  let unsub: (() => void) | undefined;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "scratch-sidebar-"));
     process.env.OFFICINA_SCRATCHPAD_DIR = dir;
   });
   afterEach(() => {
+    unsub?.();
+    unsub = undefined;
     delete process.env.OFFICINA_SCRATCHPAD_DIR;
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("scratchpad_write requests a sidebar update after a successful persist", async () => {
+  it("scratchpad_write fires the real sidebar listener after a successful persist", async () => {
+    const { onSidebarUpdate } = await import("../_shared/sidebar.ts");
     const mod = await import("../scratchpad/index.ts");
-    const { requestSidebarUpdate } = await import("../_shared/sidebar.ts");
-    const mocked = vi.mocked(requestSidebarUpdate);
-    mocked.mockClear();
+
+    let fired = 0;
+    unsub = onSidebarUpdate(() => { fired++; });
+
     const { pi, tools } = fakePi();
     mod.default(pi as never);
     const out = await tools["scratchpad_write"].execute("1", {
@@ -93,6 +106,6 @@ describe("scratchpad → sidebar refresh contract", () => {
     });
     expect(out.isError).toBeFalsy();
     expect(String(out.content?.[0]?.text ?? "")).toContain("scratchpad saved");
-    expect(mocked).toHaveBeenCalledTimes(1);
+    expect(fired).toBe(1);
   });
 });

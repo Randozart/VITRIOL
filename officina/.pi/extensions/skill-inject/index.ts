@@ -28,13 +28,25 @@ let loaded = false;
 
 // State tracked across the session so we have error-recovery + recency
 // signals by the time the next `before_agent_start` fires.
-const recentToolCalls: string[] = []; // most-recent-first, capped at 8
-let lastFailedTool: string | null = null;
+// globalThis-backed (2026-09-06): jiti (moduleCache: false) isolates module
+// instances — session-panel imports getRecentTools from its own copy, which
+// otherwise stays empty forever (the -e instance records the calls).
+const recencyState: { recent: string[]; lastFailed: string | null } =
+  (globalThis as any).__officinaSkillRecencyState ??
+  ((globalThis as any).__officinaSkillRecencyState = { recent: [], lastFailed: null });
+const recentToolCalls = recencyState.recent; // most-recent-first, capped at 8 (shared ref — mutations propagate)
 
 // ── Sidebar data export ──────────────────────────────────────────────────
 /** Return the recent tool calls (most-recent-first). Read-only snapshot. */
 export function getRecentTools(): readonly string[] {
   return recentToolCalls;
+}
+
+/** Test/teardown hook: clear the shared recency state (globalThis singleton
+ *  persists across module instances — and across tests in a file). */
+export function resetRecencyState(): void {
+  recencyState.recent.length = 0;
+  recencyState.lastFailed = null;
 }
 
 // ── Intent keywords → likely tools ──────────────────────────────────────
@@ -146,7 +158,7 @@ function selectSkills(prompt: string, budget: number, allowed?: Set<string>): To
   };
 
   // 1. Error recovery — last failed tool
-  if (lastFailedTool) tryAdd(lastFailedTool);
+  if (recencyState.lastFailed) tryAdd(recencyState.lastFailed);
 
   // 2. Recency — last 2 tool calls
   for (const name of recentToolCalls.slice(0, 4)) {
@@ -263,7 +275,7 @@ export default function (pi: ExtensionAPI) {
       if (recentToolCalls.length > 8) recentToolCalls.length = 8;
     }
     const isError = (event as any).isError === true;
-    lastFailedTool = isError && typeof name === "string" ? name : null;
+    recencyState.lastFailed = isError && typeof name === "string" ? name : null;
   });
 
   pi.on("before_agent_start", async (event, ctx) => {

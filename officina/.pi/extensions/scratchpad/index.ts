@@ -38,13 +38,18 @@ const CUSTOM_TYPE = "lc-scratchpad";
 const FILE_NAME = "SCRATCHPAD.md";
 
 const cfg = scratchpadConfig();
-// Module-level task file path — updated on session_start, read by readDoc().
-let currentFile = join(cfg.dir, FILE_NAME);
+// Session-scoped scratchpad path (2026-09-06): globalThis-backed singleton —
+// same jiti isolation as task-state (session-panel imports the sidebar getters
+// from its own module instance; without sharing they read the module-init
+// project-level file forever).
+const docState: { file: string } =
+  (globalThis as any).__officinaScratchpadFileState ??
+  ((globalThis as any).__officinaScratchpadFileState = { file: join(cfg.dir, FILE_NAME) });
 
 function readDoc(): ScratchpadDoc {
   try {
-    if (!existsSync(currentFile)) return emptyDoc();
-    return parseScratchpad(readFileSync(currentFile, "utf8"));
+    if (!existsSync(docState.file)) return emptyDoc();
+    return parseScratchpad(readFileSync(docState.file, "utf8"));
   } catch {
     return emptyDoc(); // corrupt file — start fresh rather than block the lane
   }
@@ -53,7 +58,7 @@ function readDoc(): ScratchpadDoc {
 /** Sidebar/v2 export: null when the notebook is empty. */
 export function getScratchpadSummary(): { lines: number; cap: number; facts: number; context: number; leads: number; dead: number } | null {
   try {
-    const doc = existsSync(currentFile) ? parseScratchpad(readFileSync(currentFile, "utf8")) : emptyDoc();
+    const doc = existsSync(docState.file) ? parseScratchpad(readFileSync(docState.file, "utf8")) : emptyDoc();
     if (totalLines(doc) === 0) return null;
     return { lines: totalLines(doc), cap: cfg.cap, facts: doc.facts.length, context: doc.context.length, leads: doc.leads.length, dead: doc.dead.length };
   } catch {
@@ -80,16 +85,16 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
     const stem = sessionFileStem(sm?.getSessionFile?.());
-    currentFile = join(cfg.dir, `${stem}.md`);
+    docState.file = join(cfg.dir, `${stem}.md`);
     // Re-render AFTER the path is correct (see task-state session_start note
     // — 2026-09-06): session-panel renders before this handler in load order.
     requestSidebarUpdate();
   });
 
   // session_shutdown (2026-09-06): /new swaps sessions in-process; without
-  // this reset currentFile carried the old session's stem through teardown.
+  // this reset docState.file carried the old session's stem through teardown.
   pi.on("session_shutdown", async () => {
-    currentFile = join(cfg.dir, FILE_NAME);
+    docState.file = join(cfg.dir, FILE_NAME);
     requestSidebarUpdate();
   });
 
@@ -118,20 +123,20 @@ export default function (pi: ExtensionAPI) {
       }
       try {
         mkdirSync(cfg.dir, { recursive: true });
-        writeFileSync(currentFile, serializeScratchpad(v.doc));
+        writeFileSync(docState.file, serializeScratchpad(v.doc));
       } catch (e) {
         return { content: [{ type: "text" as const, text: `scratchpad_write could not persist: ${(e as Error).message}` }], details: {}, isError: true };
       }
       const total = totalLines(v.doc);
       emitHarnessEvent(harnessEvent("lc-scratchpad", "updated", {
         detail: `${total}/${cfg.cap} lines`,
-        session: currentFile.split("/").pop()?.replace(/\.md$/, ""),
+        session: docState.file.split("/").pop()?.replace(/\.md$/, ""),
       }));
       requestSidebarUpdate(); // live refresh (2026-09-04) — see task-state note
       return {
         content: [{
           type: "text" as const,
-          text: `scratchpad saved: ${total}/${cfg.cap} lines (facts=${v.doc.facts.length} context=${v.doc.context.length} leads=${v.doc.leads.length} dead=${v.doc.dead.length}) -> ${currentFile}`,
+          text: `scratchpad saved: ${total}/${cfg.cap} lines (facts=${v.doc.facts.length} context=${v.doc.context.length} leads=${v.doc.leads.length} dead=${v.doc.dead.length}) -> ${docState.file}`,
         }],
         details: {},
       };
@@ -139,9 +144,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event) => {
-    // Guard: session_start hasn't fired yet → currentFile is still the
+    // Guard: session_start hasn't fired yet → docState.file is still the
     // module-init default. Don't inject stale project-level notes.
-    if (currentFile.endsWith("/SCRATCHPAD.md")) return undefined;
+    if (docState.file.endsWith("/SCRATCHPAD.md")) return undefined;
     const block = renderScratchpadBlock(readDoc(), cfg.cap);
     if (!block) return undefined;
     if (lastCopyIsCurrent(event.messages, block)) return undefined;

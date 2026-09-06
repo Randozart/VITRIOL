@@ -94,3 +94,33 @@ lives on GPU 0 which has headroom. The problem was layer distribution, not MTP.
   via `/import` (2026-09-06, be2a641)
 - Engine restart via unit; fingerprint carries `ts=26,10`; `ckpts=4` `cache_ram=256`
   etc. unchanged
+
+---
+
+## ADDENDUM (2026-09-06 17:35) — jiti isolation strikes one layer deeper
+
+Owner still saw old scratchpad content in the sidebar after a NEW session.
+Root cause: the SAME moduleCache:false isolation that broke the listener Set
+also isolates **every module-level mutable in the mutator extensions**.
+session-panel imports getTaskSummary/getScratchpadSummary from its own jiti
+instances of task-state/scratchpad — those copies' currentTaskFile/currentFile
+never see session_start (which fires on the -e-loaded instance), so the
+sidebar read the module-init defaults forever: `.officina/SCRATCHPAD.md`
+(stale project content — exactly the symptom) and `.officina/tasks/default.json`
+(missing → task rows vanished after the legacy-fallback removal).
+
+**Fix**: globalThis-backed shared state objects (same pattern as sidebar.ts):
+- task-state: `__officinaTaskFileState = { file }` (10 refs)
+- scratchpad: `__officinaScratchpadFileState = { file }` (12 refs)
+- skill-inject: `__officinaSkillRecencyState = { recent, lastFailed }` — the
+  sidebar "tools" row had the same silent-empty bug
+- knowledge-inject: `__officinaKnowledgeTopicState = { last }` — same
+- skill-inject gains `resetRecencyState()`; called in injection.test.ts
+  afterEach (shared singleton persists across tests in a file)
+
+session_shutdown resets now propagate to ALL instances — the sidebar empties
+on session swap by construction, not by render-order luck.
+
+**OPERATIONAL NOTE**: /new does NOT reload extension code — the pi process
+loads extensions once at TUI start. Testing these fixes requires quitting and
+relaunching the Ontic TUI entirely.

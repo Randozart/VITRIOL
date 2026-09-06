@@ -25,8 +25,15 @@ import { renderTaskBlock, taskStateConfig, validateTasks, type TaskItem } from "
 
 const CUSTOM_TYPE = "lc-tasks";
 
-// Module-level task file path — updated on session_start, read by getTaskSummary.
-let currentTaskFile = join(taskStateConfig().dir, "default.json");
+// Session-scoped task file path (2026-09-06): globalThis-backed singleton —
+// jiti (moduleCache: false) gives each import site its own module instance,
+// and session-panel imports getTaskSummary/getTaskItems from its own copy.
+// Without sharing, that copy's path stays the module-init default forever
+// (stale project file / empty task rows) no matter what session_start does
+// on the -e-loaded instance.
+const sessionState: { file: string } =
+  (globalThis as any).__officinaTaskFileState ??
+  ((globalThis as any).__officinaTaskFileState = { file: join(taskStateConfig().dir, "default.json") });
 
 /** Read a task file; missing/corrupt = empty. */
 function readTasksFile(file: string): TaskItem[] {
@@ -42,7 +49,7 @@ function readTasksFile(file: string): TaskItem[] {
  *  session owns its own list. The legacy .pi/tasks/ bridge outlived its
  *  purpose (writes have gone to .officina/tasks/ since 2026-09-02). */
 function readTasksAny(): TaskItem[] {
-  return readTasksFile(currentTaskFile);
+  return readTasksFile(sessionState.file);
 }
 
 // ── Sidebar data export ──────────────────────────────────────────────────
@@ -90,7 +97,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
     const stem = sessionFileStem(sm?.getSessionFile?.());
-    currentTaskFile = join(cfg.dir, `${stem}.json`);
+    sessionState.file = join(cfg.dir, `${stem}.json`);
     // Sidebar re-render AFTER the module var is correct (2026-09-06): pi fires
     // session_start in extension load order (scratchpad → session-panel →
     // task-state), and session-panel's own session_start renders the sidebar
@@ -103,10 +110,10 @@ export default function (pi: ExtensionAPI) {
   // extension instances and their module-level state survive. Reset the path
   // to the default so nothing from the old session can be read or written
   // between teardown and the next session_start (pi fires shutdown on
-  // teardown; previously nothing handled it, so currentTaskFile carried the
+  // teardown; previously nothing handled it, so sessionState.file carried the
   // old session's stem through the swap).
   pi.on("session_shutdown", async () => {
-    currentTaskFile = join(cfg.dir, "default.json");
+    sessionState.file = join(cfg.dir, "default.json");
     requestSidebarUpdate();
   });
 
@@ -141,29 +148,29 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: `update_tasks rejected: ${v.error}` }], details: {}, isError: true };
       }
       try {
-        mkdirSync(dirname(currentTaskFile), { recursive: true });
-        writeFileSync(currentTaskFile, JSON.stringify({ updated: Date.now(), tasks: v.tasks }, null, 2));
+        mkdirSync(dirname(sessionState.file), { recursive: true });
+        writeFileSync(sessionState.file, JSON.stringify({ updated: Date.now(), tasks: v.tasks }, null, 2));
       } catch (e) {
         return { content: [{ type: "text" as const, text: `update_tasks could not persist: ${(e as Error).message}` }], details: {}, isError: true };
       }
       const done = (v.tasks ?? []).filter((t) => t.status === "completed").length;
       emitHarnessEvent(harnessEvent("lc-tasks", "updated", {
         detail: `${done}/${(v.tasks ?? []).length} done`,
-        session: currentTaskFile.split("/").pop()?.replace(/\.json$/, ""),
+        session: sessionState.file.split("/").pop()?.replace(/\.json$/, ""),
       }));
       // Live sidebar refresh (2026-09-04): the harness event above is a passive
       // log; the sidebar's task section only re-renders when asked. Mutators of
       // sidebar-visible state request the update after persisting.
       requestSidebarUpdate();
-      return { content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${currentTaskFile}` }], details: {} };
+      return { content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${sessionState.file}` }], details: {} };
     },
   });
 
   pi.on("context", async (event) => {
-    // Guard: session_start hasn't fired yet → currentTaskFile is still the
+    // Guard: session_start hasn't fired yet → sessionState.file is still the
     // module-init default. Don't inject stale tasks from a previous session's
     // default.json — return nothing so the model starts with a clean slate.
-    if (currentTaskFile.endsWith("/default.json")) return undefined;
+    if (sessionState.file.endsWith("/default.json")) return undefined;
     const block = renderTaskBlock(readTasks(), cfg.maxItems);
     if (!block) return undefined;
     if (lastCopyIsCurrent(event.messages, block)) return undefined;

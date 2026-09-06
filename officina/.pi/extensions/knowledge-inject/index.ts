@@ -28,7 +28,12 @@ const cache = new Map<string, string>();
 let loaded = false;
 
 // ── Sidebar data export ──────────────────────────────────────────────────
-let lastInjectedTopics: string[] = [];
+// globalThis-backed (2026-09-06): same jiti isolation as skill-inject —
+// session-panel imports getLastTopics from its own module instance.
+const topicState: { last: string[] } =
+  (globalThis as any).__officinaKnowledgeTopicState ??
+  ((globalThis as any).__officinaKnowledgeTopicState = { last: [] });
+const lastInjectedTopics = topicState.last;
 
 /** Return the topics from the last knowledge injection. Read-only snapshot. */
 export function getLastTopics(): readonly string[] {
@@ -141,7 +146,8 @@ export default function (pi: ExtensionAPI) {
     if (selected.length === 0) return;
 
     // Track for sidebar display.
-    lastInjectedTopics = selected.map((e) => e.topic);
+    lastInjectedTopics.length = 0;
+    lastInjectedTopics.push(...selected.map((e) => e.topic));
 
     // Publish required tools on systemPromptOptions. skill-inject reads this
     // to include the requires_tools' skill cards in its own selection.

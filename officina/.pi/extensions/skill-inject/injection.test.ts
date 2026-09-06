@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import setupSkillInject from "./index.ts";
+import setupSkillInject, { resetRecencyState } from "./index.ts";
 import setupKnowledgeInject from "../knowledge-inject/index.ts";
 
 // End-to-end check of the #73 conversion: drive the real `before_agent_start`
@@ -45,6 +45,7 @@ function turn(prompt: string, systemPrompt = "BASE SYSTEM PROMPT") {
 }
 
 afterEach(() => {
+  resetRecencyState(); // shared globalThis singleton — don't leak across tests
   delete process.env.LITTLE_CODER_INJECT_MODE;
 });
 

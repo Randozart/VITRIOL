@@ -2359,3 +2359,16 @@ Reports: `.opencode/plans/vitriol-sycl-dispatch-fix-2026-09-06.md`, `.opencode/p
 | **Expected** | decode overlap pushes tg toward 5+ t/s on Flash-Next if NVMe queue depth is the limiter |
 | **Cost** | ~3-4 h |
 | **Status** | 💡 Planned |
+
+#### E34: Expert-usage Zipf profiling on real agentic traces (2026-09-06 late)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | agentic coding sessions concentrate expert traffic enough that selective pinning + warm-start transform the streaming economics; Session-Adaptive Residency design |
+| **Method** | E34 instrumentation (VITRIOL_PROFILE=1) records (tensor_slot, expert_id) counts in the MUL_MAT_ID path; two 8-prompt opencode-style sessions on Flash-Next UD-Q2_K_XL (A: comprehension/debug 3.02M selections, B: write-new-code 1.88M selections, 144 tensors); analyzer scripts/vitriol-profile-analyze.py |
+| **Zipf result** | A: top-8 19.3% / 16 30.3% / 32 45.2% / 64 62.9% / 96 73.6% / 128 81.0% / 256 95.7%; B nearly identical; gate/up and down have the SAME shape |
+| **Never-touched** | A 17.1%, B 23.7% per window (combined 11.9%) - demand paging already makes these free |
+| **Transfer A->B** | K=32 40.9% / K=64 52.4% / K=96 60.3% / **K=128 66.6%** / K=256 80.6% - matches upstream PoC (65-69%) |
+| **Consequences** | pin K=32 (2.87 GB) in 4 GB device LRU -> ~45% mass guaranteed; mlock top-96 (8.6 GB) -> 73.6% never touches NVMe; streaming ceiling revised 6-13 -> ~20-28 t/s theoretical / 12-18 realistic; warm-start covers ~54% of traffic from token 1 |
+| **Artifacts** | .opencode/plans/data/e34/ (raw CSVs + analysis), scripts/vitriol-profile-{workload,analyze}.py; inner commit: E34 profiler |
+| **Status** | DONE - parameterizes E31 pinning, E30b' hot/cold quant, warm-start |

@@ -1,0 +1,37 @@
+===== /tmp/vitriol-e34-taskA.csv =====
+  tensors=144  selections=3.02M
+  never-touched experts: 17.1% mean (min 7.2%, max 39.1%)
+  top-  8:  19.3% of traffic mass
+  top- 16:  30.3% of traffic mass
+  top- 32:  45.2% of traffic mass
+  top- 64:  62.9% of traffic mass
+  top- 96:  73.6% of traffic mass
+  top-128:  81.0% of traffic mass
+  top-192:  90.5% of traffic mass
+  top-256:  95.7% of traffic mass
+  top-384:  99.6% of traffic mass
+===== /tmp/vitriol-e34-taskB.csv =====
+  tensors=144  selections=1.88M
+  never-touched experts: 23.7% mean (min 11.3%, max 45.9%)
+  top-  8:  16.7% of traffic mass
+  top- 16:  27.3% of traffic mass
+  top- 32:  42.3% of traffic mass
+  top- 64:  61.3% of traffic mass
+  top- 96:  73.2% of traffic mass
+  top-128:  81.3% of traffic mass
+  top-192:  91.3% of traffic mass
+  top-256:  96.4% of traffic mass
+  top-384:  99.8% of traffic mass
+===== TRANSFER (top-K set overlap, first->second profile) =====
+  K= 32: mean 40.9% (min 12.5%, max 71.9%)
+  K= 64: mean 52.4% (min 31.2%, max 70.3%)
+  K= 96: mean 60.3% (min 44.8%, max 75.0%)
+  K=128: mean 66.6% (min 51.6%, max 76.6%)
+  K=256: mean 80.6% (min 70.3%, max 87.5%)
+===== COMBINED (all profiles summed) =====
+  top- 32:  40.1%
+  top- 64:  58.3%
+  top- 96:  70.0%
+  top-128:  78.3%
+  top-256:  94.8%
+  combined never-touched: 11.9%

@@ -189,6 +189,43 @@ touches NVMe); resident route keeps 25-45 t/s and gains quality-per-GB.
 - Outputs parameterize: E31 pinning K, E30b' hot/cold split point,
   warm-start value, revised per-route ceilings.
 
+### E34 RESULTS (2026-09-06, UD-Q2_K_XL, VITRIOL wrap, real coding traces)
+
+Two 8-prompt opencode-style sessions on Flash-Next (task A = comprehension/
+debug/refactor with pasted code, 3.02M selections; task B = write-new-code,
+1.88M selections; 144 tensors = 48 layers x 3 experts-tensors):
+
+| top-K experts/tensor | task A mass | task B mass | pin cost (all layers) |
+|---|---|---|---|
+| 8 | 19.3% | 16.7% | 0.72 GB |
+| 16 | 30.3% | 27.3% | 1.43 GB |
+| 32 | 45.2% | 42.3% | 2.87 GB (fits 4 GB device LRU) |
+| 64 | 62.9% | 61.3% | 5.74 GB |
+| 96 | 73.6% | 73.2% | 8.61 GB |
+| 128 | 81.0% | 81.3% | 11.48 GB |
+| 192 | 90.5% | 91.3% | 17.2 GB |
+| 256 | 95.7% | 96.4% | 23.0 GB |
+
+- Never-touched: A 17.1%, B 23.7% (per-window only; combined 11.9%)
+- Zipf shape IDENTICAL for gate/up and down (rank-driven, not size-driven)
+- Cross-task transfer A->B: K=32 40.9%, K=64 52.4%, K=96 60.3%,
+  **K=128 66.6%** (matches upstream PoC's 65-69%), K=256 80.6%
+- Combined A+B: top-128 78.3%, top-256 94.8%
+
+Design consequences (measured, not assumed):
+- Pin K=32 in the 4 GB device LRU (2.87 GB) covers ~45% of traffic;
+  LRU hit-rate expectation rises from 42.6% to ~65-75% with dynamics on
+  the remainder.
+- mlock top-96 (8.6 GB page-cache pin) makes 73.6% of selections never
+  touch NVMe after warm-up; per-token NVMe ~237 MB first-touch + tail
+  re-faults -> streaming ceiling revised to ~20-28 t/s theoretical,
+  12-18 realistic (was 6-13).
+- Warm-start (prior-session top-128): ~54% of traffic covered from token 1.
+- Raw profiles + analysis persisted:
+  `.opencode/plans/data/e34/{taskA.csv.gz,taskB.csv.gz,analysis.txt}`;
+  analyzer: `scripts/vitriol-profile-analyze.py`;
+  workload driver: `scripts/vitriol-profile-workload.py`.
+
 ## 7. Non-GGUF, answered
 
 OpenVINO IR + GenAI is the right runtime for the NPU track (small models).

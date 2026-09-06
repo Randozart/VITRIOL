@@ -146,6 +146,49 @@ Honest limits (unchanged): NPU is graph-compiler-only (no gguf kernels, no
 SPIR-V), shares LPDDR5X (adds compute parallelism, not bandwidth), and
 Flash-Next decode is disk-bound until Route 1/2 land.
 
+## 6b. Session-Adaptive Residency (added 2026-09-06 late)
+
+Insight (owner): agentic sessions touch only a subset of experts; the full
+model need not sit in RAM. Two distinct effects, both real:
+
+- **Never-touched experts**: a 512-token window touches only part of the
+  24,576 expert slices; in the zero-copy wrap design those pages are never
+  faulted and cost zero RAM (demand paging already filters them).
+  Corollary: E30b must use SELECTIVE mlock (Zipf head only), never
+  mlock-everything - full mlock would defeat demand paging and pin 52 GB.
+- **Traffic mass**: over long sessions nearly every expert is touched at
+  least once, but mass concentrates: upstream PoC (#20757) measured ~15-20%
+  of experts carrying ~80% of tokens; per-session hot-lists transfer at
+  ~65-69% coverage (+26% tg in their PoC).
+
+Design layers:
+
+| Layer | Mechanism | Status |
+|---|---|---|
+| 1 | mmap demand paging (wrap): untouched experts free | working (E28) |
+| 2 | selective pinning: mlock Zipf-head source ranges + preload device LRU top-K | new, parameterized by E34 |
+| 3 | frequency-aware quant: resident route = head Q4 / tail IQ1 at constant size (quality-per-GB); streaming route = head pinned / tail TQ1_0 (1.31 bpw, minimizes streamed bytes) | new ladder variant (E30b') |
+| 4 | session warm-start: prime hot-list at load from prior-session profile | optional |
+
+Revised expectations: streaming route ceiling rises from 6-13 to ~15-25 t/s
+(if top-15% of experts carry ~70% of traffic, only ~170-270 MB/token ever
+touches NVMe); resident route keeps 25-45 t/s and gains quality-per-GB.
+
+### E34 - expert-usage profiling on real traces (PREREQUISITE, cheapest)
+
+- Instrument the existing MUL_MAT_ID path (ggml-sycl.cpp, after the ids
+  host copy) to record (tensor_slot, expert_id) counts; tensor slots are
+  first-touch indexed (slot//3 = layer, slot%3 = gate/up/down, down
+  disambiguated by larger expert_size).
+- Env: VITRIOL_PROFILE=1, VITRIOL_PROFILE_PATH=<csv>. Dump CSV at exit
+  (atexit + SIGTERM path).
+- Drive a realistic opencode-style coding session against Flash-Next;
+  analyze: per-slot Zipf curves (cumulative mass vs top-K), never-touched
+  fraction, cross-task transfer (second, different task on same profile
+  infrastructure).
+- Outputs parameterize: E31 pinning K, E30b' hot/cold split point,
+  warm-start value, revised per-route ceilings.
+
 ## 7. Non-GGUF, answered
 
 OpenVINO IR + GenAI is the right runtime for the NPU track (small models).
@@ -156,14 +199,16 @@ GGUF fully supports it.
 
 ## 8. Execution order
 
-1. E30a probe (today, zero download) -> decision gate
-2. E29-0 instrumentation (parallel, cheap)
-3. E30b BF16 fetch overnight + custom ladder + MTP sidecar + A/B
-4. E29 streaming pipeline fixes (Route 2 keeps improving)
-5. E31 pinning, E32 full-SYCL
-6. E33 fast-tier downloads (Coder-30B / 80B IQ2_XXS) + bench
-7. E24' / E25' NPU track
-8. Phase 5 NPU dense-offload spike
+1. E34 expert-usage profiling (instrument + real agentic trace) -> curves
+2. E30a probe (zero download) -> decision gate
+3. E29-0 instrumentation (parallel, cheap)
+4. E30b BF16 fetch overnight + custom ladder (SELECTIVE mlock; optional
+   E30b' frequency-aware head/tail ladder) + MTP sidecar + A/B
+5. E29 streaming pipeline fixes (Route 2 keeps improving)
+6. E31 pinning (parameterized by E34), E32 full-SYCL
+7. E33 fast-tier downloads (Coder-30B / 80B IQ2_XXS) + bench
+8. E24' / E25' NPU track
+9. Phase 5 NPU dense-offload spike
 
 Disk headroom: 4 TB NVMe ~145 GB used -> 354 GB BF16 + 52 GB custom fits.
 

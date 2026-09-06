@@ -44,22 +44,53 @@ export interface EngineSnapshot {
 
 type Listener = () => void;
 
-let timer: ReturnType<typeof setInterval> | undefined;
-let listeners = new Set<Listener>();
-let snap: EngineSnapshot = {
-  up: false,
-  delta: { tps: 0, tokens: 0 },
-  ingest: { tps: 0, tokens: 0 },
-  cumulativeIngest: 0,
-  ejected: 0,
-  loaded_model: "",
-  loaded_path: "",
-  stalled: false,
-  total: 0,
-  slots: [],
-  busy: 0,
-  gpuLoad: null,
-};
+// globalThis-backed state (2026-09-06): pi loads each -e extension via a
+// SEPARATE jiti instance (moduleCache: false) — module-scope state does not
+// cross extension boundaries. engine.ts is imported by session-panel,
+// vitriol-decode AND background-lane; without sharing, each instance ran its
+// own poller (3x HTTP load on /metrics + /slots, tripled stall noise) and
+// readers with no poller saw a frozen snapshot. One shared object = one
+// poller (the state.timer guard now works across instances), one listener set,
+// one snapshot.
+interface EngineState {
+  timer: ReturnType<typeof setInterval> | undefined;
+  listeners: Set<Listener>;
+  snap: EngineSnapshot;
+  nvidiaMissing: boolean;
+  gpuLoadLatest: number | null;
+  before: ReturnType<typeof parseMetrics>;
+  lastPoll: number;
+  polledOnce: boolean;
+  base: string;
+  pollMs: number;
+}
+const state: EngineState =
+  (globalThis as any).__officinaEngineState ??
+  ((globalThis as any).__officinaEngineState = {
+    timer: undefined,
+    listeners: new Set<Listener>(),
+    snap: {
+      up: false,
+      delta: { tps: 0, tokens: 0 },
+      ingest: { tps: 0, tokens: 0 },
+      cumulativeIngest: 0,
+      ejected: 0,
+      loaded_model: "",
+      loaded_path: "",
+      stalled: false,
+      total: 0,
+      slots: [],
+      busy: 0,
+      gpuLoad: null,
+    },
+    nvidiaMissing: false,
+    gpuLoadLatest: null,
+    before: null,
+    lastPoll: 0,
+    polledOnce: false,
+    base: "",
+    pollMs: DEFAULT_POLL_MS,
+  });
 
 // ── GPU fire load (composer flames, owner request 2026-09-02) ────────────
 // One nvidia-smi spawn per poll tick rides the existing 700ms loop. The
@@ -67,18 +98,17 @@ let snap: EngineSnapshot = {
 // answer, so a slow nvidia-smi never delays telemetry. ENOENT latches off
 // (no NVIDIA driver → stop spawning forever). Never throws (observability
 // contract).
-let nvidiaMissing = false;
-let gpuLoadLatest: number | null = null;
+
 
 function pollNvidiaSmi(): void {
-  if (nvidiaMissing) return;
+  if (state.nvidiaMissing) return;
   execFile(
     "nvidia-smi",
     ["--query-gpu=power.draw,power.limit,utilization.gpu", "--format=csv,noheader,nounits"],
     { timeout: 1500 },
     (err, stdout) => {
       if (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") nvidiaMissing = true;
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") state.nvidiaMissing = true;
         return;
       }
       let load = 0;
@@ -90,7 +120,7 @@ function pollNvidiaSmi(): void {
         saw = true;
         load = Math.max(load, gpuFireLoad(p, lim, Number.isFinite(util) ? util : -1));
       }
-      if (saw) gpuLoadLatest = load;
+      if (saw) state.gpuLoadLatest = load;
     },
   );
 }
@@ -127,63 +157,59 @@ async function fetchText(url: string, timeoutMs: number): Promise<FetchOutcome> 
   }
 }
 
-let before: ReturnType<typeof parseMetrics> = null;
-let lastPoll = 0;
-let polledOnce = false;
-let base = "";
-let pollMs = DEFAULT_POLL_MS;
-// Endpoint fetch timeout — rides short stalls; poll CADENCE stays pollMs.
+
+// Endpoint fetch timeout — rides short stalls; poll CADENCE stays state.pollMs.
 const HTTP_TIMEOUT_MS = 1500;
 
 async function poll(): Promise<void> {
   pollNvidiaSmi();
   const now = Date.now();
-  const metrics = await fetchText(`${base}/metrics`, HTTP_TIMEOUT_MS);
+  const metrics = await fetchText(`${state.base}/metrics`, HTTP_TIMEOUT_MS);
   if (metrics.kind !== "ok") {
-    before = null;
-    polledOnce = true;
+    state.before = null;
+    state.polledOnce = true;
     if (metrics.kind === "down") {
-      snap = { ...snap, up: false, stalled: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "" };
+      state.snap = { ...state.snap, up: false, stalled: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "" };
     } else {
       // alive-but-busy: queue-backed endpoint didn't answer in time
-      snap = { ...snap, up: true, stalled: true };
+      state.snap = { ...state.snap, up: true, stalled: true };
     }
     notify();
     return;
   }
   const after = parseMetrics(metrics.text);
   if (!after) return;
-  const seconds = lastPoll ? (now - lastPoll) / 1000 : 0;
-  const delta = counterDelta(before, after, seconds);
+  const seconds = state.lastPoll ? (now - state.lastPoll) / 1000 : 0;
+  const delta = counterDelta(state.before, after, seconds);
   // ingestion (prefill) rate from the prompt-tokens counter, same math
-  const ingestTokens = before ? Math.max(0, after.promptTokens - before.promptTokens) : 0;
+  const ingestTokens = state.before ? Math.max(0, after.promptTokens - state.before.promptTokens) : 0;
   const ingest = {
     tps: seconds > 0 ? ingestTokens / seconds : 0,
     tokens: ingestTokens,
   };
-  before = after;
-  lastPoll = now;
-  const slotsOut = await fetchText(`${base}/slots`, HTTP_TIMEOUT_MS);
-  const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : snap.slots;
+  state.before = after;
+  state.lastPoll = now;
+  const slotsOut = await fetchText(`${state.base}/slots`, HTTP_TIMEOUT_MS);
+  const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : state.snap.slots;
   const busy = busySlots(slots, delta.tokens);
   // The ENGINE's loaded model (owner request 2026-09-03): /v1/models
   // reports the alias of whatever the server actually loaded — distinct
   // from pi's selected-model label.
-  const modelsOut = await fetchText(`${base}/v1/models`, HTTP_TIMEOUT_MS);
-  const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : snap.loaded_model;
-  const propsOut = await fetchText(`${base}/props`, HTTP_TIMEOUT_MS);
-  const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : snap.loaded_path;
+  const modelsOut = await fetchText(`${state.base}/v1/models`, HTTP_TIMEOUT_MS);
+  const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : state.snap.loaded_model;
+  const propsOut = await fetchText(`${state.base}/props`, HTTP_TIMEOUT_MS);
+  const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : state.snap.loaded_path;
   // Secondary endpoints queue-wait by design (/slots) — their stall is the
   // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
   const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
   // cumulativeIngest = total prompt tokens processed since engine boot
-  snap = { up: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path };
-  polledOnce = true;
+  state.snap = { up: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path };
+  state.polledOnce = true;
   notify();
 }
 
 function notify(): void {
-  for (const l of [...listeners]) {
+  for (const l of [...state.listeners]) {
     try {
       l();
     } catch {
@@ -194,20 +220,35 @@ function notify(): void {
 
 /** Idempotent: starts the shared poll loop (no-op if already running). */
 export function startEnginePolling(opts?: { base?: string; pollMs?: number }): void {
-  base = (opts?.base || process.env.VITRIOL_BASE_URL || DEFAULT_ENDPOINT).replace(/\/$/, "");
-  pollMs = Math.max(200, Number(opts?.pollMs ?? process.env.VITRIOL_DECODE_POLL_MS) || DEFAULT_POLL_MS);
-  if (timer) return;
-  timer = setInterval(() => void poll(), pollMs);
+  state.base = (opts?.base || process.env.VITRIOL_BASE_URL || DEFAULT_ENDPOINT).replace(/\/$/, "");
+  state.pollMs = Math.max(200, Number(opts?.pollMs ?? process.env.VITRIOL_DECODE_POLL_MS) || DEFAULT_POLL_MS);
+  if (state.timer) return;
+  state.timer = setInterval(() => void poll(), state.pollMs);
   void poll();
 }
 
 export function getEngineSnapshot(): EngineSnapshot {
-  return snap;
+  return state.snap;
 }
 
 export function onEngineUpdate(fn: Listener): () => void {
-  listeners.add(fn);
-  return () => listeners.delete(fn);
+  state.listeners.add(fn);
+  return () => state.listeners.delete(fn);
+}
+
+/** Test hook (jiti-isolation guard): true when THIS module instance sees a
+ *  live poller. After the globalThis fix all instances share the timer, so
+ *  instance B reports active after only instance A started polling. */
+export function enginePollerActive(): boolean {
+  return state.timer !== undefined;
+}
+
+/** Test hook / shutdown: stop the shared poll loop. */
+export function stopEnginePolling(): void {
+  if (state.timer) {
+    clearInterval(state.timer);
+    state.timer = undefined;
+  }
 }
 
 export { busySlots };

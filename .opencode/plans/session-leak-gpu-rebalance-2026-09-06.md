@@ -124,3 +124,34 @@ on session swap by construction, not by render-order luck.
 **OPERATIONAL NOTE**: /new does NOT reload extension code — the pi process
 loads extensions once at TUI start. Testing these fixes requires quitting and
 relaunching the Ontic TUI entirely.
+
+## ADDENDUM 2 (2026-09-06 18:35) — the class, formalized
+
+Owner: "We keep having correctness issues like this." Common thread of the
+day's failures: hidden cross-module contracts with no runtime assertion, and
+tests that mock the signal away (sidebar-refresh.test.ts verified
+requestSidebarUpdate() was CALLED, not that it ARRIVED).
+
+**Bug #4 from the same root**: _shared/engine.ts (module-level snapshot,
+listener Set, poller timer) imported by session-panel + vitriol-decode +
+background-lane → three parallel pollers (3x HTTP load on /metrics+/slots,
+tripled stall noise); any reader without its own poller saw a frozen
+snapshot. Fixed: all ten module mutables moved into one
+`__officinaEngineState` globalThis singleton (one poller — the timer guard
+now works across instances; `enginePollerActive()`/`stopEnginePolling()`
+test hooks added).
+
+**Permanent guard**: `.pi/extensions/_shared/jiti-isolation.test.ts` loads
+task-state, scratchpad, sidebar.ts and engine.ts through TWO separate jiti
+instances (createJiti ×2, moduleCache:false — pi's exact loader shape,
+jiti resolved from pi's nested node_modules) and asserts:
+  - update_tasks on A → B's getTaskSummary() sees the write AND B's
+    onSidebarUpdate listener fires (signal crosses)
+  - scratchpad_write on A → B's getScratchpadSummary() sees it
+  - startEnginePolling on A → B reports the poller active; stop propagates
+Every assertion is unsatisfiable without the globalThis sharing — this is
+the test the original bugs would have tripped.
+
+**Doctrine**: AGENTS.md "Cross-extension state contract (2026-09-06)":
+module-level mutable crossing an extension boundary ⇒ globalThis-backed
+`__officina*State` singleton, with a jiti-isolation test.

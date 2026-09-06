@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 import { fgSeq } from "../_shared/vitriolum.ts";
 import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
@@ -547,6 +548,115 @@ export default function (pi: ExtensionAPI) {
         }),
         { overlay: true },
       );
+    },
+  });
+
+  // ── /import — pull another session's tasks + scratchpad into this one ───
+  pi.registerCommand("import", {
+    description: "Import tasks and scratchpad from another session (/import or /import <stem>)",
+    handler: async (args: string, ctx: { ui: any; sessionManager: any }) => {
+      const tasksDir = join(cwd, ".officina", "tasks");
+      const scratchDir = join(cwd, ".officina");
+      try {
+        const { readdirSync, readFileSync, copyFileSync, existsSync } = await import("node:fs");
+        const { join: j } = await import("node:path");
+
+        // Current session stem (to exclude from list)
+        const curFile = ctx.sessionManager.getSessionFile?.();
+        const curStem = curFile?.split("/").pop()?.replace(/\.jsonl$/, "") ?? "";
+
+        // Gather available sessions from task files
+        let files: string[] = [];
+        try { files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".json")); } catch { /* no tasks dir */ }
+
+        const sessions: Array<{ stem: string; date: string; tasks: number; hasScratch: boolean }> = [];
+        for (const f of files) {
+          const stem = f.replace(/\.json$/, "");
+          if (stem === curStem) continue;
+          let taskCount = 0;
+          try {
+            const data = JSON.parse(readFileSync(j(tasksDir, f), "utf8"));
+            taskCount = (data.tasks ?? []).length;
+          } catch { /* corrupt */ }
+          const hasScratch = existsSync(j(scratchDir, `${stem}.md`));
+          // Parse date from stem (format: 2026-09-05T05-11-44-395Z_...)
+          const dateStr = stem.split("T")[0] ?? stem.slice(0, 10);
+          sessions.push({ stem, date: dateStr, tasks: taskCount, hasScratch });
+        }
+
+        // Sort newest first
+        sessions.sort((a, b) => b.stem.localeCompare(a.stem));
+
+        if (sessions.length === 0) {
+          await ctx.ui.notify?.("no other sessions found to import", "info");
+          return;
+        }
+
+        // If args provided, try direct import
+        if (args.trim()) {
+          const target = sessions.find((s) => s.stem === args.trim() || s.stem.startsWith(args.trim()));
+          if (!target) {
+            await ctx.ui.notify?.(`session not found: ${args.trim()}`, "warning");
+            return;
+          }
+          // Copy task file
+          const srcTasks = j(tasksDir, `${target.stem}.json`);
+          const dstTasks = j(tasksDir, `${curStem}.json`);
+          if (existsSync(srcTasks)) copyFileSync(srcTasks, dstTasks);
+          // Copy scratchpad file
+          const srcScratch = j(scratchDir, `${target.stem}.md`);
+          const dstScratch = j(scratchDir, `${curStem}.md`);
+          if (existsSync(srcScratch)) copyFileSync(srcScratch, dstScratch);
+          await ctx.ui.notify?.(`imported from ${target.stem} (${target.tasks} tasks${target.hasScratch ? " + scratchpad" : ""})`, "info");
+          renderSidebar();
+          return;
+        }
+
+        // Interactive list via custom overlay
+        let selected = 0;
+        await ctx.ui.custom(
+          (tui: any, _theme: any, _keys: any, close: () => void) => ({
+            render(width: number): string[] {
+              const inner = Math.max(4, width - 4);
+              const lines: string[] = [
+                `── import session ──`,
+                `── ↑↓ select · Enter import · q close ──`,
+                "",
+              ];
+              for (let i = 0; i < sessions.length; i++) {
+                const s = sessions[i];
+                const mark = i === selected ? "▸ " : "  ";
+                const scratch = s.hasScratch ? " + scratch" : "";
+                lines.push(`${mark}${s.date}  ${s.tasks} tasks${scratch}  ${s.stem.slice(0, 12)}…`);
+              }
+              return lines;
+            },
+            invalidate() {},
+            handleInput(data: string) {
+              if (data === "q" || data === ESC) return close();
+              if (data === `${ESC}[A`) selected = Math.max(0, selected - 1);
+              else if (data === `${ESC}[B`) selected = Math.min(sessions.length - 1, selected + 1);
+              else if (data === "\r" || data === "\n") {
+                const target = sessions[selected];
+                const srcTasks = j(tasksDir, `${target.stem}.json`);
+                const dstTasks = j(tasksDir, `${curStem}.json`);
+                if (existsSync(srcTasks)) copyFileSync(srcTasks, dstTasks);
+                const srcScratch = j(scratchDir, `${target.stem}.md`);
+                const dstScratch = j(scratchDir, `${curStem}.md`);
+                if (existsSync(srcScratch)) copyFileSync(srcScratch, dstScratch);
+                close();
+                renderSidebar();
+                return;
+              }
+              else return;
+              tui.requestRender();
+            },
+          }),
+          { overlay: true },
+        );
+      } catch (e) {
+        await ctx.ui.notify?.(`import failed: ${(e as Error).message}`, "warning");
+      }
     },
   });
 }

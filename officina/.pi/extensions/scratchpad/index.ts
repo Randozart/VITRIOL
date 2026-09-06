@@ -14,6 +14,7 @@ import {
   totalLines,
   type ScratchpadDoc,
 } from "./state.ts";
+import { sessionFileStem } from "../task-state/index.ts";
 
 // scratchpad — the project-scoped hot notebook (detective-notebook lane).
 //
@@ -37,7 +38,8 @@ const CUSTOM_TYPE = "lc-scratchpad";
 const FILE_NAME = "SCRATCHPAD.md";
 
 const cfg = scratchpadConfig();
-const currentFile = join(cfg.dir, FILE_NAME);
+// Module-level task file path — updated on session_start, read by readDoc().
+let currentFile = join(cfg.dir, FILE_NAME);
 
 function readDoc(): ScratchpadDoc {
   try {
@@ -75,6 +77,12 @@ export function getScratchpadItems(): { facts: string[]; leads: string[] } | nul
 export default function (pi: ExtensionAPI) {
   if (!cfg.enabled) return;
 
+  pi.on("session_start", async (_event, ctx) => {
+    const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
+    const stem = sessionFileStem(sm?.getSessionFile?.());
+    currentFile = join(cfg.dir, `${stem}.md`);
+  });
+
   pi.registerTool({
     name: "scratchpad_write",
     label: "Scratchpad Write",
@@ -105,7 +113,10 @@ export default function (pi: ExtensionAPI) {
         return { content: [{ type: "text" as const, text: `scratchpad_write could not persist: ${(e as Error).message}` }], details: {}, isError: true };
       }
       const total = totalLines(v.doc);
-      emitHarnessEvent(harnessEvent("lc-scratchpad", "updated", { detail: `${total}/${cfg.cap} lines` }));
+      emitHarnessEvent(harnessEvent("lc-scratchpad", "updated", {
+        detail: `${total}/${cfg.cap} lines`,
+        session: currentFile.split("/").pop()?.replace(/\.md$/, ""),
+      }));
       requestSidebarUpdate(); // live refresh (2026-09-04) — see task-state note
       return {
         content: [{
@@ -118,6 +129,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event) => {
+    // Guard: session_start hasn't fired yet → currentFile is still the
+    // module-init default. Don't inject stale project-level notes.
+    if (currentFile.endsWith("/SCRATCHPAD.md")) return undefined;
     const block = renderScratchpadBlock(readDoc(), cfg.cap);
     if (!block) return undefined;
     if (lastCopyIsCurrent(event.messages, block)) return undefined;

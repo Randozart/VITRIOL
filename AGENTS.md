@@ -142,11 +142,13 @@ applies, but the records are kept as-is for accuracy.)
 
 Model: `~/Downloads/Qwen3.8-27B-Q3_K_M.gguf` (unsloth, qwen35 arch, embedded MTP head).
 
-**LIVE CONFIG (blessed 2026-09-06)**: `~/.vitriol/config` runs `-ts 26,10`
-(retarget 2026-09-06: 22,14 left the 1070 Ti at 98.3% VRAM / 58 MiB free —
-knife edge; 26,10 → 1070 Ti 74.8% / ~2.0 GiB free, 3060 85.8%, and a
-same-methodology A/B measured 26,10 FASTER: 13.65 vs 12.80 t/s sustained
-median, see `.opencode/plans/session-leak-gpu-rebalance-2026-09-06.md`),
+**LIVE CONFIG (blessed 2026-09-06, ts 24,12)**: `~/.vitriol/config` runs
+`-ts 24,12` (2026-09-06 same-day ladder: 22,14 put the 1070 Ti at 98.3%
+VRAM / 58 MiB free; 26,10 fixed that but tipped pressure to the 3060
+(85.8%, and dev0 carries display + depth-creep); **24,12 balances both at
+~81%** — GPU 0 81.3% / 2.3 GiB free, GPU 1 81.5% / 1.5 GiB free, median
+13.10 t/s vs 13.65 (26,10) / 12.80 (22,14) same-methodology — see
+`.opencode/plans/session-leak-gpu-rebalance-2026-09-06.md`),
 ctx 81920, `parallel = 1`, q4_0 KV, `[spec] type=mtp draft_n_max=1` —
 pinned via `vitriol config bless`; launch fingerprints carry `spec=` and
 `par=` since 2026-09-04. The 22,14 references below (depth cert,
@@ -170,7 +172,7 @@ Addenda 5–6):
   (independent of KV bits; NOT fixed by GGML_CUDA_NO_VMM=1). Window ≠ usable
   depth: shallow-bench numbers do not certify filled-context operation.
 
-Recommended working config (certified): `-ngl 99 -ts 26,10 --main-gpu 0 -ub 64
+Recommended working config (certified): `-ngl 99 -ts 24,12 --main-gpu 0 -ub 64
 --cache-type-k tq3_0 --cache-type-v tq3_0` (TurboQuant KV = 3.5 bpw, −22% vs q4_0;
 per-device overrides via `VITRIOL_KV_QUANT[_K|_V]_GPU<d>`). Add
 `--spec-type mtp --spec-draft-n-max 1` for the 49k-window profile.
@@ -179,7 +181,7 @@ Master deep-context profile: `vitriol config load qwen38-master`
 VITRIOL_POOL_RESET=1 first — certified 96,836 tok @ 11.32 t/s).
 
 Required flags (all wired into `scripts/vitriol` config now):
-`-ngl 99 -ts 26,10 --main-gpu 0 -ub 64 --cache-type-k q4_0 --cache-type-v q4_0 --spec-type mtp --spec-draft-n-max 1` (the blessed live point; depth-certified 2026-09-04 under ts 22,14 — see the MTP CORRECTION below)
+`-ngl 99 -ts 24,12 --main-gpu 0 -ub 64 --cache-type-k q4_0 --cache-type-v q4_0 --spec-type mtp --spec-draft-n-max 1` (the blessed live point; depth-certified 2026-09-04 under ts 22,14 — see the MTP CORRECTION below)
 
 MTP draft depth: n_max must be **1** (re-confirmed 2026-08-24: n=2 → 12.71 vs n=1 → 14.05
 t/s shallow-bench). Depth>=2 regresses because chained MTP-head drafts drift (acceptance

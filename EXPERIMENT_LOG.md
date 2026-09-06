@@ -1907,3 +1907,27 @@ compare across; the A/B above is same-methodology.
 **Post-A/B state**: config restored to 26,10, re-blessed, engine restarted via
 unit, adj=-500 verified, fingerprint .last == .blessed (ts=26,10). AGENTS.md
 live-config section updated.
+
+## Same-day addendum: ts 24,12 balance point (2026-09-06 16:15–16:22)
+
+**Trigger**: owner — "pressure now mostly on the 3060" under 26,10 (GPU 0
+85.8% / 1.75 GiB free; dev0 also carries display + the 23 KiB/token depth
+creep — headroom there is the depth wall). Proposal: 24,12.
+
+**Method**: identical to the A/B above (same binary/unit/prompt, 1 warmup +
+5 rounds, 64-tok decode). Fingerprint: `ts=24,12` — all other flags
+identical to the blessed record (ckpts=4 cram=256 spec=mtp:1 par=1
+score=probe …).
+
+**Results**:
+
+| arm | median t/s | GPU 0 | GPU 1 |
+|---|---|---|---|
+| ts 22,14 | 12.80 | 9,272 MiB | 7,552 MiB (92.2%) |
+| ts 26,10 | 13.65 | 10,540 MiB (85.8%) | 6,126 MiB (74.8%) |
+| **ts 24,12** | **13.10** | **9,986 MiB (81.3%, 2.3 GiB free)** | **6,678 MiB (81.5%, 1.5 GiB free)** |
+
+**Verdict**: 24,12 = balanced operating point. Both cards ~81%, both >1.5 GiB
+free, t/s between the extremes (−4% vs 26,10, +2.3% vs 22,14). GPU 0 keeps
+~2.3 GiB for depth-wall creep + display. Blessed 2026-09-06T16:21:44+02:00;
+AGENTS.md live-config updated. Engine under unit, adj=-500.

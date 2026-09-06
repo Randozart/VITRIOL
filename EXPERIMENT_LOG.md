@@ -1875,3 +1875,35 @@ The memory bus math: 27B Q4 ≈ 15.3GB weights/token. 14 t/s × 15.3GB = 214 GB/
 ### Flash-Next download status (2026-09-05 ~21:30)
 
 Shard1 (11MB) verified ✓. Shards 2+3 re-downloading after fetch-hf.py fix (~21 MiB/s, ~1.7h remaining). Blocked on completion for same-sweep comparison.
+
+## GPU tensor-split A/B: ts 22,14 vs ts 26,10 (2026-09-06 16:00–16:10)
+
+**Trigger**: 1070 Ti at 98.3% VRAM (58 MiB free) under ts 22,14 — knife edge
+(owner: "pressure on my 1070Ti currently seems greater"). Report:
+`.opencode/plans/session-leak-gpu-rebalance-2026-09-06.md`.
+
+**Method**: same binary (lull engine, system unit), same prompt ("The nature of
+consciousness is a question that has occupied philosophers for centuries. In this
+essay I will argue"), n_predict=64, cache_prompt=true, 1 warmup + 5 measured
+rounds via POST /completion, sustained-median comparison. Config flipped
+22,14 → restart → bench → 26,10 → restart → bench. Full argv per fingerprint:
+
+- ts=22,14 arm: `VITRIOL-FINGERPRINT model=Qwen3.8-27B-Q3_K_M.gguf ts=22,14 c=81920 kv=q4_0/q4_0 fa=on ub=64 mode=off engine=vitriol-dma ckpt=8192 ckpts=4 lru=0 sparse=sparse score=probe pool_reset=0 spec=mtp:1 par=1 ssp=1 cram=256 cis=0`
+- ts=26,10 arm: same with `ts=26,10` (blessed 2026-09-06T16:00:38+02:00)
+
+**Results** (sustained 5-round median, 64-tok decode):
+
+| arm | median t/s | rounds | GPU1 VRAM | GPU0 VRAM |
+|---|---|---|---|---|
+| ts 22,14 | **12.80** | [12.24, 12.53, 12.80, 13.06, 13.95] | 7,552 MiB (92.2%) | 9,272 MiB |
+| ts 26,10 | **13.65** | [12.86, 13.64, 13.65, 14.24, 14.26] | **6,126 MiB (74.8%)** | 10,540 MiB (85.8%) |
+
+**Verdict**: 26,10 wins BOTH axes — +6.7% sustained decode AND −17.4 pp GPU 1
+VRAM (92.2→74.8% during bench; 98.3→74.8% at load). More layers on the faster
+sm_86 card is a decode win, not a cost. Note: the historical "16.49 t/s live
+unit bench" (2026-09-03, ts 22,14) used a different methodology/prompt — do not
+compare across; the A/B above is same-methodology.
+
+**Post-A/B state**: config restored to 26,10, re-blessed, engine restarted via
+unit, adj=-500 verified, fingerprint .last == .blessed (ts=26,10). AGENTS.md
+live-config section updated.

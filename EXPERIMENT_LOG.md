@@ -2320,3 +2320,42 @@ c=2048               (sufficient for most prompts)
 | Long prompt tg | 8.9 t/s | +1.0x (was ~8.3) |
 
 ### Status: TUNING COMPLETE — optimal config identified
+
+## 2026-09-06 - VITRIOL SYCL dispatch chain fix + zero-copy streaming (Flash-Next runs)
+
+**Session:** 2026-09-06 (laptop, Arc B390 iGPU, 62 GB LPDDR5X)
+**Build:** `build-sycl/` commits `5fb6a67a9` then `9eba8229e` (build 143)
+**Model:** Qwen3.8-Flash-Next-UD-Q2_K_XL (176.9B, qwen4exp, 73.44 GiB, 512 experts, 10 active) + GLM-4.7-Flash Q4_K (17 GB)
+Reports: `.opencode/plans/vitriol-sycl-dispatch-fix-2026-09-06.md`, `.opencode/plans/vitriol-sycl-zero-copy-flash-next-2026-09-06.md`
+
+#### E27: VITRIOL SYCL dispatch chain - hooks fire
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | the LRU hooks never fired because expert weights never reached VITRIOL buffers and MUL_MAT_ID never routed to SYCL; 5 stacked gates |
+| **Result** | all 5 fixed (buft discovery incl. IGPU type, dev-pointer match, mmap-redirect shadowing, supports_op gate) + LRU init self-deadlock (lru_init_pool -> lru_ensure_queue both locked g_lru_init_mtx) |
+| **Verify** | GLM-4.7-Flash ngl 0: LRU pool 4096 MB / 2427 slots, hooks fire with src0 in VITRIOL_SYCL, coherent output, pinned mode tg 15.9 t/s (CPU-only 27.4) |
+| **Status** | DONE, commit `5fb6a67a9` |
+
+#### E28: Zero-copy mmap wrap - Flash-Next streams on 62 GB RAM
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | wrap the GGUF file-backed pages as VITRIOL buffers (loader procs `vitriol_buft_supports_host_ptr` / `vitriol_buffer_from_host_ptr`); hooks DMA from page cache; no pinned copies |
+| **Bugs fixed en route** | supports_op gate scanned only src[0] (MUL weights are src[1] - dense weights leaked into VITRIOL buffers; DEVICE_LOST on non-USM wrapped pages, silently USM-ok in pinned mode); is_vitriol name-sniffed foreign contexts (UB -> pointer identity); L0 copy engines cannot page-fault (MADV_WILLNEED + touch before every DMA); LRU slot sized at first expert (q6_K down slices 0.92 MB > 0.47 MB slot -> pool resize) |
+| **Flash-Next result** | loads ~13 s zero-copy (19.4 + 27.5 GB wrapped); coherent reasoning + correct arithmetic (17x23) through streaming path; LRU 42.6% hit rate |
+| **pp512** | 76.6 +/- 7.6 (CPU-only baseline 82.1) |
+| **tg64** | 3.36 +/- 0.01 (CPU-only 7.69) |
+| **Config probes** | LRU 8 GB worse (2.94 - device pool steals page cache on UMA); async DMA worse (2.95; lru_sync waits one slot, prefetch thrashes); madvise touch neutral (3.32, noise) |
+| **GLM wrap (control)** | pp 16.6 / tg 10.8 vs pinned 15.9 / CPU 27.4 - residency rule holds |
+| **Verdict** | prefill near parity on oversize model; decode CPU-favored (disk-bound misses + per-slice DMA/sync overhead; CPU direct-reads at ~6.9 GB/s effective). On iGPU UMA the LRU bounds device-pool memory rather than adding bandwidth |
+| **Status** | DONE, commit `9eba8229e` |
+
+#### E29 (planned): async DMA done right + pread fault-in
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | lru_sync must wait ALL in-flight slots; predictor prefetch only with LRU slack; pread(fd) per slice (fd plumbed through wrap buffer) beats per-page faulting |
+| **Expected** | decode overlap pushes tg toward 5+ t/s on Flash-Next if NVMe queue depth is the limiter |
+| **Cost** | ~3-4 h |
+| **Status** | 💡 Planned |

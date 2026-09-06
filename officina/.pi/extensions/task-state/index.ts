@@ -91,6 +91,23 @@ export default function (pi: ExtensionAPI) {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
     const stem = sessionFileStem(sm?.getSessionFile?.());
     currentTaskFile = join(cfg.dir, `${stem}.json`);
+    // Sidebar re-render AFTER the module var is correct (2026-09-06): pi fires
+    // session_start in extension load order (scratchpad → session-panel →
+    // task-state), and session-panel's own session_start renders the sidebar
+    // BEFORE this handler runs — reading the stale path. This late update
+    // heals the race; /new then shows the (empty) new session's state.
+    requestSidebarUpdate();
+  });
+
+  // session_shutdown (2026-09-06): /new replaces the session IN-PROCESS — the
+  // extension instances and their module-level state survive. Reset the path
+  // to the default so nothing from the old session can be read or written
+  // between teardown and the next session_start (pi fires shutdown on
+  // teardown; previously nothing handled it, so currentTaskFile carried the
+  // old session's stem through the swap).
+  pi.on("session_shutdown", async () => {
+    currentTaskFile = join(cfg.dir, "default.json");
+    requestSidebarUpdate();
   });
 
   function readTasks(): TaskItem[] {

@@ -81,6 +81,16 @@ export default function (pi: ExtensionAPI) {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
     const stem = sessionFileStem(sm?.getSessionFile?.());
     currentFile = join(cfg.dir, `${stem}.md`);
+    // Re-render AFTER the path is correct (see task-state session_start note
+    // — 2026-09-06): session-panel renders before this handler in load order.
+    requestSidebarUpdate();
+  });
+
+  // session_shutdown (2026-09-06): /new swaps sessions in-process; without
+  // this reset currentFile carried the old session's stem through teardown.
+  pi.on("session_shutdown", async () => {
+    currentFile = join(cfg.dir, FILE_NAME);
+    requestSidebarUpdate();
   });
 
   pi.registerTool({

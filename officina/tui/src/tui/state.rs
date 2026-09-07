@@ -193,6 +193,11 @@ const TOOL_OUTPUT_CAP: usize = 2000;
 /// Block preview lines.
 const TOOL_OUTPUT_PREVIEW: usize = 30;
 
+/// Seconds of zero-output before a running tool gets a pipe-buffer hint.
+/// Commands like `cargo test 2>&1 | tail -30` buffer everything until EOF —
+/// from the chair that reads as a hang, so after this window we say so.
+const NO_OUTPUT_HINT_SECS: u64 = 30;
+
 /// One rendered chat entry.
 #[derive(Debug, Clone)]
 pub enum ChatEntry {
@@ -208,11 +213,18 @@ pub enum ChatEntry {
         output_truncated: bool,
         running: bool,
         error: bool,
-        /// Cached Block/Full rendering: (width, tools_gen, output_len, lines).
+        /// Wall-clock start — drives the running elapsed timer + pipe-buffer
+        /// hint (owner request 2026-09-07: a 30-min bash with buffered
+        /// output reads as a hang).
+        started_at: Option<std::time::Instant>,
+        /// Declared tool timeout from args (`bash` `timeout: 1800` → "30m").
+        timeout_s: Option<u64>,
+        /// Cached Block/Full rendering: (width, tools_gen, output_len, tick, lines).
         /// Invalidated when any component changes — streaming output grows,
-        /// config toggles bump tools_gen.
+        /// config toggles bump tools_gen, and the elapsed tick advances
+        /// once per second while the tool is running.
         #[allow(clippy::type_complexity)]
-        render_cache: Option<(usize, u64, usize, Vec<Line<'static>>)>,
+        render_cache: Option<(usize, u64, usize, u64, Vec<Line<'static>>)>,
     },
     /// Diagnostic notice (extension errors, retries, stderr surfacing).
     Diag(String),
@@ -425,6 +437,10 @@ impl AppState {
     /// Tool execution started — add a running tool entry with full args.
     pub fn tool_start(&mut self, tool_call_id: Option<&str>, name: &str, args: &serde_json::Value) {
         let summary = summarize_args(args);
+        let timeout_s = args
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .or_else(|| args.get("timeout").and_then(|v| v.as_i64()).and_then(|i| u64::try_from(i).ok()));
         self.entries.push(ChatEntry::Tool {
             tool_call_id: tool_call_id.map(String::from),
             name: name.to_string(),
@@ -434,6 +450,8 @@ impl AppState {
             output_truncated: false,
             running: true,
             error: false,
+            started_at: Some(std::time::Instant::now()),
+            timeout_s,
             render_cache: None,
         });
     }
@@ -801,6 +819,8 @@ impl AppState {
                     output_truncated,
                     running,
                     error,
+                    started_at,
+                    timeout_s,
                     render_cache,
                     ..
                 } => {
@@ -835,13 +855,24 @@ impl AppState {
                         }
                     } else {
                         // Block / Full — bordered construction block, cached
-                        // against (width, tools_gen, output length).
+                        // against (width, tools_gen, output length, elapsed
+                        // tick for running tools → the timer advances once
+                        // per second on the heartbeat redraw).
                         let gen = self.tools_gen;
                         let body_w = width.saturating_sub(2).max(20);
                         let olen = output.len();
+                        let tick: u64 = if *running {
+                            started_at.map(|t| t.elapsed().as_secs()).unwrap_or(0)
+                        } else {
+                            0
+                        };
                         let fresh = matches!(render_cache,
-                            Some((w, g, o, _)) if *w == body_w && *g == gen && *o == olen);
+                            Some((w, g, o, tk, _)) if *w == body_w && *g == gen && *o == olen && *tk == tick);
                         if !fresh {
+                            let elapsed = started_at.map(|t| t.elapsed().as_secs());
+                            let no_output_hint = *running
+                                && output.is_empty()
+                                && elapsed.is_some_and(|s| s >= NO_OUTPUT_HINT_SECS);
                             let block = render_tool_block(
                                 mode,
                                 name,
@@ -852,10 +883,13 @@ impl AppState {
                                 *running,
                                 *error,
                                 body_w,
+                                elapsed,
+                                *timeout_s,
+                                no_output_hint,
                             );
-                            *render_cache = Some((body_w, gen, olen, block));
+                            *render_cache = Some((body_w, gen, olen, tick, block));
                         }
-                        if let Some((_, _, _, block)) = render_cache.as_ref() {
+                        if let Some((_, _, _, _, block)) = render_cache.as_ref() {
                             for bl in block {
                                 lines.push(Line::from(
                                     std::iter::once(Span::raw("  "))
@@ -1131,6 +1165,9 @@ fn render_tool_block(
     running: bool,
     error: bool,
     width: usize,
+    elapsed: Option<u64>,
+    timeout_s: Option<u64>,
+    no_output_hint: bool,
 ) -> Vec<Line<'static>> {
     let full = mode == ToolVerbosity::Full;
     // The panel is an OPAQUE PLATE (owner request 2026-09-03: fire must
@@ -1240,10 +1277,29 @@ fn render_tool_block(
             ]));
         }
     } else if running {
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled("│ ", border),
             Span::styled("running…", Style::default().fg(theme::LIGHT_YELLOW).bg(surf)),
-        ]));
+        ];
+        if let Some(secs) = elapsed {
+            spans.push(Span::styled(
+                format!(" {}", fmt_elapsed(secs)),
+                Style::default().fg(theme::ORANGE).bg(surf),
+            ));
+        }
+        lines.push(Line::from(spans));
+        if no_output_hint {
+            lines.push(Line::from(vec![
+                Span::styled("│ ", border),
+                Span::styled(
+                    trunc_str(
+                        "no output yet — pipe-buffered? (e.g. `2>&1 | tail`)",
+                        width.saturating_sub(4),
+                    ),
+                    muted_st.add_modifier(ratatui::style::Modifier::ITALIC),
+                ),
+            ]));
+        }
     }
 
     // Bottom status.
@@ -1255,9 +1311,18 @@ fn render_tool_block(
         } else {
             ("✓", "", Style::default().fg(theme::GREEN).bg(surf))
         };
+        let mut status = format!("{}{}", icon, label);
+        if running {
+            if let Some(secs) = elapsed {
+                status.push_str(&format!(" · {}", fmt_elapsed(secs)));
+            }
+            if let Some(t) = timeout_s {
+                status.push_str(&format!(" · timeout {}", fmt_elapsed(t)));
+            }
+        }
         lines.push(Line::from(vec![
             Span::styled("╰─ ", border),
-            Span::styled(format!("{}{}", icon, label), st),
+            Span::styled(status, st),
         ]));
     }
     lines
@@ -1277,6 +1342,20 @@ fn pad_panel(mut line: Line<'static>, width: usize) -> Line<'static> {
         ));
     }
     line
+}
+
+/// Compact wall-clock format: `45s`, `12m 03s`, `1h 02m`.
+fn fmt_elapsed(total: u64) -> String {
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if h > 0 {
+        format!("{}h {:02}m", h, m)
+    } else if m > 0 {
+        format!("{}m {:02}s", m, s)
+    } else {
+        format!("{}s", s)
+    }
 }
 
 /// Pretty-JSON line colorized into spans: `"key":` cyan, braces muted,
@@ -1638,6 +1717,9 @@ mod panel_tests {
             false,
             false,
             40,
+            Some(7),
+            Some(30),
+            false,
         );
         assert!(lines.len() >= 4, "header + args + out + status: {}", lines.len());
         for l in &lines {
@@ -1661,11 +1743,47 @@ mod panel_tests {
             true,
             false,
             40,
+            Some(90),
+            Some(1800),
+            true,
         );
         for l in &lines {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(w, 40);
             assert!(l.spans.iter().all(|s| s.style.bg == Some(theme::PANEL)));
         }
+    }
+
+    /// Owner request 2026-09-07: a long bash with pipe-buffered output reads
+    /// as a hang — the running block must show elapsed time, the declared
+    /// timeout, and a pipe-buffer hint once output stays empty.
+    #[test]
+    fn running_tool_shows_elapsed_timeout_and_buffer_hint() {
+        let lines = render_tool_block(
+            ToolVerbosity::Full,
+            "bash",
+            "",
+            Some(&serde_json::json!({ "command": "cargo test", "timeout": 1800 })),
+            &[],
+            false,
+            true,
+            false,
+            60,
+            Some(93),
+            Some(1800),
+            true,
+        );
+        let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("1m 33s"), "elapsed shown: {}", text);
+        assert!(text.contains("timeout 30m"), "timeout shown: {}", text);
+        assert!(text.contains("pipe-buffered"), "buffer hint shown: {}", text);
+    }
+
+    #[test]
+    fn fmt_elapsed_compact() {
+        assert_eq!(fmt_elapsed(0), "0s");
+        assert_eq!(fmt_elapsed(45), "45s");
+        assert_eq!(fmt_elapsed(723), "12m 03s");
+        assert_eq!(fmt_elapsed(3725), "1h 02m");
     }
 }

@@ -2382,3 +2382,21 @@ Reports: `.opencode/plans/vitriol-sycl-dispatch-fix-2026-09-06.md`, `.opencode/p
 | **Results** | tg ~3 t/s (baseline) -> 7-9 t/s (E31) = 2-3x improvement; 144 MoE tensors preloaded; mlock fails due to RLIMIT_MEMLOCK 8MB cap (graceful fallback) |
 | **Artifacts** | Inner: 6420bff76 (3 files, +131 lines); Outer: E31 section in plan doc |
 | **Status** | DONE - streaming route now at 7-9 t/s, approaching 12-18 t/s target |
+
+---
+
+## Upstream Merge + DSV4_HC dual-impl toggle (2026-09-07)
+
+**Trigger**: `git fetch upstream` showed 22 new ggml-org commits since `da13a30aa`. Critical for VITRIOL: upstream added their OWN DeepSeek-V4 hyper-connection fused ops (`7a333e724`, Vulkan DSV4_HC_COMB/PRE/POST) — colliding with our earlier port.
+
+**Merge**: `9585dd299` (inner). Resolved:
+- `mmq-config-*.cuh` ×8: kept our TQ3_0/TQ3_1S/TQ3_4S CASE blocks + adopted upstream's `use_typical_moe_ncols` constructor signature (clean additive).
+- `dsv4_hc_*.comp` (add/add): upstream's subgroup-shuffle Sinkhorn is canonical; our flat kernels kept as `*_vitriol.comp`.
+- `ggml-vulkan.cpp` silent collision (merge-tree didn't flag duplicate symbols): kept upstream's DSV4_HC intact; re-homed ours under `_vitriol`-suffixed pipelines/structs/dispatch; new `VITRIOL_VK_HC_IMPL` env var (default `upstream`, `vitriol` for legacy).
+
+**Bugs found/fixed during verification**:
+- `ggml-vk_dispatch_pipeline` divides elements by `wg_denoms` (256); our legacy calls pre-divided with `CEIL_DIV(nr,256)` → double-division → multi-workgroup runs silently dropped threads. All 19/19 DSV4 tests now pass on Arc B390 in BOTH impls (was never validated before — Vulkan OOM'd before reaching the kernels).
+
+**Verified**: build-vulkan + build-sycl compile; DSV4_HC_COMB/PRE/POST 19/19 both toggles; MUL_MAT 1119/1119. B390 subgroup 16-32 → upstream kernel runs locally.
+
+**Status**: DONE — merge complete, both implementations correct and toggleable for A/B on future hardware.

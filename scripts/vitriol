@@ -23,8 +23,8 @@ BUNDLED_PROFILES_DIR="${PROJECT_DIR}/profiles"
 CALIBRATION_DIR="${CONFIG_DIR}/calibration"
 
 # ── defaults ─────────────────────────────────────────────────────
-DEFAULT_MODEL="/home/randozart/Desktop/Projects/Qwen3.6-35B-A3B-UD-IQ2_M.gguf"
-DEFAULT_CTX=136192
+DEFAULT_MODEL="/home/test/Downloads/Qwen3.8-27B-UD-Q3_K_XL.gguf"
+DEFAULT_CTX=131072
 DEFAULT_THREADS=4
 DEFAULT_NGL=99
 DEFAULT_PORT=8279

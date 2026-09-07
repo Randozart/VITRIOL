@@ -31,7 +31,7 @@ cd "$BUILD_DIR"
 # 2026-08-06: CMAKE_POSITION_INDEPENDENT_CODE=ON is required — the vendored
 # cpp-httplib static lib is linked into libllama-common.so and a clean build
 # fails with "relocation R_X86_64_TPOFF32 ... recompile with -fPIC" without it.
-cmake .. -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+cmake .. -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
 make -j"$(nproc)" llama-server
 
 echo ""

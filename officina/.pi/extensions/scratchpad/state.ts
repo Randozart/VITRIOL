@@ -106,7 +106,9 @@ export function applyUpdate(
       const s = String(v[i] ?? "").trim();
       if (!s) return { error: `${name}[${i}]: empty entry (omit the line instead)` };
       if (s.length > cfg.maxLineChars) {
-        return { error: `${name}[${i}]: ${s.length} chars exceeds ${cfg.maxLineChars} - split or shorten` };
+        return {
+          error: `${name}[${i}]: ${s.length} chars — exceeds ${cfg.maxLineChars}-char max per line (separate from the ${cfg.cap}-line cap). Split or shorten.`,
+        };
       }
       next[name].push(s);
     }

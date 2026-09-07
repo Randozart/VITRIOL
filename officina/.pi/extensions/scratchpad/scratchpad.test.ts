@@ -60,7 +60,10 @@ describe("applyUpdate", () => {
   it("rejects non-arrays, empty entries, overlong lines", () => {
     expect(applyUpdate(emptyDoc(), { facts: "nope" as unknown as string[] }, cfg).error).toContain("array");
     expect(applyUpdate(emptyDoc(), { facts: ["  "] }, cfg).error).toContain("empty entry");
-    expect(applyUpdate(emptyDoc(), { facts: ["x".repeat(201)] }, cfg).error).toContain("200");
+    const over = applyUpdate(emptyDoc(), { facts: ["x".repeat(201)] }, cfg).error ?? "";
+    expect(over).toContain("201 chars");
+    expect(over).toContain("200-char max per line");
+    expect(over).toContain("512-line cap");
   });
 
   it("enforces the total line cap with pruning guidance", () => {

@@ -105,7 +105,7 @@ export default function (pi: ExtensionAPI) {
       "Update the project hot notebook (external state, survives compaction, re-injected every turn). " +
       "Detective-notebook discipline: evidence in `facts` (numbers verbatim), structured working data in `context` " +
       "(error lists, file excerpts, intermediate results), open hypotheses in `leads`, " +
-      `ruled-out ideas in \`dead\`. Hard cap ${cfg.cap} lines total. ` +
+      `ruled-out ideas in \`dead\`. Hard cap ${cfg.cap} lines total; max ${cfg.maxLineChars} chars per line. ` +
       "A section you name is REPLACED wholesale — omit stale lines to prune them. Not history.",
     parameters: Type.Object({
       facts: Type.Optional(Type.Array(Type.String(), { description: "Replace the facts section (evidence: numbers, shapes, argv, observed behavior)" })),

@@ -2372,3 +2372,13 @@ Reports: `.opencode/plans/vitriol-sycl-dispatch-fix-2026-09-06.md`, `.opencode/p
 | **Consequences** | pin K=32 (2.87 GB) in 4 GB device LRU -> ~45% mass guaranteed; mlock top-96 (8.6 GB) -> 73.6% never touches NVMe; streaming ceiling revised 6-13 -> ~20-28 t/s theoretical / 12-18 realistic; warm-start covers ~54% of traffic from token 1 |
 | **Artifacts** | .opencode/plans/data/e34/ (raw CSVs + analysis), scripts/vitriol-profile-{workload,analyze}.py; inner commit: E34 profiler |
 | **Status** | DONE - parameterizes E31 pinning, E30b' hot/cold quant, warm-start |
+
+#### E31: Hot-expert profile + device LRU preload (2026-09-06)
+
+| Field | Value |
+|---|---|
+| **Hypothesis** | Preloading hot expert pages into page cache + larger LRU pool eliminates cold disk reads and reduces eviction pressure, improving tg |
+| **Method** | VITRIOL_HOT_PROFILE env var loads E34 CSV; after model load walks ggml_context, finds MoE tensors by per-expert slice size, attempts mlock (fallback madvise), touches hot pages; LRU bumped to 8GB |
+| **Results** | tg ~3 t/s (baseline) -> 7-9 t/s (E31) = 2-3x improvement; 144 MoE tensors preloaded; mlock fails due to RLIMIT_MEMLOCK 8MB cap (graceful fallback) |
+| **Artifacts** | Inner: 6420bff76 (3 files, +131 lines); Outer: E31 section in plan doc |
+| **Status** | DONE - streaming route now at 7-9 t/s, approaching 12-18 t/s target |

@@ -234,6 +234,18 @@ VITRIOL integration, and per-tensor custom mixes (llama-quantize
 --tensor-type). The freedom that matters is the custom per-tensor mix -
 GGUF fully supports it.
 
+### E31 RESULTS (2026-09-06, hot-expert profile + device LRU preload)
+
+- VITRIOL_HOT_PROFILE env var loads E34 CSV at startup
+- After model load: walks ggml_context, finds MoE tensors by per-expert
+  slice size, attempts selective mlock (graceful fallback to madvise when
+  RLIMIT_MEMLOCK too low), touches hot pages to warm the device LRU
+- LRU pool default: 2048 -> 8192 MB (fits top-32 across all layers)
+- 144 MoE tensors preloaded into page cache (all gate/up/down across 48 layers)
+- Results: tg ~3 t/s (baseline) -> 7-9 t/s (E31) = 2-3x improvement
+- Implementation: dlsym-based runtime symbol lookup to avoid hard link
+  dependency on libggml-sycl; inner commit: 6420bff76
+
 ## 8. Execution order
 
 1. E34 expert-usage profiling (instrument + real agentic trace) -> curves

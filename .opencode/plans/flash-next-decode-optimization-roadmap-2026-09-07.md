@@ -42,8 +42,11 @@ Current measured state (2 slots × 131072 ctx, q4_0 KV, all-CPU `-ngl 0`,
 - **Caveat**: `fattn rejects TQ3_*` note in llama-kv-cache.cpp is CUDA-specific;
   on this CPU/SYCL box K-side verified correct. V-side TQ3 on CPU needs a runtime
   FA check (the code comment flagged the fattn fallback path).
-- **Actions**: `--cache-type-k tq3_0 --cache-type-v tq3_0`, verify FA active +
-  no quality regression on a canned prompt; else keep V as q4_0, K as tq3_0.
+- **TESTED 2026-09-07**: TQ3_0 on V-cache CRASHES on this CPU/SYCL box —
+  `ggml-cpu/ops.cpp:5197` GET_ROWS dispatcher `GGML_ABORT` on unsupported type
+  during decode (not just FA). **TQ3_0 KV is NOT viable on the CPU path here** —
+  reverted to q4_0. K-side TQ3 might be OK but V-side is not; treat as rejected
+  for now unless a custom CPU GET_ROWS kernel for TQ3 lands.
 
 ### Lever 3 — Prefix caching / KV-shift reuse (free, ideal for OpenCode)
 
@@ -80,15 +83,22 @@ Current measured state (2 slots × 131072 ctx, q4_0 KV, all-CPU `-ngl 0`,
 ## Execution order
 
 1. Write this roadmap (done).
-2. Lever 2 (TQ3_0 KV) — one-line, lowest risk, immediate.
-3. Lever 3 (cache-reuse + prompt cache) — two flags, immediate.
-4. Lever 4 (chunked prefill) — verify flag surface.
-5. Lever 1 (draft model) — download + wire + n_max sweep; biggest expected win.
-6. Re-measure per-slot t/s after each; record in EXPERIMENT_LOG.md.
+2. **FOUND: ubatch split prefill/decode** — `-ub 64` (best for decode) choked
+   prefill to ~14 t/s by slicing into 64-token chunks each re-reading the model.
+   Raised to `-ub 512 -b 2048` → **prefill now 60 t/s (4.3x)**; decode still ~7.3 t/s.
+   This was the "prefill is stuck" bug from the remote session (80k prompt at 14 t/s
+   = ~95 min).
+3. Lever 3 (cache-reuse) — `--cache-reuse 256` now active.
+4. Lever 2 (TQ3_0 KV) — **REJECTED on CPU** (GET_ROWS crash, see Lever 2). Stay q4_0.
+5. Lever 4 (chunked prefill) — verify flag surface.
+6. Lever 1 (draft model) — download + wire + n_max sweep; biggest expected win.
+7. Re-measure per-slot t/s after each; record in EXPERIMENT_LOG.md.
 
 ## Measurement protocol (per change)
 
-- Server: 2 slots × 131072 ctx, `-ub 64 -t 8 -ngl 0`, alias flash-next.
+- Server: 2 slots × 131072 ctx, `-ub 512 -b 2048 -t 8 -ngl 0`, alias flash-next.
+- Prefill: measured 60.1 t/s on 1792-token prompt (was 14 t/s at ub=64).
+- Decode: ~7.3 t/s single-token stream (fresh).
 - Warmup: 1× 128-tok generation to fault in hot expert pages.
 - Measure: 3× separate /v1/chat/completions (fresh slots), 128-tok generations,
   report `predicted_per_second` median + server `print_timing` eval line.

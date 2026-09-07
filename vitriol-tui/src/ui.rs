@@ -350,7 +350,7 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     if snap.gpus.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "nvidia-smi unavailable",
+                "no GPU telemetry (nvidia-smi / intel sysfs unavailable)",
                 theme::muted(),
             ))),
             inner,
@@ -597,7 +597,7 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
     if app.snapshot.gpus.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "nvidia-smi unavailable",
+                "no GPU telemetry (nvidia-smi / intel sysfs unavailable)",
                 theme::muted(),
             ))),
             area,

@@ -24,6 +24,7 @@ use crate::model::{
     DraftSnapshot, EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, MetricsTotals,
     PerfSnapshot, RebisEvent, RebisSnapshot, RecentStore, SlotSnapshot, Snapshot,
 };
+use crate::intel;
 use crate::nvidia;
 
 /// Number of trailing lines kept per service log.
@@ -120,9 +121,20 @@ impl Poller {
         self.mercury_tail.poll(&self.cfg.mercury_log);
         self.supervise_tail.poll(&self.cfg.supervise_log);
         self.traffic_tail.poll(&self.cfg.traffic_log);
-        let gpus = nvidia::query_gpus();
+        let gpus = {
+            let mut g = nvidia::query_gpus();
+            if g.is_empty() {
+                g = intel::query_gpus();
+            }
+            g
+        };
         self.last_gpus = gpus.clone();
-        let gpu_processes = nvidia::query_processes(&gpus);
+        let gpu_processes = if !gpus.is_empty() && gpus[0].uuid.is_empty() {
+            // Intel sysfs snapshot (no uuid) — no process table to join.
+            intel::query_processes(&gpus)
+        } else {
+            nvidia::query_processes(&gpus)
+        };
         // RETIRED 2026-09-01 (see rebis_enabled): REBIS probes skipped
         // unless explicitly re-enabled.
         let rebis = if rebis_enabled() {

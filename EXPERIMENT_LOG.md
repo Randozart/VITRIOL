@@ -2023,7 +2023,7 @@ Each shader: `gl_GlobalInvocationID.x` indexing, pure scalar math, no shared mem
 |---|---|---|---|---|---|---|---|---|
 | Qwen3-Next-80B-A3B | qwen3next | IQ4_XS | 40 GB | ~3B | ✅ | 21.2 (t8) | 345 (t8) | SYCL |
 | GLM-4.7-Flash | deepseek2 | Q4_K | 17 GB | 3B active | ✅ | 24.1 (t8 clean) / 31.9 (Vulkan) | 400.9 (t8 clean) / 370 (Vulkan) | SYCL+Vulkan |
-| gpt-oss-20b | deepseek2 | MXFP4 | 12 GB | 3B active | ✅ | 15.6 (t8, clean) | — | SYCL |
+| gpt-oss-20b | gpt-oss | MXFP4 | 12 GB | ~3B active | ✅ | 15.6 (t8, clean) / **23.5 (2026-09-08, swap fixed)** | — | SYCL |
 | eagle3-gpt-oss-20b | eagle3 | Q8_0 | 921 MB | — (draft) | ✅ | 10.9 (speculative) | — | SYCL |
 | **Flash-Next** | **qwen4exp** | **Q2_K_XL** | **73 GB** | **~3B** | ✅ | **7.69 (CPU-only)** | **82.1 (CPU-only)** | **SYCL** |
 
@@ -2400,3 +2400,43 @@ Reports: `.opencode/plans/vitriol-sycl-dispatch-fix-2026-09-06.md`, `.opencode/p
 **Verified**: build-vulkan + build-sycl compile; DSV4_HC_COMB/PRE/POST 19/19 both toggles; MUL_MAT 1119/1119. B390 subgroup 16-32 → upstream kernel runs locally.
 
 **Status**: DONE — merge complete, both implementations correct and toggleable for A/B on future hardware.
+
+---
+
+## 2026-09-07/08 — gpt-oss-20b becomes daily driver (Flash-Next swap) + swap-thrash lesson
+
+**Session:** 2026-09-07 23:10 → 2026-09-08 (laptop, Arc B390 iGPU, 62 GB LPDDR5X)
+**Model:** gpt-oss-20b MXFP4 (11.3 GiB, gpt-oss arch, 24 layers, 32 experts/4 active, n_embd 2880, **native 131072 ctx**, yarn scaling 4096→131k)
+**Build:** `build-sycl/` (`-ngl 0`, CPU-only SYCL build)
+**Server:** systemd user unit (renamed description only; file still `vitriol-flashnext.service`), `-np 2 --kv-unified-per-slot 131072 -ub 512 -b 2048 -fa auto -t 8 --cache-type-k/v q4_0 --alias gpt-oss`, port 8080
+
+### Swap: Flash-Next → gpt-oss-20b
+
+- Rationale: gpt-oss has the best programming reputation of everything tested on this box; 11.3 GiB vs 73 GiB; ~3B active params.
+- Corrected arch: `gpt-oss` (NOT deepseek2 as the 09-04 table listed). KV: sliding_window 128, 8 KV heads × 64, freq_base 150000, yarn factor 32.
+- **`--cache-reuse` auto-disabled**: `cache_reuse is not supported by this context` — gpt-oss sliding-window attention is incompatible with KV-shift reuse. Expected, no prefix caching.
+
+### Verified capability
+
+- `/v1/models` → `gpt-oss`, n_ctx 131072, n_ctx_train 131072, 20.9B params.
+- Chat round-trip: `17*23` → content `'391'`, reasoning shown. Returns both `content` and `reasoning_content` fields.
+- **Decode 23-25 t/s**, prefill 45-46 t/s (clean). Remote-accessible over Tailnet at `http://overlord-x8664.tailee2a23.ts.net:8080/v1`.
+
+### SWAP-THRASH POST-MORTEM (kills decode 25→4 t/s)
+
+| Field | Value |
+|---|---|
+| **Symptom** | decode collapsed from 25 t/s (fresh) to 3.98-4.43 t/s on later requests; prefill unaffected |
+| **Root cause** | stale `2d-Kiosk-Avatar` ML server (PID 43026, running 17h42m) held **4.2 GB in zram swap** (whisper `pytorch_model.bin` + SD-VAE `diffusion_pytorch_model.bin` via OpenVINO CPU plugin; child PID 43108 +300 MB). Background app from a different project, idle but keeping pages swapped |
+| **Mechanism** | zram swap (62G, swappiness 150 per AGENTS.md) + active decode touching cold pages → swap thrash; llama-server's working set competes with the swapped ML models |
+| **Fix** | `kill 43026 43108 43027 43098` → swap dropped **9.4G → 544M instantly** (zram pages freed on process exit). No swapoff needed |
+| **After** | decode restored to **23.46 t/s** (code-gen prompt), prefill 46.08 t/s |
+| **Lesson** | on a zram box, background swapped processes silently destroy LLM decode throughput. Check `for f in /proc/*/smaps_rollup` for >100MB Swap per PID before debugging engine flags. 4 t/s = swap thrash signature, not a kernel problem |
+
+### OpenCode config (this laptop, remote use)
+
+`~/.config/opencode/opencode.jsonc` provider `gpt-oss` → baseURL `http://overlord-x8664.tailee2a23.ts.net:8080/v1`, model `gpt-oss`, context 131072, output 65536 (was 32768 — gpt-oss spends many tokens on reasoning). Added **`reasoning: true` + `interleaved: "reasoning_content"`** so opencode surfaces the thinking block (config schema fields; requires opencode restart to take effect).
+
+### Status
+
+DONE — gpt-oss serving as daily driver @ ~23-25 t/s, remote path proven. Flash-Next stays on disk; swapable back by editing the unit. gpt-oss `sliding_window` disables cache-reuse by design; no E19 requant done (MXFP4 already faster than the 15.6 t/s kernel-penalty baseline — that number was swap-contaminated too).

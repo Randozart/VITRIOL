@@ -251,8 +251,42 @@ already amortizes dispatch. SKIP unless a profile shows dispatch-bound.
      (larger draft chains), which this box rejects (n_max>=2 regresses).
 6. Committed: llama.cpp 8382994a0, outer eb4c965.
 
-### Phase 3 — Quick wins (as time allows)
+### Phase 3 — Quick wins (assessed 2026-09-08; NOT implemented — see rationale)
 - autotune probe (4.5), 2-D dispatch guard (4.7), load-time repack (4.4).
+
+**Phase 3 assessment — all three weaker than the "quick wins" label; no implementation:**
+
+- **4.7 2-D dispatch guard — NOT a real bug on CUDA.** The WebGPU 65535/dimension
+  limit maps to grid.y/z on CUDA (capped 2^16 on old archs), but the "tall matvec"
+  dim is the VOCAB (248,320), which lands in **grid.x** (`block_nums(nblocks, ...)`
+  at mmvq.cu:996, `nblocks=(nrows_x+rpb-1)/rpb`, `nrows_x`=vocab). grid.x caps at
+  2^31-1, so 248,320 blocks (or 124,160 at rpb=2) is fine. The small grid.y/z dims
+  (`nchannels_dst`, `nsamples`) stay at 1-8. No launch exceeds a grid dim limit.
+  Nothing to guard. (Confirmed by tracing `calc_launch_params` -> `block_nums` ->
+  `mul_mat_vec_q` row0/channel_dst mapping.)
+
+- **4.5 device autotune — premise weaker than doc assumed.** Pascal sm_61 (1070 Ti)
+  AND Ampere sm_86 (3060) BOTH resolve to `MMVQ_PARAMETERS_GENERIC` (mmvq.cu:113-127
+  `get_device_table_id` `#else` fallback; the table IS already per-`__CUDA_ARCH__`
+  since the build targets both archs). So there is no mismatched-table situation to
+  fix — both GPUs share the same already-tuned generic values (nwarps=4 for
+  ncols_dst 1-4). Autotune would only marginally refine generic defaults; the gain
+  is speculative, the path (calc_nwarps/calc_rows_per_block) is performance-critical
+  and shared across every quant type, and the review/maintenance burden is high.
+  Not worth it absent a measured regression.
+
+- **4.4 load-time scale/nibble repack — no effect on the daily driver.** The daily
+  driver runs `VITRIOL_MODE=off` (weights fully VRAM-resident, AGENTS.md residency
+  rule). The repack only reduces bytes streamed over PCIe in `mode=stream`
+  (vitriol-buffer.cpp). Zero payoff unless/when streaming is used for a model that
+  exceeds VRAM (35B-class). Park until a streaming workload exists.
+
+**Verdict:** Phase 2 (the chunked GDN kernel) was the real value and is done.
+Phase 3 items were "low" in the doc's own ranking and, on inspection, are either
+non-bugs (4.7), speculative-on-a-critical-path (4.5), or inapplicable-to-current-
+mode (4.4). Recommend closing the SwarmLLM mining arc here; re-open 4.4 if/when a
+35B-class streaming workload lands, re-open 4.5 if a profile shows a dispatch-bound
+or warp-count-mismatch regression.
 
 ## 8. Open decisions
 

@@ -69,3 +69,18 @@ Best certified local configs to build on:
 - Hold RPC until a second LAN machine exists; then follow the plan above.
 - Prioritize local work: VRAM-creep investigation, `tq3_0` KV everywhere,
   quant selection.
+
+## Superseded (2026-09-08): skip as RUNTIME, mine as INSPIRATION
+
+The 08-31 "skip permanently" verdict was about SwarmLLM as a runtime
+replacement — still correct: browser/WebGPU/WebRTC, none of VITRIOL's stack
+runs there. But the repo is MIT and its **kernel techniques** transfer to
+CUDA. It runs the exact model class VITRIOL serves daily (Qwen3.8-27B,
+Gated-DeltaNet + MTP), and its `docs/deltanet-prefill-spec.md` is a complete,
+numerically-verified spec for the **chunked Gated-DeltaNet prefill** — the
+serial wall VITRIOL planned (C1b, 2026-08-18) but never implemented.
+
+See `.opencode/plans/swarmllm-mining-assessment-2026-09-08.md` for the full
+borrow list and implementation phases. Priority borrow: chunked GDN prefill
+(E1-E7) to attack the MTP-verify 3.4× serial wall; secondary: register-resident
+recurrence tiling, row-stationary prefill GEMM ideas, device kernel autotune.

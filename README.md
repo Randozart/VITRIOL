@@ -519,6 +519,13 @@ VITRIOL stands on the shoulders of giants. Every core insight — DMA over PCIe,
 | **[GraphRAG](https://arxiv.org/abs/2404.16130)** — Edge, Trinh et al. (Microsoft, 2024) | Replaced flat vector DBs with LLM-derived knowledge graphs for multi-hop retrieval (spreading activation). Informs our cascading memory retrieval. |
 | **[Aider](https://github.com/paul-gauthier/aider)** — Paul Gauthier (2023) | Gold standard for tree-sitter AST-based repo mapping. Informs future AST code graphing for context injection. |
 
+### Chunked Recurrence Inference
+
+| Paper / Project | What We Learned |
+|-----------------|-----------------|
+| **[SwarmLLM](https://github.com/Nehanth/swarmllm)** (MIT) — Narendrula (2026) | A WebGPU/WebRTC engine running the same model class VITRIOL serves (Qwen3.8-27B, Gated-DeltaNet + MTP) — rejected as a *runtime* (browser stack, none of VITRIOL's CUDA machinery runs there) but mined as *inspiration*. Two measured, golden-test-gated techniques transfer to CUDA: (1) **chunked Gated-DeltaNet prefill** — E1–E7 running-product decays + C-step triangular solve breaks the serial token recurrence (verified vs f64 oracle 4e-15; 2.6–3× on the recurrence kernel, groundwork for 16+ column passes); (2) **register-resident recurrence tiling** (private array with literal indices, shared-mem partial reduce, 1.7–2.9× on the delta kernel). Also: row-stationary packed-nibble prefill GEMM (bank-conflict-padded shared tile), device kernel autotune with a 3% noise guard, 2-D dispatch for tall matvecs past the 65,535-workgroup cap. Full record: `.opencode/plans/swarmllm-mining-assessment-2026-09-08.md`. Their measured rejections (Q4 KV → −92.5% prefill; external draft model → vocab mismatch) validate VITRIOL's own verdicts. |
+| **[Gated Delta Net](https://arxiv.org/abs/2412.06464)** — Yang et al. (2024) | The chunkwise-parallel delta-rule prefill identity (Sec 3.3) that E1–E7 above instantiate: `(I+A)D=R` unit-lower substitution turns the serial state recurrence into C independent reductions. Primary citation for the chunk algorithm; SwarmLLM is the verified implementation reference. |
+
 ### Agent Harness & Context Efficiency (Officina)
 
 | Project | What We Learned |

@@ -229,6 +229,28 @@ already amortizes dispatch. SKIP unless a profile shows dispatch-bound.
    1/4/5).
 6. Commit each green stage (AGENTS.md workflow).
 
+### Phase 2 — DONE 2026-09-08 (implemented + certified)
+1. Implemented the **chunked GDN kernel** (E1-E7) directly (skipped the RG=2
+   register-resident rewrite — the fork's serial kernel is ALREADY
+   register-resident: s_shard/k_reg/q_reg in registers). Non-KDA path only
+   (chunk identity assumes scalar decay; KDA stays serial).
+2. Numeric validation: E1-E7 vs serial CPU reference at the MTP-verify shape
+   (S_v=128, n_tokens=6, K=4 snapshots) — **passes on BOTH CUDA devices**
+   (3060 + 1070 Ti). Full identity: delta_0/delta_1 expand identically to the
+   serial recurrence (verified by hand in the kernel comments).
+3. Dispatch: `GGML_CUDA_GDN_SCAN=off|on|auto` (default auto), non-KDA +
+   n_tokens in {2,3,4,6,8} -> chunk; else serial. KDA untouched.
+4. Tests added: n_tokens=6 (K=4) incl. KDA-serial control, n_tokens=2/8 with
+   n_seqs=2. All pass.
+5. **Full-model A/B (Qwen3.8-27B, blessed config, draft_n_max=1)**:
+   - Correctness: chunk vs serial output **bit-identical** on real 120-token
+     generation (validates the (I+A)D=R identity end-to-end).
+   - Perf: 17.43 t/s (serial) vs 17.54 t/s (chunk) = +0.6%, parity within
+     noise. Honest ceiling confirmed: with draft_n_max=1 the verify batch is
+     C=2 tokens, serial wall shallow; the chunk kernel pays off at C=6+
+     (larger draft chains), which this box rejects (n_max>=2 regresses).
+6. Committed: llama.cpp 8382994a0, outer eb4c965.
+
 ### Phase 3 — Quick wins (as time allows)
 - autotune probe (4.5), 2-D dispatch guard (4.7), load-time repack (4.4).
 

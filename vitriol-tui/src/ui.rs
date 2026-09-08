@@ -378,13 +378,26 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
             .replace("NVIDIA GeForce ", "")
             .replace("NVIDIA ", "");
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("[{}] {}", gpu.index, short), theme::text()),
-                Span::styled(
-                    format!("  {:.0}W  {}°C", gpu.power_w, gpu.temp_c),
-                    theme::muted(),
-                ),
-            ])),
+            Paragraph::new(Line::from({
+                let mut spans = vec![
+                    Span::styled(format!("[{}] {}", gpu.index, short), theme::text()),
+                ];
+                // Only show power/temp when available (non-zero).
+                if gpu.power_w > 0.0 || gpu.temp_c > 0 {
+                    spans.push(Span::styled(
+                        format!("  {:.0}W  {}°C", gpu.power_w, gpu.temp_c),
+                        theme::muted(),
+                    ));
+                }
+                // Show clock speeds when available.
+                if gpu.sm_clock_mhz > 0 {
+                    spans.push(Span::styled(
+                        format!("  {} MHz", gpu.sm_clock_mhz),
+                        theme::muted(),
+                    ));
+                }
+                spans
+            })),
             g_rows[0],
         );
         let vram_ratio = if gpu.vram_total_mib > 0 {
@@ -392,18 +405,21 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
         } else {
             0.0
         };
-        render_gauge_row(
-            frame,
-            g_rows[1],
-            &format!(
-                "VRAM  {:.2}/{:.2} GiB  {:.0}%",
-                gpu.vram_used_mib as f64 / 1024.0,
-                gpu.vram_total_mib as f64 / 1024.0,
-                vram_ratio * 100.0
-            ),
-            vram_ratio,
-            theme::BrailleRamp::Capacity,
-        );
+        // Only render VRAM gauge when the driver exposes VRAM data.
+        if gpu.vram_total_mib > 0 {
+            render_gauge_row(
+                frame,
+                g_rows[1],
+                &format!(
+                    "VRAM  {:.2}/{:.2} GiB  {:.0}%",
+                    gpu.vram_used_mib as f64 / 1024.0,
+                    gpu.vram_total_mib as f64 / 1024.0,
+                    vram_ratio * 100.0
+                ),
+                vram_ratio,
+                theme::BrailleRamp::Capacity,
+            );
+        }
         render_gauge_row(
             frame,
             g_rows[2],
@@ -637,35 +653,51 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
             .replace("NVIDIA GeForce ", "")
             .replace("NVIDIA ", "");
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("[{}] {}", gpu.index, short), theme::title()),
-                Span::styled(
-                    format!(
-                        "    {:.0}W   {}°C   SM {} MHz   MEM {} MHz",
-                        gpu.power_w, gpu.temp_c, gpu.sm_clock_mhz, gpu.mem_clock_mhz
-                    ),
-                    theme::muted(),
-                ),
-            ])),
+            Paragraph::new(Line::from({
+                let mut spans = vec![
+                    Span::styled(format!("[{}] {}", gpu.index, short), theme::title()),
+                ];
+                // Only show power/temp when available (non-zero).
+                if gpu.power_w > 0.0 || gpu.temp_c > 0 {
+                    spans.push(Span::styled(
+                        format!("    {:.0}W   {}°C", gpu.power_w, gpu.temp_c),
+                        theme::muted(),
+                    ));
+                }
+                // Show clock speeds when available.
+                if gpu.sm_clock_mhz > 0 || gpu.mem_clock_mhz > 0 {
+                    spans.push(Span::styled(
+                        format!(
+                            "   SM {} MHz   MEM {} MHz",
+                            gpu.sm_clock_mhz, gpu.mem_clock_mhz
+                        ),
+                        theme::muted(),
+                    ));
+                }
+                spans
+            })),
             g_rows[0],
         );
 
         let vram_ratio = ratio(gpu.vram_used_mib as f64, gpu.vram_total_mib as f64);
-        render_metric_row(
-            frame,
-            g_rows[1],
-            MetricRow {
-                label: "VRAM",
-                ratio: vram_ratio,
-                value: format!(
-                    "{:.2}/{:.2} GiB {:.0}%",
-                    gpu.vram_used_mib as f64 / 1024.0,
-                    gpu.vram_total_mib as f64 / 1024.0,
-                    vram_ratio * 100.0
-                ),
-                ramp: theme::BrailleRamp::Capacity,
-            },
-        );
+        // Only render VRAM gauge when the driver exposes VRAM data.
+        if gpu.vram_total_mib > 0 {
+            render_metric_row(
+                frame,
+                g_rows[1],
+                MetricRow {
+                    label: "VRAM",
+                    ratio: vram_ratio,
+                    value: format!(
+                        "{:.2}/{:.2} GiB {:.0}%",
+                        gpu.vram_used_mib as f64 / 1024.0,
+                        gpu.vram_total_mib as f64 / 1024.0,
+                        vram_ratio * 100.0
+                    ),
+                    ramp: theme::BrailleRamp::Capacity,
+                },
+            );
+        }
         render_metric_row(
             frame,
             g_rows[2],
@@ -676,16 +708,19 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
                 ramp: theme::BrailleRamp::Activity,
             },
         );
-        render_metric_row(
-            frame,
-            g_rows[3],
-            MetricRow {
-                label: "TEMP",
-                ratio: gpu.temp_c as f64 / 100.0,
-                value: format!("{}°C", gpu.temp_c),
-                ramp: theme::BrailleRamp::Heat,
-            },
-        );
+        // Only render TEMP gauge when the driver exposes temperature data.
+        if gpu.temp_c > 0 {
+            render_metric_row(
+                frame,
+                g_rows[3],
+                MetricRow {
+                    label: "TEMP",
+                    ratio: gpu.temp_c as f64 / 100.0,
+                    value: format!("{}°C", gpu.temp_c),
+                    ramp: theme::BrailleRamp::Heat,
+                },
+            );
+        }
         render_metric_row(
             frame,
             g_rows[4],

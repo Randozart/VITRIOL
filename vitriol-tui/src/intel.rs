@@ -22,6 +22,28 @@ fn read_sysfs_u64(path: &std::path::Path) -> Option<u64> {
     std::fs::read_to_string(path).ok()?.trim().parse::<u64>().ok()
 }
 
+/// Read CPU/package temperature from thermal zones (millidegrees → Celsius).
+/// Scans for TCPU_PCI or x86_pkg_temp zones; returns 0 when unavailable.
+fn read_cpu_temp_c() -> u8 {
+    let thermal_dir = std::path::Path::new("/sys/class/thermal");
+    if let Ok(entries) = std::fs::read_dir(thermal_dir) {
+        for entry in entries.flatten() {
+            let zone_dir = entry.path();
+            let type_path = zone_dir.join("type");
+            if let Ok(type_str) = std::fs::read_to_string(&type_path) {
+                let zone_type = type_str.trim();
+                // Prefer CPU/PCI package temperature as system thermal proxy.
+                if zone_type == "TCPU_PCI" || zone_type == "x86_pkg_temp" {
+                    if let Some(temp_millideg) = read_sysfs_u64(&zone_dir.join("temp")) {
+                        return (temp_millideg / 1000) as u8;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
 /// Name of the first GPU tile (friendly label, e.g. "Arc B390").
 fn tile_name(card: &str) -> Option<String> {
     // Map known Intel PCI device ids to friendly product names; fall back to a
@@ -93,6 +115,10 @@ fn query_intel_sysfs() -> Vec<GpuSnapshot> {
 
     let name = tile_name(CARD).unwrap_or_else(|| "Intel Arc".to_string());
 
+    // Use CPU/package temperature as system thermal proxy — the xe driver on
+    // Panther Lake doesn't expose a GPU-specific thermal zone.
+    let temp_c = read_cpu_temp_c();
+
     Some(GpuSnapshot {
         index: 0,
         name,
@@ -102,7 +128,7 @@ fn query_intel_sysfs() -> Vec<GpuSnapshot> {
         // VRAM not exposed on this kernel's xe sysfs; intel_gpu_top fills it.
         vram_used_mib: 0,
         vram_total_mib: 0,
-        temp_c: 0,
+        temp_c,
         power_w: 0.0,
         power_limit_w: 0.0,
         uuid: String::new(),

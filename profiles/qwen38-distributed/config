@@ -1,0 +1,135 @@
+# VITRIOL Configuration — Qwen3.8-27B Q3_K_M, DISTRIBUTED row-split via RPC
+# Transcends one machine: layers 0-4 (approx 5%) offload to overlord-x8664
+# (100.92.76.67) CPU over Tailscale; the rest split across the 3060 + 1070 Ti.
+# Measured 2026-09-09: decode ~11 t/s, prefill ~7-20 t/s (box B CPU-bound).
+# Local-only baseline: 18.94 t/s decode. Trade speed for box B's 64 GB RAM
+# (context/KV capacity). tensor_split is 3-way: [RPC, 3060, 1070 Ti].
+# Requires: box B `ggml-rpc-server -H 0.0.0.0 -p 50052` running, and a
+# llama.cpp built with -DGGML_RPC=ON (BOTH sides).
+
+[gpu]
+# CUDA device index to use
+device = 0
+# Exclude secondary GPU (GTX 960, CC 5.2 lacks kernel images)
+exclude_secondary = false
+# Tensor split across GPUs (e.g. "24,12" for 2 GPUs, empty = auto layer split)
+# 26,10 (2026-09-06): 1070 Ti was at 98.3% VRAM (58 MiB free) under 22,14 —
+# knife edge. 18 layers on the 1070 Ti → ~81%, ~1.5 GiB headroom; more layers
+# on the faster 3060. See .opencode/plans/session-leak-gpu-rebalance-2026-09-06.md
+# 3-way for distributed: [boxB(0.05), 3060(0.475), 1070Ti(0.475)]
+tensor_split = 0.05,0.475,0.475
+# Remote RPC servers (row-split layer offload) — Tailscale mesh, box B
+rpc_servers = 100.92.76.67:50052
+
+[model]
+# Path to GGUF model file
+path = /home/randozart/Downloads/Qwen3.8-27B-Q3_K_M.gguf
+# Context window size
+context = 81920
+# CPU threads for prompt processing
+threads = 4
+# GPU layers to offload
+ngl = 99
+# Expert count override (0 = model default, 4-8 recommended)
+expert_count = 0
+# Name reported via /v1/models (pi model-sync identity) — LOAD-BEARING
+alias = Lapis Occultus
+# Vision projector GGUF (empty = text-only) — LOAD-BEARING
+mmproj = 
+
+[vitriol]
+# Operation mode: stream | sync | async | off
+mode = off
+# LRU VRAM cache in MB (0 to disable; only effective with FP16/FP32 experts)
+lru_mb = 0
+# Verbose logging
+verbose = false
+# Expert output caching: on | off (approximate — reuses previous token's expert outputs)
+output_cache = off
+# Predictive prefetching: on | off (cross-layer + temporal heuristic, DMA stream overlap)
+predictive_prefetch = off
+# Expert pinning: pin first N layers' expert tensors in VRAM (0 = off)
+#   Pins all 256 experts per pinned layer into VRAM at first use.
+#   Targets the fast MMVQ/MMQ/MMF kernel path — auto-disables output cache.
+#   Recommended: 5-15. Uses ~220 MB per layer. Needs KV offload for >10.
+pin_first_n_layers = 0
+# Top-K expert pruning: drop bottom N of 8 active experts before compute
+#   0 = off (default), 2 = compute 6 experts, 4 = compute 4 experts
+#   Experimental: may affect output quality, especially for creative tasks.
+prune_experts = 0
+# Reasoning/thinking mode: on | off (off disables thinking, required for Qwen3.6)
+reasoning = off
+
+[server]
+# API host address
+host = 127.0.0.1
+# API port
+port = 8279
+# Parallel slots for concurrent requests
+parallel = 1
+slot_context = 
+slot_save_path = /home/randozart/.vitriol/checkpoints
+cache_ram = 256
+# Idle-slot KV -> host RAM (on | off). OFF = host-memory trim 2026-09-04:
+# the host KV backup was a swappable reservoir inflating engine OOM badness.
+cache_idle_slots = off
+# Custom Jinja chat template file (empty = use model's embedded template)
+chat_template = 
+
+[memory]
+# Emulated memory mode: on | off
+mode = off
+# Semantic search mode: on | off (requires sentence-transformers)
+semantic_mode = off
+
+[kv]
+# KV cache mode: standard | offload | sparse
+#   sparse probe scoring (context lifecycle, 2026-09-03):
+#   kv.score = probe | off        (scoring feeds eviction; off = blind)
+#   kv.score_every = N            (probe cadence in decode steps, default 16)
+mode = sparse
+#   sparse probe scoring (context lifecycle, 2026-09-03): probe | off
+score = probe
+#   probe cadence in decode steps (default 16; 4 rejected — ejected too hard)
+score_every = 16
+# KV cache quantization: f16 | q8_0 | q4_0 (affects K cache only)
+quant_mode = q4_0
+# V cache quantization: f16 (default, safe) | q8_0 | q4_0 (RISK: quantizing V causes garbage output)
+quant_mode_v = q4_0
+
+# Frozen prompt: on | off (keep system prompt static to avoid re-prefix)
+frozen_prompt = off
+# Physical batch size (default 256, lower = less VRAM for compute buffers)
+ubatch_size = 64
+# Slot checkpoint cadence (lull engine: --checkpoint-every-n-tokens)
+checkpoint_every_n_tokens = 8192
+# RAM checkpoint-ring depth per slot (4; 0 forbidden) — host-memory trim 2026-09-04
+ctx_checkpoints = 4
+
+[engine]
+# Execution mode: vitriol-dma | native
+mode = vitriol-dma
+
+[lookup]
+# Prompt lookup decoding tokens (0 = disabled)
+tokens = 0
+
+[spec]
+# Speculative decoding type: mtp | draft (leave empty to disable)
+type = mtp
+# Draft tokens to generate for speculative decoding (e.g. 2 for MTP)
+draft_n_max = 1
+# Separate draft model file (e.g. an MTP head GGUF). Empty = use embedded/type default.
+draft_model = 
+# Device index to run the draft model on (e.g. 1 = second GPU). Empty = main devices.
+draft_device = 
+# Draft model layers to keep in VRAM (all | auto | N)
+draft_ngl = all
+
+[chimera]
+# Backend routing: auto | cuda | vulkan | off
+#   auto   → Chimera if Vulkan available, else CUDA-only
+#   cuda   → CUDA-only (experts via VITRIOL DMA)
+#   vulkan → Vulkan-only (all tensors via VK_EXT_external_memory_host)
+#   off    → CUDA-only (same as cuda)
+mode = auto

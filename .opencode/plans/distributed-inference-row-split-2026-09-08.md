@@ -1,7 +1,9 @@
 # VITRIOL Distributed Inference — Row-Split RPC (setup + first light)
 
 Date: 2026-09-09
-Status: SETUP COMPLETE — box B rpc-server running; box A build + smoke pending
+Status: DONE — distributed row-split working end-to-end (box A GPU + box B CPU),
+launcher plumbing + fingerprint + profile + box B systemd unit all in place.
+Measured: decode 10-11 t/s, prefill 6-20 t/s (box B DDR5-bound). See §5-§6.1.
 
 Goal: transcend one machine — split Qwen3.8-27B (and, by extension, larger
 models) across box A (GPU) + box B (CPU/NPU, 64GB unified memory) via the
@@ -94,33 +96,82 @@ Devices:
 - The `0.0.0.0` security warning is expected; traffic is confined to the
   Tailscale mesh (no public exposure).
 
-## 5. Pending (box A)
+## 5. Box A setup — DONE (2026-09-09)
 
-1. Build with RPC: `cmake -B build -DCMAKE_CUDA_ARCHITECTURES="61;86" -DGGML_RPC=ON`
+1. Built with RPC: `cmake -B build -DGGML_RPC=ON` (box A build dir).
+   Also applied the op-count fix in `ggml/include/ggml-rpc.h` (see §3) and
+   bumped `RPC_PROTO_PATCH_VERSION` 0->1 so both sides match v6.0.1.
 2. Launch: `llama-server --rpc 100.92.76.67:50052 -m <model> -ngl 65 -ts <3-way> ...`
-3. Verify in load log that layers offload to the RPC device.
-4. Measure decode t/s + find context-capacity ceiling (window != depth rule:
-   report FILLED tokens, not allocated ctx).
+3. **Smoke tested end-to-end**: coherent output on box A through the split;
+   box B log shows `Accepted client connection` + ESTAB from box A
+   (100.111.244.0 -> 100.92.76.67:50052).
+4. Measured profile (2026-09-09, Qwen3.8-27B, box B = overlord CPU over
+   Tailscale 13 ms RTT):
 
-## 6. Launcher + fingerprint plumbing (planned)
+| config | decode t/s | prefill t/s |
+|---|---|---|
+| local blessed (24,12 + MTP) | 18.94 | 34 |
+| RPC 5% box B (0.05,0.475,0.475) | 11.35 | 7.66 |
+| RPC 25% box B (0.25,0.375,0.375) | 10.03 | 6.03 |
+| RPC 40% box B (0.40,0.30,0.30) | 4.87 | 4.87 |
 
-- `scripts/vitriol`: add `[gpu] rpc_servers = <host:port>` config key, emit
-  `--rpc` into server argv.
-- Fingerprint (`scripts/vitriol:111`): add `rpc=<host:port>` — topology-bearing
-  key, REQUIRED by the flag-provenance rule (AGENTS.md).
+   Sweet spot for decode: small box B slice (~5%). Prefill is box-B
+   DDR5-bandwidth-bound (~3 GB slice streamed per token) -> ~20 t/s at 25%
+   slice (405 s for 8K tokens). **20 t/s prefill deemed acceptable** by user.
+   Note: RPC device sits at FRONT of the device list, so box B's layers process
+   every prefill/decode token (position does not amortize).
+
+## 6. Launcher + fingerprint plumbing — DONE (2026-09-09)
+
+- `scripts/vitriol`: added `[gpu] rpc_servers = <host:port>` config key
+  (parse_config, config_set, write_config, config_show), emitted `--rpc` into
+  all 4 server launch sites (memory + external, detach + foreground).
+- Fingerprint: `rpc=<host:port>` appended conditionally in the two serve paths
+  AND `config_fingerprint` (for `config bless` parity). Topology-bearing key,
+  REQUIRED by flag-provenance rule (AGENTS.md).
 - `-ts` becomes 3-way: `[boxB_frac, 3060_frac, 1070Ti_frac]` summing to 1.0.
+- Bundled profile `profiles/qwen38-distributed/` saved: 5% box B slice
+  (0.05,0.475,0.475) + `rpc_servers = 100.92.76.67:50052`.
 
-## 7. Honest expectations
+## 6.1 Box B rpc-server lifecycle — DONE (2026-09-09)
+
+- Replaced the ad-hoc `nohup` run with a user systemd unit
+  (`scripts/systemd/vitriol-rpc-server.service`, installed at
+  `~/.config/systemd/user/vitriol-rpc-server.service` on box B).
+- `systemctl --user enable --now vitriol-rpc-server.service`; active, listening
+  on 0.0.0.0:50052, survives SSH disconnect + login (Linger=yes on box B).
+- Bind to 0.0.0.0 so box A reaches it via the Tailscale mesh address.
+
+## 7. Honest expectations — MEASURED (2026-09-09)
 
 - box B's compute is CPU (SYCL, `-ngl 0`). It already runs a 20.9B MoE at
   25 t/s CPU-only; for 27B dense (all params active) expect slower per-layer.
-- Decode = box_A_layers + box_B_layers + 2 x 13 ms network. Projected
-  ~8-12 t/s with ~200K+ context capacity (64 GB DDR5 KV) vs current 17.5 t/s
-  at 81K.
-- Speed loss ~30-50%, context gain ~2-3x. The win is CAPACITY, not speed.
+- Decode = box_A_layers + box_B_layers + 2 x 13 ms network. **Measured
+  10-11 t/s at 5-25% box B slice** vs 18.94 local. **Prefill 6-20 t/s**,
+  DDR5-bandwidth-bound on box B. Confirmed: the win is CAPACITY (box B's
+  64 GB DDR5 for KV/context), not speed.
+- **Prefill-on-A / KV-ship-to-B** (send prefilled data over the wire): the RPC
+  `SET_TENSOR` primitive already uploads arbitrary tensors to box B buffers
+  (that's how weights load), and KV cache for box B's layers is allocated on
+  box B's RPC buft (`llama-kv-cache.cpp:218`). A "prefill all layers on box A,
+  then ship box B's KV in one bulk transfer" mode is a real option if the 20 t/s
+  prefill ever becomes the blocker. NOT implemented (20 t/s accepted). Requires:
+  (1) a prefill phase that runs all layers on box A (needs full weights in box A
+  VRAM, ~12 GB, tight but feasible at moderate ctx), (2) a KV-upload path reusing
+  `RPC_CMD_SET_TENSOR`. `COPY_TENSOR` is box-B-local only (same-dispatcher), so
+  cross-host ship must go through `SET_TENSOR`.
 - NPU: not usable for 27B (SYCL backend GPU-only; OpenVINO NPU path limited to
   ~1-3B models, static-graph, stateless). Revisit if a small draft model on NPU
   is ever wanted for speculative decoding.
+- **CUDA Rust (NVIDIA, Sep-2026, future direction)**: two tracks — cuda-oxide
+  (SIMT kernels in Rust, nightly + custom LLVM, early alpha) and cutile-rs
+  (Tile-based, stable Rust 1.89+, CUDA 13.3, used by HuggingFace Grout +
+  mistral.rs). NOT applicable to VITRIOL now: both require CC 8.0+ (Ampere+);
+  the 1070 Ti is CC 6.1, and box B is Intel Arc/SYCL (NVIDIA-only toolchain).
+  Integration into `ggml-cuda` (monolithic C++ template-instantiated kernels)
+  would need a separate backend, not a swap. File under future direction; the
+  mature entry point is cutile-rs if a standalone Rust inference engine ever
+  emerges (VITRIOL's Rust already exists in `libvitriol/`, host-side only).
 
 ## 8. Credentials handling (do not commit)
 

@@ -125,6 +125,7 @@ config_fingerprint() {
         "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}" "${CFG_PARALLEL:-1}")
     # Mirror the serve path's conditional fields so blessed-vs-launch
     # diffs stay clean (only REAL differences show up).
+    [[ -n "${CFG_RPC_SERVERS:-}" ]] && fp="$fp rpc=$CFG_RPC_SERVERS"
     [[ -n "${CFG_SLOT_CONTEXT:-}" ]] && fp="$fp slots=$CFG_SLOT_CONTEXT"
     [[ -n "${CFG_SLOT_SAVE_PATH:-}" ]] && fp="$fp ssp=1"
     [[ -n "${CFG_CACHE_RAM:-}" ]] && fp="$fp cram=$CFG_CACHE_RAM"
@@ -270,6 +271,7 @@ DEFAULT_UBATCH=256
 CFG_DEVICE="$DEFAULT_DEVICE"
 CFG_EXCLUDE_SECONDARY="$DEFAULT_EXCLUDE_SECONDARY"
 CFG_TENSOR_SPLIT="$DEFAULT_TENSOR_SPLIT"
+CFG_RPC_SERVERS=""
 CFG_MODEL="$DEFAULT_MODEL"
 CFG_CTX="$DEFAULT_CTX"
 CFG_THREADS="$DEFAULT_THREADS"
@@ -343,6 +345,7 @@ parse_config() {
                 gpu.device)            CFG_DEVICE="$val" ;;
                 gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
                 gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
+                gpu.rpc_servers)       CFG_RPC_SERVERS="$val" ;;
                 model.path)            CFG_MODEL="$val" ;;
                 model.mmproj)          CFG_MMPROJ="$val" ;;
                 model.context)         CFG_CTX="$val" ;;
@@ -408,6 +411,11 @@ device = $CFG_DEVICE
 exclude_secondary = $CFG_EXCLUDE_SECONDARY
 # Tensor split across GPUs (e.g. "24,12" for 2 GPUs, empty = auto layer split)
 tensor_split = $CFG_TENSOR_SPLIT
+# Remote RPC servers (row-split layer offload, e.g. "100.92.76.67:50052")
+# Comma-separated host:port list. Empty = local only. RPC devices land at the
+# FRONT of the device list, so tensor_split must have one entry per device:
+# [RPC, GPU0, GPU1] = 3-way split. Requires llama.cpp built with -DGGML_RPC=ON.
+rpc_servers = $CFG_RPC_SERVERS
 
 [model]
 # Path to GGUF model file
@@ -547,6 +555,8 @@ config_show() {
     echo "╠$(printf '═%.0s' $(seq 1 $box_w))╣"
     print_row "GPU Device:            " "${CFG_DEVICE}"
     print_row "Exclude Secondary:     " "${CFG_EXCLUDE_SECONDARY}"
+    print_row "Tensor Split:          " "${CFG_TENSOR_SPLIT:-auto}"
+    print_row "RPC Servers:           " "${CFG_RPC_SERVERS:-none}"
     echo "╠$(printf '─%.0s' $(seq 1 $box_w))╣"
     local mtp_label=""
     model_has_mtp "$CFG_MODEL" && mtp_label=" [MTP]"
@@ -628,6 +638,7 @@ config_set() {
         gpu.device)            CFG_DEVICE="$val" ;;
         gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
         gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
+        gpu.rpc_servers)       CFG_RPC_SERVERS="$val" ;;
         model.path)            CFG_MODEL="$val" ;;
                 model.mmproj)          CFG_MMPROJ="$val" ;;
         model.alias)           CFG_MODEL_ALIAS="$val" ;;
@@ -2007,6 +2018,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
+        RPC_SERVERS="${CFG_RPC_SERVERS}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         REASONING="${CLI_REASONING:-${CFG_REASONING}}"
@@ -2024,6 +2036,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         kv_sparse_guard
         FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
+        [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2265,6 +2278,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
+        RPC_SERVERS="${CFG_RPC_SERVERS}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
@@ -2275,6 +2289,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB" \
             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
+        [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
@@ -2394,6 +2409,10 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
          # Multi-GPU tensor split args
          TS_ARGS=""
         [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"
+        # Remote RPC servers (row-split layer offload). Requires llama.cpp
+        # built with -DGGML_RPC=ON, else llama-server rejects --rpc.
+        RPC_ARGS=""
+        [[ -n "${RPC_SERVERS:-}" ]] && RPC_ARGS="--rpc ${RPC_SERVERS}"
         # Model alias: name reported via /v1/models and matched in requests
         MODEL_ALIAS="${CFG_MODEL_ALIAS:-${VITRIOL_MODEL_ALIAS:-}}"
         ALIAS_ARGS=()
@@ -2487,7 +2506,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                          -t "$THREADS" \
-                            $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
+$KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
                             "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
@@ -2552,7 +2571,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         --slots --metrics \
                         --no-mmap \
                         -t "$THREADS" \
-                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
+                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
                         "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/server.pid"
@@ -2614,7 +2633,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         "${MMPROJ_ARGS[@]}" \
                         --slots --metrics \
                         --no-mmap \
-                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS &
+                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS &
                 LLAMA_PID=$!
                 echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
 
@@ -2677,7 +2696,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     --slots --metrics \
                     --no-mmap \
                     -t "$THREADS" \
-                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
+                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
                     "$@"
             fi
         fi

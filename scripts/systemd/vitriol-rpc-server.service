@@ -1,0 +1,17 @@
+[Unit]
+Description=VITRIOL RPC server (row-split layer offload, box B)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/prestopoverlord/Projects/VITRIOL/llama.cpp/build-sycl/bin/ggml-rpc-server -H 0.0.0.0 -p 50052
+Restart=on-failure
+RestartSec=5
+# RPC server is the box-B side of VITRIOL distributed inference. Exposes the
+# local CPU (and GPU if -d is added) as an RPC device over the Tailscale mesh.
+# Bind to 0.0.0.0 so box A can reach it via the mesh address; traffic is
+# confined to Tailscale (no public exposure).
+
+[Install]
+WantedBy=default.target

@@ -75,7 +75,8 @@ export default function (pi: ExtensionAPI) {
       `   ${tpsGauge} ${decoding ? `${fmtRate(last.delta.tps)} tok/s` : "idle"}` +
       `   ·  ${fmtTokens(last.total)} decoded this boot`;
     const line2 = sessionDir ? `◈ ${sessionDir}` : undefined;
-    ui.setWidget("vitriol-decode", line2 ? [line1, line2] : [line1], { placement: "belowEditor" });
+    const rpc = last.rpc.length > 0 ? `   ·  rpc ${last.rpc.map((s) => s.split(":")[0]).join(",")}` : "";
+    ui.setWidget("vitriol-decode", line2 ? [line1 + rpc, line2] : [line1 + rpc], { placement: "belowEditor" });
   };
 
   pi.on("session_start", (_event, ctx) => {

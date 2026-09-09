@@ -3,6 +3,7 @@ import {
   busySlots,
   parseLoadedModel,
   parseModelPath,
+  parseRpcServers,
   counterDelta,
   fireLoad,
   gpuFireLoad,
@@ -36,6 +37,16 @@ describe("parseMetrics", () => {
     expect(parseModelPath('{"model_path":"/home/x/Downloads/Qwen3.8-27B-Q3_K_M.gguf"}')).toBe("/home/x/Downloads/Qwen3.8-27B-Q3_K_M.gguf");
     expect(parseModelPath("{}")).toBe("");
     expect(parseModelPath("garbage")).toBe("");
+  });
+
+  it("parses RPC (row-split) servers from /props", () => {
+    expect(parseRpcServers('{"rpc_servers":["100.92.76.67:50052"]}')).toEqual(["100.92.76.67:50052"]);
+    expect(parseRpcServers('{"rpc_servers":["a:1","b:2"]}')).toEqual(["a:1", "b:2"]);
+    expect(parseRpcServers('{"rpc_servers":[]}')).toEqual([]);
+    expect(parseRpcServers("{}")).toEqual([]);
+    expect(parseRpcServers("garbage")).toEqual([]);
+    expect(parseRpcServers('{"rpc_servers":"not-array"}')).toEqual([]);
+    expect(parseRpcServers('{"rpc_servers":["", 7]}')).toEqual([]);
   });
 
   it("parses the sparse-KV ejected counter when present", () => {

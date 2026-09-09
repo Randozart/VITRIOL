@@ -65,6 +65,21 @@ export function parseModelPath(text: string): string {
   }
 }
 
+/**
+ * Parse /props for the engine's loaded RPC (row-split) server endpoints
+ * (top-level `rpc_servers` array). Empty array when absent/unparseable —
+ * a local-only engine reports no RPC servers.
+ */
+export function parseRpcServers(text: string): string[] {
+  try {
+    const j = JSON.parse(text) as { rpc_servers?: unknown };
+    if (!Array.isArray(j.rpc_servers)) return [];
+    return j.rpc_servers.filter((s): s is string => typeof s === "string" && s.length > 0);
+  } catch {
+    return [];
+  }
+}
+
 export interface DecodeDelta {
   tps: number;
   tokens: number;

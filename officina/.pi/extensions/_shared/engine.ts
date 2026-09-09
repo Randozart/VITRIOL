@@ -10,7 +10,7 @@
 // Provenance: original work, this repo; parsers from vitriol-decode/decode.ts
 // (own; this repo, Apache-2.0 OR MIT).
 import { execFile } from "node:child_process";
-import { busySlots, counterDelta, gpuFireLoad, parseLoadedModel, parseMetrics, parseModelPath, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
+import { busySlots, counterDelta, gpuFireLoad, parseLoadedModel, parseMetrics, parseModelPath, parseRpcServers, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8279";
 const DEFAULT_POLL_MS = 700;
@@ -29,6 +29,9 @@ export interface EngineSnapshot {
   loaded_model: string;
   /** The loaded model's file path (from /props), "" when unknown. */
   loaded_path: string;
+  /** RPC (row-split) server endpoints the engine loaded (from /props),
+   *  e.g. ["100.92.76.67:50052"]; [] when local-only. */
+  rpc: string[];
   /** True when the engine answers TCP but queue-backed endpoints stall
    * (generation in flight) — alive-but-busy, NOT down. */
   stalled: boolean;
@@ -77,6 +80,7 @@ const state: EngineState =
       ejected: 0,
       loaded_model: "",
       loaded_path: "",
+      rpc: [],
       stalled: false,
       total: 0,
       slots: [],
@@ -169,7 +173,7 @@ async function poll(): Promise<void> {
     state.before = null;
     state.polledOnce = true;
     if (metrics.kind === "down") {
-      state.snap = { ...state.snap, up: false, stalled: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "" };
+      state.snap = { ...state.snap, up: false, stalled: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "", rpc: [] };
     } else {
       // alive-but-busy: queue-backed endpoint didn't answer in time
       state.snap = { ...state.snap, up: true, stalled: true };
@@ -199,11 +203,12 @@ async function poll(): Promise<void> {
   const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : state.snap.loaded_model;
   const propsOut = await fetchText(`${state.base}/props`, HTTP_TIMEOUT_MS);
   const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : state.snap.loaded_path;
+  const rpc = propsOut.kind === "ok" ? parseRpcServers(propsOut.text) : state.snap.rpc;
   // Secondary endpoints queue-wait by design (/slots) — their stall is the
   // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
   const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
   // cumulativeIngest = total prompt tokens processed since engine boot
-  state.snap = { up: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path };
+  state.snap = { up: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path, rpc };
   state.polledOnce = true;
   notify();
 }

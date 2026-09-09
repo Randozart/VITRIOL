@@ -205,6 +205,13 @@ export default function (pi: ExtensionAPI) {
     if (eng.total > 0) {
       lines.push(truncate(sc(MUTED, `${fmtTokens(eng.total)} decoded this boot`), CONTENT_W));
     }
+    // Distributed row-split (owner request 2026-09-09): when the engine
+    // loaded RPC servers (/props rpc_servers), surface the remote host —
+    // the engine's truth, not the config file (which can drift).
+    if (eng.rpc.length > 0) {
+      const hosts = eng.rpc.map((s) => s.split(":")[0]).join(",");
+      lines.push(truncate(sc(MUTED, "rpc ") + sc(SOLVENT, hosts), CONTENT_W));
+    }
     return lines;
   });
 

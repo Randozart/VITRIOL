@@ -115,6 +115,34 @@ Accessed via `vitriol config` at the terminal. All settings are persisted to `~/
 
 ---
 
+## `[gpu] rpc_servers` (config key, no CLI flag / env)
+
+Row-split layer offload to a remote machine over the llama.cpp RPC backend.
+Comma-separated list of `host:port` (e.g. `100.x.y.z:50052`).
+
+Requirements:
+- **Both** ends built with `-DGGML_RPC=ON` (else `--rpc` is rejected and the
+  RPC device never appears). See `docs/DISTRIBUTED_INFERENCE.md` for the full
+  setup, the op-count/protocol version fix, and the box B `ggml-rpc-server`
+  systemd unit.
+- A remote `ggml-rpc-server` listening on the mesh (box B), reachable from
+  box A.
+- `tensor_split` becomes a **3-way** split with one entry per device:
+  `[boxB, GPU0, GPU1]` summing to 1.0. RPC devices land at the FRONT of the
+  device list, so box B's layers process every token (position does not
+  amortize the cost).
+
+Impact on the fingerprint: `rpc=<host:port>` is appended when set (both serve
+paths and `config bless`). Topology-bearing — the flag-provenance rule
+(AGENTS.md) requires it in every launch fingerprint.
+
+Trade-off: decode ~10-11 t/s vs ~19 t/s local; prefill is box-B
+DDR5-bandwidth-bound (~6-20 t/s). The win is capacity — box B's large unified
+memory holds KV/context box A's VRAM cannot. Load the `qwen38-distributed`
+profile for a measured split.
+
+---
+
 ## Recommended Configs by Use Case
 
 ### Max throughput (daily OpenCode use)

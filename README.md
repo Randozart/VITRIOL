@@ -271,6 +271,16 @@ per-device pin ranges (`VITRIOL_PIN_FIRST_N_LAYERS_GPU<d>`) let each card be
 tuned to its own headroom. The calibration tool (`vitriol calibrate --quick`)
 computes VRAM from GGUF tensor data — no hardcoded model constants.
 
+### Distributed operation (row-split over RPC)
+
+A second machine can host a slice of the layers over the llama.cpp RPC
+backend (raw TCP on a Tailscale mesh): `[gpu] rpc_servers = <host:port>` and
+a 3-way `-ts [boxB, GPU0, GPU1]`. Load `qwen38-distributed` profile to get the
+measured split (5% to box B). The win is **capacity** — box B's large unified
+memory holds KV/context box A's VRAM cannot — at a decode cost (~10-11 t/s vs
+18.94 local; prefill is box-B bandwidth-bound). Full setup, measured table, and
+limits: `docs/DISTRIBUTED_INFERENCE.md`.
+
 ## Hardware & Compatibility
 
 ### Tested daily driver

@@ -2440,3 +2440,49 @@ Reports: `.opencode/plans/vitriol-sycl-dispatch-fix-2026-09-06.md`, `.opencode/p
 ### Status
 
 DONE — gpt-oss serving as daily driver @ ~23-25 t/s, remote path proven. Flash-Next stays on disk; swapable back by editing the unit. gpt-oss `sliding_window` disables cache-reuse by design; no E19 requant done (MXFP4 already faster than the 15.6 t/s kernel-penalty baseline — that number was swap-contaminated too).
+
+## 2026-09-16 — Dual RTX 3060 12GB: full native 262K + MTP (Lapis Occultus retarget)
+
+**Session:** 2026-09-16 20:30 → 22:35 (Randy-PC)
+**Hardware change:** GTX 1070 Ti 8GB + box B RPC removed → 2x RTX 3060 12GB (sm_86 symmetric), host RAM 16→32 GiB.
+**Model:** Qwen3.8-27B Q3_K_M (qwen35 hybrid SSM+attention, 65 layers, 17 attn, 48 SSM, embedded MTP head)
+**Config (blessed 2026-09-16T22:29:52):** `ts=24,24 c=262144 kv=q4_0/q4_0 fa=on ub=64 mode=off engine=vitriol-dma ckpt=8192 ckpts=4 lru=0 sparse=sparse score=probe pool_reset=0 spec=mtp:1 par=1 ssp=1 cram=2048 cis=0`
+**Fingerprint diff vs prior blessed:** `ts 24,12→24,24`, `c 81920→262144`, `cram 256→2048`. spec=mtp:1 unchanged.
+
+### Key discovery — hybrid arch makes 262K+MTP fit locally
+
+- `full_attention_interval=4`: only ~17/65 layers attend; KV ≈ 19.1 KiB/token @ q4_0 → 5.1 GiB at full 262144 (dense-arch equivalent would be ~19 GiB).
+- Total load ~21 GiB in 23.3 GiB usable. GPU0 10.6 GiB / GPU1 11.7 GiB at load (dev0 carries display).
+- The old "262K + MTP does NOT fit (Pascal compute buffers)" rule is dead — dual Ampere fits it.
+
+### Build fix
+
+Upstream merge renamed spec type: `--spec-type mtp` errored (`draft-mtp` only). Restored `mtp` alias in `llama.cpp/common/speculative.cpp` to keep blessed `spec=mtp:1` fingerprints valid. Rebuilt `llama-server`.
+
+### Benchmarks (3x64, fingerprint-tagged)
+
+| config | decode t/s | notes |
+|---|---|---|
+| old 3060+1070Ti c81920 MTP | 18.94 | pre-change |
+| dual 3060 c262144 MTP shallow | **22.85** (22.91/22.84/22.82) | +21% |
+| dual 3060 c262144 MTP @245534 filled | **19.54** (19.05/19.05/20.52) | depth cert |
+
+### Depth cert — PASSED (no OOM)
+
+`depth_cert.py --window 262144 --target 245760 --ts 24,24 --kv q4_0 --spec`: filled 245534 tok (22.7 min), 3x64 decode 19.05/19.05/20.52 t/s, GPU util 53/59%, `oom: false`. Old 54K wall dead; full native ctx + MTP certified first time locally.
+
+### Tensor-sharing / vLLM parallelism verdict
+
+- `-sm row`: deleted upstream (#24216) — "device CUDA0 does not support split buffers".
+- `-sm tensor`: EXPERIMENTAL, crashes (fit unimplemented + meta_buf assert). Not fixable cheaply.
+- CUDA-graph capture: already automatic in ggml-cuda. vLLM TP port: not applicable (different engine).
+
+### Bugs fixed
+
+1. `depth_cert.py`: stale `--checkpoint-every-n-tokens` → `--checkpoint-min-step`.
+2. `depth_cert.py`: `--sample-util` help broke Python 3.14 argparse (`%`).
+3. **MTP draft context 1 GiB alloc OOMs on empty GPU1 without `--parallel 1`** (`allocating 1024.00 MiB on device 1: cudaMalloc failed: out of memory`). depth_cert now passes `--parallel 1` to match the launcher.
+
+### Status
+
+DONE — daily driver = Qwen3.8-27B @ 262K + MTP n=1 local, 19.5-22.9 t/s, self-contained (no box B). Report: `.opencode/plans/dual-3060-qwen38-fullctx-2026-09-16.md`. Follow-ups: tq3_0 KV arm, Q4_K_M quality ceiling, libvitriol hybrid-KV estimator, AGENTS.md refresh, hardware.json refresh.

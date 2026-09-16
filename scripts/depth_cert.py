@@ -25,7 +25,7 @@ def main():
     ap.add_argument("--kv", default="tq3_0")
     ap.add_argument("--no-substrate", action="store_true")
     ap.add_argument("--no-vmm", action="store_true")
-    ap.add_argument("--sample-util", action="store_true", help="sample GPU util% during run")
+    ap.add_argument("--sample-util", action="store_true", help="sample GPU utilization during run")
     ap.add_argument("--spec", action="store_true", help="enable MTP speculative decoding n=1")
     ap.add_argument("--spec-draft-model", type=str, default=None, help="separate MTP head gguf")
     ap.add_argument("--no-mmap", action="store_true")
@@ -58,11 +58,13 @@ def main():
            "-t", "4",
            *([] if a.ts == "none" else ["-ts", a.ts]),
            *([] if not a.fa else ["-fa", a.fa]),
-           *([] if not a.spec else (["--spec-type", "mtp", "--spec-draft-n-max", "1"] +
+           *([] if not a.spec else (["--spec-type", "mtp", "--spec-draft-n-max", "1",
+               "--spec-draft-ngl", "all"] +
               ([] if not a.spec_draft_model else ["--spec-draft-model", a.spec_draft_model]))),
            *(["--no-mmap"] if a.no_mmap else []),
            "--cache-type-k", a.kv, "--cache-type-v", a.kv,
-           "--ctx-checkpoints", "4", "--checkpoint-every-n-tokens", "8192",
+           "--ctx-checkpoints", "4", "--checkpoint-min-step", "8192",
+           "--kv-unified", "--cache-ram", "2048", "--parallel", "1",
            "--host", "127.0.0.1", "--port", "8299"]
     log = f"/tmp/opencode/dc-{a.tag}.log"
     with open(log, "w") as lf:

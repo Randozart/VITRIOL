@@ -2486,3 +2486,45 @@ Upstream merge renamed spec type: `--spec-type mtp` errored (`draft-mtp` only). 
 ### Status
 
 DONE — daily driver = Qwen3.8-27B @ 262K + MTP n=1 local, 19.5-22.9 t/s, self-contained (no box B). Report: `.opencode/plans/dual-3060-qwen38-fullctx-2026-09-16.md`. Follow-ups: tq3_0 KV arm, Q4_K_M quality ceiling, libvitriol hybrid-KV estimator, AGENTS.md refresh, hardware.json refresh.
+
+## 2026-09-16/17 — GPU Optimization Sweep: all levers tested, ubatch is the only winner
+
+**Session:** 2026-09-16 23:00 -> 2026-09-17 08:57
+**Hardware:** 2x RTX 3060 12GB (sm_86, symmetric, no NVLink)
+**Config:** ts=24,24 c=262144 kv=q4_0/q4_0 fa=on spec=mtp:1 par=1 cram=2048
+**Baseline:** 22.89 t/s (ub=64, no env vars)
+
+### Results (3x64 shallow, /completion, fingerprint-tagged)
+
+| Test | t/s | vs baseline | Notes |
+|---|---|---|---|
+| Baseline (ub=64) | 22.89 | — | |
+| GGML_CUDA_GRAPH_OPT=1 | 23.38 | +2.1% | Concurrent QKV in CUDA graphs |
+| GGML_CUDA_CUBLAS_COMPUTE_TYPE=bf16 | 23.48 | +2.6% | bf16 tensor cores |
+| GGML_CUDA_P2P=1 | 23.57 | +3.0% | Peer access; no help for layer-split |
+| **ub=128** | **23.67** | **+3.2%** | **Main lever. 135 MiB free GPU1.** |
+| ub=256 | OOM | — | GPU1 can't fit MTP draft |
+| tq3_0 K + q4_0 V | 16.55 | -27.7% | Hadamard transform overhead kills decode |
+| Combined (GRAPH_OPT+bf16+ub=128) | 23.63 | +3.2% | Gains don't compound |
+| All flags (P2P in combo) | 23.28 | +1.7% | P2P hurts in combos |
+| -sm tensor | CRASH | — | Assert + Vulkan OOM fallback |
+| No MTP + ub=128 | 15.24 | -33.4% | MTP provides +55% speedup |
+
+### Key findings
+
+1. **ubatch 64->128 is the only meaningful lever** (+3.2%). Simple, free, safe.
+2. CUDA env vars (GRAPH_OPT, bf16) are marginal (+2-3%) and don't compound with ub=128.
+3. P2P hurts when combined with other flags — not worth the complexity.
+4. **tq3_0 K is a net LOSS** (-27.7%): Hadamard transform dequantization overhead > VRAM savings. V-side tq3_0 is also KNOWN BROKEN on CUDA.
+5. -sm tensor is dead: crashes, no NVLink means PCIe allreduce would kill perf anyway.
+6. MTP is the dominant lever (+55%). ubatch is +3% on top.
+
+### Changes applied
+
+- `~/.vitriol/config`: `ubatch_size` 64 -> 128
+- `scripts/vitriol`: Added `GGML_CUDA_GRAPH_OPT=1` + `GGML_CUDA_CUBLAS_COMPUTE_TYPE=bf16` to both detached env blocks
+- Blessed fingerprint (2026-09-17T08:56:54): ub=128
+
+### Status
+
+DONE — daily driver optimized: ub=128, GRAPH_OPT=1, bf16. 23.5-23.9 t/s (was 22.9). Report: `.opencode/plans/gpu-optimization-sweep-2026-09-16.md`.

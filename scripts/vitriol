@@ -2534,6 +2534,8 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                 # Start llama-server on external port directly
                 env \
                     CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+                    GGML_CUDA_GRAPH_OPT=1 \
+                    GGML_CUDA_CUBLAS_COMPUTE_TYPE=bf16 \
                     VITRIOL_MODE="$MODE" \
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
@@ -2911,9 +2913,11 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         echo "NOTE: Run 'vitriol setup' first for CAP_IPC_LOCK on llama-bench"
         echo ""
 
-        env \
-            CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
-            VITRIOL_MODE="$MODE" \
+                env \
+                    CUDA_VISIBLE_DEVICES="$CUDA_DEVICES" \
+                    GGML_CUDA_GRAPH_OPT=1 \
+                    GGML_CUDA_CUBLAS_COMPUTE_TYPE=bf16 \
+                    VITRIOL_MODE="$MODE" \
             VITRIOL_LRU_MB="$LRU_MB" \
             VITRIOL_OUTPUT_CACHE="$OUTPUT_CACHE" \
             VITRIOL_PIN_FIRST_N_LAYERS="$PIN_FIRST_N_LAYERS" \

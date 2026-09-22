@@ -1,4 +1,4 @@
 [submodule "llama.cpp"]
 	path = llama.cpp
 	url = https://github.com/Randozart/llama.cpp.git
-	branch = vitriol-mellum2
+	branch = main

@@ -137,6 +137,40 @@ until B2 lands — recorded for truthfulness.
 
 ### C1 IN PROGRESS (multi-hop constrained-reasoning variant)
 
+### C1/C2 DONE 2026-09-22 14:00
+
+- C1 outer commit `308097d`: multi-hop constrained variant (final-only
+  output, 400-token cap with --no-thinking). Now deterministic but measures
+  model arithmetic capability, not quant quality (documented; model misses
+  chained XOR/arith final values even at zero depth - verified).
+- C2 outer commit `85a53c9`: AGENTS.md drift fixed (lull-kv on main, Stage 6
+  resolved, GSQ-RCO blessed + dual-3060 LIVE CONFIG, orphaned 1070-Ti text
+  removed).
+
+### D1 DONE 2026-09-22 15:00 (integration + final cert)
+
+- Inner fork clean at fa7a75f4e (3 VITRIOL commits on ab61c2a01, 0-behind
+  upstream). Unit restarted on final binary.
+- Final blessed-geometry cert on integrated engine: 200k @ 24.08 t/s,
+  245k (244,778 filled) @ 23.55 t/s, probe:true, no OOM. Sparse probe costs
+  ~1 t/s at depth (24.85->23.55 vs A1 no-probe) - accepted for the
+  preservation contract.
+- Unit active, fingerprint `sparse=sparse score=probe` now TRUTHFUL (probe
+  real, verified live).
+- Master plan COMPLETE. All stages done.
+
+## Outcome summary
+
+- GSQ-RCO IQ3_S-mtp blessed (+22-26% decode, flat depth).
+- lull-kv sparse restored to main (probe scoring, evict_sparse, eager floor,
+  ejected counter + gauge) - the silent-no-op hole is closed AND the guard
+  now checks the real linked lib.
+- Per-device KV quant + tool-reminder ported.
+- Bounded metrics already-present; obsolete features evaluated not-ported.
+- Multi-hop test deterministic; docs truthful.
+- Next (out of scope): duo-393K cutover can now lean on real sparse; the
+  probe overhead at depth is worth a follow-up tuning pass (VITRIOL_KV_SCORE_EVERY).
+
 ## Constraints (invariants)
 
 - Residency rule: mode=off (model fits).

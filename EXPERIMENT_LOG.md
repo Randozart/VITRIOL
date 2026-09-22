@@ -2528,3 +2528,22 @@ DONE — daily driver = Qwen3.8-27B @ 262K + MTP n=1 local, 19.5-22.9 t/s, self-
 ### Status
 
 DONE — daily driver optimized: ub=128, GRAPH_OPT=1, bf16. 23.5-23.9 t/s (was 22.9). Report: `.opencode/plans/gpu-optimization-sweep-2026-09-16.md`.
+
+## 2026-09-22 15:00 — VITRIOL hardening (lull-kv restore + GSQ-RCO bless)
+
+Engine: GSQ-RCO-IQ3_S-mtp (blessed), dual 3060, c=262144 ts=24,24 ub=128
+kv=q4_0/q4_0 fa=on spec=mtp:1, fingerprint truthful sparse=probe.
+
+| filled | Q3_K_M t/s | GSQ-RCO t/s (A1 no-probe) | GSQ-RCO t/s (D1 probe) |
+|---|---|---|---|
+| 8k | 19.30 | 23.54 | — |
+| 64k | 20.55 | 25.21 | — |
+| 200k | 20.30 | 24.85 | 24.08 |
+| 245k | 19.79 | 24.85 | 23.55 |
+
+lull-kv sparse ported to main (inner 6f9316128): probe active
+(n_kv=256 layers=1 decay=0.90 at shallow; n_kv=16128 at 262K),
+evict_sparse + eager floor + kv_ejected_total gauge live. Probe costs
+~1 t/s at 245K depth - accepted. Per-device KV quant (d86cdbb59) and
+tool-reminder (fa7a75f4e) ported. Guard symlink bug fixed (3d6c5f1).
+Master plan: .opencode/plans/vitriol-hardening-master-2026-09-22.md

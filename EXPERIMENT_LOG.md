@@ -2547,3 +2547,23 @@ evict_sparse + eager floor + kv_ejected_total gauge live. Probe costs
 ~1 t/s at 245K depth - accepted. Per-device KV quant (d86cdbb59) and
 tool-reminder (fa7a75f4e) ported. Guard symlink bug fixed (3d6c5f1).
 Master plan: .opencode/plans/vitriol-hardening-master-2026-09-22.md
+
+## 2026-09-22 17:10 — Attention-probe depth gate (VITRIOL_KV_SCORE_MIN_FILL)
+
+The lull-kv probe scored every cadence step regardless of cache fill,
+paying graph-rebuild + stream-sync on each scored decode. Measured ~18%
+shallow-decode penalty: 24.3 t/s (probe off) vs 19.8 t/s (probe on, every
+16) on 64-token turns.
+
+Fix: process_ubatch arms the probe only when kv-cache fill >=
+VITRIOL_KV_SCORE_MIN_FILL (default 0.5), via dynamic_cast to
+llama_kv_cache_context + fill_ratio() (n_kv/get_size).
+
+| scenario | fill | probe | decode t/s |
+|---|---|---|---|
+| shallow, no gate | 0.03 | scored | 19.8 |
+| shallow, gated | 0.03 | skipped | 25.2-26.0 (unit: 24.7-25.9) |
+| deep, gated | 0.59 | scored 4804/4864 cells | 20.9 |
+
+Commits: inner 229238384 (gate), outer 5b5c5c1 (launcher wiring),
+submodule pin. Unit restarted, shallow decode penalty eliminated.

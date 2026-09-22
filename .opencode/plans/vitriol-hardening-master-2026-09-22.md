@@ -182,3 +182,12 @@ until B2 lands — recorded for truthfulness.
   cert geometry adjusts (reduced ctx if needed, stated).
 - Inner fork untouched except deliberate ports; builds target sm_86 (both
   cards are RTX 3060 Ampere).
+### PROBE DEPTH GATE 2026-09-22 17:10 (post-master follow-up)
+
+The lull-kv probe scored every cadence step regardless of cache fill -
+~18% shallow-decode penalty (24.3 -> 19.8 t/s on 64-token turns), the
+daily driver's dominant workload. Fixed: process_ubatch arms the probe
+only when fill >= VITRIOL_KV_SCORE_MIN_FILL (default 0.5), via
+dynamic_cast + fill_ratio(). Shallow gated: 25.2-26.0 t/s, zero score-
+applies; deep (0.59 fill): scored 4804/4864 cells. Inner 229238384,
+outer 5b5c5c1, config key kv.score_min_fill. EXPERIMENT_LOG 2026-09-22.

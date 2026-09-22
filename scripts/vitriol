@@ -246,6 +246,7 @@ DEFAULT_KV_MODE="standard"
 # (certified; cadence 4 was rejected by the owner — ejected too hard).
 DEFAULT_KV_SCORE=""
 DEFAULT_KV_SCORE_EVERY="16"
+DEFAULT_KV_SCORE_MIN_FILL="0.5"
 DEFAULT_FROZEN_PROMPT="off"
 DEFAULT_SEMANTIC_MODE="off"
 DEFAULT_KV_QUANT="q4_0"
@@ -298,6 +299,7 @@ CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
 CFG_KV_MODE="$DEFAULT_KV_MODE"
 CFG_KV_SCORE="$DEFAULT_KV_SCORE"
 CFG_KV_SCORE_EVERY="$DEFAULT_KV_SCORE_EVERY"
+CFG_KV_SCORE_MIN_FILL="$DEFAULT_KV_SCORE_MIN_FILL"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
 CFG_SEMANTIC_MODE="$DEFAULT_SEMANTIC_MODE"
 CFG_KV_QUANT="$DEFAULT_KV_QUANT"
@@ -376,8 +378,10 @@ parse_config() {
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
                 kv.mode)               CFG_KV_MODE="$val" ;;
-                kv.score)              CFG_KV_SCORE="$val" ;;
-                kv.score_every)        CFG_KV_SCORE_EVERY="$val" ;;
+kv.score)              CFG_KV_SCORE="$val" ;;
+         kv.score_every)        CFG_KV_SCORE_EVERY="$val" ;;
+         kv.score_min_fill)     CFG_KV_SCORE_MIN_FILL="$val" ;;
+                kv.score_min_fill)     CFG_KV_SCORE_MIN_FILL="$val" ;;
                 kv.frozen_prompt)      CFG_FROZEN_PROMPT="$val" ;;
                 kv.quant_mode)         CFG_KV_QUANT="$val" ;;
                 kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
@@ -495,6 +499,10 @@ mode = $CFG_KV_MODE
 score = $CFG_KV_SCORE
 #   probe cadence in decode steps (default 16; 4 rejected — ejected too hard)
 score_every = $CFG_KV_SCORE_EVERY
+#   depth gate (2026-09-22): score only when cache fill >= this fraction
+#   (default 0.5). Short agent turns skip scoring - removes graph-rebuild +
+#   stream-sync overhead (~18% shallow-decode penalty).
+score_min_fill = $CFG_KV_SCORE_MIN_FILL
 # KV cache quantization: f16 | q8_0 | q4_0 (affects K cache only)
 quant_mode = $CFG_KV_QUANT
 # V cache quantization: f16 (default, safe) | q8_0 | q4_0 (RISK: quantizing V causes garbage output)
@@ -2012,6 +2020,7 @@ case "$CMD" in
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
         KV_SCORE="${VITRIOL_KV_SCORE:-${CFG_KV_SCORE}}"
         KV_SCORE_EVERY="${VITRIOL_KV_SCORE_EVERY:-${CFG_KV_SCORE_EVERY}}"
+        KV_SCORE_MIN_FILL="${VITRIOL_KV_SCORE_MIN_FILL:-${CFG_KV_SCORE_MIN_FILL}}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
@@ -2155,6 +2164,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_KV_MODE="$KV_MODE" \
             VITRIOL_KV_SCORE="$KV_SCORE" \
             VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
             VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
             VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
             VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2272,6 +2282,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         KV_MODE="${VITRIOL_KV_MODE:-${CLI_KV_MODE:-${CFG_KV_MODE}}}"
         KV_SCORE="${VITRIOL_KV_SCORE:-${CFG_KV_SCORE}}"
         KV_SCORE_EVERY="${VITRIOL_KV_SCORE_EVERY:-${CFG_KV_SCORE_EVERY}}"
+        KV_SCORE_MIN_FILL="${VITRIOL_KV_SCORE_MIN_FILL:-${CFG_KV_SCORE_MIN_FILL}}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
@@ -2481,6 +2492,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2525,6 +2537,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2548,6 +2561,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2611,6 +2625,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2656,6 +2671,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \
@@ -2673,6 +2689,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
+            VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
                     VITRIOL_SEMANTIC_MODE="$SEMANTIC_MODE" \
                     VITRIOL_KV_QUANT="$KV_QUANT" \

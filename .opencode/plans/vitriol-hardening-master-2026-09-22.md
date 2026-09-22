@@ -77,6 +77,34 @@ committed + reported.
 A1 → A2 → B1 → B2 → B3 → B4 → B5 → C1 → C2 → D1. B-stages each get a commit
 per AGENTS "commit after every stage".
 
+## Progress log
+
+### A1/A2 DONE 2026-09-22 11:00 (blessed-geometry cert + retarget)
+
+GSQ-RCO vs Q3_K_M, same geometry (c=262144 ts=24,24 ub=128 kv=q4_0/q4_0
+fa=on spec=mtp:1 ckpts=4 cram=2048), depth_cert 3x64 decode:
+
+| filled | Q3_K_M | GSQ-RCO | delta |
+|---|---|---|---|
+| 8k | 19.30 | 23.54 | +22% |
+| 32k | — | 22.11 | — |
+| 64k | 20.55 | 25.21 | +23% |
+| 128k | — | 24.58 | — |
+| 200k | 20.30 | 24.85 | +22% |
+| 245k | 19.79 | 24.85 | +26% |
+
+GSQ-RCO: no OOM marks (Q3_K_M had transient `cudaMalloc` 306 MiB hits on
+dev1 that recovered); 244,778 filled @ 24.85 t/s flat curve.
+Config blessed: `path` → GSQ-RCO-IQ3_S-mtp.gguf (single-field diff: model).
+Unit active, /health ok, "Lapis Occultus" serves. Fingerprint:
+`model=Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf ts=24,24 c=262144 kv=q4_0/q4_0
+fa=on ub=128 mode=off engine=vitriol-dma ckpt=8192 ckpts=4 lru=0
+sparse=sparse score=probe pool_reset=0 spec=mtp:1 par=1 ssp=1 cram=2048 cis=0`
+NOTE: `sparse=sparse` in fingerprint is STILL a no-op (engine lacks lull-kv)
+until B2 lands — recorded for truthfulness.
+
+### B1 IN PROGRESS (launcher guard symlink fix)
+
 ## Constraints (invariants)
 
 - Residency rule: mode=off (model fits).

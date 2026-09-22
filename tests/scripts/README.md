@@ -54,7 +54,13 @@ experiment records.
   `reasoning_content` and emit empty `content` (2026-09-22: GSQ-RCO KV-recall
   "0/8" was this artifact; 8/8 with `--no-thinking`). Run KV/ledger accuracy
   tests with `--no-thinking` for stable protocol.
-- **Multi-hop dependency test is not discriminative** for verbose-reasoning
-  models: they compute intermediate XORs in long reasoning and exhaust the
-  token budget before the final answer (fails identically on Q3_K_M and
-  GSQ-RCO). Treat as design-artifact, not a quant signal.
+- **Multi-hop dependency test** (2026-09-22, constrained variant): the
+  original asked for all intermediates -> verbose-reasoning models exhausted
+  the token budget before var_h (fails identically on Q3_K_M and GSQ-RCO,
+  a truncation artifact). Constrained variant now demands final-only output
+  and caps tokens (400 with --no-thinking). It is now DETERMINISTIC (clean
+  'FINAL_VALUE: <n>' emission, no truncation) but measures MODEL arithmetic
+  capability without showing work, not KV-quant quality: even at near-zero
+  depth the model misses chained XOR/arith final values (verified 8-stage
+  no-filler probes). Treat as a model-capability signal, not a quant
+  discriminator; KV recall + extreme-precision are the discriminative tests.

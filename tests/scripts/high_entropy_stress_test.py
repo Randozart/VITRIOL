@@ -9,11 +9,13 @@
 
 """
 High-Entropy Long-Context Stress Test:
-Comparing 4,3 vs 4,2 KV Cache Quantization Boundaries.
+Comparing KV Cache Quantization Boundaries.
 
 Tests:
 1. High-Entropy Key-Value Associative Recall (10 random alphanumeric keys & values buried in 50k tokens)
 2. Multi-Hop Variable Tracking across 8 sequential dependency stages in 50k tokens
+   (2026-09-22 constrained variant: final-only output; measures model arithmetic
+    capability without showing work, not quant quality - see tests/scripts/README)
 3. Multi-Value Filtering & Set Aggregation across 50 database records
 """
 
@@ -226,12 +228,13 @@ def test_multi_hop_variable_tracking(url, model="qwen3.8-27b", api_key="", total
         f"{doc_text}\n\n"
         "TASK:\n"
         "Trace the 8-stage sequential ALU pipeline transformations (var_a through var_h) defined in the document above.\n"
-        "Calculate the exact intermediate values for var_a, var_b, var_c, var_d, var_e, var_f, var_g, and the final value of var_h.\n"
-        "State the final value of var_h clearly at the end: 'FINAL_VALUE: <number>'."
+        "Calculate the final value of var_h. Do NOT show intermediate steps, do NOT explain your reasoning.\n"
+        "Respond with ONLY this exact line, nothing else: 'FINAL_VALUE: <number>'"
     )
     
     print(f"  Ingesting ~{total_blocks * 100:,} tokens with 8 sequential multi-hop dependencies...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, enable_thinking=(not no_thinking), model=model, api_key=api_key)
+    max_gen = 400 if no_thinking else 1500
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=max_gen, temperature=0.0, enable_thinking=(not no_thinking), model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     text = res["text"]

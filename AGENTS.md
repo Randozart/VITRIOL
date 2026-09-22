@@ -40,7 +40,7 @@
 
 ## Code Conventions
 
-- This is a fork of `ggml-org/llama.cpp` with VITRIOL modifications. **`main` is the canonical daily-driver branch in BOTH repos** (consolidated 2026-09-01 — see `.opencode/plans/branch-consolidation-2026-09-01.md`). Outer repo: all feature work lives on `main` (was `officina`). Inner fork (`llama.cpp/`): `main` is the live line ported onto ggml-org upstream (was `vitriol-ku`); `vitriol` is the frozen pre-port archive, `master` tracks the fork's published state. `lull-kv` lives in the `VITRIOL-lull` worktree.
+- This is a fork of `ggml-org/llama.cpp` with VITRIOL modifications. **`main` is the canonical daily-driver branch in BOTH repos** (consolidated 2026-09-01 — see `.opencode/plans/branch-consolidation-2026-09-01.md`). Outer repo: all feature work lives on `main` (was `officina`). Inner fork (`llama.cpp/`): `main` is the live line ported onto ggml-org upstream (was `vitriol-ku`); `vitriol` is the frozen pre-port archive, `master` tracks the fork's published state. **lull-kv (probe-scored sparse KV) was ported from the `VITRIOL-lull` worktree to `main` 2026-09-22** (inner commits 6f9316128 + d86cdbb59 + fa7a75f4e) — `VITRIOL-lull` is now historical; do not branch feature work there.
 - The VITRIOL predictor is in `ggml/src/ggml-cuda/vitriol-cuda-integration.cpp`.
 - The server context checkpoint logic is in `tools/server/server-context.cpp`.
 - All VITRIOL env vars are prefixed with `VITRIOL_`.
@@ -141,19 +141,12 @@ applies, but the records are kept as-is for accuracy.)
 
 ## Qwen3.8-27B Dual-GPU Config (RTX 3060 + GTX 1070 Ti)
 
-Model: `~/Downloads/Qwen3.8-27B-Q3_K_M.gguf` (unsloth, qwen35 arch, embedded MTP head).
+Model: `~/Downloads/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` (ISTA-DASLab, qwen35 arch, embedded MTP head) — **BLESSED 2026-09-22** (replaces Q3_K_M: +22-26% decode at blessed geometry, flat depth curve, no transient alloc failures; cert `.opencode/plans/gsq-rco-vendor-qual-2026-09-22.md` + master plan A1).
 
-**LIVE CONFIG (blessed 2026-09-06, ts 24,12)**: `~/.vitriol/config` runs
-`-ts 24,12` (2026-09-06 same-day ladder: 22,14 put the 1070 Ti at 98.3%
-VRAM / 58 MiB free; 26,10 fixed that but tipped pressure to the 3060
-(85.8%, and dev0 carries display + depth-creep); **24,12 balances both at
-~81%** — GPU 0 81.3% / 2.3 GiB free, GPU 1 81.5% / 1.5 GiB free, median
-13.10 t/s vs 13.65 (26,10) / 12.80 (22,14) same-methodology — see
-`.opencode/plans/session-leak-gpu-rebalance-2026-09-06.md`),
-ctx 81920, `parallel = 1`, q4_0 KV, `[spec] type=mtp draft_n_max=1` —
-pinned via `vitriol config bless`; launch fingerprints carry `spec=` and
-`par=` since 2026-09-04. The 22,14 references below (depth cert,
-MTP A/B) are the 2026-09-04-era operating point — historical.
+**LIVE CONFIG (blessed 2026-09-22, ts 24,24)**: `~/.vitriol/config` runs
+the 2026-09-16 dual-3060 retarget (ts 24,24, c 262144, ub 128, GSQ-RCO
+model) with MTP n=1 + sparse probe (lull-kv on main since 2026-09-22).
+Historical ts 24,12 lines below are 1070-Ti-era — superseded.
 
 Saved VITRIOL profiles (load with `vitriol config load <name>`):
 
@@ -243,8 +236,9 @@ Aug-31 silent-no-op regression post-mortem).
   `⤓ Nk` in Officina's ctx row. Preservation layer: scratchpad +
   task-state tails re-inject every turn and are carried abroad by the
   TUI bridge; task tail states the eviction contract.
-- **Stage 6 standing**: port lull-kv → main (llama-kv-cache divergence +
-  `vitriol-kv-probe.*`). Slot save/restore RESOLVED 2026-09-04: the
+- **Stage 6 RESOLVED 2026-09-22**: lull-kv ported to main (inner commit
+  `6f9316128` — vitriol-kv-probe + evict_sparse + eager floor + counter +
+  prometheus gauge; verified live `VITRIOL_KV_SCORE: probe active`). Slot save/restore RESOLVED 2026-09-04: the
   endpoints exist in lull (server-context.cpp post_slots) — they were
   gated by the multimodal engine (`--mmproj` → 501 "not supported by
   multimodal"), which also silenced the entire persistence chain (startup

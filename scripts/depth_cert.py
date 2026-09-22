@@ -32,6 +32,8 @@ def main():
     ap.add_argument("--gen", type=int, default=64)
     ap.add_argument("--fa", type=str, default=None)
     ap.add_argument("--mode", default="off", help="VITRIOL_MODE: off|stream|sync|async")
+    ap.add_argument("--ckpts", type=int, default=4, help="RAM checkpoint ring depth (0 forbidden)")
+    ap.add_argument("--cache-ram", type=int, default=2048, help="host KV reservoir MiB")
     a = ap.parse_args()
     fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=%s ub=%d mode=%s substrate=%s" %
           (os.path.basename(a.model), a.ts, a.window,
@@ -39,6 +41,7 @@ def main():
            a.mode,
            'off' if a.no_substrate else 'on'))
     fp += " pool_reset=" + os.environ.get('VITRIOL_POOL_RESET','0')
+    fp += " ckpts=%d cram=%d" % (a.ckpts, a.cache_ram)
 
     env = dict(os.environ)
     env["VITRIOL_MODE"] = a.mode
@@ -63,8 +66,8 @@ def main():
               ([] if not a.spec_draft_model else ["--spec-draft-model", a.spec_draft_model]))),
            *(["--no-mmap"] if a.no_mmap else []),
            "--cache-type-k", a.kv, "--cache-type-v", a.kv,
-           "--ctx-checkpoints", "4", "--checkpoint-min-step", "8192",
-           "--kv-unified", "--cache-ram", "2048", "--parallel", "1",
+            "--ctx-checkpoints", str(a.ckpts), "--checkpoint-min-step", "8192",
+            "--kv-unified", "--cache-ram", str(a.cache_ram), "--parallel", "1",
            "--host", "127.0.0.1", "--port", "8299"]
     log = f"/tmp/opencode/dc-{a.tag}.log"
     with open(log, "w") as lf:

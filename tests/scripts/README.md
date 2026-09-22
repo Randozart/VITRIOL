@@ -49,3 +49,12 @@ experiment records.
 - Accuracy arms (stress tests) should run with sparse-KV eviction OFF
   (fixed KV) so quantization is the only variable; throughput arms run the
   live config. Record which in the experiment report.
+- **Thinking budget caveat**: llama-server defaults `enable_thinking` ON for
+  the Qwen3 template; a reasoning model can spend the whole token budget in
+  `reasoning_content` and emit empty `content` (2026-09-22: GSQ-RCO KV-recall
+  "0/8" was this artifact; 8/8 with `--no-thinking`). Run KV/ledger accuracy
+  tests with `--no-thinking` for stable protocol.
+- **Multi-hop dependency test is not discriminative** for verbose-reasoning
+  models: they compute intermediate XORs in long reasoning and exhaust the
+  token budget before the final answer (fails identically on Q3_K_M and
+  GSQ-RCO). Treat as design-artifact, not a quant signal.

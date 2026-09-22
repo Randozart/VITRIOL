@@ -28,7 +28,7 @@ import argparse
 
 DEFAULT_API_URL = "http://127.0.0.1:8279/v1/chat/completions"
 
-def call_model(url, messages, max_tokens=1500, temperature=0.0, enable_thinking=False, timeout=600, model="qwen3.8-27b", api_key=""):
+def call_model(url, messages, max_tokens=1500, temperature=0.0, enable_thinking=False, no_thinking=False, timeout=600, model="qwen3.8-27b", api_key=""):
     payload = {
         "model": model,
         "messages": messages,
@@ -38,6 +38,8 @@ def call_model(url, messages, max_tokens=1500, temperature=0.0, enable_thinking=
     }
     if enable_thinking:
         payload["chat_template_kwargs"] = {"enable_thinking": True}
+    elif no_thinking:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -99,7 +101,7 @@ FILLER_BLOCK = (
     "Memory cgroups enforce hierarchical resource isolation, throttling writeback bandwidth when limits are exceeded. "
 ) # ~100 tokens
 
-def test_high_entropy_kv_recall(url, model="qwen3.8-27b", api_key="", total_blocks=500):
+def test_high_entropy_kv_recall(url, model="qwen3.8-27b", api_key="", total_blocks=500, no_thinking=False):
     print("\n" + "="*80)
     print("STRESS TEST 1: High-Entropy Associative Key-Value Recall (10 Targets in 50k Tokens)")
     print("="*80)
@@ -164,7 +166,7 @@ def test_high_entropy_kv_recall(url, model="qwen3.8-27b", api_key="", total_bloc
     )
     
     print(f"  Ingesting ~{total_blocks * 100:,} tokens with {len(kv_pairs)} associative high-entropy key-value pairs...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0, model=model, api_key=api_key)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1000, temperature=0.0, no_thinking=no_thinking, model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     out = res["content"]
@@ -182,7 +184,7 @@ def test_high_entropy_kv_recall(url, model="qwen3.8-27b", api_key="", total_bloc
     print(f"  [Result]: {passed_keys}/{len(targets)} exact high-entropy matches. {'PASS' if success else 'FAIL'}")
     return {"name": "High-Entropy KV Recall (8/8)", "passed": success, "score": f"{passed_keys}/{len(targets)}"}
 
-def test_multi_hop_variable_tracking(url, model="qwen3.8-27b", api_key="", total_blocks=500):
+def test_multi_hop_variable_tracking(url, model="qwen3.8-27b", api_key="", total_blocks=500, no_thinking=False):
     print("\n" + "="*80)
     print("STRESS TEST 2: Multi-Hop Variable Tracking across 8 Dependency Stages in 50k Tokens")
     print("="*80)
@@ -229,7 +231,7 @@ def test_multi_hop_variable_tracking(url, model="qwen3.8-27b", api_key="", total
     )
     
     print(f"  Ingesting ~{total_blocks * 100:,} tokens with 8 sequential multi-hop dependencies...")
-    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, enable_thinking=True, model=model, api_key=api_key)
+    res = call_model(url, [{"role": "user", "content": prompt}], max_tokens=1500, temperature=0.0, enable_thinking=(not no_thinking), model=model, api_key=api_key)
     print(f"  Generated {res['completion_tokens']} tokens in {res['total_time_s']:.2f}s ({res['tok_per_sec']:.1f} tok/s)")
     
     text = res["text"]
@@ -245,6 +247,7 @@ def main():
     parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY", ""), help="API key")
     parser.add_argument("--fingerprint", default=os.environ.get("VITRIOL_FINGERPRINT", ""), help="VITRIOL-FINGERPRINT provenance string (flag-provenance doctrine)")
     parser.add_argument("--blocks", type=int, default=500, help="Filler block count (100 tokens each; 500 ~= 50k depth)")
+    parser.add_argument("--no-thinking", action="store_true", help="Force chat_template_kwargs.enable_thinking=False (server defaults thinking ON for Qwen3 templates)")
     parser.add_argument("--out", default="tests/results/stress_test_results.json", help="Path to output JSON")
     args = parser.parse_args()
     if args.fingerprint:
@@ -252,8 +255,8 @@ def main():
     
     results = []
     depth_tok = args.blocks * 100
-    results.append(test_high_entropy_kv_recall(args.url, model=args.model, api_key=args.api_key, total_blocks=args.blocks))
-    results.append(test_multi_hop_variable_tracking(args.url, model=args.model, api_key=args.api_key, total_blocks=args.blocks))
+    results.append(test_high_entropy_kv_recall(args.url, model=args.model, api_key=args.api_key, total_blocks=args.blocks, no_thinking=args.no_thinking))
+    results.append(test_multi_hop_variable_tracking(args.url, model=args.model, api_key=args.api_key, total_blocks=args.blocks, no_thinking=args.no_thinking))
     
     print("\n" + "="*80)
     print("STRESS TEST SUMMARY")

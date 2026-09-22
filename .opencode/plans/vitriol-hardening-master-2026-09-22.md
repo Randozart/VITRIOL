@@ -105,6 +105,38 @@ until B2 lands — recorded for truthfulness.
 
 ### B1 IN PROGRESS (launcher guard symlink fix)
 
+### B1/B2 DONE 2026-09-22 11:30 (guard fix + lull-kv sparse port)
+
+- Inner fork commit `6f9316128`: full lull-kv sparse port to main
+  (vitriol-kv-probe, score cells, evict_sparse, eager floor, counter,
+  prometheus gauge, graph-reuse disarm) + latent build-break fix
+  (missing llama-sampler.h include).
+- Outer commit `3d6c5f1`: kv_sparse_guard now readlink-resolves the
+  actually-linked libllama (was globbing dead lull-era libs).
+- Verified live on GSQ-RCO daily driver (unit, port 8279):
+  `VITRIOL_KV_SCORE: probe active, n_kv=256 layers=1 decay=0.90`,
+  `llamacpp:kv_ejected_total 0`, decode 28.8-29.3 t/s (no regression).
+  Fingerprint `sparse=sparse score=probe` is now TRUTHFUL.
+
+### B3 IN PROGRESS (bounded /metrics scrape)
+
+### B3/B4/B5 DONE 2026-09-22 13:00 (metrics already-present; per-device KV quant; tool-reminder)
+
+- B3: bounded /metrics scrape already in main (2026-09-04 merge, has own
+  plan doc). Nothing to port.
+- B4 inner commit `d86cdbb59`: per-device KV quant overrides
+  (VITRIOL_KV_QUANT[_K|_V]_GPU<d>). Verified: K_GPU0=q8_0 -> dev0
+  k:q8_0/v:q4_0, dev1 unchanged.
+- B5 inner commit `fa7a75f4e`: tool-reminder injection (VITRIOL_TOOL_REMINDER).
+  Verified: 144-byte reminder before generation marker on tools request.
+- B5 eval: split profiler (VITRIOL_LULL_PROFILE) already in main. NOT
+  ported (correctly obsolete on current HW): rectify.experts MoE tally
+  (dense GSQ-RCO / mode=off), VITRIOL_FUSE_MMVQ_PASCAL (Pascal-only; both
+  cards Ampere), PERF/CUGR decode diag (marginal), tree-sitter AST
+  compaction (1.8M-line vendored dep, risky, unused).
+
+### C1 IN PROGRESS (multi-hop constrained-reasoning variant)
+
 ## Constraints (invariants)
 
 - Residency rule: mode=off (model fits).

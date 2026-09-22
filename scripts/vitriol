@@ -26,12 +26,19 @@ SERVER_BINARY="${LLAMA_DIR}/build/bin/llama-server"
 kv_sparse_guard() {
     [ "$KV_MODE" = "sparse" ] || return 0
     local found=0 f
-    for f in "$SERVER_BINARY" "$LLAMA_DIR"/build/bin/libllama.so*; do
-        [ -f "$f" ] || continue
+    # Probe the ACTUALLY-LOADED libllama, not a glob of every version in the
+    # build dir. 2026-09-22 bug: the glob matched stale lull-era libs
+    # (libllama.so.0.0.133/.134) that still contained VITRIOL_KV_MODE while
+    # the runtime symlink libllama.so.0 -> libllama.so.0.4.0 pointed at a
+    # main-tree lib WITHOUT sparse — guard passed, engine silently no-opped.
+    for f in "$SERVER_BINARY" \
+             "$(readlink -f "$LLAMA_DIR"/build/bin/libllama.so 2>/dev/null)" \
+             "$(readlink -f "$LLAMA_DIR"/build/bin/libllama.so.0 2>/dev/null)"; do
+        [ -n "$f" ] && [ -f "$f" ] || continue
         if grep -qa "VITRIOL_KV_MODE" "$f" 2>/dev/null; then found=1; break; fi
     done
     if [ "$found" = 0 ]; then
-        echo "VITRIOL: REFUSING launch — config requests kv.mode=sparse but the engine has no sparse-KV code (VITRIOL_KV_MODE absent from $SERVER_BINARY and its libllama)." >&2
+        echo "VITRIOL: REFUSING launch — config requests kv.mode=sparse but the engine has no sparse-KV code (VITRIOL_KV_MODE absent from $SERVER_BINARY and its runtime-linked libllama)." >&2
         echo "         Rebuild an engine with lull-kv (VITRIOL-lull worktree) or set kv.mode = standard." >&2
         exit 1
     fi

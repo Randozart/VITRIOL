@@ -42,3 +42,22 @@ each depth, equivalence PASS/FAIL, VRAM creep, store-vs-mmap attribution.
 
 Ladder ONLY if Phase 0 passes. mmap baseline pathologically slow at depth =
 a finding (the store's reason to exist), noted not fought.
+
+## BLOCKER found 2026-09-23 (arm A first launch)
+
+Arm A failed to load: `ggml_backend_cuda_buffer_type_alloc_buffer: allocating
+29677 MiB on device 0: cudaMalloc OOM`. Root cause: expert weights were NOT
+routed to the VITRIOL buffer type - they went to normal CUDA buffers.
+
+- vitriol_get_expert_buffer_type_dev() is declared but never CALLED by the
+  loader for CUDA (dead code).
+- Commit 5fb6a67a9 fixed this routing for SYCL (make_cpu_buft_list extra-buft
+  discovery + supports_op MUL_MAT_ID-only). The CUDA path never got the same.
+- Consequence: flash-next (84G, 56G experts) cannot load at all - experts
+  demand ~30G CUDA buffer per GPU that does not exist.
+- This is PRE-EXISTING, affects store AND mmap paths equally. Not a store bug.
+
+Fix direction (separate commit): mirror 5fb6a67a9's make_cpu_buft_list logic
+for the CUDA backend - discover VITRIOL buft as an extra buft paired with the
+owning GPU, and have the CUDA supports_op claim MUL_MAT_ID-only for VITRIOL
+src0. Then re-run Phase 0.

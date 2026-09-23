@@ -89,3 +89,12 @@ Profile keys: `store.path=/dev/nvme0n1p3`, `store.zones=experts|kv|both`.
 ## Status
 
 - 2026-09-23 10:0x P0 staging in progress.
+- 2026-09-23 P0 done: 84G staged `/home/randozart/Downloads/staging-qwen38fn`,
+  byte-verified MATCH vs `/scratch/qwen38fn` (3 shards + fetch.log).
+  P1 script geometry-verified; p4-size guard fixed (`17051279`). Awaiting
+  interactive sudo run.
+- Toolchain verification (2026-09-23, feeds `docs/cpp26-conventions.md`):
+  store code per P2 will be C++26; contract-semantic flag on g++ 16.2 is
+  `-fcontract-evaluation-semantic=ignore` (`-fcontract-semantic` rejected);
+  `ignore` = zero cost (verified disasm `lea; ret`), but ignored contracts are
+  NOT optimizer assumptions (`idiv` survives `-O2`).

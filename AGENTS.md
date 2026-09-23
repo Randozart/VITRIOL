@@ -9,7 +9,11 @@ writing/editing VITRIOL C++ host code. Core rules: C++26 per-file on vitriol
 `-fcontract-evaluation-semantic=ignore` (zero runtime cost — never ship
 `enforce` on hot paths); typed pointers/`std::span`/`std::mdspan`; no
 pointer-as-integer keys, no C-casts, no raw alloc w/o RAII; `std::expected`
-for host errors; `[[assume]]` only after a contract proves the invariant.
+for host errors; `[[assume]]` only after a contract proves the invariant
+(state once via the guide's `VITRIOL_ASSUME_FROM_CONTRACT(cond)` helper — an
+ignored contract is NOT an optimizer assumption); hot inner-loop micro-APIs
+return scalars, not `std::expected` (SYSV ABI: keep `sizeof(expected) <= 16`);
+`std::hash<const void*>` does not mix bits — bit-mix for power-of-2 flat maps.
 `main()`-bearing harnesses (`vitriol_ce_d2b.cpp`, `vitriol_ce_spike.cpp`)
 must stay OUT of the ggml-cuda source GLOB.
 

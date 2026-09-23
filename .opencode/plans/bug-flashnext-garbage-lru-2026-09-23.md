@@ -28,6 +28,31 @@ Qwen3.8-Flash-Next-UD-Q3_K_XL (84G, qwen4exp arch) on 2x RTX 3060:
 2. Eager path's 56G host-RAM alloc is a sizing bug (should mmap GGUF via
    disk_offload, not alloc anon RAM).
 
+## ROOT CAUSE FOUND (2026-09-23, debug run)
+
+**Not an offset bug. It's RLIMIT_MEMLOCK = 8192 KB (8 MB).**
+
+- `ulimit -l` = 8192. `vitriol_ensure_expert_locked` mlock's each expert
+  slice; cumulative >8MB -> `mlock slice(921600) failed: Cannot allocate
+  memory` -> the lazy buffer pages are never locked/populated -> LRU reads
+  garbage -> "////////".
+- The `cudaHostUnregister failed: pointer does not correspond to a registered
+  memory region` is a secondary symptom: mlock failed -> register skipped ->
+  eviction unregisters an unregistered slice.
+- Eager path fails separately: 56G host-RAM alloc on 32G RAM box.
+- Flash-next (84G, 56G experts) fundamentally needs streaming + mlock beyond
+  8MB. The 27B daily driver is resident (fits VRAM) so it never hit this.
+- CAP_IPC_LOCK is NOT set on build/bin/llama-server (getcap empty).
+  AGENTS.md: CUDA pinned allocs don't count against RLIMIT_MEMLOCK, but plain
+  mlock DOES.
+
+## Fix
+
+`sudo vitriol setup` (sets CAP_IPC_LOCK on the binary) OR
+`sudo setcap cap_ipc_lock+ep build/bin/llama-server`. Then rerun arm A.
+Also consider: the lazy path could use cudaHostRegister-only (which bypasses
+RLIMIT_MEMLOCK per AGENTS.md) instead of mlock for the fill.
+
 ## Repro
 
 ```

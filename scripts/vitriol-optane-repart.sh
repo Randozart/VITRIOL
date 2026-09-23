@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+# --dry-run: verify preconditions + print the sfdisk input, touch nothing.
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
 DEV=/dev/nvme0n1
 SCRATCH_MNT=/scratch
 STAGE=/home/randozart/Downloads/staging-qwen38fn
@@ -36,7 +40,15 @@ sect() { cat "/sys/block/nvme0n1/nvme0n1$1/start" 2>/dev/null || die "no part $1
 siz() { cat "/sys/block/nvme0n1/nvme0n1$1/size"  2>/dev/null || die "no part $1 size"; }
 
 # --- precondition checks ----------------------------------------------------
-[ "$(id -u)" -eq 0 ] || die "must run as root (sudo)"
+# dry-run: preconditions are root-free (sysfs/du/findmnt); destructive steps need root
+if [ "$DRY_RUN" = "1" ] && [ "$(id -u)" -ne 0 ]; then
+    # fall through to dry-run preconditions below; skip the root gate + destructive steps
+    :
+elif [ "$(id -u)" -eq 0 ]; then
+    :
+else
+    die "must run as root (sudo) for a real repartition (use --dry-run to verify without root)"
+fi
 [ -b "$DEV" ] || die "no block device $DEV"
 
 # stage must exist + be verified by caller
@@ -64,13 +76,47 @@ if [ -b "${DEV}p3" ] && [ "$(sect p3)" = "$P3_START" ] && [ "$(siz p3)" = "$P3_S
 fi
 
 echo "== backing up GPT to $BACKUP"
-sfdisk -d "$DEV" > "$BACKUP" || die "sfdisk backup failed"
+if [ "$DRY_RUN" = "1" ]; then
+    echo "  [dry-run] (skipped: sfdisk -d needs root)"
+else
+    sfdisk -d "$DEV" > "$BACKUP" || die "sfdisk backup failed"
+fi
 
 echo "== unmounting $SCRATCH_MNT"
-umount "$SCRATCH_MNT" || die "umount failed (open files?)"
+if [ "$DRY_RUN" = "1" ]; then
+    if findmnt "$SCRATCH_MNT" >/dev/null 2>&1; then
+        echo "  [dry-run] $SCRATCH_MNT is mounted (will be unmounted)"
+    else
+        echo "  [dry-run] $SCRATCH_MNT not mounted (ok)"
+    fi
+else
+    umount "$SCRATCH_MNT" || die "umount failed (open files?)"
+fi
+
+# sfdisk refuses whole-disk repartition while any partition has a live swap.
+# p1 swap is 0B used (zram holds live swap); capture BEFORE sfdisk so restore
+# runs even if it was active.
+SWAP_P1="$(awk '$1 == "'"$DEV"'p1" {print $1}' /proc/swaps)"
+if [ -n "$SWAP_P1" ]; then
+    echo "== swapoff ${DEV}p1 (zram holds live swap; p1 is 0B used)"
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "  [dry-run] (skipped)"
+    else
+        swapoff "${DEV}p1" || die "swapoff ${DEV}p1 failed"
+    fi
+fi
 
 echo "== repartitioning: delete p2, recreate p2(96G)+p3(279G raw)"
 # Only p2 is deleted/recreated. p1 and p4 are NOT in the input.
+if [ "$DRY_RUN" = "1" ]; then
+    echo "  [dry-run] sfdisk input (NOT applied):"
+    echo "    ${DEV}p1 : start=${EXPECT_P1_START}, size=${EXPECT_P1_SIZE}, type=swap"
+    echo "    ${DEV}p2 : start=${P2_START}, size=${P2_SIZE}, type=linux"
+    echo "    ${DEV}p3 : start=${P3_START}, size=${P3_SIZE}, type=linux"
+    echo "    ${DEV}p4 : start=${EXPECT_P4_START}, size=${EXPECT_P4_SIZE}"
+    echo "  [dry-run] stopping before any destructive step"
+    exit 0
+fi
 sfdisk "$DEV" <<EOF
 label: gpt
 unit: sectors
@@ -82,7 +128,21 @@ ${DEV}p4 : start=${EXPECT_P4_START}, size=${EXPECT_P4_SIZE}
 EOF
 
 # reload partition table
-partprobe "$DEV" || udevadm settle
+if [ "$DRY_RUN" = "1" ]; then
+    echo "  [dry-run] partprobe skipped"
+else
+    partprobe "$DEV" || udevadm settle
+fi
+
+# restore swap on p1 — partition geometry unchanged, safe to re-arm
+if [ -n "$SWAP_P1" ]; then
+    echo "== swapon ${DEV}p1 (restored)"
+    if [ "$DRY_RUN" = "1" ]; then
+        echo "  [dry-run] (skipped)"
+    else
+        swapon "${DEV}p1" || die "swapon ${DEV}p1 failed"
+    fi
+fi
 
 # post-assert: p1/p4 untouched, p2/p3 present with exact geometry
 [ "$(sect p1)" = "$EXPECT_P1_START" ] || die "post: p1 start drifted!"
@@ -124,3 +184,5 @@ echo "  lsblk /dev/nvme0n1            -> p1 64G swap, p2 96G xfs, p3 279G, p4 8.
 echo "  lsblk -f /dev/nvme0n1p3       -> empty (no fs) = raw zone ready"
 echo "  swapon --show                 -> both zram + p1 present"
 echo "  After verifying model bytes: rm -rf '$STAGE'"
+echo ""
+echo "  usage: $0 [--dry-run]   (dry-run = verify + print, no changes)"

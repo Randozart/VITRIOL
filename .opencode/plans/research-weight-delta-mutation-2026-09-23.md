@@ -168,3 +168,45 @@ must carry its own PROVENANCE header per VITRIOL convention.
 - 2026-09-23: all lossless-delta/mutation/generator hypotheses measured and
   falsified on live store data. Two testable ideas remain (SVD rank probe,
   output-equivalence A/B). Bus-traffic counter planned for the ladder.
+
+## 9. Addendum: Predictive push + Cap'n Proto on-disk format (2026-09-23)
+
+Proposal: predictively push expert data ahead of the compute wave (io_uring
+fixed-buffer ring, lookahead scheduler), and store experts in a Cap'n Proto
+on-disk arena so the disk layout == in-memory execution layout (zero-copy).
+
+Assessment against the actual codebase:
+
+| claim | reality |
+|---|---|
+| predictive push before consumer needs it | ALREADY BUILT: vitriol_predictor_prefetch (cross-layer + temporal union, prefetch_ahead=2, async_prefetch=true) at integration.cpp:300/352/647 |
+| io_uring fixed-buffer push ring | ALREADY BUILT: store uses io_uring + O_DIRECT (vitriol-store.cpp:173); read_async path exists |
+| NVMe -> VRAM P2P DMA | NOT POSSIBLE on this host: no DAX, no NVMe peer-DMA to GPU. Path is Optane -> pinned host RAM -> H2D copy (LRU cuMemcpyHtoDAsync). |
+| Cap'n Proto zero-copy (disk == memory layout) | ALREADY TRUE without capnp: our store format IS the raw byte layout (super + fixed-slot descriptor table, O(1) base + slot*stride). No serialization/parse/allocation to eliminate. capnp would be an indirection regression. |
+| tiny multiplier/IA3 push payload | FALSIFIED: delta ~= 99% of expert (section 3). A 2KB multiplier cannot reproduce a 921KB expert to identical output. |
+
+Correct kernel: predictive push is right and is the existing design - the bus
+traffic is hidden behind compute (overlap), which is the correct attack on
+PCIe latency (not shrinking bytes - entropy-bound - but overlapping with work).
+
+Cap'n Proto: NOT needed. Our raw fixed-layout store already achieves
+zero-copy. Adding capnp would add an indirection layer for a problem we don't
+have.
+
+Actionable follow-up (build mode): wire store_read_expert_async into
+vitriol_predictor_prefetch so the store-backed async read feeds the prefetch
+slot - completes the "predictive push from Optane" loop. The ladder bus-
+traffic counter measures whether prefetch hides PCIe latency (the real
+deliverable).
+
+## 10. Addendum: Wayland restart (2026-09-23)
+
+Black screens after heavy VRAM churn (desktop shares the GPU we were
+hammering; kwin/plasmashell stayed resident through repeated server crashes).
+Driver clean (615.71.09), no GPU faults in dmesg - compositor-side issue.
+
+Restart options:
+- A (non-destructive): kwin_wayland --replace & - new compositor, apps survive.
+- B (full session): loginctl terminate-session 1 - autologin restores in ~10s,
+  kills GUI apps (terminal sessions survive).
+- Reboot is the reliable reset if B fails; also clears lingering nvidia state.

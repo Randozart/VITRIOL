@@ -1,5 +1,18 @@
 # VITRIOL AI Agent Guidelines
 
+## Code Style
+
+**`docs/cpp26-conventions.md` is the binding style guide** — read it before
+writing/editing VITRIOL C++ host code. Core rules: C++26 per-file on vitriol
+`.cpp` (g++ 16.2), C++20 ceiling on nvcc-parsed headers; contracts
+(`pre`/`post`/`contract_assert`) on public host functions with
+`-fcontract-evaluation-semantic=ignore` (zero runtime cost — never ship
+`enforce` on hot paths); typed pointers/`std::span`/`std::mdspan`; no
+pointer-as-integer keys, no C-casts, no raw alloc w/o RAII; `std::expected`
+for host errors; `[[assume]]` only after a contract proves the invariant.
+`main()`-bearing harnesses (`vitriol_ce_d2b.cpp`, `vitriol_ce_spike.cpp`)
+must stay OUT of the ggml-cuda source GLOB.
+
 ## Testing Protocol
 
 1. **Residency rule (2026-08-24, supersedes "always DMA")**: stream/DMA offloading ONLY when weights exceed combined VRAM (e.g. 35B-class). For resident-capable quants (≤ ~20 GiB combined) the default is `VITRIOL_MODE=off` — weights fully VRAM-resident; streaming a fitting model starves GPUs on DDR3/PCIe expert fetches and is a pessimization. Streaming in an experiment record must be justified.

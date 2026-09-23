@@ -116,6 +116,55 @@ building now.
   under real expert load. Keep doorbell only if it wins; report to
   `.opencode/plans/`. Commit.
 
+### D2a results (2026-09-23 08:40) — PASS
+
+Rounds: r1 weak-detector FP flood (zero-page fallback: 27k hits) ->
+r2 tightened idle-coherent UserD, heap-only (userd=0, gpfifo=1375 FP)
+-> r3 device-map phase (mprotect on `-w-s`, page-hash live-change)
+-> r4 `dev_read` (GUP fails on BAR; in-process SEGV-guarded fallback)
++ dword-level diffs + domain-corrected `looks_like_userd` -> **PASS**.
+
+Exact output (r4, abridged):
+
+```
+mprotect ok  <nvidia1 -w-s 64KB>   (readable after)
+mprotect ok  <nvidia0 -w-s 64KB>
+USERD 200200000+1d000 (rw-s /dev/nvidia0)  Put=39845980 Get=39845980 GPGet=2 GPPut=2
+CHANGED /dev/nvidia0 200200000+1d000
+  +040: 0260005c -> 02600098   (Put, +0x3c = 60B)
+  +044: 0260005c -> 02600098   (Get == Put, idle)
+  +088: 00000002 -> 00000003   (GPGet)
+  +08c: 00000002 -> 00000003   (GPPut)
+CHANGED /dev/nvidia0 200200000+1b000
+  +010: 00000000 -> 0260005c / 00003e02   (new GPFIFO entry appended)
+LIVE userd 200200000+1d000+000  Put=39846040 Get=39846040 GPGet=3 GPPut=3
+RESULT userd=16 live_userd=3 gpfifo=1421 changed_pages=8
+D2a_PASS
+```
+
+Findings:
+1. Layout `/dev/nvidia0` 2MB RW aperture at `0x200200000` (created
+   `after cuCtxCreate`): **16 pre-created channel UserD blocks, 0x3000
+   stride** (GPU-VA ~4MB/channel). Only the active stream's block
+   (`+1d000`) moves; GP counters are small ints (2,3), NOT 8-aligned —
+   domain fix was the r4 unlock (r2 rejected real UserD for `v%8`).
+2. GPFIFO entry log `+1b000` (same 2MB map): entry `hi[30:10]` length
+   dwords x4 == Put delta (0x2202->8dw=32B, 0x3e02->15dw=60B). Entry
+   `addr_lo` = raw PB GPU-VA (equals pre-op Put), NOT `>>2` as
+   `gpfifo_entry_set()` in the header assumes — fix before D2b.
+3. Channel PB presumed at GPU VA `0x02600000`; candidate CPU alias =
+   `nvidiactl` 48MB window `0x200400000` (= VRAM phys 0..0x3000000)
+   + 0x02600000 = `0x202A00000` — decode UMD method headers there in
+   D2b phase 0 to settle SET_CLS/subch/method-header encoding.
+4. `-w-s` 64KB nvidia0/1 maps: mprotect(RW) succeeds; content changes
+   per-op at +0x48.. (host-pointer pairs — async-cb queue, not PB).
+5. GUP/`process_vm_readv` fails on device maps (reads as all-zero);
+   in-process memcpy required. Doorbell field at UserD+0x90 not yet
+   written (D2a read-only). No XID in dmesg baseline.
+
+D2b next: phase-0 BAR decode -> doorbell-kick smoke -> foreign-PB
+C6B5 DMA + metapage fence + timeout; abort gate unchanged.
+
 ## Risks (accepted)
 
 1. Channel-hijack premise unverified; GeForce + 615 may block or race the

@@ -78,6 +78,16 @@ Access: udev rule grants randozart rw on /dev/nvme0n1p3 (GROUP disk or acl).
 - store bench: 3x64 token unit bench vs current mmap path
 - filled-depth ladder (A-track certification later)
 
+## Status
+
+- 2026-09-23 mkfs DONE on /dev/nvme0n1p3: 336 expert tensors (52.2 GiB) +
+  26.8 GiB per_layer_token_embd. Store readback byte-identical to GGUF
+  source (verified tensor 0 + 33, full slices compared).
+- O_DIRECT alignment fixed (tmpfs selftest masked it): aligned_alloc(4096)
+  buffers, index+CRC as one 512-block, expert slots padded to 512-multiple
+  (store_tensor_desc: data_bytes vs slice_bytes). Commit 22e78b2b5.
+- Format v1 live on the raw zone. KV zone reserved (P3). Next: LRU wire-in.
+
 ## Side fix
 
 - `libvitriol/gguf_reader.py` type table: correct to ggml.h enum + type_traits

@@ -53,6 +53,23 @@ Both paths present; flag selects. Byte-identical output gate.
   tokens == mmap-path tokens.
 - Then 3x64 unit bench store vs mmap (toy-efficiency proof).
 
+## Status
+
+- 2026-09-23 wire-in code complete + committed (e4e8e1141, 0465a6489):
+  - store_backed config + host-only store path
+  - VITRIOL_STORE / VITRIOL_STORE_PATH env parse
+  - buffer: store_open + pinned anon mmap; set_tensor skips copy for expert
+    tensors only, registers tensor_base->tid by name
+  - LRU: ensure_expert_locked fills slice from store_read_expert before mlock
+  - CMake: integration.cpp + buffer.cpp to C++26
+  - Fixed orphaned MTP arch files breaking the llama build (excluded from
+    GLOB); store fill gate on store_backed (not lazy-lock budget)
+- PENDING: output-equivalence gate. Blocked in-session by: 84G model slow
+  load, live daily-driver llama-server on the GPUs (pid 80601), and
+  -c 512 -ngl 99 VRAM overflow (compute buffers). Run via scripts/vitriol
+  launcher with the certified geometry (small ctx, ub 64) after stopping the
+  daily server.
+
 ## Config keys (flags too, per doctrine)
 
 - `VITRIOL_STORE=1`

@@ -46,12 +46,27 @@ Qwen3.8-Flash-Next-UD-Q3_K_XL (84G, qwen4exp arch) on 2x RTX 3060:
   AGENTS.md: CUDA pinned allocs don't count against RLIMIT_MEMLOCK, but plain
   mlock DOES.
 
-## Fix
+## BUG 2 (2026-09-23, after CAP fix): LRU eviction unregisters in-use slices
 
-`sudo vitriol setup` (sets CAP_IPC_LOCK on the binary) OR
-`sudo setcap cap_ipc_lock+ep build/bin/llama-server`. Then rerun arm A.
-Also consider: the lazy path could use cudaHostRegister-only (which bypasses
-RLIMIT_MEMLOCK per AGENTS.md) instead of mlock for the fill.
+After CAP_IPC_LOCK fixed mlock, output became coherent ("Four." vs "////////")
+BUT deterministic 32-token decode crashed:
+`CUDA error: pointer does not correspond to a registered memory region`
+at ggml-cuda.cu:219 during decode (task 6).
+
+Root cause: LRU eviction in vitriol_ensure_expert_locked unregisters a slice
+(cudaHostUnregister + munlock) when over the mlock budget, but a subsequent
+DMA to that host pointer fails because it's no longer registered. The lazy
+buft registers slices individually; eviction removes that registration while
+the decode stream still references the page.
+
+This is arm-A (mmap+LRU) specific. Store mode uses a different fill path.
+
+## Fix direction
+
+Either (a) do not unregister on eviction (leave registered, only munlock) -
+cudaHostRegister has no memory cost beyond the pinning, and CUDA pinned
+allocs don't count against RLIMIT_MEMLOCK per AGENTS.md; or (b) refcount
+slices by in-flight stream events before unregistering.
 
 ## Repro
 

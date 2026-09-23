@@ -90,7 +90,11 @@ if [ "$DRY_RUN" = "1" ]; then
         echo "  [dry-run] $SCRATCH_MNT not mounted (ok)"
     fi
 else
-    umount "$SCRATCH_MNT" || die "umount failed (open files?)"
+    if findmnt "$SCRATCH_MNT" >/dev/null 2>&1; then
+        umount "$SCRATCH_MNT" || die "umount failed (open files?)"
+    else
+        echo "  $SCRATCH_MNT not mounted (ok)"
+    fi
 fi
 
 # sfdisk refuses whole-disk repartition while any partition has a live swap.

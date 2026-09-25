@@ -130,6 +130,30 @@ INTERVENTION TEST (decisive): server arm B + VITRIOL_STORE_HYBRID=1
        +46% per-token expert read traffic).
   F-d  Fill gate/up at load: +30.8 GiB RAM - DEAD on this 31 GiB box.
 
+## O1 PROBE RESULTS (2026-09-25 22:15 CEST)
+
+- Graph (capture with op+src0 rows, new oracle fields op/src0): ALL THREE
+  expert kinds are plain MUL_MAT_ID with src0 = the VITRIOL-buffered
+  weight. No fused node, no exotic op. Fused-node theory DEAD.
+- Execution (classifier moved to the top of ggml_cuda_mul_mat_id, fires
+  for EVERY path): ONLY ffn_down_exps is ever dispatched to CUDA
+  (48 lines). ffn_gate/up_exps: zero lines, in server AND oracle, with
+  and without cb_eval. They execute somewhere else - by elimination, the
+  CPU backend (the 3-split layout is CPU -> CUDA0 -> CUDA1).
+- supports_op (wrapper probe VITRIOL_SUP): ALL expert MUL_MAT_IDs report
+  supported=1 on dev0 AND dev1 (down and gate/up alike). Placement is
+  NOT an op-support rejection.
+- NEW CONFIRMED: store-greedy oracle is nondeterministic run-to-run
+  (11751, 11751, 279 identical configs) - phenomenon D2 is real and is
+  greedy-level, not sampler noise.
+
+NEXT PROBE (O1b, designed, not yet run): GGML_SCHED_DEBUG=2 prints the
+full node->backend map (ggml-backend.cpp:1018, debug>1 branch) - the
+2026-09-25 22:00 attempt did not emit node lines (env did not take
+effect through that systemd-run; needs a direct-exec rerun). The map
+names the backend chosen for gate/up MUL_MAT_ID and completes the
+placement answer. Alternative: instrument the placement loop directly.
+
 ## Log
 
 - 2026-09-25 18:15 CEST: plan written, approved. Phase 0 not started.

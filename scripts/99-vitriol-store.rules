@@ -1,0 +1,4 @@
+# VITRIOL store device - give the owning user rw access to the raw store zone.
+# /dev/nvme0n1p3 = Optane 900P raw store zone (279G, no filesystem).
+# MATCH via partition UUID (stable across device renames).
+KERNEL=="nvme0n1p3", OWNER="randozart", GROUP="disk", MODE="0660"

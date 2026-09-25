@@ -1,0 +1,21 @@
+# VITRIOL expert-streaming path in safe Rust.
+# Backend for the hybrid experiment: same store format, same event protocol,
+# same env flags as the C++ implementation (see
+# .opencode/plans/vitriol-stream-rust-hybrid-2026-09-25.md).
+[package]
+name = "vitriol-stream"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "VITRIOL expert streaming: Optane store reader, pinned bounce ring, per-device expert LRU"
+
+[lib]
+name = "vitriol_stream"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[profile.release]
+panic = "abort"          # loud failure beats silent corruption
+codegen-units = 1
+
+[dependencies]
+libc = "0.2"

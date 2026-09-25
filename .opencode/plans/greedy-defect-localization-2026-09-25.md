@@ -154,6 +154,28 @@ effect through that systemd-run; needs a direct-exec rerun). The map
 names the backend chosen for gate/up MUL_MAT_ID and completes the
 placement answer. Alternative: instrument the placement loop directly.
 
+## FIX (2026-09-25 22:45 CEST) - DEFECT CLOSED
+
+Root cause: the CUDA backend's gate/up/swiglu node fusion
+(ggml_cuda_should_fuse_mul_mat, applied at ggml-cuda.cu:3449) combines
+[MUL_MAT_ID(gate), MUL_MAT_ID(up), GLU] into one fused kernel that reads
+the expert weights DIRECTLY from src0->data - bypassing ggml_cuda_mul_mat_id
+and the LRU. For VITRIOL store mode that pointer is the ZEROED host buffer
+-> gate/up contribute zero -> degenerate MoE. gguf mode works because the
+host buffer holds real bytes. down is not fused (no GLU successor) which is
+why the LRU only ever saw down tensors.
+
+Fix: ggml_cuda_should_fuse_mul_mat now refuses vitriol-buffered weights ->
+the fusion is skipped -> gate/up return to ggml_cuda_mul_mat_id -> LRU ->
+store fills. VERIFIED: server store arm greedy x3 =
+" Paris. Paris is a city. All" (correct, deterministic); MMID
+classification now 144/144 tensors (down+gate+up) on the LRU path.
+
+Remaining: O2 - greedy token variance vs arm A's exact continuation
+("is known for" vs "is a city. All" beyond the correct " Paris") and the
+historical rare flips (D2). Measure: greedy n=10 both arms; byte-capture
+diff if variance persists. Then Stage-5 perf (the mission).
+
 ## Log
 
 - 2026-09-25 18:15 CEST: plan written, approved. Phase 0 not started.

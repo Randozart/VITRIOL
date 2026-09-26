@@ -123,6 +123,34 @@ pinning — see predecessor plan §Deferred.
     for GDN; only DSV4-HC probes appear in oracle logs) -> no device check
     ever ran for the fused GDN ops.
 
+## SESSION 5b: instrument + NEW LANDMINES
+  - GRAPH STRUCTURE: 14-tok vs 16-tok sched dumps (GGML_SCHED_DEBUG=2,
+    cb-free) - the (op, node-name) sets are IDENTICAL. No new node at the
+    cliff. The bug is SIZE-DEPENDENT BEHAVIOR inside the same nodes.
+  - STALE-BINARY LANDMINE: build/bin and build-ku-cu12/bin are HARDLINKED
+    trees; several "BUILD_DONE"s only rebuilt vulkan-shaders-gen, and at
+    least one probe ran against a lib without the new gate. ANY probe
+    verdict from a session whose build output lacks an explicit compile of
+    the changed file is INVALID. Verified-fresh rerun of the 16-tok
+    first-request probe FAILED to complete (server died on request; see
+    crash below) - GDN-CH and HC exonerations MUST BE RE-RUN on a verified
+    binary before they are trusted.
+  - NEW NH INSTRUMENT (uncommitted->committed now): VITRIOL_NODE_HASH=1
+    prints a synchronous FNV hash per CUDA node (cb-free, in
+    ggml_cuda_compute_forward). Plan: run server-bulk vs oracle-cb at 16
+    tokens; identical math => identical hashes; first mismatch = ground
+    zero. nh mismatch methodology replaces the blind oracle.
+  - NEW CRASH: oracle with 1-token prompt ("hi") segfaults at the FIRST
+    CUDA node: VITRIOL_NH_ENTER op=REPEAT name=hc_init -> SIGSEGV
+    (journal stack: n/a+0x0). Tiny-shape edge case (earlier oracle runs at
+    12/20 tok completed) or a regression from today's rebuild - needs one
+    rerun at 12 tok on the current build to separate.
+  - SCHED SPLITS = 267 (bs=64) / 303 (bs=1): the vitriol buffers shatter
+    the graph into hundreds of splits. Any split-boundary copy/event bug
+    has enormous surface. Worth an upstream-comparison look eventually.
+  - NOTE: stray python PID (19h old) holds ~1.6GB VRAM on GPU0; loads
+    tolerate it.
+
   PREVIOUS NEXT LEADS (superseded but kept for depth):
   1. The sched/gallocr REALLOC that a new n_tokens triggers: cudaMalloc
      /cudaFree of compute buffers while g_lru_stream still has queued

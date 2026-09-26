@@ -80,10 +80,17 @@ pinning — see predecessor plan §Deferred.
     fused op -> collapse. Server-only: the ORACLE escapes because cb_eval
     forces unfused per-node graphs; PLAIN escapes (its fused path is
     inert/different). Reinterprets ALL prior evidence consistently.
-  - NEXT STEP (one-liner): force cparams.fused_gdn_ch = false (test first,
-    maybe ar too) for the vitriol server and rerun F1->A1->suite. If Gate B
-    passes: gate the fused GDN ops off whenever vitriol buffers are active
-    (or fix the actual fused-GDN-kernel/sched interaction; secondary).
+  - TESTED: VITRIOL_FUSED_GDN_CH off (fused_gdn_ch=false ->
+    build_delta_net_chunking, llama-context.cpp, env-gated): A1 STILL
+    COLLAPSES (12 alive, 20 dead as first request). The GDN chunked FUSION
+    is exonerated. The 16-cliff is something ELSE that flips with n_tokens.
+    Remaining candidates at the same boundary: the OTHER fused ops
+    (dsv4_hc_pre/comb/post = true unprobed, flash_attn), the per-expert
+    mul_mat dispatch (ne11=tokens_per_expert crossing MMVQ/MKQ limits),
+    ggml graph alloc padding at 16, or a hybrid-cache state size that
+    steps at 16 (conv/SSM window). Next: bisect via cparams switches
+    (fused_dsv4_hc_*, flash_attn off already tested clean on plain but
+    NOT with vitriol at 12 vs 16 first-request), then hc node capture.
   - Server init logs contain NO resolve_fused_ops lines (all auto_* false
     for GDN; only DSV4-HC probes appear in oracle logs) -> no device check
     ever ran for the fused GDN ops.

@@ -67,7 +67,28 @@ pinning — see predecessor plan §Deferred.
   unconsumed lanes: 95 floats at hidden dim 2559, GET_ROWS tails).
   cb_eval's synchronous per-node eval masks the bug - oracle unusable
   for this defect (re-confirms the old "cb_eval masking" note).
-  NEXT LEADS (in order):
+## BREAKTHROUGH (session 4): the cliff is n_tokens >= 15/16 - fused GDN CH
+  - A1 (20 tok) as the FIRST request on a FRESH server: DEAD immediately.
+    There was never a "shape change" requirement - every earlier "first
+    request" was <= 12 tokens.
+  - Boundary bisected with first-request probes on fresh servers:
+    14 tok ALIVE, 16 tok DEAD (17, 18, 20 DEAD). Cliff at 15/16.
+  - 16 = llama-context.cpp:58 llm_fused_op_gdn_ch_probe.n_tokens_per_seq.
+    cparams.fused_gdn_ar = fused_gdn_ch = true HARDCODED (llama-context.cpp
+    234-235), auto_fgdn = false -> the fused GDN chunked op is enabled
+    UNPROBED. At n_tokens >= 16 the model builder emits the CHUNKED GDN
+    fused op -> collapse. Server-only: the ORACLE escapes because cb_eval
+    forces unfused per-node graphs; PLAIN escapes (its fused path is
+    inert/different). Reinterprets ALL prior evidence consistently.
+  - NEXT STEP (one-liner): force cparams.fused_gdn_ch = false (test first,
+    maybe ar too) for the vitriol server and rerun F1->A1->suite. If Gate B
+    passes: gate the fused GDN ops off whenever vitriol buffers are active
+    (or fix the actual fused-GDN-kernel/sched interaction; secondary).
+  - Server init logs contain NO resolve_fused_ops lines (all auto_* false
+    for GDN; only DSV4-HC probes appear in oracle logs) -> no device check
+    ever ran for the fused GDN ops.
+
+  PREVIOUS NEXT LEADS (superseded but kept for depth):
   1. The sched/gallocr REALLOC that a new n_tokens triggers: cudaMalloc
      /cudaFree of compute buffers while g_lru_stream still has queued
      DMAs; extra_bufts handling on graph rebuild. Instrument buffer

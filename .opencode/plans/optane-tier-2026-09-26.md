@@ -64,11 +64,30 @@ changes (Limine p4 untouched), /home btrfs untouched.
   eviction answered correctly ("47" from restored session); suite 7/8+1
   artifact unchanged. NOTE: opencode already sends X-Session-Id
   (workspaceRootHash) - routing engages with zero client changes.
-  v1 LIMITATIONS (documented, not bugs): (1) server-restart persistence:
-  a returning session is treated as new (no file-existence check on
-  claim) - fresh prefill once, then re-persisted; (2) crash loses the
-  current turn (ckpt ring + periodic tmp saves partially cover);
-  (3) SRV_INF router lines gated behind verbose.
+  ADDENDUM v1.1 (2026-09-26 ~23:40 CEST): RESTART PERSISTENCE + SERVICE
+  REMOVED.
+  - v1.1: route_session's new-session branch now checks
+    slot_save_path/sess-<key>.bin (std::filesystem::exists) before
+    claiming: file present -> claim slot + restore (build 1764).
+  - VERIFIED across THREE engine generations: unit run -> unit restart ->
+    bare on-demand launch; alpha's codeword ("ONYX") answered correctly
+    after each (prompt_tokens ~59, restored KV prefix-matched the
+    history prompt).
+  - SERVICE REMOVED (user decision): vitriol-server.service disabled +
+    stopped; unit file KEPT at /etc/systemd/system/ as the optional
+    hardened (OOMScoreAdjust) launch path. Engine now runs on demand via
+    `scripts/vitriol serve` (guard: refuses only while the unit is
+    ACTIVE; inactive unit = warning + unprotected run). Session state is
+    service-independent (files on /scratch/kvtier) - verified by the
+    3-generation cycle above.
+  - Trade-offs on record: on-demand runs lack Restart=always and the
+    OOM shield (a box-wide OOM may pick the engine first again); the
+    current turn is still lost to a hard kill (checkpoint ring partially
+    covers); start the engine before using opencode.
+
+  v1 LIMITATIONS REMAINING: crash loses the current turn (ckpt ring +
+  periodic tmp saves partially cover); SRV_INF router lines gated
+  behind verbose.
 
 ## Milestone B (next, scoped after validation)
 

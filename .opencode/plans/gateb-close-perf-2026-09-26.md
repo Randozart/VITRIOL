@@ -67,6 +67,34 @@ pinning — see predecessor plan §Deferred.
   unconsumed lanes: 95 floats at hidden dim 2559, GET_ROWS tails).
   cb_eval's synchronous per-node eval masks the bug - oracle unusable
   for this defect (re-confirms the old "cb_eval masking" note).
+## SESSION 5: thinking-mode hypothesis TESTED AND RESOLVED (M1)
+  User recalled a past identical `!!!!!` incident fixed by turning thinking
+  off. Excavation: no written record of that exact incident; closest analogs
+  are DIFFERENT failures (09-22 GSQ-RCO budget-burn - content trapped in
+  reasoning_content; IQ2_M `?` garbage fixed by --reasoning off, EXP_LOG:628).
+  DECISIVE TEST (T2, equal token counts, first-request, fresh servers):
+  plain20 DEAD / <think>-open20 DEAD / <think> pre-closed20 DEAD.
+  -> M1 CONFIRMED: thinking tokens are IRRELEVANT to the cliff. The past
+     `--reasoning off` / `--no-thinking` fixes were LENGTH COINCIDENCES
+     (think-off prompts/templates sat under the 16-token cliff).
+  Note: all our probes are RAW /completion where the reasoning machinery
+  (budget sampler, chat_params.enable_thinking) is dormant by default -
+  there is no think branch in the engine to take.
+  Also tested this session: fused_dsv4_hc_pre/comb/post OFF (env
+  VITRIOL_FUSED_DSV4_HC) -> still DEAD (HC ops exonerated; LID not in
+  qwen4exp; GDN-CH already exonerated). Fused-op list EXHAUSTED for
+  qwen4exp. -fa off with 20tok FIRST request: DEAD (fa exonerated again).
+  LEADING THEORY: the RECURRENT/CONV STATE update (SSM_CONV / hc state,
+  conv_states) corrupts when written by a >=16-token ubatch under sched
+  bulk evaluation, poisons that request's decodes AND (despite
+  llama_memory_clear) all later requests. Matches: oracle (cb_eval
+  per-node writes) clean; <=14-token prompts clean; permanent poisoning.
+  NEXT: capture conv/rs state tensors at 14 vs 16 tokens server-side
+  (cb-free), or diff the qwen4exp builder graph at 14 vs 16 (node list
+  via GGML_SCHED_DEBUG=2 --log-verbose, no cb) - the node that appears/
+  changes at 16 is the ground zero. ggml-cuda ssm_conv/recurrent kernels'
+  token-tiling is the first code suspect (e.g. 8 tokens/warp tiling).
+
 ## BREAKTHROUGH (session 4): the cliff is n_tokens >= 15/16 - fused GDN CH
   - A1 (20 tok) as the FIRST request on a FRESH server: DEAD immediately.
     There was never a "shape change" requirement - every earlier "first

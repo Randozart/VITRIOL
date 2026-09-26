@@ -187,11 +187,8 @@ fn main() {
         eprintln!("usage: store_vs_gguf <store> <shard2> <shard3> [layers...]");
         std::process::exit(1);
     }
-    let layers: Vec<u32> = if args.len() > 4 {
-        args[4..].iter().map(|x| x.parse().unwrap()).collect()
-    } else {
-        vec![0, 2, 30, 46, 47]
-    };
+    let layers: Vec<u32> = (0u32..48).collect();
+    let kinds: [(u32, &str); 3] = [(0, "ffn_up_exps"), (1, "ffn_gate_exps"), (2, "ffn_down_exps")];
 
     let store = Store::open(&args[1]).expect("store open");
     println!("store tensors: {}", store.n_tensors());
@@ -199,7 +196,7 @@ fn main() {
     // Parse both shards; index tensors by name.
     let mut by_name: std::collections::HashMap<String, (String, GgufTensor, u64)> =
         std::collections::HashMap::new();
-    for shard in [&args[2], &args[3]] {
+    for shard in args.iter().skip(2) {
         let (data_start, tensors) = parse_gguf(shard).expect("gguf parse");
         let shard_path = shard.to_string();
         for t in tensors {
@@ -212,12 +209,13 @@ fn main() {
     let mut total_mismatch = 0usize;
     let mut total_checked = 0usize;
     for layer in layers {
-        let Some(tid) = store.find_tensor(layer, 2) else {
-            println!("layer {layer}: no store tensor");
+        for (kind, kind_name) in kinds {
+        let Some(tid) = store.find_tensor(layer, kind) else {
+            println!("layer {layer} {kind_name}: no store tensor");
             continue;
         };
         let d = store.desc(tid).unwrap();
-        let name = format!("blk.{layer}.ffn_down_exps.weight");
+        let name = format!("blk.{layer}.{kind_name}.weight");
         let Some((shard_path, t, data_start)) = by_name.get(&name) else {
             println!("layer {layer}: not in gguf shards");
             continue;
@@ -225,7 +223,7 @@ fn main() {
         // The GGUF expert stride equals the store slice stride (mkfs wrote
         // the store from these tensors with this very stride).
         println!(
-            "layer {layer}: tid={tid} experts={} slice={} gguf_shard={}",
+            "layer {layer} {kind_name}: tid={tid} experts={} slice={} gguf_shard={}",
             d.n_experts, d.slice_bytes,
             shard_path.rsplit('/').next().unwrap_or("?")
         );
@@ -238,7 +236,7 @@ fn main() {
         for e in 0..d.n_experts {
             store
                 .read_expert_padded(tid, e, sbuf.as_mut_slice())
-                .unwrap_or_else(|err| panic!("store read l{layer} e{e}: {err}"));
+                .unwrap_or_else(|err| panic!("store read l{layer} {kind_name} e{e}: {err}"));
             let goff = data_start + t.offset + e as u64 * u64::from(d.slice_bytes);
             f.seek(SeekFrom::Start(goff)).unwrap();
             f.read_exact(&mut gbuf).unwrap();
@@ -256,10 +254,11 @@ fn main() {
             }
         }
         println!(
-            "layer {layer}: {} / {} experts differ",
+            "layer {layer} {kind_name}: {} / {} experts differ",
             layer_bad,
             d.n_experts
         );
+        }
     }
     println!(
         "TOTAL: {total_mismatch} / {total_checked} expert slices differ"

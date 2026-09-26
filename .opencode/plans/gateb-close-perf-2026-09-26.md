@@ -67,6 +67,23 @@ pinning — see predecessor plan §Deferred.
   unconsumed lanes: 95 floats at hidden dim 2559, GET_ROWS tails).
   cb_eval's synchronous per-node eval masks the bug - oracle unusable
   for this defect (re-confirms the old "cb_eval masking" note).
+## ADDENDUM: opencode Jinja exception fixed (2026-09-26 ~19:30 CEST)
+  Symptom: opencode turns failed with `Jinja Exception: System message
+  must be at the beginning.` - the GSQ-RCO GGUF's embedded template
+  raises on system messages after the first turn (opencode injects
+  <system-reminder> system messages mid-conversation).
+  Fix: tolerant template variant at
+  /home/randozart/.vitriol/chat-template-tolerant.j2 (copy of the
+  embedded tokenizer.chat_template extracted from the GGUF; the
+  mid-loop raise replaced with rendering the content as a user-turn
+  <system-reminder> block). ~/.vitriol/config server.chat_template now
+  points at it; launcher passes --chat-template-file. Service restarted
+  via unit. Verified: mid-conversation system message answered correctly
+  (408 then 816 on "double it"); leading-system chat normal ("Paris");
+  leading system still rendered by the template's own system path.
+  Fingerprint: chat template is not a fingerprint key; recorded here as
+  provenance per the flag-provenance doctrine.
+
 ## MILESTONE 1 DONE (2026-09-26 ~19:00 CEST): DAILY DRIVER RESTORED
   - Model found: /home/randozart/Models/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
     (12,120,016,960 B = 11.29 GiB; the "missing path" was Downloads/ ->

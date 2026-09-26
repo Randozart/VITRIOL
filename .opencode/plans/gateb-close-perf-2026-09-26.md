@@ -67,6 +67,31 @@ pinning — see predecessor plan §Deferred.
   unconsumed lanes: 95 floats at hidden dim 2559, GET_ROWS tails).
   cb_eval's synchronous per-node eval masks the bug - oracle unusable
   for this defect (re-confirms the old "cb_eval masking" note).
+## MILESTONE 1 DONE (2026-09-26 ~19:00 CEST): DAILY DRIVER RESTORED
+  - Model found: /home/randozart/Models/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf
+    (12,120,016,960 B = 11.29 GiB; the "missing path" was Downloads/ ->
+    Models/ relocation; ~/.vitriol/config path updated accordingly).
+  - Config write + fingerprint diff: launch fingerprint is BYTE-IDENTICAL
+    to the blessed 2026-09-22 line (fingerprint.log:1160): ts=24,24
+    c=262144 kv=q4_0/q4_0 fa=on ub=128 mode=off spec=mtp:1 score=probe.
+  - Bisection env-gates inverted to opt-out BEFORE this build:
+    VITRIOL_NO_FUSED_GDN_CH / VITRIOL_NO_FUSED_DSV4_HC (defaults now ON =
+    upstream). Fresh-binary verified (NO_FUSED strings in
+    libllama.so.0.4.0, rebuilt 18:16).
+  - Validation on 127.0.0.1:8279: greedy ' Paris.' correct @ 30.2 t/s;
+    34-tok thinking prompt coherent @ 28.6 t/s; functional suite 7/8 with
+    the 1 "failure" a checker artifact (model answered "15" - correct,
+    checker wants >=3 alnum chars). MTP draft context confirmed in log.
+  - vitriol-server.service: the unit execs `scripts/vitriol serve
+    --detach` (reads ~/.vitriol/config - no hardcoded path) -> config fix
+    = service fix. restart via polkit OK; NOW set ENABLED (boot-persistent).
+    Post-restart probe: ' Paris.' @ 25.5 t/s.
+  - opencode profile: lapis-occultus/qwen38-mtp entry refreshed to the
+    blessed reality (GSQ-RCO, ctx 262144, revalidation note); entry id
+    kept (pi model-sync identity, load-bearing). JSONC validity checked.
+    Hermes config already targets 127.0.0.1:8279 "Lapis Occultus" - no
+    change needed.
+
 ## GET-WORKING-AGAIN PLAN (2026-09-26, user directive)
   User wants local inference back. Two paths; PRIMARY = Milestone 1 option 1:
   - PRIMARY: restore the BLESSED Qwen3.8-27B GSQ-RCO-IQ3_S-mtp resident

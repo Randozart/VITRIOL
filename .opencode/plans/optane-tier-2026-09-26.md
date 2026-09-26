@@ -40,6 +40,36 @@ changes (Limine p4 untouched), /home btrfs untouched.
 5. Fingerprint diff (recorded; path keys not fingerprinted, provenance
    here), session-switch timing validation, greedy probe + suite.
 
+## MILESTONE B v1 DONE (2026-09-26 ~23:10 CEST): Optane-backed session LRU
+  Implementation (llama.cpp/tools/server/server-context.{h,cpp}):
+  - server_routes gains a session registry (X-Session-Id -> {slot, file,
+    last_used}) + slot->session reverse map, guarded by mutex_sessions.
+  - handle_completions_impl routes every completion/chat request:
+    json data_routed = data_in; route_session(data_routed, req);
+    (param renamed data_in; routed copy shadows via `data` reference).
+  - route_session: header key (case-insensitive) -> sanitize -> claim/
+    reassign slots; explicit body id_slot wins; single-slot configs and
+    empty slot_save_path bypass routing.
+  - Eviction: least-recently-used idle session persisted via a
+    synchronous SLOT_SAVE task into slot_save_path (create_response +
+    rd.next pattern, no HTTP response needed); mid-generation slots are
+    never evicted; save failure = no eviction (resident state preserved).
+  - Restore: returning session with persisted state claims a slot,
+    synchronous SLOT_RESTORE; restore failure = fresh prefill, request
+    unaffected. New route_session_pick_victim() + public
+    server_context_impl::slot_processing(id) accessor.
+  Verified live (unit restart, port 8279): alpha/beta/gamma 3-session
+  rotation on par=2 - saves on eviction (sess-*.bin appearing on
+  /scratch/kvtier), restore-on-return, full-history continuation across
+  eviction answered correctly ("47" from restored session); suite 7/8+1
+  artifact unchanged. NOTE: opencode already sends X-Session-Id
+  (workspaceRootHash) - routing engages with zero client changes.
+  v1 LIMITATIONS (documented, not bugs): (1) server-restart persistence:
+  a returning session is treated as new (no file-existence check on
+  claim) - fresh prefill once, then re-persisted; (2) crash loses the
+  current turn (ckpt ring + periodic tmp saves partially cover);
+  (3) SRV_INF router lines gated behind verbose.
+
 ## Milestone B (next, scoped after validation)
 
 Optane-backed session LRU in `tools/server/server-context.cpp`:

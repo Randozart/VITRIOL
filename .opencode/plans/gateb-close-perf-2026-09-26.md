@@ -50,6 +50,34 @@ pinning — see predecessor plan §Deferred.
 
 ## Log
 - 2026-09-26: plan written. Stage 1 starting.
+- 2026-09-26 late (session 3): TRIGGER ISOLATED - THE SHAPE CHANGE.
+  Server, hybrid, fresh: S1..S4 = FOUR different 12-token prompts in a
+  row: ALL CORRECT (same-shape chains never collapse, content
+  irrelevant). S5 = first 20-token prompt: COLLAPSE. S6/S7 = the old
+  12-token shape: ALSO DEAD - the first new-shape request poisons the
+  whole process PERMANENTLY. Every historical death = a request whose
+  token count differed from all earlier requests; every pass = same
+  shape (fix-verification probes x3, long48/64, S-chain).
+  Additional eliminations: -fa off (no effect), VITRIOL_POOL_RESET=1
+  (no effect), upstream bug (plain -ngl 0 CPU server AND -ngl 4 GPU
+  server both handle request 2 correctly).
+  ORACLE IS BLIND: two-shot oracle (shot A 12tok + shot B 20tok with 3
+  decode steps each, KV cleared between) - every segment's result_output
+  byte-IDENTICAL between after-A and solo-B (only stale-memory diffs in
+  unconsumed lanes: 95 floats at hidden dim 2559, GET_ROWS tails).
+  cb_eval's synchronous per-node eval masks the bug - oracle unusable
+  for this defect (re-confirms the old "cb_eval masking" note).
+  NEXT LEADS (in order):
+  1. The sched/gallocr REALLOC that a new n_tokens triggers: cudaMalloc
+     /cudaFree of compute buffers while g_lru_stream still has queued
+     DMAs; extra_bufts handling on graph rebuild. Instrument buffer
+     alloc/free + LRU activity around the first new-shape request.
+  2. Server-side logits hash per request (no cb_eval) to find the first
+     divergent request state; then bisect WITHIN the server using
+     VITRIOL_MATMUL_SYNC + trace (probes exist and are cb-free).
+  3. ggml_cuda_mul_mat_id sync loop scratch sizes (ids_buf_dev,
+     src1_sorted, dst_sorted scale with ne12) - check pool_alloc reuse
+     across the shape change.
 - 2026-09-26 evening: NEW DEFECT (blocks Gate B) — "request-2 collapse".
   Suite: req1 correct, every later DIFFERENT-prompt request = token-0 spam
   (tokens [0,0,0...]); SAME-prompt repeats always correct. Plain server

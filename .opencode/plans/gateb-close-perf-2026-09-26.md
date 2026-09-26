@@ -67,6 +67,25 @@ pinning — see predecessor plan §Deferred.
   unconsumed lanes: 95 floats at hidden dim 2559, GET_ROWS tails).
   cb_eval's synchronous per-node eval masks the bug - oracle unusable
   for this defect (re-confirms the old "cb_eval masking" note).
+## GET-WORKING-AGAIN PLAN (2026-09-26, user directive)
+  User wants local inference back. Two paths; PRIMARY = Milestone 1 option 1:
+  - PRIMARY: restore the BLESSED Qwen3.8-27B GSQ-RCO-IQ3_S-mtp resident
+    config (~/Downloads/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf, 11.29 GiB,
+    qwen35 arch, embedded MTP). VRAM-resident -> NO store, NO 16-token
+    cliff, NO streaming path. Fastest recorded rig numbers: ~25.7-26.2
+    t/s flat at 24k depth (qual A/B), blessed live config = ts 24,24
+    ub 128 c 262144 MTP n=1 (+22-26% vs Q3_K_M).
+    Steps: validate model file -> launch blessed flags -> greedy probe +
+    MTP-active check + tps -> fix/enable vitriol-server.service (system
+    unit, polkit-managed) -> opencode profile entry.
+  - PARALLEL: flash-next streaming stays a RESEARCH LINE: -ub workaround
+    test (8/12/14/15 sweep) once the NH instrument + verified-binary
+    protocol are in place; root cause via NH bulk-vs-cb diff at 16 tok.
+  - Root cause context: cliff = per-graph n_tokens >= 15/16, first
+    request, server bulk eval only (cb_eval oracle immune); fused ops
+    exonerated on VERIFIED binaries only (GDN-CH/HC verdicts need re-run
+    post stale-binary discovery); recurrent/conv-state theory leading.
+
 ## SESSION 5: thinking-mode hypothesis TESTED AND RESOLVED (M1)
   User recalled a past identical `!!!!!` incident fixed by turning thinking
   off. Excavation: no written record of that exact incident; closest analogs

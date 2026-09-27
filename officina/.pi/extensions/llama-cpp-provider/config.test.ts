@@ -196,9 +196,27 @@ describe("shipped models.json", () => {
     expect(lmstudio.models.find((m) => m.id === "local-model")).toBeDefined();
   });
 
-  it("still registers llamacpp and ollama alongside lmstudio", () => {
+  it("still registers llamacpp and ollama alongside lmstudio (and zen, parity 1.3)", () => {
     const result = loadProviders(pkgRoot, {});
-    expect(Object.keys(result.providers).sort()).toEqual(["llamacpp", "lmstudio", "ollama"]);
+    expect(Object.keys(result.providers).sort()).toEqual(["llamacpp", "lmstudio", "ollama", "zen"]);
+  });
+
+  it("zen free tier ships the free catalog without training-trade models (2026-09-27)", () => {
+    const result = loadProviders(pkgRoot, {});
+    const zen = result.providers.zen;
+    expect(zen, "zen provider should be present in shipped models.json").toBeDefined();
+    expect(zen.baseUrl).toBe("https://opencode.ai/zen/v1");
+    expect(zen.apiKey).toBe("OPENCODE_API_KEY");
+    const ids = zen.models.map((m) => m.id);
+    expect(ids).toContain("space-bunny-free");
+    expect(ids).toContain("big-pickle");
+    expect(ids).toContain("nemotron-3-ultra-free");
+    // muse-spark contributor models trade prompts for training — never ship
+    expect(ids.some((id) => id.includes("contributor"))).toBe(false);
+    // jev uses the non-OpenAI systemone endpoint — not registrable here
+    expect(ids.some((id) => id.startsWith("jev-"))).toBe(false);
+    // paid tier deliberately absent from the shipped default
+    expect(ids.some((id) => !id.endsWith("-free") && id !== "big-pickle")).toBe(false);
   });
 });
 

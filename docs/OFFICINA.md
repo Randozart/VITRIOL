@@ -125,10 +125,33 @@ is the coupling, the model behind it incidental. Alternative providers are
 hot-swappable mid-session (pi.setModel preserves the conversation):
 `/coupling` lists, `/coupling <id>` swaps, `/coupling lapis-occultus`
 returns to the stone. Couplings come from
-~/.vitriol/officina/couplings.json (shape: officina/couplings.example.json;
-an "ascensus" euro-capped cloud-escalation entry is pre-drafted). This is
-the groundwork for a built-in ascensus tool. The session panel's cordoned
-top frame shows the current coupling name.
+~/.vitriol/officina/couplings.json (shape: officina/couplings.example.json).
+This is the groundwork for a built-in ascensus tool. The session panel's
+cordoned top frame shows the current coupling name.
+
+### Live couplings (2026-09-27, parity phase 1.3)
+
+- `zen-free` — OpenCode Zen free tier (`https://opencode.ai/zen/v1`,
+  `OPENCODE_API_KEY` in ~/.vitriol/officina/env). Swap target:
+  space-bunny-free (zero-retention). Nine free models also register as the
+  `zen` provider via models.json (pick natively with `/models zen/…`).
+  **Privacy law**: free-tier terms let Big Pickle / MiMo / Ling train on
+  prompts; NVIDIA Nemotron trial endpoints forbid confidential data;
+  Space Bunny + LongCat declare zero retention; muse-spark contributor
+  models are EXCLUDED entirely (explicit training trade). No confidential
+  material on this tier, ever. Declared context windows are conservative
+  65536 (catalog publishes none); paid models (glm-5.3-flash,
+  qwen3.8-flash, deepseek-v4-flash, …) are deliberately absent — add to
+  your user-override models file if wanted.
+- `ascensus` — euro-capped cloud escalation via ascensusd (now a live
+  coupling entry, no longer pre-drafted).
+
+auto-route is untouched by zen: its cloud tier is ascensusd-only
+(injection, no model switch), so sensitive/confidential turns can never
+reach Zen through routing — Zen use is always an explicit /coupling or
+/models choice by the owner.
+PROVENANCE: catalog/endpoint reference only (opencode Zen docs); zero
+code copied.
 
 ## Layout notes (2026-08-31)
 

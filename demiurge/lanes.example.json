@@ -1,0 +1,48 @@
+{
+  "_comment": "Demiurge lane registry - the configured endpoints Demiurge may route to. Copy to ~/.vitriol/demiurge/lanes.json and edit. VITRIOL's own engine is the always_preferred local lane. node lanes with kv:true accept spilled KV state, but only if their fingerprint matches the source engine's. cloud-free serves its declared models at EUR 0. cloud-paid requires a budget authority (ascensusd single-writer).",
+  "lanes": [
+    {
+      "id": "lapis",
+      "kind": "local",
+      "endpoint": "http://127.0.0.1:8279",
+      "always_preferred": true,
+      "fingerprint": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"
+    },
+    {
+      "id": "boxb",
+      "kind": "node",
+      "endpoint": "http://100.92.76.67:8280",
+      "fingerprint": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp",
+      "kv": true
+    },
+    {
+      "id": "overlord",
+      "kind": "node",
+      "endpoint": "http://100.124.222.109:8279",
+      "kv": false
+    },
+    {
+      "id": "zen",
+      "kind": "cloud-free",
+      "endpoint": "https://opencode.ai/zen/v1",
+      "models": [
+        "space-bunny-free",
+        "big-pickle",
+        "longcat-2.5-preview-free",
+        "mimo-v2.6-flash-free",
+        "mimo-v2.5-free",
+        "ling-3.0-flash-fin-free",
+        "nemotron-3-ultra-free",
+        "nemotron-3.5-lightning-free",
+        "deepseek-v4-flash-free"
+      ]
+    },
+    {
+      "id": "ascensus",
+      "kind": "cloud-paid",
+      "endpoint": "https://api.z.ai/api/coding/paas/v4",
+      "models": ["glm-5.3-flash"],
+      "budget": "ascensusd"
+    }
+  ]
+}

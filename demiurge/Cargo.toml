@@ -1,0 +1,28 @@
+# DEMIURGE workspace root - VITRIOL Lanes arbiter.
+# PROVENANCE: original - VITRIOL (2026-09-27, plan
+# .opencode/plans/demiurge-2026-09-27.md). Routing design borrows from
+# knooppunt (MIT OR Apache-2.0, same author) - harvested crates are added
+# here per plan M2/M3 with their own PROVENANCE headers. Dependency pins
+# mirror knooppunt's known-good set where shared (axum, tokio, reqwest).
+
+[workspace]
+resolver = "2"
+members = ["crates/demiurge"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+axum = "0.8"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream", "charset"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

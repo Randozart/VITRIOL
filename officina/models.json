@@ -3,7 +3,7 @@
   "providers": {
     "llamacpp": {
       "api": "openai-completions",
-      "baseUrl": "http://127.0.0.1:8888/v1",
+      "baseUrl": "http://127.0.0.1:8279/v1",
       "apiKey": "LLAMACPP_API_KEY",
       "models": [
         {

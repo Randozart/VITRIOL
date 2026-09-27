@@ -135,8 +135,13 @@ export default function (pi: ExtensionAPI) {
     }
     // Branded location (.officina, 2026-09-02) — write-only artifact.
     cardsDir = join(ctx.cwd, ".officina", "background", sessionStem);
-    if (ctx.hasUI) startEnginePolling();
-    // one launch attempt per poll tick — the poller is the heartbeat
-    setInterval(() => void tryLaunch(), Math.max(1000, Math.floor(cfg.idleMs / 2)));
+    if (ctx.hasUI) {
+      startEnginePolling();
+      // one launch attempt per poll tick — the poller is the heartbeat.
+      // hasUI-gated (2026-09-27): the bare interval kept the process alive
+      // forever in print/json mode — headless `officina -p` never exited
+      // (background jobs have no consumer there anyway).
+      setInterval(() => void tryLaunch(), Math.max(1000, Math.floor(cfg.idleMs / 2)));
+    }
   });
 }

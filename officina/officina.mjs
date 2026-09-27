@@ -154,13 +154,21 @@ if (docked) {
 // about least); rewrite it so pi sees the bound flags before the user's.
 process.argv = [process.argv[0], cli, ...bound, ...process.argv.slice(2)];
 
+// Headless parity (2026-09-27): pi's `--print/-p` writes its answer to
+// stdout as plain text. That must NOT happen inside the alt-screen claim —
+// output would land in the alternate buffer and vanish when we restore.
+// Detect the print flags (post-rewrite: user flags live in argv[2+]; our
+// bound flags never collide) and drop the fullscreen path entirely.
+const printMode = process.argv.slice(2).some((a) => a === "-p" || a === "--print");
+
 // ── Full terminal claim ────────────────────────────────────────────────
 // pi's inline TUI has no alt-screen mode of its own. When we're on a TTY
 // we claim the screen (ANSI 1049h: enter alternate buffer, clear, home),
 // run pi as a child with inherited stdio, and ALWAYS restore the terminal
 // (1049l) on exit — shell scrollback comes back untouched. Opt-out:
-// TRIS_NO_FULLSCREEN=1 (some multiplexers/copilots prefer inline).
-if (process.stdout.isTTY && process.env.TRIS_NO_FULLSCREEN !== "1") {
+// TRIS_NO_FULLSCREEN=1 (some multiplexers/copilots prefer inline), or
+// print mode (see above) which needs real stdout.
+if (process.stdout.isTTY && process.env.TRIS_NO_FULLSCREEN !== "1" && !printMode) {
   // Claim the screen AND paint the engine's background (Vitriolum BG
   // #0d1117, blue-slate near-black) via OSC 11, so the workshop has the
   // VITRIOL TUI's atmosphere even where messages have no explicit bg.

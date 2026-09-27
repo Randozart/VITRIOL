@@ -229,6 +229,10 @@ export function startEnginePolling(opts?: { base?: string; pollMs?: number }): v
   state.pollMs = Math.max(200, Number(opts?.pollMs ?? process.env.VITRIOL_DECODE_POLL_MS) || DEFAULT_POLL_MS);
   if (state.timer) return;
   state.timer = setInterval(() => void poll(), state.pollMs);
+  // unref (2026-09-27): telemetry must never pin the process. TUI callers
+  // keep node alive anyway; print/json mode must be allowed to exit even if
+  // a stray consumer started the loop.
+  state.timer.unref?.();
   void poll();
 }
 

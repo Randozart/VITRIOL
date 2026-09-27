@@ -173,6 +173,7 @@ export default async function (pi: ExtensionAPI) {
       model?: { id?: string };
       modelRegistry?: { find?: (p: string, id: string) => unknown };
       ui?: { notify?: (m: string, level?: string) => void };
+      hasUI?: boolean;
     };
     let syncTimer: ReturnType<typeof setInterval> | undefined;
     let syncTries = 0;
@@ -224,6 +225,14 @@ export default async function (pi: ExtensionAPI) {
     const armSync = (ctx: SyncCtx) => {
       lastCtx = ctx;
       if (syncTimer) return; // already retrying
+      // Officina divergence (2026-09-27): print/json mode has no modelRegistry
+      // in ctx, so every retry failed and the bounded loop (12×5s) held the
+      // process ~60s after the answer was already printed. Headless gets ONE
+      // best-effort attempt and no retry arming.
+      if (ctx.hasUI === false) {
+        void syncOnce();
+        return;
+      }
       syncTries = 0;
       void syncOnce().then((done) => {
         if (done) stopSync();

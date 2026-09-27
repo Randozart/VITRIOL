@@ -35,13 +35,17 @@
         "nemotron-3-ultra-free",
         "nemotron-3.5-lightning-free",
         "deepseek-v4-flash-free"
-      ]
+      ],
+      "overflow": true,
+      "api_key_env": "OPENCODE_API_KEY"
     },
     {
       "id": "ascensus",
       "kind": "cloud-paid",
       "endpoint": "https://api.z.ai/api/coding/paas/v4",
-      "models": ["glm-5.3-flash"],
+      "models": [
+        "glm-5.3-flash"
+      ],
       "budget": "ascensusd"
     }
   ]

@@ -1,8 +1,9 @@
 // PROVENANCE: original - VITRIOL (2026-09-27, plan
-// .opencode/plans/demiurge-2026-09-27.md). Integration tests: M1 proxy
-// round-trip against an in-process stub upstream - body forwarding,
-// streaming (SSE) passthrough, x-demiurge-lane audit header, hop-by-hop
-// stripping, /demiurge/* routes.
+// .opencode/plans/demiurge-2026-09-27.md). M2 integration tests: arbiter
+// routing end-to-end over in-process stubs - local headroom, pressure
+// overflow to the free lane (model rewrite + key injection), privacy gate
+// (sensitive stays local even saturated), affinity stickiness, audit
+// headers.
 
 use std::sync::Arc;
 
@@ -12,39 +13,50 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower::ServiceExt;
 
+use demiurge::affinity::SessionTable;
+use demiurge::arbiter::{Arbiter, Thresholds};
+use demiurge::audit::Audit;
 use demiurge::config::Registry;
-use demiurge::pressure::PressureBoard;
-use demiurge::proxy::Proxy;
+use demiurge::pressure::{Pressure, PressureBoard};
 
-const LANES_JSON: &str = r#"{
+/// env vars are process-global and the suite runs parallel - tests that
+/// set/remove the zen key must hold this lock for their whole body.
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const LANES: &str = r#"{
     "lanes": [
-        { "id": "stub", "kind": "local", "endpoint": "PLACEHOLDER", "always_preferred": true },
-        { "id": "boxb", "kind": "node", "endpoint": "http://127.0.0.1:1", "kv": true }
+        { "id": "lapis", "kind": "local", "endpoint": "PLACEHOLDER_LOCAL", "always_preferred": true },
+        { "id": "zen", "kind": "cloud-free", "endpoint": "PLACEHOLDER_ZEN", "models": ["space-bunny-free"], "overflow": true, "api_key_env": "DEMIURGE_TEST_ZEN_KEY" }
     ]
 }"#;
 
-async fn spawn_stub() -> String {
+async fn spawn_stub(marker: &'static str) -> String {
+    let handler = |marker: &'static str| {
+        move |headers: axum::http::HeaderMap, body: String| async move {
+            let auth = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("none")
+                .to_string();
+            axum::Json(serde_json::json!({
+                "stub": true,
+                "auth": auth,
+                "got": serde_json::from_str::<serde_json::Value>(&body).ok(),
+                "marker": marker,
+            }))
+        }
+    };
     let app = Router::new()
+        .route("/v1/chat/completions", post(handler(marker)))
         .route(
-            "/v1/chat/completions",
-            post(|headers: axum::http::HeaderMap, body: String| async move {
-                let passthrough = headers
-                    .get("x-custom-thing")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-                // echo proves the body arrived intact and custom headers pass
-                format!("echo:{passthrough}:{body}")
-            }),
+            // cloud gateways carry their own /v1 root - demeiurge strips the
+            // client's /v1 prefix, so the stub serves the stripped path too
+            "/chat/completions",
+            post(handler(marker)),
         )
         .route(
-            "/v1/events",
-            get(|| async {
-                axum::response::Response::builder()
-                    .header("content-type", "text/event-stream")
-                    .body(Body::from("data: one\n\ndata: two\n\n"))
-                    .unwrap()
-            }),
+            "/health",
+            get(|| async { axum::Json(serde_json::json!({"status":"ok"})) }),
         );
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -53,134 +65,229 @@ async fn spawn_stub() -> String {
     format!("http://{addr}")
 }
 
-fn proxy_for(base: &str) -> Proxy {
-    let json = LANES_JSON.replace("PLACEHOLDER", base);
-    let registry = Arc::new(Registry::parse(&json).expect("fixture registry"));
-    Proxy {
-        registry,
-        client: reqwest::Client::new(),
-        board: PressureBoard::new(),
+struct Rig {
+    app: Router,
+    board: Arc<PressureBoard>,
+}
+
+async fn rig() -> Rig {
+    let local = spawn_stub("local-answer").await;
+    let zen = spawn_stub("zen-answer").await;
+
+    let json = LANES
+        .replace("PLACEHOLDER_LOCAL", &local)
+        .replace("PLACEHOLDER_ZEN", &zen);
+    let registry = Arc::new(Registry::parse(&json).unwrap());
+    let board = PressureBoard::new();
+
+    let arbiter = Arc::new(Arbiter {
+        registry: (*registry).clone(),
+        board: Arc::clone(&board),
+        sessions: SessionTable::new(1800),
+        thresholds: Thresholds::default(),
+    });
+    let audit = Arc::new(Audit::new(
+        std::env::temp_dir().join("demiurge-test-decisions.jsonl"),
+    ));
+    let privacy = Arc::new(privacy::PrivacyEngine::new().unwrap());
+
+    let app = demiurge::app::build_router(
+        Arc::clone(&registry),
+        Arc::clone(&board),
+        reqwest::Client::new(),
+        arbiter,
+        audit,
+        privacy,
+    );
+
+    Rig { app, board }
+}
+
+impl Rig {
+    fn set_pressure(&self, busy: u32, total: u32) {
+        self.board.set(
+            "lapis",
+            Pressure {
+                busy_slots: busy,
+                total_slots: total,
+                deferred: 0,
+                tokens_per_second: None,
+                healthy: true,
+                updated_at_ms: 0,
+            },
+        );
+    }
+
+    async fn chat(&self, session: Option<&str>, body: &str) -> axum::response::Response {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json");
+        if let Some(s) = session {
+            builder = builder.header("x-session-id", s);
+        }
+        self.app
+            .clone()
+            .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap()
     }
 }
 
+fn chat_body(text: &str) -> String {
+    serde_json::json!({
+        "model": "whatever-local",
+        "messages": [{"role": "user", "content": text}]
+    })
+    .to_string()
+}
+
 #[tokio::test]
-async fn forwards_body_and_custom_header() {
-    let base = spawn_stub().await;
-    let state = proxy_for(&base);
-    let app = Router::new()
-        .fallback(demiurge::proxy::handle_passthrough)
-        .with_state(state);
-
-    let req = Request::builder()
-        .method("POST")
-        .uri("/v1/chat/completions")
-        .header("x-custom-thing", "kept")
-        .header("connection", "close")
-        .body(Body::from("hello-lane"))
-        .unwrap();
-
-    let res = app.oneshot(req).await.unwrap();
-    assert_eq!(res.status(), 200);
+async fn quiet_engine_answers_locally() {
+    let r = rig().await;
+    r.set_pressure(0, 2);
+    let res = r.chat(Some("ses_1"), &chat_body("hi")).await;
+    assert_eq!(res.headers().get("x-demiurge-lane").unwrap(), "lapis");
     assert_eq!(
-        res.headers().get("x-demiurge-lane").unwrap(),
-        "stub",
-        "audit header names the lane"
+        res.headers().get("x-demiurge-cause").unwrap(),
+        "local-headroom"
     );
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert_eq!(&bytes[..], b"echo:kept:hello-lane");
-}
-
-#[tokio::test]
-async fn streams_sse_unmodified() {
-    let base = spawn_stub().await;
-    let state = proxy_for(&base);
-    let app = Router::new()
-        .fallback(demiurge::proxy::handle_passthrough)
-        .with_state(state);
-
-    let req = Request::builder()
-        .uri("/v1/events")
-        .body(Body::empty())
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["marker"], "local-answer");
     assert_eq!(
-        res.headers().get("content-type").unwrap(),
-        "text/event-stream",
-        "content type preserved for SSE clients"
+        v["got"]["model"], "whatever-local",
+        "local lane keeps client model"
     );
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert_eq!(&bytes[..], b"data: one\n\ndata: two\n\n");
 }
 
 #[tokio::test]
-async fn unreachable_lane_is_502_with_cause() {
-    // port 1 is reserved and refuses connections
-    let state = proxy_for("http://127.0.0.1:1");
-    let app = Router::new()
-        .fallback(demiurge::proxy::handle_passthrough)
-        .with_state(state);
-
-    let req = Request::builder()
-        .uri("/v1/chat/completions")
-        .body(Body::empty())
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
-    assert_eq!(res.status(), 502);
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    assert!(String::from_utf8_lossy(&bytes).contains("unreachable"));
+async fn saturated_engine_overflows_to_free_lane_with_model_rewrite() {
+    let r = rig().await;
+    r.set_pressure(2, 2);
+    let res = r.chat(Some("ses_1"), &chat_body("hi")).await;
+    let (parts, body) = res.into_parts();
+    eprintln!("STATUS: {}", parts.status);
+    eprintln!("HEADERS: {:?}", parts.headers);
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    eprintln!("BODY: {}", String::from_utf8_lossy(&bytes));
+    assert_eq!(parts.headers.get("x-demiurge-lane").unwrap(), "zen");
+    assert_eq!(parts.headers.get("x-demiurge-cause").unwrap(), "overflow");
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["marker"], "zen-answer");
+    assert_eq!(
+        v["got"]["model"], "space-bunny-free",
+        "cloud dispatch rewrites the model to the lane's declared model"
+    );
 }
 
 #[tokio::test]
-async fn demiurge_routes_bypass_proxy() {
-    let base = spawn_stub().await;
-    let json = LANES_JSON.replace("PLACEHOLDER", &base);
-    let registry = Arc::new(Registry::parse(&json).unwrap());
-    let board = PressureBoard::new();
-    let app = demiurge::app::build_router(registry, board, reqwest::Client::new());
-
-    let req = Request::builder()
-        .uri("/demiurge/health")
-        .body(Body::empty())
+#[allow(clippy::await_holding_lock)] // test-only: the key must outlive the awaits
+async fn overflow_injects_lane_key() {
+    let _env = ENV_LOCK.lock().unwrap();
+    std::env::set_var("DEMIURGE_TEST_ZEN_KEY", "test-key-123");
+    let r = rig().await;
+    r.set_pressure(2, 2);
+    let res = r.chat(Some("ses_1"), &chat_body("hi")).await;
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
         .unwrap();
-    let res = app.oneshot(req).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    eprintln!("KEYTEST BODY: {v}");
+    assert_eq!(v["auth"], "Bearer test-key-123");
+    std::env::remove_var("DEMIURGE_TEST_ZEN_KEY");
+}
+
+#[tokio::test]
+async fn sensitive_stays_local_even_saturated() {
+    // IBAN + credential context from the Dutch fail-closed category set
+    let body = chat_body("betaling naar NL91ABNA0417164300, wachtwoord: hunter2");
+    let r = rig().await;
+    r.set_pressure(2, 2);
+    let res = r.chat(Some("ses_1"), &body).await;
+    let lane = res.headers().get("x-demiurge-lane").unwrap().clone();
+    let cause = res.headers().get("x-demiurge-cause").unwrap().clone();
+    // fail-closed: scanned-and-gated OR scan-refused, either way local
+    assert_eq!(lane, "lapis", "sensitive request must not leave local");
+    assert_eq!(cause, "privacy-gate");
+}
+
+#[tokio::test]
+async fn affinity_sticks_then_recalls() {
+    let r = rig().await;
+    r.set_pressure(2, 2);
+    let res = r.chat(Some("ses_stick"), &chat_body("hi")).await;
+    assert_eq!(res.headers().get("x-demiurge-lane").unwrap(), "zen");
+
+    // still saturated: affinity holds
+    let res = r.chat(Some("ses_stick"), &chat_body("hi")).await;
+    assert_eq!(res.headers().get("x-demiurge-cause").unwrap(), "affinity");
+
+    // pressure drops: session recalls home
+    r.set_pressure(0, 2);
+    let res = r.chat(Some("ses_stick"), &chat_body("hi")).await;
+    assert_eq!(res.headers().get("x-demiurge-cause").unwrap(), "recall");
+    assert_eq!(res.headers().get("x-demiurge-lane").unwrap(), "lapis");
+}
+
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // test-only: the key must outlive the awaits
+async fn privacy_gate_beats_affinity_pin() {
+    let _env = ENV_LOCK.lock().unwrap();
+    std::env::set_var("DEMIURGE_TEST_ZEN_KEY", "k");
+    let r = rig().await;
+    r.set_pressure(2, 2);
+    // safe request pins the session to zen
+    let res = r.chat(Some("ses_pin"), &chat_body("hi")).await;
+    let (parts, _) = res.into_parts();
+    assert_eq!(parts.headers.get("x-demiurge-lane").unwrap(), "zen");
+    // sensitive follow-up must NOT ride the pin
+    let res = r
+        .chat(
+            Some("ses_pin"),
+            &chat_body("betaling naar NL91ABNA0417164300"),
+        )
+        .await;
+    let (parts, _) = res.into_parts();
+    assert_eq!(parts.headers.get("x-demiurge-lane").unwrap(), "lapis");
+    assert_eq!(
+        parts.headers.get("x-demiurge-cause").unwrap(),
+        "privacy-gate"
+    );
+    std::env::remove_var("DEMIURGE_TEST_ZEN_KEY");
+}
+
+#[tokio::test]
+async fn health_and_lanes_still_served() {
+    let r = rig().await;
+    let res = r
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/demiurge/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(res.status(), 200);
-    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+
+    let res = r
+        .app
+        .oneshot(
+            Request::builder()
+                .uri("/demiurge/lanes")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert!(String::from_utf8_lossy(&bytes).contains("\"demiurge\""));
-}
-
-#[tokio::test]
-async fn lanes_endpoint_reports_pressure() {
-    let base = spawn_stub().await;
-    let json = LANES_JSON.replace("PLACEHOLDER", &base);
-    let registry = Arc::new(Registry::parse(&json).unwrap());
-    let board = PressureBoard::new();
-    let slots = r#"[{"id":0,"is_processing":true},{"id":1,"is_processing":false}]"#;
-    board.set(
-        "stub",
-        demiurge::pressure::snapshot_from(slots, "llamacpp:requests_deferred 2").unwrap(),
-    );
-
-    let app = demiurge::app::build_router(registry, board, reqwest::Client::new());
-    let req = Request::builder()
-        .uri("/demiurge/lanes")
-        .body(Body::empty())
-        .unwrap();
-    let res = app.oneshot(req).await.unwrap();
     let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
     let text = String::from_utf8_lossy(&bytes);
-    assert!(
-        text.contains("\"busy_slots\":1"),
-        "pressure visible: {text}"
-    );
-    assert!(text.contains("boxb"));
+    assert!(text.contains("zen") && text.contains("overflow"));
 }

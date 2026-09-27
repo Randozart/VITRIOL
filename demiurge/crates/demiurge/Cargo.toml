@@ -8,6 +8,7 @@ license.workspace = true
 axum = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true }
+privacy = { path = "../privacy" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

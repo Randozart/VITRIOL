@@ -1,0 +1,27 @@
+# Privacy crate — the PII engine that classifies every chat request
+# (PLAN §7 P3): safe | sensitive | confidential, fail-closed.
+# Purpose: scan ALL messages of a request for Dutch PII (BSN mod-11,
+# NL IBAN mod-97, phone, postcode, email, context terms, credentials) and
+# return the most protective class; any error is a refusal, never a
+# pass-through (LESSONS: v1 scanned the LAST message only and swallowed
+# scanner failures — both bugs are structurally impossible here).
+# The P3 spike (RESEARCH.md, `## PII engine spike (P3)`) evaluated the
+# `redact` and `presidio-analyzer` candidates against the committed Dutch
+# test set; verdict: neither covers the Dutch category set, so the engine
+# is our own recognizers — `regex` + checksum validators (this crate).
+# Reading order: src/class.rs (the class type) → src/error.rs (refusal
+# taxonomy) → src/patterns.rs (recognizers + checksum math) →
+# src/engine.rs (the scan) → tests/dutch_testset.json (the fixture).
+[package]
+name = "privacy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+regex = { workspace = true } # pattern engine for the recognizers — see patterns.rs
+serde = { workspace = true } # Serialize for PrivacyClass (lowercase in logs/ledger)
+thiserror = { workspace = true } # typed PrivacyError enum — see error.rs
+
+[dev-dependencies]
+serde_json = { workspace = true } # parse tests/dutch_testset.json in the suite

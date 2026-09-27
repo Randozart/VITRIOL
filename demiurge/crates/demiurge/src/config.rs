@@ -39,6 +39,12 @@ pub struct Lane {
     /// budget authority for paid forwards (e.g. "ascensusd")
     #[serde(default)]
     pub budget: Option<String>,
+    /// arbiter-eligible overflow target (M2: cloud-free; M3/M4: node+paid)
+    #[serde(default)]
+    pub overflow: bool,
+    /// env var name holding this lane's API key (cloud lanes)
+    #[serde(default)]
+    pub api_key_env: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

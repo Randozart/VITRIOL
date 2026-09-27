@@ -1,7 +1,6 @@
 // PROVENANCE: original - VITRIOL (2026-09-27, plan
 // .opencode/plans/demiurge-2026-09-27.md). DEMIURGE - VITRIOL Lanes
-// arbiter. M1 entry: load the lane registry, start the pressure poller,
-// serve the proxy on 127.0.0.1:8265 (DEMIURGE_PORT overrides).
+// arbiter. M2 entry: registry + pressure poll + privacy-gated arbiter.
 
 fn main() {
     tracing_subscriber::fmt()

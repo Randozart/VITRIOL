@@ -23,6 +23,13 @@ use demiurge::pressure::{Pressure, PressureBoard};
 /// set/remove the zen key must hold this lock for their whole body.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+const LANES_PAID: &str = r#"{
+    "lanes": [
+        { "id": "lapis", "kind": "local", "endpoint": "LOCAL", "always_preferred": true },
+        { "id": "ascensus", "kind": "cloud-paid", "endpoint": "http://ignored.example", "models": ["glm-5.3-flash"], "overflow": true, "gateway": "GATEWAY", "budget": "ascensusd" }
+    ]
+}"#;
+
 const LANES: &str = r#"{
     "lanes": [
         { "id": "lapis", "kind": "local", "endpoint": "PLACEHOLDER_LOCAL", "always_preferred": true },
@@ -257,6 +264,138 @@ async fn privacy_gate_beats_affinity_pin() {
         "privacy-gate"
     );
     std::env::remove_var("DEMIURGE_TEST_ZEN_KEY");
+}
+
+async fn spawn_gateway(escalate_status: u16, body: serde_json::Value) -> String {
+    let app = Router::new().route(
+        "/escalate",
+        post(move || async move {
+            (
+                axum::http::StatusCode::from_u16(escalate_status).unwrap(),
+                axum::Json(body.clone()),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+async fn paid_rig(
+    gateway_status: u16,
+    gateway_body: serde_json::Value,
+) -> (Router, Arc<PressureBoard>) {
+    let local = spawn_stub("local-answer").await;
+    let gateway = spawn_gateway(gateway_status, gateway_body).await;
+
+    let json = LANES_PAID
+        .replace("LOCAL", &local)
+        .replace("GATEWAY", &gateway);
+    let registry = Arc::new(Registry::parse(&json).unwrap());
+    let board = PressureBoard::new();
+
+    let arbiter = Arc::new(Arbiter {
+        registry: (*registry).clone(),
+        board: Arc::clone(&board),
+        sessions: SessionTable::new(1800),
+        thresholds: Thresholds::default(),
+    });
+    let audit = Arc::new(Audit::new(
+        std::env::temp_dir().join("demiurge-test-paid.jsonl"),
+    ));
+    let privacy = Arc::new(privacy::PrivacyEngine::new().unwrap());
+
+    let app = demiurge::app::build_router(
+        registry,
+        board.clone(),
+        reqwest::Client::new(),
+        arbiter,
+        audit,
+        privacy,
+    );
+    (app, board)
+}
+
+#[tokio::test]
+async fn paid_overflow_escalates_via_gateway() {
+    let (app, board) = paid_rig(
+        200,
+        serde_json::json!({"status":"escalated","answer":"the cloud verdict","eur_spent":0.012}),
+    )
+    .await;
+    board.set(
+        "lapis",
+        Pressure {
+            busy_slots: 2,
+            total_slots: 2,
+            deferred: 0,
+            tokens_per_second: None,
+            healthy: true,
+            updated_at_ms: 0,
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .header("x-session-id", "ses_paid")
+                .body(Body::from(chat_body("hard problem please")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.headers().get("x-demiurge-lane").unwrap(), "ascensus");
+    assert_eq!(
+        res.headers().get("x-demiurge-cause").unwrap(),
+        "overflow-escalation"
+    );
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["choices"][0]["message"]["content"], "the cloud verdict");
+    assert_eq!(v["object"], "chat.completion");
+    assert_eq!(v["demiurge"]["eur_spent"], 0.012);
+}
+
+#[tokio::test]
+async fn paid_overflow_budget_refusal_is_402() {
+    let (app, board) = paid_rig(
+        429,
+        serde_json::json!({"status":"budget_exhausted","error":{"message":"euro budget exhausted. Spent EUR 1.0000 of 1.0000"}}),
+    )
+    .await;
+    board.set(
+        "lapis",
+        Pressure {
+            busy_slots: 2,
+            total_slots: 2,
+            deferred: 0,
+            tokens_per_second: None,
+            healthy: true,
+            updated_at_ms: 0,
+        },
+    );
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(Body::from(chat_body("hard problem")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 402);
+    let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error"]["type"], "budget_exhausted");
 }
 
 #[tokio::test]

@@ -45,6 +45,11 @@ pub struct Lane {
     /// env var name holding this lane's API key (cloud lanes)
     #[serde(default)]
     pub api_key_env: Option<String>,
+    /// for cloud-paid: escalation gateway that owns the budget
+    /// (e.g. "http://127.0.0.1:8283" for ascensusd). The lane endpoint is
+    /// then only used for health; dispatch goes through the gateway.
+    #[serde(default)]
+    pub gateway: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

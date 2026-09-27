@@ -46,7 +46,9 @@
       "models": [
         "glm-5.3-flash"
       ],
-      "budget": "ascensusd"
+      "budget": "ascensusd",
+      "overflow": true,
+      "gateway": "http://127.0.0.1:8283"
     }
   ]
 }

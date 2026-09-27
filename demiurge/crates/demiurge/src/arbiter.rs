@@ -198,12 +198,17 @@ impl Arbiter {
 }
 
 impl Registry {
-    /// The first healthy-eligible overflow lane (cloud-free today; node +
-    /// cloud-paid join in M3/M4).
+    /// Overflow lane for one decision: free tier first, paid tier (gateway
+    /// escalation) as the second pick. Node lanes join in M4.
     pub fn overflow_lane(&self) -> Option<&crate::config::Lane> {
         self.lanes
             .iter()
             .find(|l| l.overflow && l.kind == LaneKind::CloudFree)
+            .or_else(|| {
+                self.lanes
+                    .iter()
+                    .find(|l| l.overflow && l.kind == LaneKind::CloudPaid && l.gateway.is_some())
+            })
     }
 }
 

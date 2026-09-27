@@ -212,6 +212,16 @@ pub async fn handle_chat(State(state): State<Proxy>, req: Request) -> Response {
         .cloned()
         .unwrap_or_else(|| state.registry.local().clone());
 
+    // paid lanes escalate through the budget gateway (single euro writer)
+    if lane.kind == LaneKind::CloudPaid {
+        let mut res = escalate_chat(&state, &lane, &body_bytes, session.as_deref()).await;
+        res.headers_mut().insert(
+            "x-demiurge-lane",
+            HeaderValue::from_str(&lane.id).unwrap_or(HeaderValue::from_static("paid")),
+        );
+        return res;
+    }
+
     // body + auth for cloud lanes: model rewrite + key injection
     let mut send_bytes = body_bytes.to_vec();
     if matches!(lane.kind, LaneKind::CloudFree | LaneKind::CloudPaid) {
@@ -305,6 +315,147 @@ fn prepare_cloud_body(body: &[u8], lane: &Lane) -> Result<Vec<u8>, String> {
         serde_json::from_slice(body).map_err(|e| format!("body not json: {e}"))?;
     v["model"] = serde_json::Value::String(model.to_string());
     serde_json::to_vec(&v).map_err(|e| format!("re-serialize failed: {e}"))
+}
+
+/// Flatten an OpenAI chat body into one escalate query string (roles kept
+/// as prefixes; tool/assistant history travels with the escalation so the
+/// cloud model sees the conversation).
+fn flatten_chat(body: &[u8]) -> Result<String, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("body not json: {e}"))?;
+    let mut out = String::new();
+    if let Some(msgs) = v.get("messages").and_then(|m| m.as_array()) {
+        for m in msgs {
+            let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("user");
+            let text = match m.get("content") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Array(parts)) => parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            if !text.is_empty() {
+                out.push_str(&format!("[{role}] {text}\n"));
+            }
+        }
+    }
+    if out.is_empty() {
+        return Err("no message content".into());
+    }
+    Ok(out)
+}
+
+/// Paid lane: escalate through the budget gateway (ascensusd - single
+/// euro-budget writer + Hermetis dedup) and wrap the verdict in an
+/// OpenAI-shaped response. Non-streaming by design: overflow traffic is
+/// batch-shaped; a streaming client receives one final chunk + [DONE].
+async fn escalate_chat(proxy: &Proxy, lane: &Lane, body: &[u8], session: Option<&str>) -> Response {
+    let Some(gateway) = &lane.gateway else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "paid lane has no gateway",
+        )
+            .into_response();
+    };
+    let query = match flatten_chat(body) {
+        Ok(q) => q,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("demiurge: {e}")).into_response(),
+    };
+
+    let payload = serde_json::json!({
+        "query": query.chars().take(8000).collect::<String>(),
+        "reasoning": "demiurge pressure overflow (paid lane)",
+        "agent": "demiurge",
+        "project_id": session.unwrap_or("anonymous"),
+    });
+
+    let url = format!("{}/escalate", gateway.trim_end_matches('/'));
+    let sent = match proxy.client.post(&url).json(&payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(gateway = %gateway, error = %e, "escalation gateway unreachable");
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("demiurge: budget gateway unreachable: {e}"),
+            )
+                .into_response();
+        }
+    };
+
+    let status = sent.status().as_u16();
+    let data: serde_json::Value = match sent.json().await {
+        Ok(d) => d,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("demiurge: gateway reply unparseable: {e}"),
+            )
+                .into_response()
+        }
+    };
+
+    let esc_status = data.get("status").and_then(|s| s.as_str()).unwrap_or("");
+    if status == 429 || status == 402 || esc_status == "budget_exhausted" {
+        let msg = data
+            .pointer("/error/message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("euro budget exhausted");
+        return (
+            StatusCode::PAYMENT_REQUIRED,
+            axum::Json(serde_json::json!({
+                "error": {"type": "budget_exhausted", "message": msg},
+                "demiurge": {"lane": lane.id, "cause": "budget"}
+            })),
+        )
+            .into_response();
+    }
+    if !(200..300).contains(&status) {
+        return (
+            StatusCode::BAD_GATEWAY,
+            format!("demiurge: gateway status {status}"),
+        )
+            .into_response();
+    }
+
+    let answer = data
+        .get("answer")
+        .and_then(|a| a.as_str())
+        .unwrap_or_default();
+    let eur = data
+        .get("eur_spent")
+        .cloned()
+        .unwrap_or(serde_json::json!(0));
+    let esc_status_owned = esc_status.to_string();
+    let model = lane
+        .models
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "ascensusd".into());
+
+    let completion = serde_json::json!({
+        "id": format!("demiurge-esc-{}", now_ms()),
+        "object": "chat.completion",
+        "created": now_ms() / 1000,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": answer},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": null, "completion_tokens": null},
+        "demiurge": {"escalation_status": esc_status_owned, "eur_spent": eur}
+    });
+
+    let mut resp = axum::Json(completion).into_response();
+    resp.headers_mut()
+        .insert("x-demiurge-lane", HeaderValue::from_str(&lane.id).unwrap());
+    resp.headers_mut().insert(
+        "x-demiurge-cause",
+        HeaderValue::from_static("overflow-escalation"),
+    );
+    resp
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -52,6 +52,23 @@ no foreign extensions into it; bare projects get the officina core
 
 - Prior sessions: `/resume` picker, `/tree` navigator (per-project/cwd).
 - `/history`: scrollable full transcript (↑↓ pgup/pgdn G q).
+
+## Headless mode (2026-09-27)
+
+`tris code -p "prompt"` (or `vitriol officina -p ...`) runs non-interactive:
+pi's print mode with all officina extensions bound. No fullscreen claim,
+no retry loops — answer on stdout, exit code carries failure.
+`--mode json` streams the full event record. Background jobs, engine
+telemetry polling, and model-sync retries are hasUI-gated and stay off.
+
+## @-mentions (2026-09-27)
+
+The composer's `@` fuzzy completion (stock pi `@file`, fd-backed) is
+extended by `at-mention` with officina-owned targets: skill/knowledge/
+protocol cards (`officina/skills/**`, inserted as absolute paths so they
+resolve from any project) and `.officina/` artifacts (SCRATCHPAD.md,
+MEMORY.md, approved-plan.md, tasks/*). File hits stay stock; officina
+items are appended, capped at 6.
 - `/panel`: right sidebar — modified files, tokens, model, session id.
 - cwd in the terminal title + widget line at all times.
 

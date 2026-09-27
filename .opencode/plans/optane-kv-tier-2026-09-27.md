@@ -1,7 +1,49 @@
 # Optane-Resident KV Tier — eliminate re-prefill — 2026-09-27
 
-**Status**: APPROVED (owner: "Write it down, get to work"). cache-ram 8192,
-sequence Stage 0 → 1 → 2 → 3 → 4.
+**Status**: COMPLETE 2026-09-27 (Stages 0-4 done). Inner commit `15686347f`,
+outer config `cache_ram = 12288`, fingerprint diff `cram=2048 -> cram=12288`
+(all 18 other keys identical).
+
+## Result (certified on live engine)
+
+SIGKILL -> unit restart -> same prompt: **cached 745/755 tokens, 0.5s reply**
+(vs 14s cold prefill; vs ~7 minutes for Hermes' 190K-token session at
+~450 t/s — the exact workload that motivated this plan). Boot reload of
+~9.8 GB of spilled states: "disk load: restored 2 prompt states (3 skipped)".
+
+## What was done
+
+- Stage 0: mega-prefills identified as Hermes/opencode sessions retrying
+  full context after restarts; X-Session-Id only sent by officina/Hermes;
+  plain-path LRU swaps had zero persistence; RAM cache rejected all
+  mega-states (2048 MiB pool < one 2.5-7 GiB state, 9 skip events logged).
+- Stage 1: `cache_ram 2048 -> 12288` (deviation from approved 8192:
+  measured states up to 6967 MiB; header comment documents 262K slot KV
+  ~= 5 GiB). Fingerprint law honored.
+- Stage 2: inner fork `server_prompt_cache` gains disk mirror
+  (`cache-<fnv>.bin` under slot_save_path, tmp+rename, detached writer via
+  shared_ptr state ownership — dispatch never blocks, never copies; boot
+  `disk_load` newest-first with containment dedupe + pool-limit stop +
+  damaged-file removal; size-trim to RAM pool limit; mtmd skipped).
+- Stage 3: cert as above. Async spill verified: B answered in 0.7s while a
+  4.5 GB writer ran in background.
+- Stage 4: OFFICINA.md KV-tier section (incl. known issues).
+
+## Known issues (recorded, open)
+
+1. Fork seq-state serialization under `--kv-unified` bloats states
+   ~60-230x vs theoretical (19.1 KiB/token); spill mirrors bloat
+   symmetrically (function correct, footprint fat). Future: compact
+   per-seq cells at serialization.
+2. Explicit `id_slot` requests bypass the prompt cache (upstream
+   dispatch semantics; cert had to use the LCP/LRU path).
+3. `llamacpp:kv_cache_spill_total` reads 0 across processes despite
+   successful spills — wiring unproven, observability gap only.
+4. Mega-spills are multi-GB disk writes; boot reload of 9.8 GB adds
+   ~40s to startup. Acceptable; watch /scratch headroom (164G free).
+5. Old `cache_ram=2048` cap accidentally shielded dispatch from
+   multi-GB get_data serializations; the async-writer design replaces
+   that shield properly.
 
 ## Problem statement
 

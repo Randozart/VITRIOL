@@ -61,6 +61,28 @@ no retry loops — answer on stdout, exit code carries failure.
 `--mode json` streams the full event record. Background jobs, engine
 telemetry polling, and model-sync retries are hasUI-gated and stay off.
 
+## Engine KV residency tiers (2026-09-27)
+
+Three tiers, in spill order: VRAM (live slots) -> host RAM prompt cache
+(`--cache-ram 12288`, was 2048 — measured slot states run 2.5-7 GiB
+bloated; the old cap rejected every mega-session by construction) ->
+Optane disk mirror (`--slot-save-path`, inner commit `15686347f`:
+async spill on swap, boot-time reload). Engine restart + same-context
+next turn now costs seconds (certified: SIGKILL, restart, same prompt =
+cached 745/755 tokens, 0.5s reply vs 14s cold; 190K-token sessions
+previously re-prefilled for ~7 minutes at ~450 t/s).
+
+Known issues (recorded, not fixed):
+- Fork's seq-state serialization under `--kv-unified` bloats states
+  ~60-230x vs theoretical KV size (19.1 KiB/token); spill mirrors the
+  bloat symmetrically, so function is correct, footprint is fat.
+- Requests with explicit `id_slot` bypass the prompt cache entirely
+  (upstream dispatch semantics: update_cache only set on LCP-loss/LRU).
+- `llamacpp:kv_cache_spill_total` wiring unproven (reads 0 after spills
+  in earlier process; unverified in a spilling process).
+- Mega-session spills are multi-GB writes; boot loads them back
+  (~40s for 9.8 GB on top of model load).
+
 ## @-mentions (2026-09-27)
 
 The composer's `@` fuzzy completion (stock pi `@file`, fd-backed) is

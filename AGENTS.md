@@ -19,6 +19,8 @@ must stay OUT of the ggml-cuda source GLOB.
 
 ## Testing Protocol
 
+0. **KV residency tiers (2026-09-27, inner commit `15686347f`)**: engine KV flows VRAM -> host RAM prompt cache (`cache_ram = 12288` — raised from 2048; measured slot states 2.5-7 GiB) -> Optane disk mirror under `--slot-save-path` (async spill on swap, boot reload). Restarts no longer re-prefill from zero: same-context next turn = delta-only (certified 745/755 cached, 0.5s). Config writes to these keys MUST fingerprint-diff (`cram=` rides the fingerprint). Known: state serialization bloat under `--kv-unified` (~60-230x theoretical, pre-existing); explicit `id_slot` requests bypass the prompt cache.
+
 1. **Residency rule (2026-08-24, supersedes "always DMA")**: stream/DMA offloading ONLY when weights exceed combined VRAM (e.g. 35B-class). For resident-capable quants (≤ ~20 GiB combined) the default is `VITRIOL_MODE=off` — weights fully VRAM-resident; streaming a fitting model starves GPUs on DDR3/PCIe expert fetches and is a pessimization. Streaming in an experiment record must be justified.
 
 2. **CAP_IPC_LOCK is optional on this host**: CUDA pinned allocations do not count against RLIMIT_MEMLOCK; all 2026-08-24 certifications ran uncapped. `scripts/build-llama-server.sh` reapplies caps best-effort after builds; `sudo vitriol setup` remains for hosts where mlock fails. Never pass `--ctx-checkpoints 0` (heap corruption) or `--cache-ram 0` (no readiness).

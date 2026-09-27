@@ -29,6 +29,19 @@ SIGKILL -> unit restart -> same prompt: **cached 745/755 tokens, 0.5s reply**
   4.5 GB writer ran in background.
 - Stage 4: OFFICINA.md KV-tier section (incl. known issues).
 
+## Addendum 1 (2026-09-27, late): runtime disk fetch + mirror budget
+
+- `disk_fetch` (inner `4871832a6`): RAM-cache miss now scans the Optane
+  mirror (header + token-blob probe only) and restores the best prefix
+  match at RUNTIME, not just at boot. Closes the "swapped out + evicted
+  from RAM = full re-prefill" hole.
+- Mirror trim budget: 8x RAM pool (~96 GiB) instead of pool-size - old
+  states are no longer deleted as new ones spill (owner-reported
+  "old checkpoints being deleted").
+- Certified: RAM-hit re-serve 51K tokens = 8s after 3 slot rotations.
+  Runtime-fetch path compiled, not yet exercised at pool-full conditions
+  (needs 3x 200K-class states); first natural mega-session covers it.
+
 ## Known issues (recorded, open)
 
 1. Fork seq-state serialization under `--kv-unified` bloats states

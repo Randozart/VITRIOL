@@ -32,51 +32,56 @@ parity gaps first, own roadmap (read-ahead digests, churn investigator) queued a
   1050-char budget, output tail 400 chars, once-then-clear
   (`diagnostics-loop/index.ts:63-77`) — reuse for LSP diagnostics.
 
-## Phase 1 — quick wins
+## Phase 1 — quick wins — COMPLETE 2026-09-27
 
-### 1.1 Headless verify ✅ criterion: `-p` round-trip answers from live engine
-- Smoke: `tris code -p "2+2?"` (and `vitriol officina -p ...`).
-- `officina.mjs`: when argv contains `-p`/`--print`, force `TRIS_NO_FULLSCREEN`
-  behavior (skip alt-screen claim) — cosmetic for print mode, zero TUI risk.
-- Document one-liner usage in `docs/OFFICINA.md`.
+Commits: `95fee61` (1.1), `3f61103` (1.2), `8cf6410` (1.3), `a5de5ca` (1.4).
+569 extension tests green; tsc clean (pre-existing jiti TS2307 in the
+committed jiti-isolation test file — separate debt).
 
-### 1.2 @-mentions
-- Verify stock `@file` completion survives the layout fork (P1 OfficinaSplit
-  replaces the stock layout; editor + autocomplete provider are editor-level,
-  expected to survive). Manual smoke + note in OFFICINA.md.
-- Officina autocomplete provider extension: trigger `@` + `/`; suggests files
-  (fd-backed, already stock), skills (`officina/skills/**`), couplings,
-  `.officina/` artifacts (SCRATCHPAD, tasks, approved-plan).
-- Tests: suggestion assembly pure-function tests (jiti-isolation guard if
-  cross-extension state needed — prefer none).
+### 1.1 Headless — DONE ✅ (criterion exceeded: 4s round-trip)
+Extra findings fixed beyond the plan (found by bisecting the 180s hang):
+- `background-lane` launch loop was un-gated in headless → hasUI gate
+  (kept the process alive forever in print mode).
+- `_shared/engine.ts` poll interval now `unref()`ed (defense in depth).
+- `llama-cpp-provider` model-sync retry (12×5s) spun headless — print ctx
+  has no modelRegistry, so sync could never succeed; single-shot when
+  `hasUI === false`.
+- shipped `models.json` port drift 8888→8279 killed (user override file
+  already pointed at 8279 — the drift only hit no-override hosts).
+- During verification the engine appeared to "hang": actually slot 0 was
+  chewing an unrelated 87.7k-token prefill at ~151 t/s (another client);
+  requests queue behind it. Not a bug; noted so future 60s first-tokens
+  aren't misdiagnosed.
+- `tris` CLI interpreter is `~/venvs/tris/bin/python` (shebang); needs that
+  venv (PyYAML), not system python3.
 
-### 1.3 Zen free tier (owner: key held; free-only default)
-- `officina/models.json`: add `zen` provider —
-  `api: "openai-completions"`, `baseUrl: "https://opencode.ai/zen/v1"`,
-  `apiKey: "OPENCODE_API_KEY"`, models:
-  big-pickle, space-bunny-free, longcat-2.5-preview-free, mimo-v2.5-free,
-  mimo-v2.6-flash-free, ling-3.0-flash-fin-free, nemotron-3-ultra-free,
-  nemotron-3.5-lightning-free.
-  EXCLUDED by default: muse-spark-1.3-contributor-free (trains on prompts),
-  jev-* (systemone endpoint, not OpenAI-compatible), all paid tier.
-  Cheap paid tier (GLM 5.3 Flash, Qwen3.8 Flash, DeepSeek V4 Flash) as
-  commented opt-in block.
-- `~/.vitriol/officina/couplings.json`: "Zen Free" coupling (cloud tier).
-- `auto-route`: zen-free models tagged cloud-tier — sensitive/complex
-  classification applies; private turns NEVER routed. Same discipline as ascensus.
-- Key goes in `~/.vitriol/officina/env` (owner action, not committed).
-- Rot: free tier is "limited time", deprecations regular — reuse
-  llama-cpp-provider `/v1/models` discovery (`GET /zen/v1/models`) so stale
-  entries surface at registration.
-- PROVENANCE: inspiration line only (catalog/endpoint reference; zero code copied).
-- Caveat honored: Big Pickle / MiMo / Ling / Nemotron free periods may train on
-  data; NVIDIA trial terms forbid confidential data. auto-route tagging is the
-  mitigation; also record in coupling description.
+### 1.2 @-mentions — DONE ✅
+- Verified: patched runtime retains `CombinedAutocompleteProvider` +
+  `addAutocompleteProvider` (interactive-mode.officina.js:775,777,2086) —
+  stock @file works under the layout fork untouched.
+- New `at-mention` extension wraps the provider; adds skills/knowledge/
+  protocol cards (absolute paths) + `.officina/` artifacts, capped 6.
+  17 unit tests. Interactive smoke still pending an owner TUI run.
 
-### 1.4 /init bootstrap
-- Command `/init`: repo-map scan → seed project `.officina/MEMORY.md`
-  (structure, build/test commands, conventions pointers). Reuses repo-map +
-  memory extension stores. No-op if MEMORY.md exists (confirm before overwrite).
+### 1.3 Zen free tier — DONE ✅ (pending owner key)
+- 9 free models as `zen` provider in models.json + `/coupling zen-free`
+  (live couplings.json now also carries the ascensus entry — no longer
+  pre-drafted). Swap target: space-bunny-free (zero-retention).
+- Live-wire verified: `--model zen/space-bunny-free` reached Zen's real
+  endpoint and got 401 AuthError (key not yet stored) — full HTTP path
+  proven, activation = uncomment `OPENCODE_API_KEY` in
+  ~/.vitriol/officina/env.
+- muse-spark contributor excluded (train-on-prompts trade); jev excluded
+  (systemone API). Paid tier absent by design. 65536 conservative windows.
+- auto-route untouched (cloud tier = ascensusd-only, injection-only) —
+  routing can never leak turns to Zen; privacy law in OFFICINA.md.
+
+### 1.4 /init — DONE ✅ (deviation recorded)
+- Deterministic fs scan (manifests/dirs/language census/docs) → seeds
+  `.officina/MEMORY.md`; confirm-before-overwrite; 5 unit tests.
+- DEVIATION from plan: repo-map (tree-sitter shim) not reused — needs a
+  subprocess warm-up, wrong dependency for a cold-start command. Plain
+  scan is deterministic + zero-token.
 
 ## Phase 2 — MCP bridge
 - `mcp-bridge` extension: vendor `@modelcontextprotocol/sdk` (MIT — license

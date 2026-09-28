@@ -108,6 +108,38 @@ consumes what), [`docs/LAYOUT-FORK-2026-08-31.md`](docs/LAYOUT-FORK-2026-08-31.m
 (the docked-shell build), and [`docs/HANDOFF-2026-08-31.md`](docs/HANDOFF-2026-08-31.md)
 (session handoff).
 
+## 🔱 Demiurge — the lanes arbiter
+
+Officina answers *with* the engine; Demiurge decides *where* the engine's
+work runs. It is a small sidecar daemon (Rust/axum, `127.0.0.1:8265`,
+`demiurge/` in this repo) built on one observation: a desktop can only run
+so many simultaneous workflows locally, and cloud spend on quiet days is
+waste. So it watches engine pressure (slots, queue depth, tok/s via the
+same `/slots` + `/metrics` every operator already has) and routes chat
+sessions across **configured endpoints** — a ladder, by law:
+
+1. **local** — the VITRIOL engine, always preferred
+2. **node** — a fingerprint-matched peer engine (stateful: the Optane tier's
+   spilled KV rsyncs ahead, the peer's lazy restore finishes the job — zero
+   re-prefill offload)
+3. **free cloud** — OpenAI-compatible zero-cost endpoints
+4. **capped paid** — routed *through* `ascensusd` (the single euro-budget
+   writer + Hermetis dedup: a problem class pays once), refusal surfaces as
+   HTTP 402
+5. else queue locally, wait visible
+
+Three laws bind it, in order: **privacy** (a harvested Dutch-PII engine
+classifies every chat — sensitive/confidential never leaves the local lane,
+fail-closed), **stickiness** (a session stays on its lane; recall only
+below the low watermark — no flapping), **pressure** (overflow only above
+the high watermark). Every decision lands in `decisions.jsonl` and
+`x-demiurge-lane` / `x-demiurge-cause` response headers. Clients opt in by
+pointing at `:8265` with an `X-Session-Id` header; headerless traffic stays
+local. Status: M1-M3 shipped and live-certified (overflow to free cloud
+answered through the real gateway; paid escalation cost €0.00115 with the
+ledger updated); node lanes (M4) and the transformer-decides evaluator
+(M5) are open.
+
 ## History
 
 The project has lived three eras. Each one is preserved as history in
@@ -137,6 +169,12 @@ measurement and reason.
   memory exhaustion wedges the box, and an oom-shield that works backwards —
   since unprivileged users cannot protect their own processes, it marks
   everything else as more killable.
+- **War III deepens (2026-09-27).** Three moves in one day: slot *fairness*
+  (a chunk cap that stops one tenant's 200K prefill from starving the
+  sibling slot — 110 s → 3 s for a 619-token request); the KV residency
+  *tier* (VRAM → 12.8 GiB host-RAM prompt cache → Optane disk mirror with
+  runtime fetch — a restart re-prefills only the session delta); and
+  **Demiurge**, the lanes arbiter (below).
 
 **Reading the repo:** `docs/ARCHITECTURE.md` is the single source of truth
 for current behavior. `docs/VERDICTS.md` holds every dead idea and why it
@@ -204,7 +242,7 @@ save|load`) switch between blessed operating points.
 | `-ts 24,12` / `--tensor-split` | Split model across mismatched GPUs | Per-device VRAM headroom balancing |
 | `--spec-type mtp --spec-draft-n-max 1` | MTP speculative decoding, single draft | `n_max=1` is load-bearing; `>=2` regresses (acceptance decay) |
 | `--cache-type-k/-v tq3_0` | TurboQuant KV, 3.5 bpw | ~22% smaller than q4_0; per-device overrides via `VITRIOL_KV_QUANT[_K\|_V]_GPU<d>` |
-| `--cache-ram 256` | Host RAM KV ring | Never pass `--cache-ram 0` (no readiness) |
+| `--cache-ram 12288` | Host RAM prompt cache (LRU, prefix-matched states) | Was 2048/256; measured slot states run 2.5-7 GiB so smaller caps rejected every mega-session. Never `0` (no readiness). Disk mirror budget = 8× this |
 | `--ctx-checkpoints 4` | RAM ring of in-slot KV copies | Never pass `--ctx-checkpoints 0` (heap corruption) |
 | `[kv] score=probe, score_every=16` | Attention-probe sparse eviction | Sink + recent cells protected; `VITRIOL_KV_FLOOR` (eager sweep) off by default |
 | `VITRIOL_POOL_RESET=1` | Rewind compute pools at graph end | Recovers ~20% usable depth |
@@ -326,6 +364,13 @@ limits: `docs/DISTRIBUTED_INFERENCE.md`.
   (staged writes; an empty save can never replace a rich checkpoint),
   hang watchdog (~60 s health-deaf → restart), proactive bounce (clean
   restart before memory exhaustion wedges the box).
+- **KV residency tiers:** VRAM → host-RAM prompt cache (`--cache-ram`) →
+  Optane disk mirror under `--slot-save-path`. Spills are async (dispatch
+  never blocks); mirror files reload at boot *and* are fetched at runtime
+  on a RAM-cache miss (header + token-blob probe — gigabyte KV blobs are
+  read only for the winning candidate). Certified: SIGKILL → restart →
+  same prompt = 745/755 tokens cached, 0.5 s reply; 51K-token re-serve in
+  8 s after three slot rotations.
 - **Flag provenance:** every launch emits a `VITRIOL-FINGERPRINT:` line and
   journals it with a per-field diff against the previous launch and the
   blessed operating point. Silent flag drift is a review blocker — config
@@ -347,6 +392,10 @@ Numbers are depth-certified unless labeled shallow. **Window ≠ depth.**
 | Depth 26K, MTP off | 8.54 | MTP = +31% at depth |
 | **Max certified depth** | **96,836 tok @ 11.32** | IQ3_S, `tq3_0`, ts 26,10 (2026-08-24) |
 | 262K ctx (MTP off) | ~11.0 | Max native context profile |
+| Fairness: 619-tok request during sibling 40K prefill | 110 s → **3 s** | n_ubatch chunk cap (2026-09-27) |
+| Solo prefill throughput | 492.9 → 435.4 t/s | the fairness cost, accepted |
+| Optane re-serve: 51K tok after 3 slot rotations | **8 s** | RAM-cache hit path |
+| Optane re-serve after SIGKILL + restart | 745/755 cached, 0.5 s | boot mirror reload |
 
 ### Historical (War I — single GPU, 35B MoE, Chimera)
 
@@ -407,6 +456,7 @@ See `docs/BENCHMARKS.md`, `docs/FINDINGS_2026-05-19.md`, and
 │   ├── vitriol              ← launcher: config TUI + run + serve + profiles
 │   ├── build-llama-server.sh
 │   ├── vitriol-oom-hardening.sh
+│   ├── ascensusd.py         ← euro-capped escalation daemon (single writer)
 │   └── lull_slot_persist.py ← persistence + watchdog sidecar
 ├── libvitriol/              ← Rust calibrator (GGUF parser, VRAM estimator)
 │   ├── src/{gguf,probe,estimator,main}.rs
@@ -414,6 +464,8 @@ See `docs/BENCHMARKS.md`, `docs/FINDINGS_2026-05-19.md`, and
 │   └── sweep_controller.py  ← automated HTTP benchmark sweeps
 ├── profiles/                ← canonical configs (personal + examples/)
 ├── officina/                ← the built-in coding workshop
+├── demiurge/                ← lanes arbiter: pressure-gated session placement
+│   └── crates/{demiurge,privacy}/src/
 ├── llama.cpp/               ← Git submodule (pinned, "main" branch)
 │   └── ggml/src/ggml-cuda/
 │       ├── vitriol-buffer.{cpp,h}          ← RAM Shot buffer type
@@ -500,6 +552,21 @@ VITRIOL stands on the shoulders of giants. Every core insight — DMA over PCIe,
 | **[vLLM PagedAttention](https://arxiv.org/abs/2309.06180)** — Kwon et al. (2023) | Block-level KV cache management enabling near-zero memory waste. Foundation of efficient serving. |
 | **[KIVI](https://arxiv.org/abs/2402.02750)** — Liu et al. (2024) | 2-bit KV cache quantization with minimal accuracy loss. Informs `--kv-quant q4_0` and future KV compression. |
 | **[StreamingLLM](https://arxiv.org/abs/2309.17453)** — Xiao et al. (2023) | Identified "attention sinks" (first few tokens) that must be preserved for stable long-context generation. Core insight behind sparse KV caching. |
+
+### Context Tiering, Scheduling & Inference Placement
+
+| Paper / Project | What We Learned |
+|-----------------|-----------------|
+| **[llama.cpp prompt cache, PR #16391](https://github.com/ggml-org/llama.cpp/pull/16391)** | The RAM LRU prompt cache VITRIOL's tier extends: prefix-matched KV states with evict-to-fit. Our `--cache-ram` pool, slot spill/restore and Optane mirror are built on this machinery. |
+| **[Mooncake](https://arxiv.org/abs/2407.15379)** — Mooncake et al. (2024) | KVCache-centric disaggregated serving: the KV store as a first-class, shared, tiered substrate rather than a per-instance scratch. The shape our VRAM → RAM → Optane tier imitates at desktop scale. |
+| **[LMCache](https://github.com/LMCache/LMCache)** | Persistent, shareable KV layers for vLLM — cross-instance cache reuse. Validates the "state outlives the instance" premise of the Optane tier. |
+| **[CacheGen](https://arxiv.org/abs/2310.07240)** — Liu et al. (2023) | KV cache compression + streaming for network transfer. Informs the (future) node-handoff path of Demiurge's node lanes. |
+| **[vLLM PrefixCaching](https://docs.vllm.ai/en/latest/automatic_prefix_caching/prefix_caching.html)** / **[SGLang RadixAttention](https://arxiv.org/abs/2312.07104)** | In-RAM prefix reuse as a serving primitive; RadixAttention's tree matching informs how the prompt cache reasons about common prefixes. |
+| **vLLM chunked prefill** | Splitting long prefills so decode traffic interleaves — the scheduling property VITRIOL's n_ubatch chunk cap restores at server level (one tenant's prompt no longer starves the sibling slot). |
+| **[llama-swap](https://github.com/modelerflow/llama-swap)** | Proxy that swaps llama.cpp instances per model. Demiurge differs: sessions (not models) are the routed unit, and placement is pressure-gated rather than demand-paged. |
+| **[LiteLLM](https://github.com/BerriAI/litellm)** / **[OpenRouter](https://openrouter.ai)** | L7 LLM routing: provider adapters, health-weighted selection, budget surfaces. OpenRouter's uptime windows + stale-downweight scoring directly shaped the lane health model. |
+| **[GPTCache](https://github.com/zilliztech/GPTCache)** | Semantic answer caching — the economic ancestor of ascensusd's Hermetis dedup: a problem class pays the cloud once, then replays. |
+| **[Presidio](https://github.com/microsoft/presidio)** (Microsoft) / **redact** (crate) | PII detection candidates evaluated and rejected (63% class recall on the Dutch category set / no detectors) — the shipped recognizers are first-party regex + BSN/IBAN checksum validators, fail-closed. |
 
 ### CPU Offload & Ternary Compute
 

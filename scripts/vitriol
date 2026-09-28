@@ -238,6 +238,7 @@ DEFAULT_LRU_MB=0
 DEFAULT_DEVICE=0
 DEFAULT_EXCLUDE_SECONDARY=true
 DEFAULT_TENSOR_SPLIT=""
+DEFAULT_SPLIT_MODE="layer"
 DEFAULT_VERBOSE=false
 DEFAULT_MEMORY_MODE="off"
 DEFAULT_KV_MODE="standard"
@@ -354,6 +355,8 @@ parse_config() {
                 gpu.device)            CFG_DEVICE="$val" ;;
                 gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
                 gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
+        gpu.split_mode)        CFG_SPLIT_MODE="$val" ;;
+                gpu.split_mode)        CFG_SPLIT_MODE="$val" ;;
                 gpu.rpc_servers)       CFG_RPC_SERVERS="$val" ;;
                 model.path)            CFG_MODEL="$val" ;;
                 model.mmproj)          CFG_MMPROJ="$val" ;;
@@ -653,6 +656,7 @@ config_set() {
         gpu.device)            CFG_DEVICE="$val" ;;
         gpu.exclude_secondary) CFG_EXCLUDE_SECONDARY="$val" ;;
         gpu.tensor_split)      CFG_TENSOR_SPLIT="$val" ;;
+        gpu.split_mode)        CFG_SPLIT_MODE="$val" ;;
         gpu.rpc_servers)       CFG_RPC_SERVERS="$val" ;;
         model.path)            CFG_MODEL="$val" ;;
                 model.mmproj)          CFG_MMPROJ="$val" ;;
@@ -2034,6 +2038,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
+        SPLIT_MODE="${CFG_SPLIT_MODE:-layer}"
         RPC_SERVERS="${CFG_RPC_SERVERS}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
@@ -2052,6 +2057,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         kv_sparse_guard
         FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
+        [[ "${SPLIT_MODE:-layer}" == "row" ]] && FINGERPRINT="$FINGERPRINT sm=row"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
@@ -2296,6 +2302,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
+        SPLIT_MODE="${CFG_SPLIT_MODE:-layer}"
         RPC_SERVERS="${CFG_RPC_SERVERS}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
@@ -2307,6 +2314,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB" \
             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
+        [[ "${SPLIT_MODE:-layer}" == "row" ]] && FINGERPRINT="$FINGERPRINT sm=row"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
@@ -2427,6 +2435,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
          # Multi-GPU tensor split args
          TS_ARGS=""
         [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"
+        # row-split: both GPUs run all layers on partial batches (NCCL
+        # allreduce per layer) - balances context-heavy attention across GPUs
+        [[ "${SPLIT_MODE:-layer}" == "row" ]] && TS_ARGS="$TS_ARGS -sm row"
         # Remote RPC servers (row-split layer offload). Requires llama.cpp
         # built with -DGGML_RPC=ON, else llama-server rejects --rpc.
         RPC_ARGS=""

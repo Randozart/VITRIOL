@@ -81,3 +81,33 @@ interaction (sparse eviction vs prompt-cache prefix), separate issue.
 /tmp/opencode/slotmatrix/{results.jsonl,summary.json,dmon.log,run.log},
 /tmp/opencode/mtpoff.jsonl. Config restored: `spec=mtp:1` verified via
 fingerprint after the MTP-off arm.
+
+## Addendum 1 (2026-09-28): fix arms attempted — both blocked
+
+### Row-split (`--split-mode row`)
+- Launcher gained a `gpu.split_mode` config key (parse, TS_ARGS `-sm row`,
+  fingerprint `sm=row`) — wired and committed to the launcher.
+- **BLOCKED**: model load fails with `device CUDA0 does not support split
+  buffers` — the fork's buffer types (vitriol-dma/RAM Shot + the quant set)
+  lack ggml split-buffer support. Unit crash-looped under Restart=always;
+  reverted. Fixing it = ggml CUDA backend work (implement split buffers for
+  the custom buffer types) — upstream-level task, not a config fix.
+
+### Weighted layer split (`ts 22,26`)
+- Rationale: decode load sat on GPU0 (attention + draft + sampling); give
+  GPU1 more layers. **Does not fit**: 26/48 of weights + 26/48 of the
+  262K KV + compute buffers exceed GPU1's 12 GB (unit crash-looped,
+  restart counter 24). GPU1 is already at capacity at ts 24,24 — the
+  rebalance direction is VRAM-infeasible.
+
+### Standing conclusion
+Two slots = one slot's throughput on this placement, and the two cheap
+placement fixes are blocked (buffers / VRAM). Slots remain a latency
+multiplexer (E3: interactive decode -11% under sibling mega-prefill), not
+a throughput multiplier. If throughput concurrency ever matters here, the
+path is split-buffer support in the CUDA backend (enables row-split +
+NCCL), not config.
+
+### Launcher artifact
+`gpu.split_mode` config key shipped (default `layer`, fingerprint `sm=row`
+when set) — the knob exists for the day split-buffer support lands.

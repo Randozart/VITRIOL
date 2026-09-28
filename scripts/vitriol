@@ -267,6 +267,11 @@ DEFAULT_SPEC_DRAFT_MODEL=""
 DEFAULT_MMPROJ=""
 DEFAULT_SPEC_DRAFT_DEVICE=""
 DEFAULT_SPEC_DRAFT_NGL="all"
+# Draft (MTP) KV cache quantization. Empty = engine default (f16). q4_0/q8_0
+# shrink the draft context's own KV (e.g. ~960 MiB -> ~240 MiB at 240K ctx),
+# freeing device headroom for higher --spec-draft-n-max. 2026-09-28.
+DEFAULT_SPEC_DRAFT_TYPE_K=""
+DEFAULT_SPEC_DRAFT_TYPE_V=""
 DEFAULT_CHIMERA_MODE="auto"
 DEFAULT_EXPERT_COUNT=0
 DEFAULT_OUTPUT_CACHE="off"
@@ -314,6 +319,8 @@ CFG_SPEC_DRAFT_MODEL="$DEFAULT_SPEC_DRAFT_MODEL"
 CFG_MMPROJ="$DEFAULT_MMPROJ"
 CFG_SPEC_DRAFT_DEVICE="$DEFAULT_SPEC_DRAFT_DEVICE"
 CFG_SPEC_DRAFT_NGL="$DEFAULT_SPEC_DRAFT_NGL"
+CFG_SPEC_DRAFT_TYPE_K="$DEFAULT_SPEC_DRAFT_TYPE_K"
+CFG_SPEC_DRAFT_TYPE_V="$DEFAULT_SPEC_DRAFT_TYPE_V"
 CFG_EXPERT_COUNT="$DEFAULT_EXPERT_COUNT"
 CFG_MODEL_ALIAS="$DEFAULT_MODEL_ALIAS"
 CFG_MMPROJ="$DEFAULT_MMPROJ"
@@ -399,6 +406,8 @@ kv.score)              CFG_KV_SCORE="$val" ;;
                 spec.draft_model)      CFG_SPEC_DRAFT_MODEL="$val" ;;
                 spec.draft_device)     CFG_SPEC_DRAFT_DEVICE="$val" ;;
                 spec.draft_ngl)        CFG_SPEC_DRAFT_NGL="$val" ;;
+                spec.draft_type_k)     CFG_SPEC_DRAFT_TYPE_K="$val" ;;
+                spec.draft_type_v)     CFG_SPEC_DRAFT_TYPE_V="$val" ;;
                 model.expert_count)    CFG_EXPERT_COUNT="$val" ;;
                 vitriol.output_cache)  CFG_OUTPUT_CACHE="$val" ;;
                  vitriol.predictive_prefetch) CFG_PREDICTIVE_PREFETCH="$val" ;;
@@ -539,6 +548,11 @@ draft_model = $CFG_SPEC_DRAFT_MODEL
 draft_device = $CFG_SPEC_DRAFT_DEVICE
 # Draft model layers to keep in VRAM (all | auto | N)
 draft_ngl = $CFG_SPEC_DRAFT_NGL
+# Draft (MTP) KV cache quantization: f16 (default) | q8_0 | q4_0
+# Empty = engine default (f16). q4_0 shrinks the draft context KV ~4x, freeing
+# device headroom for higher draft_n_max. 2026-09-28.
+draft_type_k = $CFG_SPEC_DRAFT_TYPE_K
+draft_type_v = $CFG_SPEC_DRAFT_TYPE_V
 
 [chimera]
 # Backend routing: auto | cuda | vulkan | off
@@ -698,6 +712,8 @@ config_set() {
         spec.draft_model)      CFG_SPEC_DRAFT_MODEL="$val" ;;
         spec.draft_device)     CFG_SPEC_DRAFT_DEVICE="$val" ;;
         spec.draft_ngl)        CFG_SPEC_DRAFT_NGL="$val" ;;
+        spec.draft_type_k)     CFG_SPEC_DRAFT_TYPE_K="$val" ;;
+        spec.draft_type_v)     CFG_SPEC_DRAFT_TYPE_V="$val" ;;
         frozen_prompt)         CFG_FROZEN_PROMPT="$val" ;;
         *) echo "Unknown key: $key"; return 1 ;;
     esac
@@ -2037,6 +2053,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_DRAFT_MODEL="${CLI_SPEC_DRAFT_MODEL:-${CFG_SPEC_DRAFT_MODEL}}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
+        SPEC_DRAFT_TYPE_K="${CLI_SPEC_DRAFT_TYPE_K:-${CFG_SPEC_DRAFT_TYPE_K}}"
+        SPEC_DRAFT_TYPE_V="${CLI_SPEC_DRAFT_TYPE_V:-${CFG_SPEC_DRAFT_TYPE_V}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
         SPLIT_MODE="${CFG_SPLIT_MODE:-layer}"
         RPC_SERVERS="${CFG_RPC_SERVERS}"
@@ -2059,6 +2077,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
         [[ "${SPLIT_MODE:-layer}" == "row" ]] && FINGERPRINT="$FINGERPRINT sm=row"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
+        [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2301,6 +2320,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_DRAFT_MODEL="${CLI_SPEC_DRAFT_MODEL:-${CFG_SPEC_DRAFT_MODEL}}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
+        SPEC_DRAFT_TYPE_K="${CLI_SPEC_DRAFT_TYPE_K:-${CFG_SPEC_DRAFT_TYPE_K}}"
+        SPEC_DRAFT_TYPE_V="${CLI_SPEC_DRAFT_TYPE_V:-${CFG_SPEC_DRAFT_TYPE_V}}"
         TENSOR_SPLIT="${CLI_TENSOR_SPLIT:-${CFG_TENSOR_SPLIT}}"
         SPLIT_MODE="${CFG_SPLIT_MODE:-layer}"
         RPC_SERVERS="${CFG_RPC_SERVERS}"
@@ -2316,6 +2337,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}" "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
         [[ "${SPLIT_MODE:-layer}" == "row" ]] && FINGERPRINT="$FINGERPRINT sm=row"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
+        [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
@@ -2432,6 +2454,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "$SPEC_DRAFT_MODEL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-model $SPEC_DRAFT_MODEL"
         [[ -n "$SPEC_DRAFT_DEVICE" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-device $SPEC_DRAFT_DEVICE"
          [[ -n "$SPEC_DRAFT_NGL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-ngl $SPEC_DRAFT_NGL"
+        [[ -n "$SPEC_DRAFT_TYPE_K" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-type-k $SPEC_DRAFT_TYPE_K"
+        [[ -n "$SPEC_DRAFT_TYPE_V" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-type-v $SPEC_DRAFT_TYPE_V"
          # Multi-GPU tensor split args
          TS_ARGS=""
         [[ -n "${TENSOR_SPLIT:-}" ]] && TS_ARGS="-ts ${TENSOR_SPLIT}"

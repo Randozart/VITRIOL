@@ -1,0 +1,167 @@
+# VITRIOL Configuration — Qwen3.8-27B GSQ-RCO BuffedMod Q6K, DUAL RTX 3060 12GB
+# 2026-09-28 SINGLE-SESSION RETARGET: duo (2 slots / 393K shared) proven no
+# throughput win (.opencode/plans/slot-scaling-2026-09-28.md) and abandoned.
+# Daily driver is now ONE slot, ctx 240K, MTP n=3. Model is tooltd BuffedMod:
+# ISTA GSQ-RCO IQ3_S (task-lossless) with output.weight Q4_K->Q6_K (measured
+# -27.2% PPL-error, -17.5% median KLD, +0.88% top-token match).
+# ctx 262144 -> 245760 buys ~200 MiB dev1 headroom for MTP n=3 (n=4 OOMs,
+# ts 25,23 OOMs dev0). Report: .opencode/plans/single-buffedmod-2026-09-28.md
+# Host: 32 GiB RAM — cache_ram 12288 (Optane-KV tier 2026-09-27);
+# ctx_checkpoints 4 stays (0 forbidden).
+
+[gpu]
+# CUDA device index to use
+device = 0
+# Exclude secondary GPU (legacy GTX 960 knob; both slots are RTX 3060)
+exclude_secondary = false
+# Tensor split across GPUs (e.g. "24,12" for 2 GPUs, empty = auto layer split)
+# 24,24 symmetric (2026-09-16): both cards identical sm_86; dev0 carries the
+# display (~1 GiB) so tune toward 23,25 if dev0 pressure shows during depth fills.
+# Historical 26,10/22,14 splits were 3060+1070 Ti era — superseded.
+tensor_split = 24,24
+# 2026-09-28: ts 22,26 (rebalance probe) does NOT fit — GPU1 exceeds 12 GB (26/48 weights + KV share + compute). Row-split blocked by fork buffer support. See .opencode/plans/slot-scaling-2026-09-28.md
+# Split mode: layer (default, pipeline-serial) | row (NCCL, balanced). 2026-09-28 experiment.
+# split_mode = row  # BLOCKED: CUDA0 'does not support split buffers' (fork buffer types lack split-buffer support) — see slot-scaling doc
+# Remote RPC servers (row-split layer offload) — EMPTY = local-only daily driver.
+# Box B (overlord-x8664) RPC remains available for larger models/future needs.
+rpc_servers =
+
+[model]
+# Path to GGUF model file
+# 2026-09-28 BLESSED: tooltd GSQ-RCO BuffedMod IQ3_S_XL-mtp-Q6K. Same ISTA
+# IQ3_S base (sha256-verified, tensor diff = output.weight only Q4_K->Q6_K).
+# Prior blessed ISTA IQ3_S-mtp stays on disk for rollback.
+path = /home/randozart/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf
+# Context window size — 208K (was native 262144). 240K does NOT load with
+# MTP n=3 plus the other GPU services on this box (lares-vision/victim-id/
+# desktop); 212992 loads stably with ~230 MiB dev1 margin, 229376 only with a
+# compute-buffer retry, 245760 fails. Conservative 192K variant profile exists
+# as qwen38-buffedmod-192k. Report: .opencode/plans/single-buffedmod-2026-09-28.md
+context = 212992
+# CPU threads for prompt processing
+threads = 4
+# GPU layers to offload
+ngl = 99
+# Expert count override (0 = model default, 4-8 recommended)
+expert_count = 0
+# Name reported via /v1/models (pi model-sync identity) — LOAD-BEARING
+alias = Lapis Occultus
+# Vision projector GGUF (empty = text-only) — LOAD-BEARING
+mmproj = 
+
+[vitriol]
+# Operation mode: stream | sync | async | off
+mode = off
+# LRU VRAM cache in MB (0 to disable; only effective with FP16/FP32 experts)
+lru_mb = 0
+# Verbose logging
+verbose = false
+# Expert output caching: on | off (approximate — reuses previous token's expert outputs)
+output_cache = off
+# Predictive prefetching: on | off (cross-layer + temporal heuristic, DMA stream overlap)
+predictive_prefetch = off
+# Expert pinning: pin first N layers' expert tensors in VRAM (0 = off)
+#   Pins all 256 experts per pinned layer into VRAM at first use.
+#   Targets the fast MMVQ/MMQ/MMF kernel path — auto-disables output cache.
+#   Recommended: 5-15. Uses ~220 MB per layer. Needs KV offload for >10.
+pin_first_n_layers = 0
+# Top-K expert pruning: drop bottom N of 8 active experts before compute
+#   0 = off (default), 2 = compute 6 experts, 4 = compute 4 experts
+#   Experimental: may affect output quality, especially for creative tasks.
+prune_experts = 0
+# Reasoning/thinking mode: on | off (off disables thinking, required for Qwen3.6)
+reasoning = off
+
+[server]
+# API host address
+host = 127.0.0.1
+# API port
+port = 8279
+# Parallel slots for concurrent requests (single-session daily driver)
+parallel = 1
+slot_context = 
+slot_save_path = /scratch/kvtier
+cache_ram = 12288
+# Optane-KV tier 2026-09-27: raised 2048 -> 12288. Measured single-slot prompt
+# states run 2508-6967 MiB (engine log, 9 skip events) — 2048 rejected every
+# mega-session by construction, 8192 still rejected 6.9 GiB states. Pool is
+# demand-allocated; bad_alloc auto-shrinks 40% (server-task.cpp). OOM-safe
+# post-hardening: engine oom_score_adj -500 (last victim), 16G /swapfile.
+# NOTE: config write followed by fingerprint diff (flag provenance law).
+# Idle-slot KV -> host RAM (on | off). OFF = host-memory trim 2026-09-04:
+# the host KV backup was a swappable reservoir inflating engine OOM badness.
+cache_idle_slots = off
+# Custom Jinja chat template file (empty = use model's embedded template)
+chat_template = /home/randozart/.vitriol/chat-template-tolerant.j2
+
+[memory]
+# Emulated memory mode: on | off
+mode = off
+# Semantic search mode: on | off (requires sentence-transformers)
+semantic_mode = off
+
+[kv]
+# KV cache mode: standard | offload | sparse
+#   sparse probe scoring (context lifecycle, 2026-09-03):
+#   kv.score = probe | off        (scoring feeds eviction; off = blind)
+#   kv.score_every = N            (probe cadence in decode steps, default 16)
+mode = sparse
+#   sparse probe scoring (context lifecycle, 2026-09-03): probe | off
+score = probe
+#   probe cadence in decode steps (default 16; 4 rejected — ejected too hard)
+score_every = 16
+#   depth gate (2026-09-22): score only when cache fill >= 0.5 (default).
+#   Short agent turns skip scoring -> no graph-rebuild/stream-sync overhead.
+score_min_fill = 0.5
+# KV cache quantization: f16 | q8_0 | q4_0 (affects K cache only)
+quant_mode = q4_0
+# V cache quantization: f16 (default, safe) | q8_0 | q4_0 (RISK: quantizing V causes garbage output)
+quant_mode_v = q4_0
+
+# Frozen prompt: on | off (keep system prompt static to avoid re-prefix)
+frozen_prompt = off
+# Physical batch size (default 256, lower = less VRAM for compute buffers)
+ubatch_size = 128
+# Slot checkpoint cadence (lull engine: --checkpoint-every-n-tokens)
+checkpoint_every_n_tokens = 8192
+# RAM checkpoint-ring depth per slot (4; 0 forbidden) — host-memory trim 2026-09-04
+ctx_checkpoints = 4
+
+[engine]
+# Execution mode: vitriol-dma | native
+mode = vitriol-dma
+
+[lookup]
+# Prompt lookup decoding tokens (0 = disabled)
+tokens = 0
+
+[spec]
+# Speculative decoding type: mtp | draft (leave empty to disable)
+# ON at 262K (2026-09-16): the "262K + MTP does NOT fit" rule was Pascal
+# compute-buffer-specific (1070 Ti era). Dual Ampere 3060 fits full ctx + MTP.
+type = mtp
+# Draft tokens to generate for speculative decoding (e.g. 2 for MTP)
+# 2026-09-28: n=3 is the fastest that fits on this rig (+17% at 42.7k vs n=1;
+# n=2 +12%). Supersedes the old "n_max MUST be 1" rule (that was the
+# Q3_K_M/Pascal era; measured here with the Q6K MTP head). n=4 load-OOMs.
+draft_n_max = 3
+# Separate draft model file (e.g. an MTP head GGUF). Empty = use embedded/type default.
+draft_model = 
+# Device index to run the draft model on (e.g. 1 = second GPU). Empty = main devices.
+draft_device = 
+# Draft model layers to keep in VRAM (all | auto | N)
+draft_ngl = all
+# Draft (MTP) KV cache quantization: f16 (default) | q8_0 | q4_0
+# 2026-09-28: KEEP EMPTY/f16. Quantizing the draft KV (q4_0) shrinks its KV
+# but breaks flash-attn for the MTP layer, exploding its compute pp buffers
+# from ~300 MiB to ~1.2 GiB on dev1 -> load OOM. f16 draft is smaller overall.
+draft_type_k =
+draft_type_v =
+
+[chimera]
+# Backend routing: auto | cuda | vulkan | off
+#   auto   → Chimera if Vulkan available, else CUDA-only
+#   cuda   → CUDA-only (experts via VITRIOL DMA)
+#   vulkan → Vulkan-only (all tensors via VK_EXT_external_memory_host)
+#   off    → CUDA-only (same as cuda)
+mode = auto

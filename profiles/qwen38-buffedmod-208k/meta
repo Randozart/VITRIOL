@@ -1,0 +1,3 @@
+name=qwen38-buffedmod-208k
+description=Single-session Qwen3.8-27B GSQ-RCO BuffedMod Q6K, ctx 212992, MTP n=3, q4_0 KV, f16 draft KV, sparse probe
+created=1790614347

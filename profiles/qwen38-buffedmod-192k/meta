@@ -1,3 +1,0 @@
-name=qwen38-buffedmod-192k
-description=Conservative variant of qwen38-buffedmod-208k: ctx 196608 for ~300 MiB extra dev1 headroom (other GPU services fluctuate).
-created=1790612653

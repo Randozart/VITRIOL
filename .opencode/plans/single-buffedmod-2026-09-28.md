@@ -54,23 +54,49 @@ Verdict: Q6K is the faster/quality upgrade; MTP `draft_n_max=3` is the fastest
 that loads. This supersedes the old "n_max MUST be 1" rule (that was
 Q3_K_M/Pascal-era; measured here with the Q6K MTP head).
 
-## VRAM wall and the 208K context
+## VRAM wall, lares, and the split rebalance
 
-The live window was `-c 262144`, not ~393K (duo never went live). With the
-other GPU services on this box (lares-vision ~1.85 GiB dev0, victim-id ~0.49
-GiB dev1, desktop), 240K + MTP n=3 does not load at all. Load matrix
-(with GPU settle between runs, Q6K, MTP n=3, f16 draft KV):
+The live window was `-c 262144`, not ~393K (duo never went live). Budget at
+208K: weights ~11.5 GiB + target KV ~3.9 GiB (19.1 KiB/tok) + MTP draft KV
+0.81 GiB + compute ~1.5 + misc ~0.8 = ~18.5 GiB engine, + ~3.2 GiB external
+GPU tenants. **KV at q4 is ~4.7 GiB; the pressure is weights + fixed compute/
+misc + external tenants, not the KV.**
+
+Tenants (per-process): dev0 held `lares-vision` 1848 MiB + desktop ~855;
+dev1 held `victim-id` 486 MiB. The engine already lands ~3 GiB more on dev1
+(MTP draft context + KV), so dev1 was the binding constraint.
+
+With lares resident (stopped 2026-09-28) load matrix was:
 
 | ctx | result | dev1 free |
 |---|---|---|
 | 196608 (192K) | stable | 534 MiB |
-| **212992 (208K)** | **stable, no retry** | **230 MiB** |
+| 212992 (208K) | stable, no retry | 230 MiB |
 | 229376 (224K) | loads w/ compute-buffer retry | 130 MiB |
 | 245760 (240K) | load OOM | - |
 
-Chosen **212992 (208K)**: largest context with a stable, retry-free load.
-A conservative **`qwen38-buffedmod-192k`** profile (196608) is bundled as a
-fallback for when external GPU memory grows.
+**Turning lares-vision off** (it is moving to another host) freed ~1.85 GiB on
+dev0, which in turn makes an asymmetric `tensor_split` viable to unload dev1.
+Re-test (Q6K, f16 draft, retry-free check):
+
+| ctx | ts | n | load | dev1 free |
+|---|---|---|---|---|
+| 245760 | 24,24 | 3 | OOM | - |
+| 245760 | 25,23 | 3 | retry | 166 MiB |
+| 245760 | 26,22 | 3 | clean | 382 MiB |
+| 262144 | 26,22 | 3 | clean | 96 MiB |
+| **262144** | **27,21** | **3** | **clean** | **500 MiB** |
+| 262144 | 27,21 | 4 | clean | 440 MiB |
+
+Chosen: **native 262144, ts 27,21, MTP n=3**. MTP n=4 also loads but measured
+no faster at 42.7k (25.3 vs 25.7 t/s; lower acceptance ratio offset by longer
+accepted runs), so n=3 kept. The asymmetric split costs nothing (both cards
+sm_86); the 208K `ts 24,24` profile remains the fallback for when any external
+GPU tenant returns.
+
+`lares-vision.service` and `lares-server.service` were stopped **and disabled**
+(via `systemctl --user disable`) so a reboot cannot restart them and break the
+engine load. Re-enable if they are not moved off-box.
 
 ### Draft KV quantization: negative result
 
@@ -84,25 +110,26 @@ OOM. Left empty (f16). The knob is kept for future use.
 
 ```
 VITRIOL-FINGERPRINT model=Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf \
-  ts=24,24 c=212992 kv=q4_0/q4_0 fa=on ub=128 mode=off engine=vitriol-dma \
+  ts=27,21 c=262144 kv=q4_0/q4_0 fa=on ub=128 mode=off engine=vitriol-dma \
   ckpt=8192 ckpts=4 lru=0 sparse=sparse score=probe pool_reset=0 spec=mtp:3 \
   par=1 ssp=1 cram=12288 ct=chat-template-tolerant.j2 cis=0
 ```
 
-Deltas vs previous blessed arm: `model=`, `c=262144->212992`, `spec=mtp:1->mtp:3`,
-`par=2->1`.
+Deltas vs previous blessed arm: `model=`, `ts=24,24->27,21`,
+`spec=mtp:1->mtp:3`, `par=2->1` (c stays 262144).
 
 ## Certification
 
-Restarted via unit; per-GPU VRAM dev0 10933/1028 free, dev1 11733/230 free.
+Restarted via unit; per-GPU VRAM dev0 1138 free, dev1 500 free (native 262K).
 
 | arm | filled | decode t/s | notes |
 |---|---|---|---|
-| shallow | 21 | 14.1-15 | MTP warm-up noise |
-| 27K | 42,678 | 25.26 / 25.40 | prefill 385 t/s, accept 0.705 |
-| deep | 116,808 | 19.79 / 20.32 | prefill 238 t/s, accept 0.958, **probe armed** |
+| shallow | 21 | 14-15 | MTP warm-up noise |
+| 27K | 42,678 | 25.56 / 25.75 | prefill 389 t/s, accept 0.717 |
+| deep | 116,808 | 19.79 / 20.32 | (208K config) prefill 238 t/s, accept 0.958 |
+| deep | 188,744 | 18.08 / 19.03 | prefill 244 t/s, accept 0.958, **probe armed** |
 
-`VITRIOL_KV_SCORE: probe active, n_kv=159744 layers=1` — the MTP draft context
+`VITRIOL_KV_SCORE: probe active, n_kv=188928 layers=1` — the MTP draft context
 was the scored memory at depth, i.e. the exact cross-context path of the
 `probe-capture-leak` fix ran clean. Zero `pre_decode() failed`,
 `unordered_map::at`, `cudaMalloc failed`, or OOM lines. Warm restart restored 4
@@ -113,12 +140,22 @@ missing `slot0.bin` boot warning.
 
 - Models: `~/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf` (live);
   ISTA `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` retained for rollback.
-- Profiles: `~/.vitriol/profiles/qwen38-buffedmod-208k` (live) +
-  `qwen38-buffedmod-192k` (conservative); bundled in `profiles/`.
+- Profiles: `qwen38-buffedmod-262k` (live, native 262K, ts 27,21) +
+  `qwen38-buffedmod-208k` (fallback for when external GPU tenants return);
+  bundled in `profiles/`.
 - Launcher: `scripts/vitriol` gained `[spec] draft_type_k/v` -> `dkv=`.
 - Config backup: `~/.vitriol/config.bak` (pre-single).
 
 ## Rollback
 
-`vitriol config load qwen38-buffedmod-192k` for more headroom, or restore the
-ISTA model path in `~/.vitriol/config` and restart the unit.
+- External GPU tenant returns: `vitriol config load qwen38-buffedmod-208k`
+  (212992, ts 24,24) and restart the unit.
+- Model regression: restore the ISTA path in `~/.vitriol/config` and restart.
+- lares: `systemctl --user enable --now lares-vision.service lares-server.service`
+  (only if not moved off-box).
+
+## Launcher additions
+
+`scripts/vitriol` now exposes `[spec] draft_type_k/v` -> `--spec-draft-type-k/v`
+(`dkv=` in the fingerprint). Kept empty (f16) on this box: q4_0 draft KV breaks
+flash-attn for the MTP layer (pp buffers ~1.2 GiB).

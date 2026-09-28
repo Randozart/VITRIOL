@@ -1,3 +1,3 @@
 name=qwen38-buffedmod-208k
-description=Single-session Qwen3.8-27B GSQ-RCO BuffedMod Q6K, ctx 212992, MTP n=3, q4_0 KV, f16 draft KV, sparse probe
-created=1790614347
+description=Fallback for when lares-vision (or other GPU tenants) are resident: ctx 212992, ts 24,24, MTP n=3. 230 MiB dev1 margin without freeing dev0.
+created=1790612653

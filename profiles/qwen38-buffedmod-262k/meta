@@ -1,0 +1,3 @@
+name=qwen38-buffedmod-262k
+description=Single-session Qwen3.8-27B GSQ-RCO BuffedMod Q6K, native ctx 262144, ts 27,21, MTP n=3, q4_0 KV, f16 draft, sparse probe. Requires lares-vision stopped.
+created=1790617204

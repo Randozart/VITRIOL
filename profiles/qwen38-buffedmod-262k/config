@@ -15,10 +15,14 @@ device = 0
 # Exclude secondary GPU (legacy GTX 960 knob; both slots are RTX 3060)
 exclude_secondary = false
 # Tensor split across GPUs (e.g. "24,12" for 2 GPUs, empty = auto layer split)
-# 24,24 symmetric (2026-09-16): both cards identical sm_86; dev0 carries the
-# display (~1 GiB) so tune toward 23,25 if dev0 pressure shows during depth fills.
-# Historical 26,10/22,14 splits were 3060+1070 Ti era — superseded.
-tensor_split = 24,24
+# 27,21 (2026-09-28): the engine lands ~3 GiB more on dev1 (MTP draft context
+# + KV), so shift layer weight to dev0. 27,21 at native 262K + MTP n=3 gives
+# dev1 ~500 MiB free retry-free; 26,22 also works (dev1 96 MiB, tighter).
+# Only viable with lares-vision stopped (freed ~1.85 GiB on dev0). With lares
+# resident use the 208K profile at ts 24,24.
+# Historical 26,10/22,14 splits were 3060+1070 Ti era; 24,24 was the 2026-09-16
+# symmetric dual-3060 default (now the lares-on fallback).
+tensor_split = 27,21
 # 2026-09-28: ts 22,26 (rebalance probe) does NOT fit — GPU1 exceeds 12 GB (26/48 weights + KV share + compute). Row-split blocked by fork buffer support. See .opencode/plans/slot-scaling-2026-09-28.md
 # Split mode: layer (default, pipeline-serial) | row (NCCL, balanced). 2026-09-28 experiment.
 # split_mode = row  # BLOCKED: CUDA0 'does not support split buffers' (fork buffer types lack split-buffer support) — see slot-scaling doc
@@ -32,12 +36,12 @@ rpc_servers =
 # IQ3_S base (sha256-verified, tensor diff = output.weight only Q4_K->Q6_K).
 # Prior blessed ISTA IQ3_S-mtp stays on disk for rollback.
 path = /home/randozart/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf
-# Context window size — 208K (was native 262144). 240K does NOT load with
-# MTP n=3 plus the other GPU services on this box (lares-vision/victim-id/
-# desktop); 212992 loads stably with ~230 MiB dev1 margin, 229376 only with a
-# compute-buffer retry, 245760 fails. Conservative 192K variant profile exists
-# as qwen38-buffedmod-192k. Report: .opencode/plans/single-buffedmod-2026-09-28.md
-context = 196608
+# Context window size — NATIVE 262144.
+# 2026-09-28: with lares-vision stopped (moving off-box) + ts 27,21, native
+# 262K + MTP n=3 loads retry-free (dev1 ~500 MiB free). With lares resident
+# this does not fit; fall back to profile qwen38-buffedmod-208k (ctx 212992,
+# ts 24,24). Report: .opencode/plans/single-buffedmod-2026-09-28.md
+context = 262144
 # CPU threads for prompt processing
 threads = 4
 # GPU layers to offload

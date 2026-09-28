@@ -160,33 +160,40 @@ applies, but the records are kept as-is for accuracy.)
 
 ## Qwen3.8-27B Dual-GPU Config (RTX 3060 + GTX 1070 Ti)
 
-**LIVE CONFIG (single-session, blessed 2026-09-28, ts 24,24)**:
+**LIVE CONFIG (single-session, blessed 2026-09-28, ts 27,21)**:
 `~/.vitriol/config` runs the 2026-09-28 single-session retarget — model
 `~/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf` (tooltd; ISTA
 RCO IQ3_S + `output.weight` Q4_K->Q6_K: -27.2% PPL-error, -17.5% median KLD),
-**c 212992 (208K)**, `parallel=1`, MTP `draft_n_max=3`, q4_0/q4_0 KV, sparse
+**c 262144 (native)**, `parallel=1`, MTP `draft_n_max=3`, q4_0/q4_0 KV, sparse
 probe, f16 draft KV. Report: `.opencode/plans/single-buffedmod-2026-09-28.md`.
 The duo (2 slots / 393K) is SUPERSEDED/abandoned (`slot-scaling-2026-09-28.md`).
 Historical ISTA `Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf` (BLESSED 2026-09-22,
 `gsq-rco-vendor-qual-2026-09-22.md`) stays on disk for rollback; lines below
-describing c 262144 / MTP n=1 / ts 27,9 / 24,12 are historical.
+describing MTP n=1 / ts 27,9 / 24,12 are historical.
 
-MTP `draft_n_max` note (2026-09-28): **n=3 is the fastest that loads** on this
-box (+17% at 42.7k vs n=1; n=2 +12%; n=4 load-OOMs; n=3+`ts 25,23` OOMs dev0).
-The old "n_max MUST be 1" rule was Q3_K_M/Pascal-era. **208K is the context
-ceiling with n=3** — 240K load-OOMs, 224K loads only with a compute-buffer
-retry, because other GPU services (lares-vision ~1.85 GiB, victim-id ~0.49 GiB,
-desktop) eat dev1 headroom. Draft KV must stay **f16**: q4_0 draft KV breaks
-flash-attn for the MTP layer and balloons its compute pp buffers to ~1.2 GiB.
+**PRECONDITION (2026-09-28)**: native 262K + MTP n=3 only fits because
+`lares-vision.service` (~1.85 GiB dev0) is **stopped and disabled** (it is
+being moved off-box), which makes the asymmetric `tensor_split = 27,21` viable
+and unloads dev1 (the engine lands ~3 GiB more there: MTP draft ctx + KV). If
+any external GPU tenant returns, load `qwen38-buffedmod-208k` (ctx 212992,
+ts 24,24) instead.
+
+MTP `draft_n_max` note (2026-09-28): **n=3** (+17% at 42.7k vs n=1; n=2 +12%).
+n=4 now also loads (ts 27,21, dev1 440 MiB) but is not faster (25.3 vs 25.7
+t/s) so it is not used. The old "n_max MUST be 1" rule was Q3_K_M/Pascal-era.
+**VRAM is NOT KV-bound**: KV at q4_0 is only ~19.1 KiB/token (hybrid arch, ~17
+of 65 layers attend) = ~3.9 GiB at 208K; pressure is the ~11.5 GiB weights +
+~2.3 GiB compute/misc + external tenants. Draft KV must stay **f16**: q4_0
+draft KV breaks flash-attn for the MTP layer (pp buffers ~1.2 GiB -> load OOM).
 
 Saved VITRIOL profiles (load with `vitriol config load <name>`):
 
-| profile | ctx | MTP | model | notes |
-|---|---|---|---|---|
-| `qwen38-buffedmod-208k` | 212992 | n=3 | BuffedMod Q6K | **live daily driver**; 230 MiB dev1 margin, retry-free load |
-| `qwen38-buffedmod-192k` | 196608 | n=3 | BuffedMod Q6K | conservative fallback (534 MiB dev1 margin) for when GPU services grow |
-| `qwen38-mtp-131k` | 49152 | n=1 | ISTA IQ3_S | SUPERSEDED; ts 27,9 (26,10 on merged base), q4k/q4v |
-| `qwen38-262k` | 262144 | off | ISTA IQ3_S | max native ctx, ts 24,12, q4k/q4v |
+| profile | ctx | ts | MTP | model | notes |
+|---|---|---|---|---|---|
+| `qwen38-buffedmod-262k` | 262144 | 27,21 | n=3 | BuffedMod Q6K | **live daily driver**; requires lares off; dev1 ~500 MiB free |
+| `qwen38-buffedmod-208k` | 212992 | 24,24 | n=3 | BuffedMod Q6K | fallback when external GPU tenants are resident; dev1 ~230 MiB |
+| `qwen38-mtp-131k` | 49152 | 27,9 | n=1 | ISTA IQ3_S | SUPERSEDED; (26,10 on merged base), q4k/q4v |
+| `qwen38-262k` | 262144 | 24,12 | off | ISTA IQ3_S | max native ctx, q4k/q4v |
 
 Depth-filled reality (2026-08-24 certification, merged base, chunked/single-shot
 prefill + 3×64 decode at depth — see `.opencode/plans/lull-phase0-report-2026-08-24.md`

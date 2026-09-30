@@ -1,6 +1,8 @@
 # Optane 900P utilization + bcache conversion — 2026-09-29
 
-Status: EXECUTION. Baselines measured, cleanup partly done; remainder runs from this plan.
+Status: EXECUTED — Stages A/C done, bcache rolled back + p3 repurposed /scratch2,
+engine relaunched + verified (§6). Deferred: B9 reboot validation, Fase E (10-01),
+pacman CacheDir, rag unit-file removal.
 Plan author: opencode (VITRIOL agent). Bcache conversion: owner-executed (handoff folded in §4).
 
 ## 1. Hardware + wear (S1, 2026-09-29 09:13)
@@ -100,19 +102,50 @@ must be ≤ ~70 G on the 120 G p2, or kvtier alone overflows the fs).
 streaming only when weights exceed combined VRAM); re-prefill 2-phase investigation
 (plan: `reprefill-cancel-modeswitch-2026-09-29.md`); `--cache-reuse` launcher wiring.
 
-## 6. Results (amend after each stage)
+## 6. Results (2026-09-29/30 final)
 
-- **Stage A (2026-09-29 11:26) — DONE**:
-  - kvtier wiped: 42 G reclaimed, 0 files left, dir kept. /scratch 117 G free.
-  - Deleted 4 GGUFs (43 G /home): UD-IQ3_S, Q3_K_M, 9B-Q8_0, 9B-Q6_K.
-  - Moved 3 keepers (29 G) -> /scratch/models, sha256 before/after **byte-identical**
-    (`dc3cd01b...` BuffedMod, `58fd8267...` IQ3_S-mtp, `53107f53...` Bonsai).
-  - `~/Models` -> symlink `/scratch/models`; all 3 paths `test -f` OK; lsof empty.
-  - df after: /scratch 88 G free (33 G used), /home 488 G free (+63 G).
-- **Stage C-pre (2026-09-29 11:2x) — DONE**: `vitriol.verbose = true` written;
-  `serve --dry-run` projected FP **identical** to `fingerprint.last` (verbose not in
-  fingerprint body) → no flag drift. BLESSED delta on screen is the known stale
-  2026-09-17 blessed point, pre-existing, untouched.
-- **Stage B**: this file, committed with Stage A.
-- **Stage C/D**: (pending — drop-in + reboot + post-reboot checks)
-- **Stage D load A/B**: (pending)
+- **Stage A (09-29 11:26)**: kvtier wiped (42 G), 4 unused GGUFs deleted (43 G),
+  3 keepers moved sha256-verified (`dc3cd01b…` BuffedMod, `58fd8267…` IQ3_S-mtp,
+  `53107f53…` Bonsai), `~/Models` → symlink `/scratch/models`, all paths resolve.
+  df: /scratch 88 G free, /home 488 G free. Committed `011a2a5`.
+- **Stage C-pre**: `vitriol.verbose = true`; dry-run FP identical to `fingerprint.last`
+  (verbose not in fingerprint body → no drift).
+- **Bcache incident (09-29, owner)**: first reboot after conversion failed inside
+  initramfs (boots absent from persistent journal = root never mounted); fixed by
+  fstab root → raw `/dev/sda6`. **Final disposition 09-30: full rollback + repurpose.**
+  - `limine.conf` root= path: durable fix lives in `/etc/default/limine`
+    (`root=UUID=863f49fd…` = sda6 live btrfs UUID, verified via `/sys/fs/btrfs/`);
+    `/boot/limine.conf` is rewritten every ~5 h by `limine-snapper-sync` — direct
+    edits there are ephemeral.
+  - Block A: set `ea19d211…` unregistered (NOTE: `/sys/fs/bcache/unregister` does not
+    exist on kernel 7.2.5 — write goes to `/sys/fs/bcache/<set>/unregister`; a plain
+    `>` to the missing path fails EACCES via O_CREAT), module removed, `MODULES=()`,
+    bcache HOOK dropped, both initramfs rebuilt clean by `limine-mkinitcpio`,
+    3 `.bak` files (mkinitcpio.conf, default/limine, limine.conf).
+  - p3 (255 G): bcache SB erased (`16 bytes … offset 0x1018 (bcache)`), mkfs.xfs
+    `-L optane2` → mounted `/scratch2` (fstab `UUID=c91f6fe7…`, **nofail**), 250 G avail.
+  - Fase C: journal → `/scratch2/journal` (52.4 M via symlink, journald restart OK);
+    parked/re-homed around the mount (`/home/randozart/journal-xfer`, cleaned).
+  - Fase D: `vm.swappiness = 100` (`/etc/sysctl.d/60-swappiness.conf`, was runtime-only
+    150). `mongod-vitriol` user unit disabled (203/EXEC loop, pkg gone);
+    `vitriol-rag` stopped by owner decision (Pymander stack superseded).
+- **Model-load A/B (phase compare `loading model` → `model loaded`)**:
+  **74.2 s (SATA baseline) → 13.4 s (first boot after move) → 12.7 s (09-30 09:24
+  relaunch) = 5.5×**. Causes: Optane QD1 seq 1001 vs 428 MiB/s + 4K random 6× +
+  empty kvtier (no state restore). n=2 post-move, direction unambiguous.
+- **Stage D verification (09-30 09:24, post-Phase-1 relaunch)**:
+  - FINGERPRINT identical (`ts=27,21 c=262144 …spec=mtp:3 par=1 ssp=1 cram=12288`)
+  - health ok, metrics: all **5 provenance counters live** (`kv_cache_disk_restored/
+    fetched/miss/rejected/pruned_total` — HELP text of pruned cites `VITRIOL_KV_DISK_PRUNE=1`)
+    + `llamacpp:kv_ejected_total`
+  - `VITRIOL_KV_DISK_PRUNE=1` present in llama-server `/proc/PID/environ` (drop-in →
+    launcher → child propagation confirmed); full argv embedded in §5 flow
+    (`--slot-save-path /scratch/kvtier … -ts 27,21 --spec-draft-n-max 3`)
+  - verbose semantics: `vitriol.verbose=true` exports `VITRIOL_VERBOSE=1` + banner;
+    server stays `-lv 3` — sufficient (f_keep/f_sim lines appear at lv 3, proven 09-28)
+  - kvtier: `slot0.tmp.bin` only (spill machinery running, PRUNE armed)
+- **Deferred**: B9 reboot validates bcache-free initramfs; Fase E 48 h wear compare
+  2026-10-01 (`~/diskstats.t0` — now also measure p2/p3 vs sda6); pacman
+  `CacheDir → /scratch2/pacman` (14 G off QVO, pending owner go); `vitriol-rag`/
+  `mongod-vitriol` unit FILES still on disk (stopped/disabled — removal command issued,
+  owner to run); re-prefill Phase-1 capture on next natural occurrence.

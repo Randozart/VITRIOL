@@ -149,3 +149,36 @@ streaming only when weights exceed combined VRAM); re-prefill 2-phase investigat
   `CacheDir → /scratch2/pacman` (14 G off QVO, pending owner go); `vitriol-rag`/
   `mongod-vitriol` unit FILES still on disk (stopped/disabled — removal command issued,
   owner to run); re-prefill Phase-1 capture on next natural occurrence.
+
+## 7. Postscript 2026-09-30 — /scratch2 merged back into /scratch (single 375 G XFS)
+
+Supersedes the two-partition layout in §4/§6: with bcache abandoned, p3's sole
+purpose vanished. Merged online; `/scratch2` no longer exists.
+
+- Target table == pre-conversion `~/nvme-sfdisk-backup.txt` (p1, p2=786432000, p4;
+  no p3). Written with `sfdisk --no-reread` (swap+p2 busy; kernel reread cannot run).
+- **Incident (live-resize ordering):** `partx -u` implements a changed partition as
+  *delete + re-add*. It **deleted kernel p2** and could not re-add it (375 G now
+  overlaps the still-mapped kernel p3) → `error updating partition 2`; p2 device and
+  its XFS by-uuid vanished. No fs data written.
+- **Recovery:** `partx -d --nr 3 /dev/nvme0n1` (drop stale p3 mapping; p3 unmounted)
+  → `partx -a /dev/nvme0n1` (add-only; p2 @786432000 reappears, by-uuid returns) →
+  `mount /scratch` → `xfs_growfs /scratch` (`data blocks 31457280 → 98304000`).
+  `partx -a` prints "error adding partition 1/4" (already exist) — benign.
+- Journal re-homed `/scratch2/journal` → parked (`/scratch/journal-park`) around the
+  swap → `/scratch/journal`; `ln -sfn`; journald restarted. Stale `/scratch2` mountpoint
+  removed.
+- Final: `/scratch` 375 G XFS on nvme0n1p2 (model tier + kvtier + journal + pacman),
+  p1 swap 64 G, p4 reserved 8.1 G. fstab single `/scratch` line; no `nofail`.
+- Rollback artifacts: `~/nvme-sfdisk-current-2026-09-30.txt` (pre-merge),
+  `~/nvme-sfdisk-backup.txt`, `/etc/fstab.bak-merge`.
+- **Lesson:** on a disk with any busy partition, a live grow must target an *unmounted*
+  target and sequence delete-stale-mapping → add-only; `partx -u` is unsafe for
+  resize-in-place.
+
+## 8. Hardening batch (2026-09-30, "no-brainers")
+
+Details + evidence: `hardening-2026-09-30.md`. Applied: smartd (both disks monitored),
+journald `SystemMaxUse=1G` drop-in, pacman `CacheDir=/scratch/pacman` + paccache.timer
+(−7.31 GiB), `xfs_scrub_all.timer`, `earlyoom`, OOM sysctls
+(`watermark_scale_factor=100`, `min_free_kbytes=262144`), Pymander unit files removed.

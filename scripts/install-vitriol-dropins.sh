@@ -21,6 +21,16 @@ install -m 0644 "$HERE/systemd/vitriol-autosave.service.d/dir.conf" \
 install -m 0644 "$HERE/systemd/vitriol-server.service.d/prune.conf" \
     /etc/systemd/system/vitriol-server.service.d/prune.conf
 
+# Optional: cooperative-VRAM governor (binary built via
+#   (cd vitriol-governor && cargo build --release))
+GOV_BIN="$HERE/../vitriol-governor/target/release/vitriol-governor"
+if [[ -x "$GOV_BIN" ]]; then
+    install -m 0755 "$GOV_BIN" /usr/local/bin/vitriol-governor
+    install -m 0644 "$HERE/systemd/vitriol-governor.service" \
+        /etc/systemd/system/vitriol-governor.service
+    echo "governor installed: /usr/local/bin/vitriol-governor (not enabled)"
+fi
+
 systemctl daemon-reload
 
 echo "drop-ins installed:"

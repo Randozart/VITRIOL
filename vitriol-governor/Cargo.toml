@@ -1,0 +1,21 @@
+# PROVENANCE: inspiration - none; VITRIOL-original cooperative VRAM policy
+# loop. Design notes: .opencode/plans/cooperative-vram-governor-2026-10-10.md
+#
+# Control-plane governor: watches NVML, decides, acts (kv-policy / ctx-resize
+# endpoints, profile swap + systemd restart). Never links the engine.
+[package]
+name = "vitriol-governor"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+
+[dependencies]
+nvml-wrapper = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+ureq = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[profile.release]
+opt-level = 2

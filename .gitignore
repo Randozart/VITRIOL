@@ -114,3 +114,6 @@ officina/native/target/
 officina/native/index.node
 node_modules
 vitriol-stream/target
+vitriol-governor/target
+vitriol-gpu-rs/target
+vitriol-gpu-rs/vendor

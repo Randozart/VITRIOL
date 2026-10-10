@@ -1,0 +1,16 @@
+# Install with scripts/install-vitriol-dropins.sh (governor section).
+# Runs as root: writes engine oom_score_adj + restarts vitriol-server.
+[Unit]
+Description=VITRIOL cooperative-VRAM governor (control plane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vitriol-governor
+Restart=on-failure
+RestartSec=5
+StateDirectory=vitriol-governor
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,3 @@
+name=qwen38-distributed
+description=Qwen3.8-27B row-split RPC: 5% layers to overlord-x8664 (100.92.76.67) CPU, rest on 3060+1070Ti. ~11 t/s decode, box B adds 64GB RAM capacity. Requires ggml-rpc-server on box B + GGML_RPC=ON build.
+created=1788955114

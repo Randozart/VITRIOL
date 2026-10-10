@@ -1,7 +1,9 @@
 # Cooperative VRAM: Rust governor + engine hooks
 
 - **Date:** 2026-10-10 14:0x
-- **Status:** approved by owner 2026-10-10 ("Let's do it"); execution started
+- **Status:** EXECUTED 2026-10-10 (G1-G4 complete; live canary deferred to
+  restart day). Commits: governor G1 `922b175`, G2 inner `2a9b79706`/outer
+  `dd2b0a6`, G3 inner `d62b88172`/outer `797e291`, G4 `0828b55`.
 - **Predecessor:** `hardening-and-cuda-oxide-2026-10-10.md` (stages 1-4 shipped)
 - **Standing constraint:** live engine NOT restarted in this batch (restart-day
   checklist stays parked). Governor + engine code land, live canary deferred.
@@ -107,3 +109,31 @@ process credential). Data plane telemetry already in engine (/metrics).
 cuda-oxide spike resume (kernel artifact lookup bug, toolchain PROVEN),
 GGML_SCHED_MAX_COPIES=64 experiment, restart-day checklist (systemd return,
 OOMScoreAdjust verify, /metrics live check, trim-WRN watch, sidecar enable).
+
+
+## Execution results (2026-10-10 18:xx)
+
+- **G1**: governor crate (observe/FSM/YIELD), 6/6 tests, Praetor clean.
+  Foreign-tenant detection needed a 768 MiB tenant floor: NVML compute list
+  is full of desktop residents (kwin 157 MiB, electron, Discord) that would
+  otherwise yield the engine forever.
+- **G2**: /kv-policy live (set persists, echo, bad-JSON 400, buffer_bytes
+  gauge 48 MiB on the smoke engine). Boot env statics -> atomics.
+- **G3**: /ctx/resize verified end-to-end on the throwaway engine:
+  8192 -> 4096 -> 8192, slot spooled each way, warm restore 603/607 tokens
+  cached, no re-prefill, no restart. common_init_result::context_from_model
+  + init_context extraction; n_ctx dropped from build_key (position-
+  addressed states fit any window; per-state fit gate added at load).
+- **G4**: governor ladder v2 (7/7 tests, Praetor 0 warnings), launcher
+  ctx_resize -> cxr=1 fingerprint, live config + profiles opt-in
+  (fingerprint diff: ONLY cxr=1 added), harness T4/T5.
+- **Environment findings**: (1) the build's fit probe initializes ALL
+  backends incl Vulkan - vkCreateDevice intermittently fails/aborts when
+  the host is saturated; smoke engines run `-device none -fit off`.
+  (2) Smoke prefill thrashes swap when MemAvailable < ~1 GiB (live engine
+  owns the 12 GiB prompt tier) - harness now preflights MemAvailable >= 3 GiB.
+  Earlier same-day full pass (T1-T3) proves the harness itself sound;
+  T4/T5 logic is the manually-verified endpoint smoke sequence.
+- **Deferred**: live governor canary (needs engine restart day),
+  full-harness rerun when RAM frees, systemd unit enable/installer run
+  (sudo), cuda-oxide spike resume.

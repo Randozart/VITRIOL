@@ -299,6 +299,7 @@ CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
+CFG_CACHE_REUSE=""
 CFG_CACHE_IDLE_SLOTS="${CFG_CACHE_IDLE_SLOTS:-on}"
 CFG_CHAT_TEMPLATE=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
@@ -384,6 +385,7 @@ parse_config() {
                 server.cache_ram)      CFG_CACHE_RAM="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
+                server.cache_reuse)     CFG_CACHE_REUSE="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -492,6 +494,9 @@ cache_ram = $CFG_CACHE_RAM
 # Idle-slot KV -> host RAM (on | off). OFF = host-memory trim 2026-09-04:
 # the host KV backup was a swappable reservoir inflating engine OOM badness.
 cache_idle_slots = $CFG_CACHE_IDLE_SLOTS
+# KV-shift salvage after prompt-head divergence: min chunk size (0 = off,
+# rebis uses 256). Saves mode-switch/cancel turns from re-prefilling from 0.
+cache_reuse = ${CFG_CACHE_REUSE:-0}
 # Custom Jinja chat template file (empty = use model's embedded template)
 chat_template = $CFG_CHAT_TEMPLATE
 
@@ -658,6 +663,7 @@ config_reset() {
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
+CFG_CACHE_REUSE=""
 CFG_CHAT_TEMPLATE=""
     CFG_UBATCH="$DEFAULT_UBATCH"
     write_config
@@ -693,6 +699,7 @@ config_set() {
         server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
         server.cache_ram)      CFG_CACHE_RAM="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
+                server.cache_reuse)     CFG_CACHE_REUSE="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         server.chat_template)  CFG_CHAT_TEMPLATE="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
@@ -2301,6 +2308,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SLOT_CONTEXT="${CLI_SLOT_CONTEXT:-${CFG_SLOT_CONTEXT:-}}"
         SLOT_SAVE_PATH="${CLI_SLOT_SAVE_PATH:-${CFG_SLOT_SAVE_PATH:-}}"
         CACHE_RAM="${CLI_CACHE_RAM:-${CFG_CACHE_RAM:-}}"
+        CACHE_REUSE="${CFG_CACHE_REUSE:-}"
         CHAT_TEMPLATE="${CFG_CHAT_TEMPLATE:-}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
         MEMORY_MODE="${VITRIOL_MEMORY_MODE:-${CLI_MEMORY_MODE:-${CFG_MEMORY_MODE}}}"
@@ -2341,6 +2349,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
+        [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && FINGERPRINT="$FINGERPRINT creuse=$CACHE_REUSE"
         [[ -n "${CHAT_TEMPLATE:-}" ]] && FINGERPRINT="$FINGERPRINT ct=$(basename "$CHAT_TEMPLATE")"
         [[ ${#MMPROJ_ARGS[@]} -gt 0 ]] && FINGERPRINT="$FINGERPRINT vis=on"
         [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && FINGERPRINT="$FINGERPRINT cis=0"
@@ -2507,6 +2516,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         else
             CACHE_ARGS="--kv-unified --cache-idle-slots --ubatch-size ${UBATCH:-256}"
         fi
+        # KV-shift salvage after head divergence (mode switch / cancel): without
+        # it a diverged turn prefills from token 0. Off unless config sets it.
+        [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && CACHE_ARGS="$CACHE_ARGS --cache-reuse ${CACHE_REUSE}"
         # Reasoning/thinking mode: off for Qwen3.6 models
         REASONING_ARGS=""
         [[ "${REASONING}" == "off" ]] && REASONING_ARGS="--reasoning off"

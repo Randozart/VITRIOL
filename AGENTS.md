@@ -158,6 +158,32 @@ borrowed). See `docs/provenance/`. (Historical note: entries predating 2026-08-2
 "re-derived only" were written under the previous GPL-2.0 regime; the constraint no longer
 applies, but the records are kept as-is for accuracy.)
 
+## Cooperative-VRAM Governor (Rust, 2026-10-10)
+
+- **`vitriol-governor/`** — control-plane daemon: NVML 1 s poll; escalation
+  ladder Full -> Relieved -> Resized -> Yielded under sustained foreign-tenant
+  VRAM pressure; walks back on sustained recovery. RELIEVE = `POST /kv-policy`
+  (runtime KV eager-sweep floor + sweep; engine atomics replace boot-only
+  `VITRIOL_KV_FLOOR`), RESIZE = `POST /ctx/resize` (live KV window swap,
+  weights resident, slots spooled -> warm restore; opt-in via
+  `[server] ctx_resize = 1` -> `VITRIOL_CTX_RESIZE=1`, fingerprint `cxr=`),
+  YIELD = `scripts/vitriol config load qwen38-buffedmod-208k` + unit restart
+  (warm KV restore) + engine `oom_score_adj` -500 -> 0 while yielded.
+- Foreign-tenant detection needs a 768 MiB per-process floor: NVML compute
+  lists are full of desktop residents (kwin/electron/Discord) that must not
+  trigger yields. Engine PID set = unit MainPID + `/proc` comm scan.
+- Engine endpoints: `POST /kv-policy {floor,protect,sweep}`,
+  `POST /ctx/resize {n_ctx}` (gated by `VITRIOL_CTX_RESIZE=1`); task-queue
+  serialized (defer while decoding). `n_ctx` is NOT in the prompt-cache
+  build_key (position-addressed states fit any window; per-state fit gate at
+  load) so mirror states survive resize.
+- Deploy (restart day): `cargo build --release` in `vitriol-governor/`,
+  `sudo scripts/install-vitriol-dropins.sh` (also installs the governor
+  unit + binary), TOML overrides at `~/.vitriol/governor.toml`. FSM unit
+  tests: `cargo test`. NOT yet enabled live — canary on restart day.
+- `vitriol-gpu-rs/` — cuda-oxide spike crate (toolchain proven, no engine
+  kernels; see `.opencode/plans/cuda-oxide-spike-verdict-2026-10-10.md`).
+
 ## Qwen3.8-27B Dual-GPU Config (RTX 3060 + GTX 1070 Ti)
 
 **LIVE CONFIG (single-session, blessed 2026-09-28, ts 27,21)**:

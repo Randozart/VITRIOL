@@ -73,6 +73,9 @@ prune_experts = 0
 reasoning = off
 
 [server]
+# Cooperative-VRAM governor: allow live context resize (POST /ctx/resize);
+# escalation tier 2 before profile-swap restart (cooperative-vram-governor plan)
+ctx_resize = 1
 # API host address
 host = 127.0.0.1
 # API port

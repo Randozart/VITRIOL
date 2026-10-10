@@ -20,6 +20,14 @@ URL="http://127.0.0.1:$PORT"
         Qwen/Qwen2.5-0.5B-Instruct-GGUF qwen2.5-0.5b-instruct-q4_k_m.gguf "$MODEL"
 }
 
+# preflight: smoke engines need real RAM; under a saturated host (live engine
+# holds the 12 GiB prompt tier) the CPU prefill thrashes swap and false-fails
+MEM_AVAIL_KB=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+if [[ "${MEM_AVAIL_KB:-0}" -lt 3145728 ]]; then
+    echo "SKIP: MemAvailable=$((MEM_AVAIL_KB / 1024)) MiB < 3072 MiB (host saturated; retry when RAM frees)"
+    exit 2
+fi
+
 TMP="$(mktemp -d /tmp/kvtier-smoke.XXXXXX)"
 LOG="$TMP/engine.log"
 ENGINE_PID=""
@@ -38,7 +46,7 @@ start_engine() { # $1.. extra env assignments as KEY=VAL, then flag passthrough 
     local envs=()
     while [[ "${1:-}" == *=* ]]; do envs+=("$1"); shift; done
     env "${envs[@]}" "$ENGINE" \
-        -m "$MODEL" -c 4096 -np 1 -t 2 -ngl 0 \
+        -m "$MODEL" -c "${NCTX:-4096}" -np 1 -t 2 -ngl 0 --device none -fit off \
         --port "$PORT" --host 127.0.0.1 --no-webui \
         --slot-save-path "$TMP/mirror" --cache-ram "${CRAM:-512}" \
         --ctx-checkpoints 4 "${EXTRA_ARGS[@]}" >"$LOG" 2>&1 &
@@ -111,6 +119,49 @@ for i in $(seq 1 25); do
 done
 grep -q "disk trim: removed" "$LOG" || fail "no 'disk trim: removed' WRN (trim not loud)"
 say "T3 ok: trim WRN present"
+stop_engine
+
+say "T4: kv-policy endpoint (runtime eviction policy)"
+start_engine
+R=$(curl -s -X POST "$URL/kv-policy" -d '{"floor":0.10,"protect":512,"sweep":true}')
+printf '%s' "$R" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+assert abs(v["floor"] - 0.10) < 1e-3, f"floor not applied: {v}"
+assert v["protect"] == 512, f"protect not applied: {v}"
+assert v["buffer_bytes"] > 0, f"buffer gauge missing: {v}"
+'
+R=$(curl -s -X POST "$URL/kv-policy" -d '{"floor":0}')
+printf '%s' "$R" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+assert v["floor"] == 0, f"floor undo failed: {v}"
+assert v["protect"] == 512, f"protect must persist when omitted: {v}"
+'
+say "T4 ok: kv-policy set/echo/persist"
+stop_engine
+
+say "T5: ctx resize round trip (spool -> swap -> warm restore)"
+NCTX=8192 start_engine VITRIOL_CTX_RESIZE=1
+complete "$P1" >/dev/null
+R=$(curl -s -X POST "$URL/ctx/resize" -d '{"n_ctx":4096}')
+printf '%s' "$R" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+assert v["n_ctx_old"] == 8192 and v["n_ctx_new"] == 4096, f"resize down failed: {v}"
+assert v["n_spooled"] == 1, f"slot not spooled: {v}"
+'
+C="$(complete "$P1" | cached_n)"
+[[ "$C" -gt 100 ]] || fail "post-resize warm restore: cache_n=$C"
+R=$(curl -s -X POST "$URL/ctx/resize" -d '{"n_ctx":8192}')
+printf '%s' "$R" | python3 -c '
+import json, sys
+v = json.load(sys.stdin)
+assert v["n_ctx_old"] == 4096 and v["n_ctx_new"] == 8192, f"resize up failed: {v}"
+'
+C="$(complete "$P1" | cached_n)"
+[[ "$C" -gt 100 ]] || fail "post-resize-up warm restore: cache_n=$C"
+say "T5 ok: resize round trip, warm restore both ways"
 stop_engine
 
 say "ALL PASS"

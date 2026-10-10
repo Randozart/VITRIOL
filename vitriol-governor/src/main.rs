@@ -81,8 +81,54 @@ fn tick_sample(obs: &Observer, cfg: &Config) -> Sample {
 fn execute(a: Action, cfg: &Config, s: &Sample, dry_run: bool) {
     match a {
         Action::Note(m) => engine::log(&m),
+        Action::Relieve(floor) => execute_relieve(cfg, s, floor, dry_run),
+        Action::RelieveUndo => execute_relieve_undo(cfg, dry_run),
+        Action::ResizeTo(n_ctx) => execute_resize(cfg, n_ctx, "sustained pressure", dry_run),
+        Action::ResizeUndo(n_ctx) => execute_resize(cfg, n_ctx, "recovery", dry_run),
         Action::Yield => execute_yield(cfg, s, dry_run),
         Action::Restore => execute_restore(cfg, s, dry_run),
+    }
+}
+
+/// RELIEVE tier: raise the eager-sweep floor + sweep once (fast, reversible).
+fn execute_relieve(cfg: &Config, s: &Sample, floor: f32, dry_run: bool) {
+    engine::log(&format!(
+        "PRESSURE (min free {} MiB, foreign tenant) -> RELIEVE: kv floor {floor} + sweep",
+        s.min_free()
+    ));
+    if dry_run {
+        engine::log("dry-run: relieve not executed");
+        return;
+    }
+    match engine::kv_policy(cfg.engine_port, floor, true) {
+        Ok(v) => engine::log(&format!("relieve ok: swept={} resident={} buffer={}",
+            v["swept"], v["resident"], v["buffer_bytes"])),
+        Err(e) => engine::log(&format!("ERROR relieve: {e}")),
+    }
+}
+
+fn execute_relieve_undo(cfg: &Config, dry_run: bool) {
+    engine::log("RECOVERY -> kv floor back to 0 (demand-driven only)");
+    if dry_run {
+        engine::log("dry-run: relieve-undo not executed");
+        return;
+    }
+    if let Err(e) = engine::kv_policy(cfg.engine_port, 0.0, false) {
+        engine::log(&format!("ERROR relieve-undo: {e}"));
+    }
+}
+
+/// RESIZE tier both directions: live context window swap, weights resident.
+fn execute_resize(cfg: &Config, n_ctx: u32, why: &str, dry_run: bool) {
+    engine::log(&format!("{why} -> RESIZE: live context swap to {n_ctx}"));
+    if dry_run {
+        engine::log("dry-run: resize not executed");
+        return;
+    }
+    match engine::ctx_resize(cfg.engine_port, n_ctx) {
+        Ok(v) => engine::log(&format!("resize ok: {} -> {} ({} slots spooled, {} tokens)",
+            v["n_ctx_old"], v["n_ctx_new"], v["n_spooled"], v["n_tokens_spooled"])),
+        Err(e) => engine::log(&format!("ERROR resize: {e}")),
     }
 }
 

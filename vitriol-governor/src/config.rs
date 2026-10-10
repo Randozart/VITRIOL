@@ -9,16 +9,28 @@ pub struct Config {
     pub floor_free_mib: u64,
     /// Recovery: ALL GPUs above this (MiB) free for `recover_secs` walks back.
     pub ceiling_free_mib: u64,
-    /// A dip must persist this long before acting (anti-flap, fast path).
+    /// A dip must persist this long before RELIEVE (anti-flap, fast path).
     pub confirm_secs: u64,
-    /// Good conditions must persist this long before restoring.
+    /// Pressure must persist this long in Relieved before RESIZE.
+    pub resize_hold_secs: u64,
+    /// Pressure must persist this long in Resized before YIELD.
+    pub yield_hold_secs: u64,
+    /// Good conditions must persist this long before walking back.
     pub recover_secs: u64,
-    /// Minimum time between transitions, both directions.
+    /// Minimum time between heavy transitions (resize/yield/restore).
     pub min_dwell_secs: u64,
+    /// Eager-sweep score floor applied while relieved (0 = sweep off).
+    pub relieve_floor: f32,
     /// Profile loaded when yielding.
     pub yield_profile: String,
     /// Profile loaded when restoring.
     pub full_profile: String,
+    /// Window the RESIZE tier shrinks to (must be < full window).
+    pub resize_n_ctx: u32,
+    /// Window restored when undoing a resize.
+    pub full_n_ctx: u32,
+    /// Allow the /ctx/resize tier at all.
+    pub resize_enabled: bool,
     /// Engine HTTP port (localhost).
     pub engine_port: u16,
     /// Project root holding scripts/vitriol.
@@ -40,10 +52,16 @@ impl Default for Config {
             floor_free_mib: 1536,
             ceiling_free_mib: 4096,
             confirm_secs: 10,
+            resize_hold_secs: 60,
+            yield_hold_secs: 180,
             recover_secs: 300,
             min_dwell_secs: 600,
+            relieve_floor: 0.10,
             yield_profile: "qwen38-buffedmod-208k".into(),
             full_profile: "qwen38-buffedmod-262k".into(),
+            resize_n_ctx: 212_992,
+            full_n_ctx: 262_144,
+            resize_enabled: true,
             engine_port: 8279,
             project_dir: format!("{}/Desktop/Projects/VITRIOL", std::env::var("HOME").unwrap_or_default()),
             engine_unit: "vitriol-server".into(),

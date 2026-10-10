@@ -116,3 +116,24 @@ pub fn apply_yield_oom(cfg: &crate::config::Config) {
         }
     }
 }
+
+fn post_json(port: u16, path: &str, body: &str) -> Result<serde_json::Value, String> {
+    let resp = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .post(&format!("http://127.0.0.1:{port}{path}"))
+        .send_string(body)
+        .map_err(|e| format!("POST {path}: {e}"))?;
+    let text = resp.into_string().map_err(|e| format!("read {path}: {e}"))?;
+    serde_json::from_str(&text).map_err(|e| format!("parse {path}: {e}"))
+}
+
+/// RELIEVE tier: raise the eager-sweep floor + sweep once (and floor 0 undoes).
+pub fn kv_policy(port: u16, floor: f32, sweep: bool) -> Result<serde_json::Value, String> {
+    post_json(port, "/kv-policy", &format!(r#"{{"floor":{floor},"sweep":{sweep}}}"#))
+}
+
+/// RESIZE tier: live context window swap (weights stay resident).
+pub fn ctx_resize(port: u16, n_ctx: u32) -> Result<serde_json::Value, String> {
+    post_json(port, "/ctx/resize", &format!(r#"{{"n_ctx":{n_ctx}}}"#))
+}

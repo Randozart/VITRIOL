@@ -300,6 +300,7 @@ CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
 CFG_CACHE_REUSE=""
+CFG_CTX_RESIZE=""
 CFG_CACHE_IDLE_SLOTS="${CFG_CACHE_IDLE_SLOTS:-on}"
 CFG_CHAT_TEMPLATE=""
 CFG_MEMORY_MODE="$DEFAULT_MEMORY_MODE"
@@ -386,6 +387,7 @@ parse_config() {
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.cache_reuse)     CFG_CACHE_REUSE="$val" ;;
+                server.ctx_resize)      CFG_CTX_RESIZE="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -497,6 +499,7 @@ cache_idle_slots = $CFG_CACHE_IDLE_SLOTS
 # KV-shift salvage after prompt-head divergence: min chunk size (0 = off,
 # rebis uses 256). Saves mode-switch/cancel turns from re-prefilling from 0.
 cache_reuse = ${CFG_CACHE_REUSE:-0}
+ctx_resize = ${CFG_CTX_RESIZE:-0}
 # Custom Jinja chat template file (empty = use model's embedded template)
 chat_template = $CFG_CHAT_TEMPLATE
 
@@ -664,6 +667,7 @@ CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
 CFG_CACHE_REUSE=""
+CFG_CTX_RESIZE=""
 CFG_CHAT_TEMPLATE=""
     CFG_UBATCH="$DEFAULT_UBATCH"
     write_config
@@ -700,6 +704,7 @@ config_set() {
         server.cache_ram)      CFG_CACHE_RAM="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.cache_reuse)     CFG_CACHE_REUSE="$val" ;;
+                server.ctx_resize)      CFG_CTX_RESIZE="$val" ;;
         server.port)           CFG_PORT="$val" ;;
         server.chat_template)  CFG_CHAT_TEMPLATE="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
@@ -2195,6 +2200,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
             VITRIOL_MEMORY_MODE="$MEMORY_MODE" \
             VITRIOL_KV_MODE="$KV_MODE" \
             VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
             VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
             VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
@@ -2350,6 +2356,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
         [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && FINGERPRINT="$FINGERPRINT creuse=$CACHE_REUSE"
+        [[ "${CFG_CTX_RESIZE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT cxr=1"
         [[ -n "${CHAT_TEMPLATE:-}" ]] && FINGERPRINT="$FINGERPRINT ct=$(basename "$CHAT_TEMPLATE")"
         [[ ${#MMPROJ_ARGS[@]} -gt 0 ]] && FINGERPRINT="$FINGERPRINT vis=on"
         [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && FINGERPRINT="$FINGERPRINT cis=0"
@@ -2540,6 +2547,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
@@ -2585,6 +2593,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_MEMORY_MODE=on \
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
@@ -2609,6 +2618,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
@@ -2673,6 +2683,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
@@ -2719,6 +2730,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_MEMORY_MODE=on \
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \
@@ -2737,6 +2749,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_LRU_MB="$LRU_MB" \
                     VITRIOL_KV_MODE="$KV_MODE" \
                     VITRIOL_KV_SCORE="$KV_SCORE" \
+            VITRIOL_CTX_RESIZE="${CFG_CTX_RESIZE:-0}" \
                     VITRIOL_KV_SCORE_EVERY="$KV_SCORE_EVERY" \
             VITRIOL_KV_SCORE_MIN_FILL="$KV_SCORE_MIN_FILL" \
                     VITRIOL_FROZEN_PROMPT="$FROZEN_PROMPT" \

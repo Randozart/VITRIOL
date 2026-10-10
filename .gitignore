@@ -113,3 +113,4 @@ alka-executor/vitriol_ce_test
 officina/native/target/
 officina/native/index.node
 node_modules
+vitriol-stream/target

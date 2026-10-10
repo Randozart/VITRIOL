@@ -2512,7 +2512,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         #   --cache-idle-slots: persist full state (incl. RS/SSM buffers) on slot release
         #   --ubatch-size 256: reduce compute buffer pressure, may reduce graph splits
         if [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]]; then
-            CACHE_ARGS="--kv-unified --ubatch-size ${UBATCH:-256}"
+            # upstream default is ON: without the explicit negative flag the
+            # engine would run cache-idle-slots while the fingerprint says cis=0
+            CACHE_ARGS="--kv-unified --no-cache-idle-slots --ubatch-size ${UBATCH:-256}"
         else
             CACHE_ARGS="--kv-unified --cache-idle-slots --ubatch-size ${UBATCH:-256}"
         fi

@@ -117,3 +117,7 @@ vitriol-stream/target
 vitriol-governor/target
 vitriol-gpu-rs/target
 vitriol-gpu-rs/vendor
+vitriol-gpu-rs/*.ptx
+vitriol-gpu-rs/*.ll
+vitriol-gpu-rs/*.ltoir
+vitriol-gpu-rs/*.cubin

@@ -1,0 +1,26 @@
+# PROVENANCE: inspiration - NVlabs/cuda-oxide (Apache-2.0), SIMT kernels in
+# pure Rust via the cargo-oxide rustc backend; learned the #[cuda_module] /
+# #[kernel] / DisjointSlice host-device API. No code copied.
+#
+# Spike crate: validates the cuda-oxide toolchain on this host (RTX 3060,
+# sm_86, driver 615.71) and benches a probe-shaped batched dot-product
+# kernel. Kernels stay out of the llama.cpp engine until an adopt/reject
+# decision (see .opencode/plans/hardening-and-cuda-oxide-2026-10-10.md).
+[package]
+name = "vitriol-gpu-rs"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0 OR MIT"
+default-run = "vitriol-gpu-rs"
+
+# vendor/ carries the pinned cuda-oxide checkout with its own nested
+# workspaces; without exclude, this [workspace] claims it and breaks
+# edition.workspace inheritance in the vendored crates.
+[workspace]
+exclude = ["vendor"]
+
+[dependencies]
+cuda-device = { path = "vendor/cuda-rust/cuda-oxide/crates/cuda-device" }
+cuda-host = { path = "vendor/cuda-rust/cuda-oxide/crates/cuda-host", features = ["async"] }
+cuda-core = { path = "vendor/cuda-rust/cuda-core" }
+cuda-async = { path = "vendor/cuda-rust/cuda-async" }

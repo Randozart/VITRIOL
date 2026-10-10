@@ -1,7 +1,9 @@
 # Cache cleanup -> full prefill from 0: root cause + fix plan
 
 - **Date:** 2026-10-10 11:47
-- **Status:** Stage A in progress; B/C pending
+- **Status:** Stage A COMPLETE 2026-10-10 (inner `8dd8e3276`, launcher outer
+  `47ffcf2`, binary rebuilt 12:35; `cache_reuse` wired but NOT enabled live -
+  needs diverged-turn validation first); B/C pending
 - **Symptom:** occasionally the engine "cleans up the cache", afterwards the next
   turn prefills the whole conversation from token 0.
 - **Component:** `llama.cpp/tools/server/server-task.cpp` (disk trim / fetch),
@@ -115,5 +117,14 @@ Verification: build server target, `llama-server --help` smoke, launcher
 - Fix autosave sidecar dir (`VITRIOL_SLOT_SAVE_DIR=/scratch/kvtier`), remove
   orphan `/scratch/kvtier/slot0.tmp.bin`.
 - Fix `cache_idle_slots` emission + `cis=` fingerprint.
+
+## Verification (2026-10-10 12:40)
+
+- `make -j8 llama-server` clean; only 3 warnings, all pre-existing (2 sign-compare
+  in disk contained-checks, 1 unused `req` in get_metrics) - none in new code.
+- `llama-server --help` lists `--cache-reuse`; binary rebuilt 12:35.
+- `bash -n scripts/vitriol` ok; `vitriol serve --dry-run` fingerprint identical
+  to live (`ssp=1 cram=12288 ...`, no `creuse=`) - no silent flag drift.
+- NOT yet run: live restart (trim/fetch behavior needs the new binary; see C).
 - Migrate the 95.7 GiB mirror carefully (trim will fire on first spill after
   deploy while old files remain).

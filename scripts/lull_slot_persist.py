@@ -53,6 +53,8 @@ SAVE_DIR = os.environ.get("VITRIOL_SLOT_SAVE_DIR",
                           os.path.expanduser("~/.vitriol/checkpoints"))
 BASE = f"http://127.0.0.1:{PORT}"
 HANG_STRIKES_MAX = int(os.environ.get("VITRIOL_HANG_STRIKES", "12"))
+# engine unit is SYSTEM scope since 2026-09-04 (user units retired)
+SYSTEMCTL = ["systemctl", "restart", "vitriol-server.service"]
 PROACTIVE_MB = int(os.environ.get("VITRIOL_PROACTIVE_MB", "250"))
 PROACTIVE_TICKS = int(os.environ.get("VITRIOL_PROACTIVE_TICKS", "24"))
 BOUNCE_COOLDOWN = int(os.environ.get("VITRIOL_BOUNCE_COOLDOWN_SECS", "600"))
@@ -109,10 +111,62 @@ def wait_health(timeout=1800):
     return False
 
 
-def restore_all():
-    """Restore slot{N}.bin into slot N. Tolerates missing/invalid files."""
+def server_identity():
+    """(boot_id, pid) of the engine, or None. Persisted across sidecar
+    restarts so a sidecar restart next to a LIVE engine does not replay a
+    stale disk checkpoint over warm in-memory state (observed 2026-10-11:
+    sidecar restart restored a stale slot0.bin and wiped the owner's 62k
+    warm session)."""
+    pid = server_pid()
+    if pid is None:
+        return None
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as f:
+            boot_id = f.read().strip()
+        return (boot_id, pid)
+    except Exception:
+        return (None, pid)
+
+
+IDENTITY_PATH = os.path.join(SAVE_DIR, ".sidecar-identity.json")
+
+
+def load_identity():
+    try:
+        with open(IDENTITY_PATH) as f:
+            v = json.load(f)
+        return (v.get("boot_id"), v.get("pid"))
+    except Exception:
+        return None
+
+
+def store_identity(ident):
+    if ident is None:
+        return
+    try:
+        os.makedirs(SAVE_DIR, exist_ok=True)
+        with open(IDENTITY_PATH, "w") as f:
+            json.dump({"boot_id": ident[0], "pid": ident[1]}, f)
+    except Exception:
+        pass
+
+
+def restore_all(force=False):
+    """Restore slot{N}.bin into slot N. Tolerates missing/invalid files.
+
+    Unless force=True, skips the replay when the engine is the SAME
+    generation the sidecar last saw - the engine's in-memory state is then
+    newer than any disk checkpoint, and restoring would regress it."""
     if PERSIST_OK is False:
         return  # confirmed 501 — silent (logged once at probe)
+    if not force:
+        ident = server_identity()
+        prev = load_identity()
+        if ident is not None and ident == prev:
+            log("engine unchanged since last sidecar run - skipping restore")
+            store_identity(ident)
+            return
+    store_identity(server_identity())
     if not os.path.isdir(SAVE_DIR):
         return
     try:
@@ -142,24 +196,30 @@ def restore_all():
 
 
 def activity_signature():
-    """Two monotonic counters from /metrics. Identical signatures between
-    ticks ⇒ no request touched the server at all — every idle checkpoint is
-    still current and the whole save tick can be skipped (a 48k-token
-    checkpoint is ~1 GiB; rewriting it while nothing happened is churn)."""
+    """Per-slot activity from /slots. Identical signatures between ticks =>
+    no request touched the server at all - every idle checkpoint is still
+    current and the whole save tick can be skipped (a 48k-token checkpoint
+    is ~1 GiB; rewriting it while nothing happened is churn).
+
+    Historical note: this used two /metrics counters, but the engine's
+    prompt/predicted counters have been frozen at 0 (pre-existing plumbing
+    bug), which made the signature constant and silently disabled ALL
+    periodic saves after the first one per boot - slot0.bin went stale and
+    every restart cost a full re-prefill. /slots state cannot freeze."""
     try:
-        req = urllib.request.Request(BASE + "/metrics")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            txt = r.read().decode("utf-8", "replace")
-        vals = {}
-        for line in txt.splitlines():
-            if line.startswith("llamacpp:prompt_tokens_total ") or \
-               line.startswith("llamacpp:tokens_predicted_total "):
-                k, v = line.split()
-                vals[k] = v
-        return (vals.get("llamacpp:prompt_tokens_total"),
-                vals.get("llamacpp:tokens_predicted_total"))
+        slots = get("/slots")
     except Exception:
-        return None  # unknown — behave conservatively
+        return None  # unknown - behave conservatively
+    sig = []
+    for s in slots:
+        p = s.get("prompt") or {}
+        sig.append((
+            s.get("id"),
+            s.get("is_processing"),
+            s.get("id_task"),
+            p.get("n_tokens", s.get("n_prompt_tokens", -1)),
+        ))
+    return tuple(sig)
 
 
 def save_idle(last_sig):
@@ -295,10 +355,7 @@ def main():
                     log(f"HANG DETECTED after {hang_strikes} strikes "
                         f"(~{hang_strikes * 5}s health-deaf, pid {pid}) "
                         f"— forcing restart")
-                    subprocess.run(
-                        ["systemctl", "--user", "restart",
-                         "vitriol-server.service"],
-                        check=False)
+                    subprocess.run(SYSTEMCTL, check=False)
                     last_pid = None  # generation branch picks up + restores
             else:
                 if hang_strikes:
@@ -321,10 +378,7 @@ def main():
                     save_idle(last_sig)  # best-effort; bounded timeouts
                 except Exception as e:
                     log(f"pre-bounce save failed (continuing): {e}")
-                subprocess.run(
-                    [*SYSTEMCTL, "restart",
-                     "vitriol-server.service"],
-                    check=False)
+                subprocess.run(SYSTEMCTL, check=False)
                 last_pid = None
                 cooldown_until = time.time() + BOUNCE_COOLDOWN
                 log("bounce issued; cooldown until "

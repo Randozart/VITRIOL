@@ -1,5 +1,7 @@
 # Install with scripts/install-vitriol-dropins.sh (governor section).
 # Runs as root: writes engine oom_score_adj + restarts vitriol-server.
+# HOME is set explicitly: the systemd environment has none, and the config
+# path + scripts/vitriol default resolve through it.
 [Unit]
 Description=VITRIOL cooperative-VRAM governor (control plane)
 After=network-online.target
@@ -7,7 +9,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/vitriol-governor
+Environment=HOME=/home/randozart
+ExecStart=/usr/local/bin/vitriol-governor --config /home/randozart/.vitriol/governor.toml
 Restart=on-failure
 RestartSec=5
 StateDirectory=vitriol-governor

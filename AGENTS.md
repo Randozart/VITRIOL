@@ -177,10 +177,15 @@ applies, but the records are kept as-is for accuracy.)
   serialized (defer while decoding). `n_ctx` is NOT in the prompt-cache
   build_key (position-addressed states fit any window; per-state fit gate at
   load) so mirror states survive resize.
-- Deploy (restart day): `cargo build --release` in `vitriol-governor/`,
-  `sudo scripts/install-vitriol-dropins.sh` (also installs the governor
-  unit + binary), TOML overrides at `~/.vitriol/governor.toml`. FSM unit
-  tests: `cargo test`. NOT yet enabled live — canary on restart day.
+- LIVE since 2026-10-11 (restart-day canary passed,
+  `.opencode/plans/restart-day-report-2026-10-11.md`): governor enabled,
+  sidecar unit active (restores /scratch/kvtier/slot0.bin at boot),
+  `VITRIOL_KV_DISK_PRUNE=0` pinned via drop-in. Config
+  `~/.vitriol/governor.toml` (absolute paths - the unit has no HOME).
+  Behavior contract: crash-resume warms when the client continues the
+  saved conversation; history rewrites re-process honestly (bounded by
+  n_rs_seq=3 for MTP). /metrics `prompt_tokens_cached_total` plumbing is
+  pre-existing-broken (investigate).
 - `vitriol-gpu-rs/` — cuda-oxide spike crate (toolchain proven, no engine
   kernels; see `.opencode/plans/cuda-oxide-spike-verdict-2026-10-10.md`).
 

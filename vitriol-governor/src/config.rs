@@ -4,6 +4,7 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct Config {
     /// Pressure: any GPU with free VRAM below this (MiB) counts as pressured.
     pub floor_free_mib: u64,

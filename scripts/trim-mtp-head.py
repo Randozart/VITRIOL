@@ -43,6 +43,19 @@ def main():
     model_path = sys.argv[1]
     out_path = sys.argv[2]
     n_trim = int(sys.argv[3]) if len(sys.argv) > 3 else 32768
+    # selection mode: l2 (top-L2-norm — FAILED, kept for reference) |
+    #   ext-d2t (token set from an external d2t draft, our weights) |
+    #   bpe (low BPE ids + specials — self-derived frequency proxy)
+    mode = sys.argv[4] if len(sys.argv) > 4 else "l2"
+    # ext-d2t consumes argv[5] for the external draft path; other modes take
+    # the head quant type there instead
+    ext_draft = sys.argv[5] if (len(sys.argv) > 5 and mode == "ext-d2t") else None
+    # head quant: Q8_0 default; Q4_0 halves draft-head bandwidth (FastMTP uses ~3-bit)
+    head_qname = "Q8_0"
+    if len(sys.argv) > 5 and mode != "ext-d2t":
+        head_qname = sys.argv[5]
+    elif len(sys.argv) > 6:
+        head_qname = sys.argv[6]
 
     print(f"reading {model_path}")
     reader = GGUFReader(model_path)
@@ -61,34 +74,57 @@ def main():
     n_embd, n_vocab = ow.shape[0], ow.shape[1]
     print(f"output.weight: shape=({n_embd}, {n_vocab}) type={ow.tensor_type}")
 
-    # dequantize to f16 — numpy layout is (n_vocab, n_embd), row j = token j's direction
+    # selection
+    if mode == "ext-d2t":
+        if not ext_draft:
+            print("ERROR: ext-d2t mode needs the external draft path (argv[5])")
+            sys.exit(1)
+        r_ext = GGUFReader(ext_draft)
+        top_idx = np.array([t for t in r_ext.tensors if t.name == "d2t"][0].data,
+                           dtype=np.int64)
+        assert len(top_idx) == n_trim, f"external d2t has {len(top_idx)} entries, expected {n_trim}"
+        print(f"ext-d2t mode: using external d2t token set ({len(top_idx)} tokens)")
+    elif mode == "bpe":
+        # low BPE ids (merge order ~ frequency) + all special/control tokens
+        r_tok_type = reader.fields["tokenizer.ggml.token_type"].contents()
+        tok_type = np.array(r_tok_type, dtype=np.int32)
+        # types: 1=normal, 2=unknown, 3=control, 4=user-defined, 5=unused...
+        special_ids = np.where((tok_type != 1) & (tok_type != 5))[0]
+        n_special = len(special_ids)
+        n_normal = n_trim - n_special
+        normal_ids = np.arange(min(n_normal, n_vocab), dtype=np.int64)
+        top_idx = np.concatenate([normal_ids, special_ids.astype(np.int64)])
+        print(f"bpe mode: {n_normal} low-id normal + {n_special} special tokens")
+    else:
+        # l2 mode: selection happens after dequantize below
+        pass
+
+    # dequantize full head, then keep only selected rows
+    # numpy layout is (n_vocab, n_embd), row j = token j's direction
     print("dequantizing output.weight to f16...")
     ow_f16 = dequantize(ow.data, GGMLQuantizationType(ow.tensor_type)).astype(np.float16)
     print(f"dequantized: shape={ow_f16.shape} dtype={ow_f16.dtype}")
 
-    # per-token L2 norms (along embedding dim = axis 1)
-    print("computing per-token L2 norms (chunked)...")
-    col_norms_sq = np.zeros(ow_f16.shape[0], dtype=np.float64)
-    chunk = 4096
-    for i in range(0, ow_f16.shape[0], chunk):
-        block = ow_f16[i:i+chunk].astype(np.float32)
-        col_norms_sq[i:i+chunk] = np.sum(block * block, axis=1)
-        del block
-    col_norms = np.sqrt(col_norms_sq)
-    del col_norms_sq
-    print(f"norms: min={col_norms.min():.4f} max={col_norms.max():.4f} mean={col_norms.mean():.4f}")
-
-    # select top-n_trim token rows by L2 norm (descending)
-    top_idx = np.argsort(col_norms)[-n_trim:][::-1]
-    print(f"selected top {n_trim}; norm range: {col_norms[top_idx[-1]]:.4f} .. {col_norms[top_idx[0]]:.4f}")
-    del col_norms
+    if mode == "l2":
+        col_norms_sq = np.zeros(ow_f16.shape[0], dtype=np.float64)
+        chunk = 4096
+        for i in range(0, ow_f16.shape[0], chunk):
+            block = ow_f16[i:i+chunk].astype(np.float32)
+            col_norms_sq[i:i+chunk] = np.sum(block * block, axis=1)
+            del block
+        col_norms = np.sqrt(col_norms_sq)
+        del col_norms_sq
+        print(f"norms: min={col_norms.min():.4f} max={col_norms.max():.4f} mean={col_norms.mean():.4f}")
+        top_idx = np.argsort(col_norms)[-n_trim:][::-1]
+        print(f"selected top {n_trim}; norm range: {col_norms[top_idx[-1]]:.4f} .. {col_norms[top_idx[0]]:.4f}")
+        del col_norms
 
     # trimmed head: [n_trim, n_embd] in f16 (token-major, matching source layout)
     ow_trimmed = ow_f16[top_idx].copy()
     del ow_f16  # free 2.5 GB
 
-    # quantize trimmed head to Q8_0 (gguf-py has no Q6_K quantizer; Q8_0 err ~0.017)
-    qtype = GGMLQuantizationType.Q8_0
+    # quantize trimmed head (gguf-py has no Q6_K quantizer; Q8_0 err ~0.017, Q4_0 ~0.35)
+    qtype = GGMLQuantizationType[head_qname]
     print(f"quantizing trimmed head to {qtype.name}...")
     ow_trimmed_q = quantize(ow_trimmed.astype(np.float32), qtype)
     del ow_trimmed

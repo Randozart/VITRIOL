@@ -142,6 +142,98 @@ FastMTP as the draft. The engine d2t fixes (inner `02233899c`) remain
 valuable — they enable any d2t draft model, including future self-made ones
 if we ever train one.
 
+---
+
+## Self-trim revisited: selection was the problem, not the mechanism — 2026-10-12 00:30
+
+**Owner insight:** d2t is a separate drafter; BuffedMod was chosen because
+its head sped up internal MTP. Can we enhance BuffedMod with d2t at the
+same speed or better? The L2 experiment failed because the *token subset*
+was wrong (rare high-norm tokens), not because trimming is inherently
+broken: a trimmed draft proposes the full head's argmax restricted to the
+subset — with the RIGHT subset (frequency-like), it should propose what the
+full head would have proposed anyway.
+
+### `scripts/trim-mtp-head.py` selection modes
+
+- `l2` — top-L2-norm (the failed variant, kept for reference)
+- `ext-d2t` — token set from the external FastMTP d2t (their trained
+  selection as a frequency proxy), our weights
+- `bpe` — ids 0..32751 + all 33 special tokens (self-derived; BPE merge
+  order ≈ frequency), zero external dependency
+- optional head quant arg (`Q8_0` default, `Q4_0` tested)
+
+### Results (49k ctx, ts 27,21, shallow 3×64 greedy)
+
+| arm | median t/s | acceptance | mean len |
+|-----|-----------|------------|----------|
+| FastMTP external (reference) | **32.3** | 0.68–0.79 | 2.95–3.32 |
+| **D2: ours + bpe set + Q8_0 head** | **29.8** | 0.62–0.74 | 2.86–3.15 |
+| internal MTP (reference) | 29.4 | 0.75–0.77 | 3.26–3.32 |
+| D3: ours + bpe + Q4_0 head | 28.0 | 0.58–0.68 | 2.74–3.00 |
+| D1: ours + ext-d2t set + Q8_0 | 26.6 | 0.51–0.70 | 2.48–3.10 |
+| no-spec | 18.5 | — | — |
+| L2 (failed) | 11.7 | 0.01 | 1.03 |
+
+- **Mechanism validated**: our own weights + the right subset ≈ internal-MTP
+  speed with a −87% draft-head matmul, zero external dependency.
+- D2 > D1: the low-BPE-ID set covers our head's actual top-1 better on this
+  prompt than FastMTP's finetuned-for-their-head set.
+- Q4_0 head (D3) loses more acceptance to quantization error than it gains
+  in bandwidth — Q8_0 is the sweet spot in gguf-py-reachable quants.
+- Remaining gap to FastMTP (29.8 vs 32.3) plausibly head bandwidth (178 MB
+  Q8_0 vs ~63 MB ~3-bit) + their cross-finetuned acceptance.
+
+### 262k status: BLOCKED by engine bug (depth-eos)
+
+262k + external draft OOMs the pipeline fit; loader falls back to
+no-pipeline-parallelism and loads (dev1 ~494 MiB free). Shallow bench
+30.6 t/s (vs 22.5 internal canary — looked like +36%). Depth probes then
+exposed a hard bug, isolated by matrix:
+
+| config | shallow | depth ≥44k |
+|--------|---------|-----------|
+| no-spec | OK | OK (12.1 t/s @66.8k) |
+| internal mtp (unit) | OK | OK (16.1 t/s @66.8k) |
+| external draft-mtp | OK | **instant eos, predicted_n=1** |
+
+Ruled out: prompt shape (organic repo docs also eos), greedy pathology
+(temp 0.7 also eos), q8_0 draft KV (f16 also eos), no-pipe fallback (49k
+WITH pipeline + 44.3k fill also eos), reasoning flag (reproduces with
+`--reasoning off`). The external draft-mtp path corrupts target sampling
+once the prompt is long; threshold between 1.2k and 44k, unbisected.
+This also means **FastMTP-at-depth was never actually validated** — the
+arm-B bench was shallow-only.
+
+Suspect in our own d2t patch: `common_sampler_accept(smpl, id, true)` at
+`common/speculative.cpp:1717` receives the mapped full-vocab id while the
+draft sampler's vocab is 32k — eagle3 accepts the UNMAPPED id into the
+draft sampler and maps only for the result/batch. Needs engine-level
+debugging (SPC_TRC) + bisect vs pre-`02233899c` build. 3+ failed local
+hypotheses → ascensus candidate per escalation policy.
+
+### Manual-launch gotcha (cost ~1 h)
+
+Bare `llama-server` launches without `--reasoning off` silently corrupt
+raw `/completion` generation at depth (instant eos ≥15k-ish prompts),
+while shallow benches pass. The unit always passes it; any manual
+experiment launch MUST carry the unit's full flag set — diff against
+`/proc/<unit MainPID>/cmdline` first.
+
+### Verdict
+
+- 49k: D2 (self-derived bpe-set draft, Q8_0 head) is a working zero-dependency
+  d2t drafter at internal-MTP speed. Drafts kept:
+  `~/Models/Qwen3.8-27B-selftrim-d{1-extd2t,2-bpe,3-bpe-q4}.gguf`;
+  profiles `qwen38-buffedmod-49k-selftrim-d{1,2,3}.*`.
+- 262k: external drafts (ours AND FastMTP) blocked by the depth-eos engine
+  bug. Daily driver stays internal MTP until the bug is fixed and a depth
+  cert passes.
+- Follow-ups: (1) fix sampler-accept mapping + bisect depth-eos,
+  (2) depth-threshold bisect, (3) re-cert FastMTP/D2 at depth,
+  (4) then reconsider 262k fit (draft KV q8_0 untested-once-fixed;
+  208k profile as fallback).
+
 ### Cleanup
 
 - Self-trim script and draft GGUF kept for reference.

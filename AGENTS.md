@@ -184,8 +184,10 @@ applies, but the records are kept as-is for accuracy.)
   `~/.vitriol/governor.toml` (absolute paths - the unit has no HOME).
   Behavior contract: crash-resume warms when the client continues the
   saved conversation; history rewrites re-process honestly (bounded by
-  n_rs_seq=3 for MTP). /metrics `prompt_tokens_cached_total` plumbing is
-  pre-existing-broken (investigate).
+  n_rs_seq=3 for MTP). /metrics accumulated counters: FIXED 2026-10-12
+  (inner `953784096`) — the cached copy was only refreshed on the
+  sleeping transition (never fires on always-on servers); a 1 Hz
+  post-update_slots hook refreshes it now. All counters verified live.
 - `vitriol-gpu-rs/` — cuda-oxide spike crate (toolchain proven, no engine
   kernels; see `.opencode/plans/cuda-oxide-spike-verdict-2026-10-10.md`).
 
@@ -284,6 +286,18 @@ The daily-driver engine runs **sparse KV eviction with attention-probe
 scoring** (lull-kv feature; see
 `.opencode/plans/officina-context-lifecycle-2026-09-03.md` — includes the
 Aug-31 silent-no-op regression post-mortem).
+
+**Identical-resend hazard (fixed 2026-10-12, inner `953784096` + `9b11ccb27`)**:
+a client retry after a slow cold-start response sends an IDENTICAL prompt —
+full prefix-cache hit. The `[TAG_PROMPT_LOGITS]` guard then rewinds one
+token; on hybrid GDN memories a rewind deeper than the `n_rs_seq` ring (3)
+used to SIGABRT (`common_context_seq_rm`) and wedge the server into a
+watchdog bounce loop. Now: removal refusal falls back to a full-sequence
+reset (honest re-prefill), and restored-state divergence tries the
+checkpoint ring before forcing a re-process. Regression signature to
+remember: health-deaf + SIGABRT ~60 s after a cache-hit request, gdb
+frames from `ggml_print_backtrace` in `vitriol_gen.log`. See
+`.opencode/plans/dashboard-o1o2o3-results-2026-10-12.md`.
 
 - **Restart the engine via the unit, never bare `serve`**:
   `systemctl restart vitriol-server.service` (**SYSTEM scope since

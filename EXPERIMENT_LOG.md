@@ -2592,3 +2592,30 @@ kept on disk for future re-eval, L2/D1/D3 (~2.7G) prunable.
 
 Reports: .opencode/plans/fastmtp-d2t-results-2026-10-11.md
 Commits: inner 02233899c (d2t engine fixes), outer 036f991 (results).
+
+## 2026-10-12 LoRA Try-A — rico03 Opus-reasoning distill on daily driver
+
+Option A of community-adapter survey (owner: no knowledge injection yet).
+Only credible shared 3.8-base reasoning LoRA found in 200-repo survey:
+`rico03/Qwen3.8-27B-Claude-Opus-Reasoning-Distilled` (PEFT r32/alpha32,
+Apache-2.0, sha-verified). All other capability-relevant repos are merged
+full finetunes (base-swap cost) — language-design adapters do not exist.
+
+Converter blocker fixed: `_reorder_v_heads` dim=1 (GDN out_proj col
+reorder) crashed `LoraTorchTensor` — added LoraModel override (row→B,
+col→A permutation; W=(BA)P = B(AP)). Numerically verified: B@perm(A) ==
+reorder_cols(B@A), diff 0.0. Required transformers>=5 (qwen3_5).
+Inner commit cd55f1f3a.
+
+Eval: 12 prompts (6 lang-design, 6 systems), greedy, 400 tok, manual arm =
+unit argv + `--lora` (fingerprint in report). Adapter loads fine on IQ3_S
+base (id=0 scale=1.0). Speed 26.4 → 21.9 t/s mean (−17%; ctx_dft not
+adapter-primed, speculative.cpp:2609 + matmul). Content: consistent
+dense/code-first style shift, invariant-crisp; spot-reads slightly favor
+adapter for systems content; one observed conflation (NLL = region
+inference). No degeneration; `--reasoning off` held.
+
+Owner decision pending: adopt (needs launcher wiring + ctx_dft patch) /
+shelve / drop. Adapter: ~/Models/Qwen3.8-27B-opus-reasoning-lora-f16.gguf.
+Daily driver untouched; unit restored active.
+Report: .opencode/plans/lora-tryA-opus-reasoning-2026-10-12.md

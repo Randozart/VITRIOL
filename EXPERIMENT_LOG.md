@@ -2642,3 +2642,13 @@ Verdict: thesis fails on its own terms at K=3. Recommendation: shelve
 Commits: outer (harness scripts/eval-gate + this entry + results report).
 Reports: .opencode/plans/lora-round2-compile-gate-2026-10-12.md (design),
 .opencode/plans/lora-round2-results-2026-10-12.md (results).
+
+## 2026-10-12 LoRA workstream CLOSED — verdict SHELVED (owner accepted)
+
+Final report: .opencode/plans/lora-workstream-final-2026-10-12.md (entry
+point for the whole stream: survey → try-A prose eval → round-2
+compile-gate → closure). Daily driver untouched and healthy at closure
+(adapters list empty, no lora flags, unit active). Shelved artifacts:
+~/Models/Qwen3.8-27B-opus-reasoning-lora-f16.gguf (467 MB), converter
+fix inner cd55f1f3a, eval-gate harness scripts/eval-gate. Documented
+follow-up if ever revisited: ctx_dft priming patch first.

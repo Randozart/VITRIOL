@@ -92,7 +92,9 @@ depth-eos/FastMTP decision.
 
 ## Deferred / flagged
 
-- The `restored_covered` WIP hunk (not mine) - owner to reconcile/commit.
+- The `restored_covered` WIP hunk was reviewed and committed as inner
+  `9b11ccb27` (checkpoint-ring fallthrough after restores; validated
+  under load, self-contained against HEAD infra).
 - Swap debt (~23 GB) + watchdog patience: the amplifier remains; options
   were presented (close idle clients / cache_ram trim / MemoryLow /
   watchdog strikes) - owner chose manual cleanup this time. Revisit if

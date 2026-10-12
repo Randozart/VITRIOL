@@ -101,3 +101,18 @@ depth-eos/FastMTP decision.
   cold-start stalls recur.
 - O4 `vitriol-tap` proxy (opencode-side telemetry): still available,
   unstarted.
+
+## Addendum: prefix-stability probe (2026-10-12, post-fix)
+
+Synthetic opencode-pattern probe (stateless append, chat endpoint):
+turn1 cache_n=0/prompt_n=36 (cold, expected); turn2 cache_n=32, only 43
+new tokens processed — engine-side prefix matching works on the append
+pattern (the 4-token shortfall is the >=1-token re-eval + BPE boundary,
+by design).
+
+Real-traffic verdict (aggregate counters since the 15:15 fix, ~1 h of
+owner opencode use): prompt_tokens_cached_total 2,703,970 vs
+prompt_tokens_total 130,426 = **95.4% cache hit rate**. opencode's
+prompt shape is cache-friendly as-is; the "move volatile content to the
+tail" work is NOT needed. Baseline snapshot:
+/tmp/opencode/prefix_baseline.txt.

@@ -2670,3 +2670,12 @@ Flagged: unrelated uncommitted restored_covered WIP hunk in
 server-context.cpp left out of the commit (owner to reconcile); swap
 debt amplifier remains (owner cleaned clients manually).
 Report: .opencode/plans/dashboard-o1o2o3-results-2026-10-12.md
+
+## 2026-10-12 Prefix-stability probe: 95.4% cache hit on real traffic
+
+Synthetic opencode append pattern: 32/36 prefix reuse, delta-only
+processing. Real aggregates since the 15:15 metrics fix: 2.70M cached /
+130K processed = 95.4% hit over ~1 h of owner use. opencode prompt shape
+confirmed cache-friendly; tail-injection work not needed. AGENTS.md
+doctrine updated (metrics fix + identical-resend hazard). Commits:
+4063b4e (docs), this commit.

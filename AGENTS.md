@@ -183,8 +183,11 @@ applies, but the records are kept as-is for accuracy.)
   `VITRIOL_KV_DISK_PRUNE=0` pinned via drop-in. Config
   `~/.vitriol/governor.toml` (absolute paths - the unit has no HOME).
   Behavior contract: crash-resume warms when the client continues the
-  saved conversation; history rewrites re-process honestly (bounded by
-  n_rs_seq=3 for MTP). /metrics accumulated counters: FIXED 2026-10-12
+  saved conversation; pure prompt growth appends delta-only; only state
+  OVERSHOOT (restored state past the match) is rollback-bounded by
+  n_rs_seq (fixed 2026-10-12, inner `f5fbc4e44` - the old growth-based
+  check full-re-prefilled every main<->subagent switch, 127-164k tokens
+  at a time; see `.opencode/plans/restored-state-overshoot-fix-2026-10-12.md`). /metrics accumulated counters: FIXED 2026-10-12
   (inner `953784096`) — the cached copy was only refreshed on the
   sleeping transition (never fires on always-on servers); a 1 Hz
   post-update_slots hook refreshes it now. All counters verified live.

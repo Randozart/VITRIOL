@@ -2679,3 +2679,18 @@ processing. Real aggregates since the 15:15 metrics fix: 2.70M cached /
 confirmed cache-friendly; tail-injection work not needed. AGENTS.md
 doctrine updated (metrics fix + identical-resend hazard). Commits:
 4063b4e (docs), this commit.
+
+## 2026-10-12 (evening) Session-switch wipe root-caused + fixed
+
+Owner hit 13-16 min hangs on main<->subagent switches. Log: five full
+re-prefills (127-164k tokens). /cache proved states were intact (RAM
+tier held both sessions) - the RESTORE was refused. Root cause:
+restored_covered gated on prompt growth (tail) instead of state
+overshoot; growth needs no removal (pure append), so every switch with
+>3 tokens of new content failed the check, missed the coarse checkpoint
+ring (min step 8192), and re-prefilled everything. Fix: overshoot =
+pos_max - n_past + 1 gates coverage; growth always appends. Verified:
+delta-only switches (378/338 matched, 26-token appends), overshoot
+cases honest, A/A/A regression green. Also measured: state serialization
+2.25x bloat (42.9 KiB/token). Inner f5fbc4e44. Plan+results:
+.opencode/plans/restored-state-overshoot-fix-2026-10-12.md

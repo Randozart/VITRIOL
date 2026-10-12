@@ -2652,3 +2652,21 @@ compile-gate → closure). Daily driver untouched and healthy at closure
 ~/Models/Qwen3.8-27B-opus-reasoning-lora-f16.gguf (467 MB), converter
 fix inner cd55f1f3a, eval-gate harness scripts/eval-gate. Documented
 follow-up if ever revisited: ctx_dft priming patch first.
+
+## 2026-10-12 Incident + O1-O3: identical-resend crash FIXED, metrics un-stuck
+
+Engine bounced 4x (watchdog SIGKILLs) after identical prompt resends:
+full-prefix cache hit + [TAG_PROMPT_LOGITS] n_past-- guard demanded a
+5-token recurrent rollback; GDN ring (n_rs_seq=3) refused; fork's
+common_context_seq_rm GGML_ABORTed. Fix: seq_rm returns status; launch
+path falls back to full-sequence reset (honest re-prefill). Also found
+the real "broken metrics": cached /metrics copy only refreshed on the
+sleeping transition (never fires) -> ALL accumulated counters served 0.
+Fix: 1 Hz post-update_slots refresh hook. Verified: 200/200/200 on the
+crash repro, counters advance, spec counters live (2/9 accepted).
+Inner 953784096. TUI (vitriol-tui) gains acceptance + cache% + ejected
+renders; VRAM was already shipped. Fingerprint unchanged (binary-only).
+Flagged: unrelated uncommitted restored_covered WIP hunk in
+server-context.cpp left out of the commit (owner to reconcile); swap
+debt amplifier remains (owner cleaned clients manually).
+Report: .opencode/plans/dashboard-o1o2o3-results-2026-10-12.md

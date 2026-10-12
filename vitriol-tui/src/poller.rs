@@ -357,6 +357,16 @@ impl Poller {
         } else {
             self.last_live_t_s = 0.0;
         }
+        let totals = poll_metrics_totals(agent, &base);
+        // 2026-10-12: this engine's `/props` carries no `draft` object —
+        // derive the acceptance snapshot from the /metrics spec counters when
+        // the props path is silent (keeps working where it is served).
+        let draft = poll_draft(agent, &base).or_else(|| {
+            (totals.spec_draft_total > 0).then(|| DraftSnapshot {
+                n_total: totals.spec_draft_total,
+                n_accepted: totals.spec_accepted_total,
+            })
+        });
         GenSnapshot {
             up,
             model,
@@ -366,8 +376,8 @@ impl Poller {
             decode_speed: live,
             perf: parse_perf(&self.cfg.gen_log()),
             slots,
-            draft: poll_draft(agent, &base),
-            totals: poll_metrics_totals(agent, &base),
+            draft,
+            totals,
             effective_port: if effective_port != self.cfg.gen_port {
                 Some(effective_port)
             } else {
@@ -540,6 +550,13 @@ fn parse_metrics_text(text: &str) -> MetricsTotals {
             "predicted_tokens_seconds" => t.predicted_tokens_seconds = parse_metric_f64(value),
             "prompt_tokens_seconds" => t.prompt_tokens_seconds = parse_metric_f64(value),
             "requests_processing" => t.requests_processing = parse_metric_u64(value),
+            "prompt_tokens_cached_total" => t.prompt_tokens_cached_total = parse_metric_u64(value),
+            "spec_decode_num_draft_tokens_total" => t.spec_draft_total = parse_metric_u64(value),
+            "spec_decode_num_accepted_tokens_total" => {
+                t.spec_accepted_total = parse_metric_u64(value)
+            }
+            "spec_decode_num_drafts_total" => t.spec_draft_steps_total = parse_metric_u64(value),
+            "kv_ejected_total" => t.kv_ejected_total = parse_metric_u64(value),
             _ => {}
         }
     }
@@ -963,6 +980,21 @@ mod tests {
             "# HELP llamacpp:requests_processing Requests processing.",
             "# TYPE llamacpp:requests_processing gauge",
             "llamacpp:requests_processing 1",
+            "# HELP llamacpp:prompt_tokens_cached_total Number of prompt tokens reused from the cache",
+            "# TYPE llamacpp:prompt_tokens_cached_total counter",
+            "llamacpp:prompt_tokens_cached_total 745",
+            "# HELP llamacpp:spec_decode_num_draft_tokens_total Speculative: Total draft tokens generated",
+            "# TYPE llamacpp:spec_decode_num_draft_tokens_total counter",
+            "llamacpp:spec_decode_num_draft_tokens_total 3000",
+            "# HELP llamacpp:spec_decode_num_accepted_tokens_total Speculative: Total draft tokens accepted by the target model",
+            "# TYPE llamacpp:spec_decode_num_accepted_tokens_total counter",
+            "llamacpp:spec_decode_num_accepted_tokens_total 2010",
+            "# HELP llamacpp:spec_decode_num_drafts_total Speculative: Total number of verification steps",
+            "# TYPE llamacpp:spec_decode_num_drafts_total counter",
+            "llamacpp:spec_decode_num_drafts_total 1000",
+            "# HELP llamacpp:kv_ejected_total Sparse-KV tokens ejected",
+            "# TYPE llamacpp:kv_ejected_total counter",
+            "llamacpp:kv_ejected_total 512000",
         ]
         .join("\n");
         let t = parse_metrics_text(&text);
@@ -971,6 +1003,55 @@ mod tests {
         assert!((t.predicted_tokens_seconds - 9.98).abs() < 1e-9);
         assert!((t.prompt_tokens_seconds - 210.5).abs() < 1e-9);
         assert_eq!(t.requests_processing, 1);
+        assert_eq!(t.prompt_tokens_cached_total, 745);
+        assert_eq!(t.spec_draft_total, 3000);
+        assert_eq!(t.spec_accepted_total, 2010);
+        assert_eq!(t.spec_draft_steps_total, 1000);
+        assert_eq!(t.kv_ejected_total, 512000);
+    }
+
+    #[test]
+    fn metrics_per_position_series_do_not_pollute_aggregates() {
+        // The labeled per-position acceptance series must not be mistaken for
+        // the aggregate counters (rsplit on the value leaves the label suffix
+        // glued to the name, which matches none of the aggregate arms).
+        let text = [
+            "llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position=\"0\"} 41",
+            "llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position=\"1\"} 17",
+        ]
+        .join("\n");
+        let t = parse_metrics_text(&text);
+        assert_eq!(t.spec_accepted_total, 0);
+        assert_eq!(t.spec_draft_total, 0);
+    }
+
+    #[test]
+    fn draft_falls_back_to_spec_counters_when_props_silent() {
+        // This engine serves no /props draft object; the poller derives the
+        // acceptance snapshot from the /metrics counters instead.
+        let mut totals = MetricsTotals::default();
+        let draft = poll_draft_legacy_none().or_else(|| {
+            (totals.spec_draft_total > 0).then(|| DraftSnapshot {
+                n_total: totals.spec_draft_total,
+                n_accepted: totals.spec_accepted_total,
+            })
+        });
+        assert!(draft.is_none());
+        totals.spec_draft_total = 3000;
+        totals.spec_accepted_total = 2010;
+        let draft = None::<DraftSnapshot>.or_else(|| {
+            (totals.spec_draft_total > 0).then(|| DraftSnapshot {
+                n_total: totals.spec_draft_total,
+                n_accepted: totals.spec_accepted_total,
+            })
+        });
+        let d = draft.expect("fallback draft");
+        assert!((d.acceptance_rate().unwrap() - 0.67).abs() < 0.01);
+    }
+
+    /// Stand-in for `poll_draft` returning None (no /props draft object).
+    fn poll_draft_legacy_none() -> Option<DraftSnapshot> {
+        None
     }
 
     #[test]

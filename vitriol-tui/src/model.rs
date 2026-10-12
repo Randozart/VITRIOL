@@ -121,6 +121,16 @@ pub struct MetricsTotals {
     pub prompt_tokens_seconds: f64,
     /// Slots currently processing.
     pub requests_processing: u64,
+    /// Prompt tokens reused from the prompt cache (prefix matches).
+    pub prompt_tokens_cached_total: u64,
+    /// Speculative decoding: draft tokens generated.
+    pub spec_draft_total: u64,
+    /// Speculative decoding: draft tokens accepted by the target.
+    pub spec_accepted_total: u64,
+    /// Speculative decoding: verification steps taken (mean accepted/step).
+    pub spec_draft_steps_total: u64,
+    /// Sparse-KV tokens ejected by probe-scored eviction + eager sweeps.
+    pub kv_ejected_total: u64,
 }
 
 /// One decoded `[PERF]` line emitted by the VITRIOL server (`GGML_CUDA_GDN_PROFILE=1`).

@@ -290,14 +290,33 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
         } else {
             String::new()
         };
+        // 2026-10-12: prompt-cache hit rate (denominator includes cached —
+        // prompt_tokens_total excludes them by definition) + sparse-KV
+        // ejections, the two numbers behind warm-resume and the depth wall.
+        let cached_reuse = t.prompt_tokens_cached_total + t.prompt_tokens_total;
+        let cache_hit = if cached_reuse > 0 {
+            format!(
+                " · cache {:.0}%",
+                t.prompt_tokens_cached_total as f64 / cached_reuse as f64 * 100.0
+            )
+        } else {
+            String::new()
+        };
+        let ejected = if t.kv_ejected_total > 0 {
+            format!(" · ⤓ {}k", t.kv_ejected_total / 1000)
+        } else {
+            String::new()
+        };
         lines.push(Line::from(vec![
             Span::styled("totals  ", theme::muted()),
             Span::styled(
                 format!(
-                    "{}k prompt · {}k gen{}",
+                    "{}k prompt · {}k gen{}{}{}",
                     t.prompt_tokens_total / 1000,
                     t.tokens_predicted_total / 1000,
-                    lifetime
+                    lifetime,
+                    cache_hit,
+                    ejected
                 ),
                 theme::info(),
             ),

@@ -95,5 +95,6 @@ unchanged):
   is now delta-only (the five 127-164k re-prefills become ~1-5k deltas;
   subagent turn 1 remains one honest prefill).
 
-Serialization bloat (42.9 vs 19.1 KiB/token) noted as separate
-workstream. AGENTS.md behavior contract updated.
+Serialization note corrected by `state-size-findings-2026-10-12.md`:
+per-token rate is 1.24x (23.7 KiB/tok, native-dtype, honest); the 42.9
+observed on entry #1 included ~2.76 GB of checkpoint-ring blobs.

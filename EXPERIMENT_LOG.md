@@ -2694,3 +2694,16 @@ delta-only switches (378/338 matched, 26-token appends), overshoot
 cases honest, A/A/A regression green. Also measured: state serialization
 2.25x bloat (42.9 KiB/token). Inner f5fbc4e44. Plan+results:
 .opencode/plans/restored-state-overshoot-fix-2026-10-12.md
+
+## 2026-10-12 State-size findings: no serialization bug; checkpoint policy question
+
+"2.25x bloat" decomposed: per-token state rate is 23.7 KiB/tok = 1.24x
+live (native-dtype serialization, draft f16 KV + recurrent + meta - no
+dequant anywhere). Entry #1's 42.9 KiB/tok was per-token rate PLUS
+~2.76 GB of checkpoint-ring blobs (restore auto-snapshot duplicates the
+whole restored state; periodic ring = 4 x ~690 MB). Real RAM cost,
+honestly counted against cram. Overshoot fix made growth cases stop
+consulting the ring, so ring value dropped; options A-D written
+(drop restore auto-snapshot + ckpt 4->2 recommended, saves ~GBs per
+session). Owner decision pending - nothing changed yet.
+Report: .opencode/plans/state-size-findings-2026-10-12.md

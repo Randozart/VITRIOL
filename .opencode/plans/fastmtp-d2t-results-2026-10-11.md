@@ -234,6 +234,31 @@ experiment launch MUST carry the unit's full flag set — diff against
   (4) then reconsider 262k fit (draft KV q8_0 untested-once-fixed;
   208k profile as fallback).
 
+---
+
+## Owner decision: accept current setup — 2026-10-12 01:15
+
+**Explicit acceptance by owner**: the daily driver as-is —
+`qwen38-buffedmod-262k` (BuffedMod Q6K, 262144 ctx, ts 27,21, internal
+MTP n=3, q4_0 KV) — is the blessed, efficient operating point. It is
+**space-optimal** (zero extra draft disk/VRAM, 12 G model carries its own
+head) and **the only spec path proven at depth** (16.1 t/s @66.8k vs
+no-spec 12.1). Owner accepts it consciously as final; not a placeholder.
+
+Consequences recorded:
+- The depth-eos bug (external draft-mtp, >=44k prompt) is **deferred** —
+  not fixed now. It is a prerequisite for FastMTP/D2 adoption only; the
+  daily driver is unaffected.
+- External drafts stay on disk for a future re-eval if/when the engine
+  session lands: FastMTP 862 M (+10% shallow, depth-unproven) and D2
+  902 M (= internal shallow, self-derived). Experiment drafts L2/D1/D3
+  (~2.7 G total) are prunable at owner's discretion — NOT deleted by
+  this decision.
+- Deferred follow-ups (order unchanged): engine session (sampler-accept
+  mapping fix + depth-eos bisect), sidecar large-checkpoint guard.
+- This supersedes the verdict sections above only in priority: the
+  "then reconsider 262k fit" step is no longer scheduled work.
+
 ### Cleanup
 
 - Self-trim script and draft GGUF kept for reference.

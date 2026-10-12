@@ -2567,3 +2567,28 @@ llama_kv_cache_context + fill_ratio() (n_kv/get_size).
 
 Commits: inner 229238384 (gate), outer 5b5c5c1 (launcher wiring),
 submodule pin. Unit restarted, shallow decode penalty eliminated.
+
+## 2026-10-12 01:15 — FastMTP/d2t investigation closed: owner accepts current setup
+
+Self-trim surgery (option B) built and benched at 49k. Selection is the
+lever, not the mechanism: L2-norm subset failed (accept 0.01, 11.7 t/s,
+rare high-norm tokens); BPE-ID subset (D2, own weights + Q8_0 head) hit
+29.8 t/s / accept 0.62-0.74 = internal-MTP speed (29.4/0.75-0.77) with
+-87% draft-head matmul. FastMTP external still shallow-winner 32.3.
+
+262k + any external draft OOMs the pipeline fit (no-pipe fallback) and
+depth probes exposed a hard bug: external draft-mtp emits instant eos at
+>=44k prompt — independent of pipeline mode, draft-KV bits, reasoning
+flag, prompt shape. Also hits FastMTP (never depth-tested before).
+Suspect: d2t patch feeds mapped full-vocab id into 32k draft sampler
+accept (speculative.cpp:1717). Manual-launch gotcha: without the unit's
+`--reasoning off`, raw /completion corrupts at depth while shallow passes.
+
+**Owner decision (explicit)**: daily driver `qwen38-buffedmod-262k`
+(internal MTP n=3) is accepted as-is — space-optimal (zero extra draft
+disk/VRAM) and the only depth-proven spec path (16.1 vs 12.1 t/s no-spec
+@66.8k). Depth-eos bug deferred; external drafts (FastMTP 862M, D2 902M)
+kept on disk for future re-eval, L2/D1/D3 (~2.7G) prunable.
+
+Reports: .opencode/plans/fastmtp-d2t-results-2026-10-11.md
+Commits: inner 02233899c (d2t engine fixes), outer 036f991 (results).

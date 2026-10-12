@@ -2619,3 +2619,26 @@ Owner decision pending: adopt (needs launcher wiring + ctx_dft patch) /
 shelve / drop. Adapter: ~/Models/Qwen3.8-27B-opus-reasoning-lora-f16.gguf.
 Daily driver untouched; unit restored active.
 Report: .opencode/plans/lora-tryA-opus-reasoning-2026-10-12.md
+
+## 2026-10-12 LoRA Round 2 — compile-gated deep eval (thesis test)
+
+Owner thesis: "faster codegen + compiler catches it = win". Gate:
+rustc + clean run + clippy -D warnings; 6 hard std-only Rust problems
+(Treiber stack, SPSC ring, generational arena, TLV parser, RB tree,
+mini-executor); K=3 repair loop with stderr fed back (agentic-loop
+emulation); temp 0, max_tokens 6000 (3.5k budget invalidated: rbtree
+truncation artifact).
+
+Result: 1/6 vs 1/6 (base solved treiber, adapter solved spsc — different
+problems; MTP/batching nondeterminism dominates at n=1). Adapter: −16%
+decode (36.6→30.9 t/s, reproduces round-1 tax), +8% tokens (22.7k tlv
+thrash), +25% wall (partially confounded by foreign CPU llama-server on
+port 8765 during adapter arm; decode metric clean). Neither arm converts
+compiler feedback into green within K=3 at this difficulty.
+
+Verdict: thesis fails on its own terms at K=3. Recommendation: shelve
+(keep adapter file + converter fix), adopt unsupported. Owner decides.
+
+Commits: outer (harness scripts/eval-gate + this entry + results report).
+Reports: .opencode/plans/lora-round2-compile-gate-2026-10-12.md (design),
+.opencode/plans/lora-round2-results-2026-10-12.md (results).

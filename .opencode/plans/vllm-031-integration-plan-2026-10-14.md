@@ -269,3 +269,25 @@ Open follow-ups (Stage 2 residual):
 - LIVE-MODEL VALIDATION PENDING: all perf/correctness so far is tiny-model +
   microbench. The 27B tq3_0/q4_0 A/B at depth needs an engine maintenance
   window (both GPUs shared with the live unit).
+
+### Stage 3 — DONE as scoped (2026-10-14 13:40)
+
+- 3.1 residual-mass sampling: NO-OP (see Stage-1 verdicts; sampler is exact
+  by construction).
+- 3.2 adaptive draft-K: DONE. Inner `86137a81d server: acceptance-driven
+  adaptive draft length (--spec-adaptive-k)` - effective K = longest prefix
+  of draft positions with empirical acceptance >= 0.125, gate after 32
+  offers per position, full-K re-exploration every 128 drafting rounds.
+  Greedy output invariant by construction; `test_adaptive_k` proves it
+  e2e + metrics consistency under the trim (test suite 10/10, metrics
+  10/10). Launcher wiring: outer `8a6f2a5` - `[spec] adaptive_k` config
+  key -> `--spec-adaptive-k`, conditional fingerprint field `specak=1`
+  (no fingerprint diff when off; live config untouched, default 0).
+- 3.3 multi-module MTP: NO-OP confirmed - GGUF metadata of the live
+  BuffedMod checkpoint reads `qwen35.nextn_predict_layers = 1` (single
+  MTP head; nothing to rotate).
+
+Session wrap: dev1 blocked by an active auto-antislop training run
+(pid 746029, 6.9 GiB, started 12:47) - the 27B live A/B waits for it to
+finish per owner decision. Stages 4 (content-addressed prefix cache) and
+5 (graph-shape capture cache) remain.

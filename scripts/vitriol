@@ -130,6 +130,7 @@ config_fingerprint() {
         "${CFG_MODE}" "${CFG_ENGINE_MODE}" "${CFG_CKPT_EVERY:-2048}" "${CFG_CKPT_RING:-4}" "${CFG_LRU_MB:-0}" \
         "${CFG_KV_MODE}" "${CFG_KV_SCORE:-off}" "0" \
         "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}" "${CFG_PARALLEL:-1}")
+    [[ "${CFG_SPEC_ADAPTIVE_K:-0}" == "1" ]] && fp="$fp specak=1"
     # Mirror the serve path's conditional fields so blessed-vs-launch
     # diffs stay clean (only REAL differences show up).
     [[ -n "${CFG_RPC_SERVERS:-}" ]] && fp="$fp rpc=$CFG_RPC_SERVERS"
@@ -262,6 +263,7 @@ DEFAULT_CKPT_EVERY="2048"
 # draft rollback; 0 is FORBIDDEN (heap corruption, AGENTS.md).
 DEFAULT_CKPT_RING="4"
 DEFAULT_SPEC_DRAFT_N_MAX=0
+DEFAULT_SPEC_ADAPTIVE_K=0
 DEFAULT_SPEC_DRAFT_MODEL=""
 # 2026-08-30: vision projector (mmproj) — model.mmproj profile key, VITRIOL_MMPROJ env.
 DEFAULT_MMPROJ=""
@@ -317,6 +319,7 @@ CFG_ENGINE_MODE="$DEFAULT_ENGINE_MODE"
 CFG_SPEC_TYPE="$DEFAULT_SPEC_TYPE"
 CFG_MODEL_ALIAS="${DEFAULT_MODEL_ALIAS:-}"
 CFG_SPEC_DRAFT_N_MAX="$DEFAULT_SPEC_DRAFT_N_MAX"
+CFG_SPEC_ADAPTIVE_K="$DEFAULT_SPEC_ADAPTIVE_K"
 CFG_SPEC_DRAFT_MODEL="$DEFAULT_SPEC_DRAFT_MODEL"
 CFG_MMPROJ="$DEFAULT_MMPROJ"
 CFG_SPEC_DRAFT_DEVICE="$DEFAULT_SPEC_DRAFT_DEVICE"
@@ -407,6 +410,8 @@ kv.score)              CFG_KV_SCORE="$val" ;;
                 engine.mode)             CFG_ENGINE_MODE="$val" ;;
                 spec.type)             CFG_SPEC_TYPE="$val" ;;
                 spec.draft_n_max)      CFG_SPEC_DRAFT_N_MAX="$val" ;;
+        spec.adaptive_k)       CFG_SPEC_ADAPTIVE_K="$val" ;;
+                spec.adaptive_k)       CFG_SPEC_ADAPTIVE_K="$val" ;;
                 spec.draft_model)      CFG_SPEC_DRAFT_MODEL="$val" ;;
                 spec.draft_device)     CFG_SPEC_DRAFT_DEVICE="$val" ;;
                 spec.draft_ngl)        CFG_SPEC_DRAFT_NGL="$val" ;;
@@ -550,6 +555,10 @@ tokens = $CFG_LOOKUP
 type = $CFG_SPEC_TYPE
 # Draft tokens to generate for speculative decoding (e.g. 2 for MTP)
 draft_n_max = $CFG_SPEC_DRAFT_N_MAX
+# Acceptance-driven draft length trim: shrink K when per-position acceptance
+# drops below the cost threshold, full-K re-exploration every 128 drafts.
+# 2026-10-14. Rides the fingerprint as specak=1.
+adaptive_k = $CFG_SPEC_ADAPTIVE_K
 # Separate draft model file (e.g. an MTP head GGUF). Empty = use embedded/type default.
 draft_model = $CFG_SPEC_DRAFT_MODEL
 # Device index to run the draft model on (e.g. 1 = second GPU). Empty = main devices.
@@ -2062,6 +2071,7 @@ case "$CMD" in
 DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
+        SPEC_ADAPTIVE_K="${CFG_SPEC_ADAPTIVE_K:-0}"
         SPEC_DRAFT_MODEL="${CLI_SPEC_DRAFT_MODEL:-${CFG_SPEC_DRAFT_MODEL}}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
@@ -2090,6 +2100,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ "${SPLIT_MODE:-layer}" == "row" ]] && FINGERPRINT="$FINGERPRINT sm=row"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
+        [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT specak=1"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2331,6 +2342,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
+        SPEC_ADAPTIVE_K="${CFG_SPEC_ADAPTIVE_K:-0}"
         SPEC_DRAFT_MODEL="${CLI_SPEC_DRAFT_MODEL:-${CFG_SPEC_DRAFT_MODEL}}"
         SPEC_DRAFT_DEVICE="${CLI_SPEC_DRAFT_DEVICE:-${CFG_SPEC_DRAFT_DEVICE}}"
         SPEC_DRAFT_NGL="${CLI_SPEC_DRAFT_NGL:-${CFG_SPEC_DRAFT_NGL}}"
@@ -2352,6 +2364,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ "${SPLIT_MODE:-layer}" == "row" ]] && FINGERPRINT="$FINGERPRINT sm=row"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
+        [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT specak=1"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
@@ -2467,6 +2480,7 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         SPEC_ARGS=""
         [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS="--spec-type $SPEC_TYPE"
         [[ "${SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-n-max $SPEC_DRAFT_N_MAX"
+        [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && SPEC_ARGS="$SPEC_ARGS --spec-adaptive-k"
         [[ -n "$SPEC_DRAFT_MODEL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-model $SPEC_DRAFT_MODEL"
         [[ -n "$SPEC_DRAFT_DEVICE" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-device $SPEC_DRAFT_DEVICE"
          [[ -n "$SPEC_DRAFT_NGL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-ngl $SPEC_DRAFT_NGL"

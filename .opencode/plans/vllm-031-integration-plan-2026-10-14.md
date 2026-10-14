@@ -291,3 +291,55 @@ Session wrap: dev1 blocked by an active auto-antislop training run
 (pid 746029, 6.9 GiB, started 12:47) - the 27B live A/B waits for it to
 finish per owner decision. Stages 4 (content-addressed prefix cache) and
 5 (graph-shape capture cache) remain.
+
+### Live 27B validation — DONE (2026-10-14 17:50)
+
+Window opened after the antislop run exited. Hardware for this session:
+2x RTX 3060 (sm_86), ts 55,45, `-ngl 99 -c 65536 -np 1 -ub 64 -fa on
+--spec-type mtp --spec-draft-n-max 3 --ctx-checkpoints 4 --cache-ram 256`.
+Fill corpus: repeated steam-engine paragraph, prefix-extended per depth
+(delta prefill), 2 decode rounds per point, round-2 numbers below.
+NOTE `timings.prompt_n` is the DELTA prefill count, not cumulative depth.
+
+**CRITICAL FIX first** (`d7f4b5cb7`): the live gate crashed every MTP
+request at the first speculative begin - SIGSEGV in
+`common_speculative_impl::draft_ready`, vector range {0x0, -4}.
+Root cause: `set_draft_ready` called `erase(end())` on the empty
+seq_draft_bad vector on every HEALTHY request (UB; libstdc++ decrements
+_M_finish to nullptr-4). draft-simple never calls the helper, which is
+why the unit suite was green while all real MTP traffic died. Guarded
+the erase. Lesson: the spec unit tests have no MTP/eagle3 coverage.
+
+**Stage 2b heuristic correction** (`4da6708ce`): the quantized-KV vec
+switch collapsed under GQA - every q-head block re-reads its kv stream
+through the scalar kernel. tq3_0 fell to 6.3 t/s at 40k. Gated on
+`gqa_ratio <= 2` (the microbench regime; its H=8 gqa=1 setup
+over-generalized).
+
+Ladder (gen t/s, round 2, cumulative filled depth):
+
+| depth | q4_0 | q4_0+adk | tq3_0 |
+|---|---|---|---|
+| 8k | 27.4 | 27.1 | 25.3 |
+| 20k | 24.9 | 24.8 | 25.4 |
+| 40k | 25.4 | 25.6 | 13.6 |
+
+(release build; the -O1 debug build measured 27.1/24.9/27.1 for q4_0 -
+flags made no material difference)
+
+- Production-binary control (main @ 10-12, same flags, same protocol):
+  21.4 t/s @ 40k. Worktree 25.4 = +19%, but the control binary predates
+  the worktree base (10-12 vs 10-14) and build-config drift between the
+  two build dirs is not fully excluded - treat the +19% as indicative,
+  not certified.
+- adaptive-K (q4_0+adk): performance-identical, as designed - the
+  archive-text acceptance (~0.55-0.6) never approaches the 0.125
+  threshold; K stays 3. Real trim behavior needs a low-acceptance
+  workload (long-tail generation, high-temperature creative text).
+- tq3_0: CORRECT at all depths now (coherent output, stable acceptance
+  ~0.45-0.53), fine through 20k (25.4), but a 40k cliff (13.6 vs q4_0
+  25.4) persists on the MMA+conversion path. Not a blocker (q4_0 is the
+  live config); open follow-up: conversion-buffer scaling or per-tile
+  dequant for the tq3 f16 path at large prefixes.
+- tq3_0 prefill also lags q4_0 at depth (268 vs 330 t/s at 40k) - same
+  conversion path, same open follow-up.

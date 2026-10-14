@@ -343,3 +343,42 @@ flags made no material difference)
   dequant for the tq3 f16 path at large prefixes.
 - tq3_0 prefill also lags q4_0 at depth (268 vs 330 t/s at 40k) - same
   conversion path, same open follow-up.
+
+### Phase 1-2 experiments — DONE (2026-10-14 21:26)
+
+Phase 1, clean control A/B (owner-mandated before any merge). Same tree,
+same protocol (40k filled, q4_0 KV, MTP n=3, 5 decode rounds, fresh
+process per arm, same session):
+
+| arm | tree | gen t/s (median) |
+|---|---|---|
+| A | HEAD (all commits) | 21.98 |
+| B | base f5fbc4e44 (files reverted in-place) | 21.57 |
+| C | production binary (10-12 build) | 21.49 |
+
+VERDICT: perf-neutral. All arms within 2.3%, identical draft behavior
+(73/38). The earlier +19/+20% (25.35/25.4 vs 21.4) was measurement
+variance between sessions - the clean control killed the claim, exactly
+what it was for. No perf-based merge argument exists.
+
+Phase 2, VEC switch verdict (dev0, microbench, nk=40960, D=128,
+gqa parameterized, VEC-vs-MMA+conversion built from HEAD vs reverted
+fattn):
+
+| case | VEC | MMA+conv | delta |
+|---|---|---|---|
+| gqa1 nq2 | 0.67 ms | 1.60 ms | VEC +58% |
+| gqa1 nq4 | 1.31 ms | 1.39 ms | ~tie |
+| gqa2 nq2 | 0.48 ms | 0.89 ms | VEC +46% |
+| gqa2 nq4 | 0.93 ms | 0.89 ms | ~tie |
+
+VERDICT: KEEP the gqa<=2-gated switch. It wins decisively at nq=2
+(1-draft MTP configs on small-kv-head models) and ties at nq=4; it
+never fires on qwen3.8 (gqa 4). Microbench run-to-run variance is
++/-40% at these scales (0.33 vs 0.48 ms for identical configs across
+runs) - only the large margins are signal.
+
+Disposition recommendation (owner decision pending): merge on merits
+(metrics fixes, TQ3 correctness restore, coverage guard + UB fix +
+new MTP/eagle3 spec test, adaptive-K opt-in, VEC gated) with NO tps
+claim; or archive the branch and take only the /metrics refresh fix.

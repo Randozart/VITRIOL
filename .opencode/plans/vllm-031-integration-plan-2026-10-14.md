@@ -214,3 +214,58 @@ TILE/MMA_F16 which dequantizes the whole K/V prefix to f16 per attention call
 live q4_0 KV config. Prereqs: `ggml_cuda_type_traits<GGML_TYPE_TQ3_0>`
 (`common.cuh:1170`) lacks `bs`; `dequantize_block_tq3_0` in `convert.cu` is
 file-static (needs export for fattn-vec).
+
+### Stage 2 — DONE in two parts (2026-10-14 12:51)
+
+Inner commits (branch `vllm-031`):
+
+- `eafd15ca1 cuda: port TQ3_0 KV into flash-attention (fixes broken tq3
+  V-cache)`. Root cause chain established by source archaeology: GPU tq3_0
+  KV is RAW-domain end to end (cpy-utils `quantize_f32_tq3_0_block` no-WHT,
+  convert dequant no-WHT, MMVQ/MMQ vec_dot centroid-direct, set_rows KV
+  writes); the CPU ref quantizer rotates (weights only; no tq3 weights exist
+  in any model, llama-quant even remaps tq3 ftypes to q4_0). fattn rejecting
+  TQ3_* pushed the FA op to CPU, whose rotated-domain dequant clashed with
+  GPU raw bytes -> the 2026-09-02 "TQ3 V-cache KNOWN-BROKEN" corruption.
+  The `ggml_turbo_wht` op and the "pre-rotated activations" MMVQ comment are
+  dead/stale relics of an older rotated design. Port = vec_dot + dequantize_V
+  + gates; no WHT anywhere. Verified: set_rows-based harness
+  max|FA(tq3) - CPU-ref-over-device-dequantized-bytes| <= 0.0023 (5 shapes x
+  2 devices); tinygemma3 e2e tq3_0/tq3_0 output identical to f16/q4_0
+  (was degraded); test-backend-ops FLASH_ATTN_EXT 5921 OK / 0 FAIL.
+- `17c2e74cb cuda: small-batch quantized-KV attention skips the f16 prefix
+  conversion` (Stage 2b first cut). Pathology QUANTIFIED with a
+  set_rows+timing harness: quantized-KV FA converts the whole prefix to f16
+  per call - 8k: 1.35 ms vs 0.15 ms (f16 KV), 40k: 6.5 vs 0.65, 82k: 12.9
+  vs 1.3 (nq=4, 8 heads x D=128 per layer-tensor). Linear in prefix;
+  affects q4_0 exactly like tq3_0; baked into every certified depth number
+  to date. Fix: `VITRIOL_QUANT_KV_VEC_MAX_ROWS = 4` in
+  `ggml_cuda_get_best_fattn_kernel` - quantized same-type KV with
+  Q->ne[1] <= 4 (decode nq=1, MTP verify nq=2..4) routes to the vec kernel
+  (cols_per_block=2 handles nq>1 natively; reads quantized cache directly).
+  Measured nq=4: 40k 7.1 -> 3.4 ms, 82k 14.2 -> 6.5 ms. Correctness:
+  harness nq=4 (VEC) + nq=8 (MMA) vs dequant ref <= 0.0027; FLASH_ATTN_EXT
+  suite 0 FAIL; e2e text identical across f16/tq3_0/q4_0 KV.
+
+Harness methodology notes (both bugs found and fixed the hard way):
+`ggml_cpy` returns a NEW op node - expanding the dst leaf builds an EMPTY
+graph (zeros in, zeros out, identical "errors"); f32->tq3_0 device quantize
+is NOT a cpy - it is SET_ROWS (cpy.cu:609 aborts). Valid graphs build from
+the returned op nodes in execution order.
+
+Hardware note: this box now reports 2x RTX 3060 (both sm_86, 23.9 GiB) -
+NOT the 3060+1070 Ti duo in AGENTS. Pascal/TILE paths are untestable here.
+
+Open follow-ups (Stage 2 residual):
+
+- 2c: prefill (nq >= 64) still pays the O(prefix) conversion. Candidates:
+  in-kernel dequant for MMA (big), cols=4/8 VEC template (medium),
+  or vLLM-style chunked-prefill threshold tuning. Crossover measured:
+  VEC(2 col-blocks) beats MMA+conversion at all tested depths for nq=4;
+  VEC loses beyond ~nq=8.
+- 2d: VEC is still ~5x off the f16-resident ideal (3.4 vs 0.65 ms at 40k,
+  nq=4). A quantized-input MMA variant or wider VEC col-blocks could close
+  more of it.
+- LIVE-MODEL VALIDATION PENDING: all perf/correctness so far is tiny-model +
+  microbench. The 27B tq3_0/q4_0 A/B at depth needs an engine maintenance
+  window (both GPUs shared with the live unit).

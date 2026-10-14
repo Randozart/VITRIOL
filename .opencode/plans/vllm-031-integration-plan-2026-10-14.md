@@ -382,3 +382,44 @@ Disposition recommendation (owner decision pending): merge on merits
 (metrics fixes, TQ3 correctness restore, coverage guard + UB fix +
 new MTP/eagle3 spec test, adaptive-K opt-in, VEC gated) with NO tps
 claim; or archive the branch and take only the /metrics refresh fix.
+
+### Daily-driver validation — DONE (2026-10-14 22:10)
+
+Live profile verbatim (`qwen38-buffedmod-208k`): c 212992, ts 24,24,
+ub 128, q4_0/q4_0, sparse probe (every=16, min_fill=0.5), MTP n=3,
+ckpt-min-step 8192, ckpt ring 4, cache_ram 12288, VITRIOL_MODE=off,
+ctx_resize=1. Deviations: no --slot-save-path (cold start per arm),
+bench port 18432, --metrics on. 5 rounds per depth, medians:
+
+| arm | 20k | 40k | 80k |
+|---|---|---|---|
+| L-A HEAD | 24.45 | 23.29 | 27.78 |
+| L-B base | 24.31 | 23.37 | 27.80 |
+| L-C production 10-12 | 24.05 | 23.04 | 27.69 |
+| L-A2 HEAD ts 50,50 | 24.11 | 23.33 | 27.55 |
+| L-A3 HEAD +adaptive-k | 24.14 | 23.16 | 27.88 |
+| L-A' drift rerun | 24.32 | 23.64 | 27.88 |
+| L-AS HEAD, 120k fill | - | - | 16.07 @120k |
+
+Findings:
+
+- Daily driver tps: NEUTRAL. All arms within ~2% at every depth -
+  confirms the Phase-1 verdict on the real profile. No merge argument
+  from performance; none disproven either.
+- ts 24,24 vs 50,50: nothing. Equal cards make the legacy split moot;
+  attention dominates.
+- adaptive-K: inert at real acceptance (0.56-0.69 vs threshold 0.125),
+  exactly as designed.
+- The 80k > 40k inversion in EVERY arm is a corpus artifact: the
+  repeated archive text drives draft acceptance to 100% (47/47) at far
+  depth - free tokens ride the draft. Not a depth speedup; do not
+  quote it as one.
+- Sparse probe: gated on fill >= score_min_fill x window = 106k -
+  silently idle at 20-80k fills (kv_ejected_total 0, no announcement).
+  At 120k fill it engages ("probe active, n_kv=120064 layers=1
+  decay=0.90"), scores, and evicts nothing (92k window headroom -
+  correct pressure-driven behavior). 16.1 t/s at 120k filled, no OOM:
+  the deepest certified number on the 2x3060 duo so far.
+- Sparse+fattn interaction remains untested under actual eviction
+  pressure (needs window-edge fill or a KV floor); note for the
+  governor's RELIEVE path.

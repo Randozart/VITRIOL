@@ -1,0 +1,159 @@
+# vLLM 0.31 survey + integration plan — 2026-10-14 00:00
+
+Source: vLLM 0.31.0 installed tree,
+`~/.cache/uv/archive-v0/9InspFUO35OuRAn_/vllm` (commit `gdb9527a46`,
+`License-Expression: Apache-2.0`). Incoming Apache-2.0 is LICENSE-OK per
+AGENTS licensing table — any verbatim copy keeps SPDX header + gains a
+`PROVENANCE:` header naming vllm (Apache-2.0), what was learned/copied.
+Triton kernels get re-derived as CUDA (mechanical), never linked.
+
+Worktree: `VITRIOL-vllm` (outer branch `vllm-031`, inner branch `vllm-031`
+off `main` in both repos). All stages below execute there.
+
+## Stage 0 — survey (done)
+
+Catalogue (file:line refs are into the vLLM tree):
+
+### Matched to open problems
+
+| # | vLLM mechanism | ref | VITRIOL target |
+|---|---|---|---|
+| a | Per-position spec-decode acceptance histogram | `v1/spec_decode/metrics.py:18-50` | Tier-1 #2 (acceptance 2/9, hand-measured) |
+| b | Residual-mass recovered-token rejection sampling (exact stochastic verify) | `v1/sample/rejection_sampler.py:678,829,1004` | verify-correctness — llama.cpp truncation biases target dist |
+| c | Dynamic draft-K by batch size + survival-budget adaptive verification | `config/speculative.py:492-495`, `adaptive_verification.py:282-350` | Tier-1 #2 — n=3 drafts wasted |
+| d | `_reserve_prefill_lookahead` (never end prefill chunk within K of end) | `v1/core/sched/scheduler.py:541-560` | MTP × chunked prefill (VITRIOL analog: nextn `process()` hook must cover EVERY prefill ubatch incl. final `{4, 4+n_ubatch}` tail chunks — `common/speculative.cpp:1494-1509` warns, degrades) |
+| e | Multi-module MTP head rotation (step i → trained head i) | `v1/worker/gpu/spec_decode/multi_module_mtp/speculator.py` | Tier-1 #2 — conditional on checkpoint having >1 nextn layer |
+| f | Chained content-hash prefix cache + partial blocks + LRU free queue | `v1/core/block_pool.py:35-904`, `kv_cache_utils.py:58-99,246-370` | Tier-2 #5/#6/#9 — disk mirror evicts active conv; `id_slot` bypass; content addressing fixes both |
+| g | O_DIRECT pipelined disk backend (aligned staging, sep store/load threads) | `v1/simple_kv_offload/disk_backend.py:49-110` | Tier-2/3 #14 — Optane tier head-of-line |
+| h | ARC eviction policy (~150 L) | `v1/kv_offload/cpu/policies/arc.py:16-212` | `cache_ram` tier beats LRU |
+| i | TQ continuation-prefill: small chunks use decode split-KV kernel against compressed cache instead of dequant-everything | `v1/attention/backends/turboquant_attn.py:79-84` (`_CONTINUATION_DECODE_THRESHOLD=128`) | 200k ctx chunked prefill with tq3_0 — O(prefix/chunk) dequant tax |
+| j | Uniform-decode CUDA-graph pad: verify batches always `1+K` rows | `v1/core/sched/scheduler.py:1086-1108`, dispatcher `uniform_decode_query_len=1+K` | Tier-5 #18 — VITRIOL graph identity = exact `ubatch.n_tokens` (`llama-graph.h:812-839`), MTP verify len varies per step → rebuild/warmup thrash |
+| k | Per-layer / boundary-layer KV-quant skip list | `config/cache.py:167-169`, `turboquant/config.py:177-213` | verify tq3_0 skip on hot boundary layers of hybrid |
+| l | Startup-plan fingerprint cache | `v1/worker/startup_plan.py:3-17` | fingerprint doctrine applied to memory solve |
+| m | Split-row top-p pipeline (batch≈1 latency) | `topk_topp_triton.py:991-1610` | sampler latency |
+| n | Captured-graph operational checklist: large-shape-first capture, warmup runs, workspace lock, pad with NULL sentinels | `gpu_model_runner.py:6755-6859`, `turboquant_attn.py:409-530` | existing CUDA-graph work |
+
+### Ideas only (rewrite, not copy)
+
+- HiSparse host-resident KV + GPU hot staging (`v1/hisparse/runtime.py`) — architecture twin of VRAM→RAM→Optane tiers.
+- Two-level block→token scoring gate (`mla/sparse_indexer.py`) — cheapen lull probe scoring.
+- Async scheduling: sampled tokens stay on GPU, side-stream D2H (`gpu_model_runner.py:759-769,3741-3752`) — kill per-token host sync.
+- Multi-tier cascade state machine w/ promotion pinning (`kv_offload/tiering/manager.py`).
+
+### Negative findings (do NOT port / vLLM is behind)
+
+- No H2O/pyramid/heavy-hitter eviction, no runtime KV resize (VITRIOL governor ahead), no AMC.
+- No tree drafting — vLLM regressed vs llama.cpp tree; keep tree.
+- Chain-only drafting, TP local-argmax, ray/cluster glue — irrelevant single-user.
+
+## Stage 1 — quick wins (metrics + MTP prefill guard)
+
+Land in `tools/server` + `common/speculative.cpp`.
+
+1. **Acceptance telemetry**: per-pos data already exists
+   (`server-common.h:497`, fill `server-context.cpp:4363-4369`, merge
+   `:4521-4529`, labeled emission `server-task.cpp:1649-1658`). VERIFY what
+   `/metrics` actually exposes today vs. vLLM's `SpecDecodingStats`
+   `[draft_len × accepted]` histogram; gap-fill: emit
+   `spec_decode_num_accepted_tokens_per_pos_total{position}` (if absent) +
+   acceptance-rate gauge. Test: `tools/server/tests/unit/test_metrics.py`.
+2. **MTP prefill-lookahead guard (vLLM `d` analog)**: audit that
+   `common_speculative_process()` runs on every prefill ubatch incl. the
+   deliberate `{4, 4+n_ubatch}` tail chunks (`server-context.cpp:3944-3958`)
+   and the mtmd skip path (`:4001-4002`); either harden the
+   `begin()` warn (`speculative.cpp:1494-1509`) into a chunk-boundary
+   constraint or fail-closed. Confirm with a deep-prefill run: zero
+   "process() hook may not have run" warnings at 44k+.
+3. **Fingerprint gate (vLLM `l`)**: config/fingerprint diff check around
+   engine alloc — cheapest hook consistent with AGENTS flag-provenance rule
+   (warn if launch fingerprint changed KV-bearing keys since last alloc).
+
+Acceptance: metrics unit test green; deep-prefill guard verified live;
+commit.
+
+## Stage 2 — TQ continuation-prefill kernel switch (i)
+
+1. Study VITRIOL tq3_0 attention path (`ggml/src/ggml-cuda/`, llama-kv-cache
+   TQ store/decode) — confirm whether chunked continuation prefill
+   re-dequantizes the prefix each chunk.
+2. If pathology confirmed: implement vLLM's threshold switch — continuation
+   chunks ≤ ~128 tokens score against compressed cache via decode-style
+   split-KV path; full dequant only above threshold. Reference:
+   `turboquant_attn.py:79-84` + store/decode Triton (`v1/attention/ops/triton_turboquant_*.py`).
+3. Also audit boundary-layer skip (k): is tq3_0 applied to first/last N
+   layers of hybrid arch where it hurts? Compare vLLM policy
+   (`turboquant/config.py:177-213`).
+
+Acceptance: A/B at 131k/208k filled — prefill t/s improves or neutral; no
+PPL/KL regression on the known eval harness; commit.
+
+## Stage 3 — spec-decode correctness + adaptive K (b, c, e, m)
+
+1. **Residual-mass recovered tokens**: port `rejection_random_sample_kernel`
+   semantics (exact-distribution stochastic verification, excess-mass
+   inverse-transform) into the sampling path
+   (`common/sampling.cpp:678-706` area / server verify). Greedy path
+   unchanged. One CUDA/host kernel + unit test.
+2. **Dynamic draft-K**: batch-size→K lookup (vLLM `c`) — for VITRIOL
+   single-user: runtime acceptance-driven K trim (K=3 → shrink when rolling
+   acceptance < threshold), wired to the new Stage-1 histogram. Config flag
+   `[spec] adaptive_k = 0/1`, rides fingerprint.
+3. **Multi-module MTP (e)**: inspect Qwen3.8 checkpoint `num_nextn_predict_layers`;
+   if >1, rotate draft step i → head i (`multi_module_mtp/speculator.py` spec).
+   If ==1, document no-op and skip.
+4. Optional: shared top-k across MTP iterations (deepseek_mtp.py:173,189 trick).
+
+Acceptance: stochastic verify exactness test (chi-square vs target dist);
+adaptive-K A/B shows acceptance/tok-per-step improvement or auto-disables;
+commit.
+
+## Stage 4 — prefix cache content-addressing + tier hardening (f, g, h)
+
+Biggest project; directly kills Tier-2 #5/#6/#9 (disk-mirror eviction of
+active conversation, `id_slot` bypass, restart re-prefill).
+
+1. **Chained content-hash keys**: hash prompt token ranges (sha256/xxh3 of
+   token IDs + extras) per block-sized unit; lookup by content, not slot
+   position → identical resend / id_slot / cross-restart all hit. Model on
+   `block_pool.py:35-904` + `kv_cache_utils.py:58-99`. Partial (sub-unit)
+   hits optional phase.
+2. **Eviction**: refcounted free queue, LRU by touch, then upgrade RAM tier
+   to ARC (`policies/arc.py:16-212` ~150 L port). Fix Tier-2 #5 class bug:
+   eviction can never drop blocks with live slot refs.
+3. **Disk tier hardening**: O_DIRECT-aligned staging + separate store/load
+   threads + pinned buffers for Optane mirror (`disk_backend.py:49-110`);
+   addresses queue head-of-line + sidecar guard #14.
+4. Optional later: event stream (`distributed/kv_events.py`) for Hermetis
+   invalidation.
+
+Acceptance: identical-resend + id_slot requests hit cache (re-prefill
+count drops to ~0); eviction never touches active conversation (regression
+test); restart warm-restore still certified; commit (likely sub-commits:
+hash layer / eviction / disk).
+
+## Stage 5 — CUDA-graph uniform verify batches + capture checklist (j, n)
+
+1. **Uniform `1+K` verify batches**: VITRIOL graph identity is exact
+   `ubatch.n_tokens` (`llama-graph.h:812-839`); MTP verify len varies per
+   step (`server-context.cpp:521-558`) → rebuild/warmup thrash
+   (`ggml-cuda.cu:4907-4929,2926-2942`). Pad drafting to exactly
+   `draft_n_max` tokens every step (sentinel drafts that always reject —
+   vLLM pads with `-1`, `scheduler.py:1086-1108`) so verify shape is fixed.
+   KV-corruption risk check: padding must be masked (no KV write) — study
+   before implementing; fall back to documenting infeasible.
+2. **Capture checklist (n)**: apply large-shape-first capture + warmup +
+   workspace lock observations to ggml-cuda capture path; add a capture-hit
+   counter (Tier-5 #18 observability gap: no counter proves graphs engage).
+3. Graph-key collision: confirm per-key warmup flag can't thrash across
+   differing shapes (`ggml-cuda.cu:2901-2903`).
+
+Acceptance: counter shows decode-graph hits across MTP steps; shallow-bench
+decode ≥ baseline; commit.
+
+## Execution rules
+
+- Every stage: build + test + `PROVENANCE` headers on copied algorithms +
+  own commit (AGENTS workflow). Flag-bearing configs fingerprint-diffed.
+- Deep-context claims state FILLED token counts.
+- Reports of results appended to this file or sibling reports in
+  `.opencode/plans/` with ISO timestamps.

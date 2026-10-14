@@ -157,3 +157,60 @@ decode ≥ baseline; commit.
 - Deep-context claims state FILLED token counts.
 - Reports of results appended to this file or sibling reports in
   `.opencode/plans/` with ISO timestamps.
+
+---
+
+## Results log
+
+### Stage 1 — DONE (2026-10-14 11:10)
+
+Inner commits (worktree `VITRIOL-vllm/llama.cpp`, branch `vllm-031`):
+
+- `589443873 server: expose spec-decode acceptance breakdown` — offered-per-pos
+  denominator + `[draft_len][accepted]` verify histogram + labeled metrics
+  (`spec_decode_num_offered_tokens_per_pos_total{position}`,
+  `spec_decode_verify_outcomes_total{draft_len,accepted}`) + ratio gauges.
+  Unit tests: `test_metrics.py` 10/10, `test_speculative.py` 9/9 (incl. new
+  `test_metrics_acceptance_breakdown`).
+- `f95a61881 server: fail-closed on draft ctx coverage gap` —
+  `common_speculative_begin` now returns bool; coverage checks upgraded to
+  fail-closed (`pos_max < N-x || pos_min > 0`) in eagle3/generic/MTP begin
+  paths; slot-level `spec_draft_off` disables drafting for the request with
+  `SLT_WRN`. (Item 2 of Stage 1.)
+- `ab8d1b374 server: refresh cached /metrics at every task boundary` —
+  BONUS FIX: the 1s time throttle on the post-update_slots refresh left the
+  served `/metrics` copy stale after the last completion (queue only runs
+  update_slots while tasks flow; counters stuck at boot zeros — the exact
+  failure `test_metrics_prometheus_format` had on main too). Throttle removed;
+  task boundary is the rate limit. Verified live: post-completion
+  `n_decode_total 8`, `prompt_tokens_total 7`, `tokens_predicted_total 8`.
+
+Stage 1 verdicts against original plan items:
+
+- 1a (acceptance telemetry): DONE as above.
+- 1b (MTP prefill-lookahead guard): DONE as fail-closed coverage guard.
+  Live deep-prefill warning sweep (44k+) still pending a deep-context run on
+  the worktree binary.
+- 1c (fingerprint gate): NO-OP confirmed — `scripts/vitriol` already has
+  `fingerprint_journal`/`_fp_delta` (per-launch diff vs last + blessed,
+  dry-run), exceeding vLLM `startup_plan`.
+
+Stage 3 revised verdicts (from source survey, not yet implemented):
+
+- 3.1 residual-mass recovered tokens: NO-OP —
+  `common_sampler_sample_and_accept_n` (`common/sampling.cpp:678-706`)
+  samples y ~ p per position and accepts iff y == draft; exact by
+  construction, no residual math needed. Skip.
+- 3.3 multi-module MTP: verify `num_nextn_predict_layers` on the live
+  Qwen3.8 checkpoint (expected == 1 -> document no-op, skip).
+
+Stage 2 revised finding (supersedes the "TQ continuation-prefill" framing):
+`ggml_cuda_fattn_kv_type_supported` (`ggml/src/ggml-cuda/fattn.cu:471-490`)
+does NOT list TQ3_0 -> FA entirely disabled with tq3_0 KV; attention falls
+back to the classic MUL_MAT path. Enabling FA-vec for tq3_0 is the primary
+lever. Additionally, for quantized KV, prefill (Q->ne[1] > 2) selects
+TILE/MMA_F16 which dequantizes the whole K/V prefix to f16 per attention call
+(`fattn.cu:650-674`) — the exact vLLM O(prefix) pathology, also hitting the
+live q4_0 KV config. Prereqs: `ggml_cuda_type_traits<GGML_TYPE_TQ3_0>`
+(`common.cuh:1170`) lacks `bs`; `dequantize_block_tq3_0` in `convert.cu` is
+file-static (needs export for fattn-vec).

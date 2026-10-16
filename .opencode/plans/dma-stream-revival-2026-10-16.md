@@ -144,3 +144,24 @@ No new third-party code. All work on fork-owned files (Apache-2.0 OR MIT).
   live config = nemotron35-super-vl-ramshot; rollback = `vitriol config load
   qwen38-buffedmod-262k` + restart. Nemotron store file
   (/scratch/vitriol-store-nemo.bin, 38 GiB) kept on disk for the store arm.
+- **2026-10-16 20:30 - RC4 identified: sticky CUDA error poisoning.** The
+  per-slice `cudaHostRegister` in `ensure_expert_locked` fails with EINVAL on
+  mmap-backed pages (registration only works on anonymous memory) and returns
+  WITHOUT clearing CUDA's per-thread sticky last-error. The next
+  `CUDA_CHECK(cudaGetLastError())` in ggml - after the `quantize_row_q8_1_cuda`
+  launch inside the first remapped mul_mat_vec_q - reads the STALE EINVAL and
+  aborts, misattributing it to that launch. Explains: determinism, immunity to
+  LRU_STRICT/MATMUL_SYNC/launch-blocking, "wrong kernel" failure site. The
+  September 35B runs never hit this because the launcher-era configs ran
+  --no-mmap (anonymous buffer -> slice registration succeeds -> no poison).
+  Why Qwen3.5 MoE worked: same anon-registered path, full pin tier functional.
+- **Fix plan (approved 2026-10-16 20:30)**:
+  1. clear sticky error after failed slice registration (1 line) + audit other
+     VITRIOL runtime-API failure paths for uncaught last-error poisoning
+     (driver cu* calls do not set runtime last-error - only runtime calls)
+  2. mmap=on wrap arm: oracle -> 3x256 bench -> clean stop -> report card
+  3. mmap=off anon arm (exact Qwen3.5-MoE-era config, registration works):
+     same protocol; A/B decides ship arm; also falsifies/confirms RC4
+  4. Rust arm after crate store-default fix; same protocol
+  5. ship best arm as the working profile; Addendum C; AGENTS note
+  Success = oracle-clean decode + t/s scaling with tier residency.

@@ -144,6 +144,7 @@ config_fingerprint() {
     [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && fp="$fp dor=1"
     [[ "${CFG_STORE:-0}" == "1" ]] && fp="$fp st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
     [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && fp="$fp pf=1"
+    [[ -n "${CFG_LRU_MB_GPU:-}" ]] && fp="$fp lrug=${CFG_LRU_MB_GPU}"
     [[ "${CFG_MMAP:-off}" == "on" ]] && fp="$fp mmap=on"
     printf '%s' "$fp"
 }
@@ -306,6 +307,7 @@ CFG_STORE="${DEFAULT_STORE:-0}"
 CFG_STORE_PATH="${DEFAULT_STORE_PATH:-}"
 CFG_STORE_SOURCE="${DEFAULT_STORE_SOURCE:-store}"
 CFG_MAX_LOCKED_MB="${DEFAULT_MAX_LOCKED_MB:-0}"
+CFG_LRU_MB_GPU="${DEFAULT_LRU_MB_GPU:-}"
 CFG_VERBOSE="$DEFAULT_VERBOSE"
 CFG_PORT="$DEFAULT_PORT"
 CFG_HOST="$DEFAULT_HOST"
@@ -396,6 +398,7 @@ parse_config() {
                 vitriol.store_path)    CFG_STORE_PATH="$val" ;;
                 vitriol.store_source)  CFG_STORE_SOURCE="$val" ;;
                 vitriol.max_locked_mb) CFG_MAX_LOCKED_MB="$val" ;;
+                vitriol.lru_mb_gpu)     CFG_LRU_MB_GPU="$val" ;;
                 vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
                 vitriol.verbose)       CFG_VERBOSE="$val" ;;
                 server.host)           CFG_HOST="$val" ;;
@@ -501,6 +504,8 @@ store_path = $CFG_STORE_PATH
 store_source = $CFG_STORE_SOURCE
 # Lazy per-expert host pin budget in MB (0 = pin everything, needs RAM >= experts)
 max_locked_mb = $CFG_MAX_LOCKED_MB
+# Per-device LRU pool override in MB, CSV "dev0,dev1" (empty = global lru_mb)
+lru_mb_gpu = $CFG_LRU_MB_GPU
 # LRU VRAM cache in MB (0 to disable; only effective with FP16/FP32 experts)
 lru_mb = $CFG_LRU_MB
 # Verbose logging
@@ -708,6 +713,7 @@ CFG_STORE="${DEFAULT_STORE:-0}"
 CFG_STORE_PATH="${DEFAULT_STORE_PATH:-}"
 CFG_STORE_SOURCE="${DEFAULT_STORE_SOURCE:-store}"
 CFG_MAX_LOCKED_MB="${DEFAULT_MAX_LOCKED_MB:-0}"
+CFG_LRU_MB_GPU="${DEFAULT_LRU_MB_GPU:-}"
     CFG_VERBOSE="$DEFAULT_VERBOSE"
     CFG_PORT="$DEFAULT_PORT"
     CFG_HOST="$DEFAULT_HOST"
@@ -746,6 +752,7 @@ config_set() {
         vitriol.store_path)    CFG_STORE_PATH="$val" ;;
         vitriol.store_source)  CFG_STORE_SOURCE="$val" ;;
         vitriol.max_locked_mb) CFG_MAX_LOCKED_MB="$val" ;;
+        vitriol.lru_mb_gpu)     CFG_LRU_MB_GPU="$val" ;;
         vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
         vitriol.verbose)       CFG_VERBOSE="$val" ;;
         vitriol.output_cache)  CFG_OUTPUT_CACHE="$val" ;;
@@ -2120,6 +2127,9 @@ STORE_EN="${CFG_STORE:-0}"
 STORE_PATH="${CFG_STORE_PATH:-}"
 STORE_SOURCE="${CFG_STORE_SOURCE:-store}"
 MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
+LRU_MB_GPU="${CFG_LRU_MB_GPU:-}"
+LRU_MB_GPU0="${LRU_MB_GPU%%,*}"
+LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
         SPEC_ADAPTIVE_K="${CFG_SPEC_ADAPTIVE_K:-0}"
@@ -2156,6 +2166,7 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
         [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT dor=1"
         [[ "${CFG_STORE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
         [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT pf=1"
+        [[ -n "${CFG_LRU_MB_GPU:-}" ]] && FINGERPRINT="$FINGERPRINT lrug=${CFG_LRU_MB_GPU}"
         [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
@@ -2281,6 +2292,8 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
             VITRIOL_STORE_PATH="$STORE_PATH" \
             VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
             VITRIOL_MAX_LOCKED_MB="$MAX_LOCKED_MB" \
+            VITRIOL_LRU_MB_0="$LRU_MB_GPU0" \
+            VITRIOL_LRU_MB_1="$LRU_MB_GPU1" \
             VITRIOL_EXPERT_COUNT="$EXPERT_COUNT" \
             VITRIOL_OUTPUT_CACHE="$OUTPUT_CACHE" \
             VITRIOL_PIN_FIRST_N_LAYERS="$PIN_FIRST_N_LAYERS" \
@@ -2406,6 +2419,9 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
         STORE_PATH="${CFG_STORE_PATH:-}"
         STORE_SOURCE="${CFG_STORE_SOURCE:-store}"
         MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
+        LRU_MB_GPU="${CFG_LRU_MB_GPU:-}"
+        LRU_MB_GPU0="${LRU_MB_GPU%%,*}"
+        LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         SPEC_TYPE="${CLI_SPEC_TYPE:-${CFG_SPEC_TYPE}}"
         SPEC_DRAFT_N_MAX="${CLI_SPEC_DRAFT_N_MAX:-${CFG_SPEC_DRAFT_N_MAX}}"
         SPEC_ADAPTIVE_K="${CFG_SPEC_ADAPTIVE_K:-0}"
@@ -2443,6 +2459,7 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
         [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT dor=1"
         [[ "${CFG_STORE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
         [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT pf=1"
+        [[ -n "${CFG_LRU_MB_GPU:-}" ]] && FINGERPRINT="$FINGERPRINT lrug=${CFG_LRU_MB_GPU}"
         [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
         REASONING="${CFG_REASONING}"
@@ -2653,6 +2670,8 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
                     VITRIOL_MAX_LOCKED_MB="$MAX_LOCKED_MB" \
+                    VITRIOL_LRU_MB_0="$LRU_MB_GPU0" \
+                    VITRIOL_LRU_MB_1="$LRU_MB_GPU1" \
                     VITRIOL_EXPERT_COUNT="$EXPERT_COUNT" \
                     VITRIOL_OUTPUT_CACHE="$OUTPUT_CACHE" \
                     VITRIOL_PIN_FIRST_N_LAYERS="$PIN_FIRST_N_LAYERS" \
@@ -2729,6 +2748,8 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
                     VITRIOL_MAX_LOCKED_MB="$MAX_LOCKED_MB" \
+                    VITRIOL_LRU_MB_0="$LRU_MB_GPU0" \
+                    VITRIOL_LRU_MB_1="$LRU_MB_GPU1" \
                     VITRIOL_EXPERT_COUNT="$EXPERT_COUNT" \
                     VITRIOL_OUTPUT_CACHE="$OUTPUT_CACHE" \
                     VITRIOL_PIN_FIRST_N_LAYERS="$PIN_FIRST_N_LAYERS" \
@@ -2799,6 +2820,8 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
                     VITRIOL_MAX_LOCKED_MB="$MAX_LOCKED_MB" \
+                    VITRIOL_LRU_MB_0="$LRU_MB_GPU0" \
+                    VITRIOL_LRU_MB_1="$LRU_MB_GPU1" \
                     VITRIOL_EXPERT_COUNT="$EXPERT_COUNT" \
                     VITRIOL_OUTPUT_CACHE="$OUTPUT_CACHE" \
                     VITRIOL_PIN_FIRST_N_LAYERS="$PIN_FIRST_N_LAYERS" \
@@ -2870,6 +2893,8 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
                     VITRIOL_MAX_LOCKED_MB="$MAX_LOCKED_MB" \
+                    VITRIOL_LRU_MB_0="$LRU_MB_GPU0" \
+                    VITRIOL_LRU_MB_1="$LRU_MB_GPU1" \
                     VITRIOL_EXPERT_COUNT="$EXPERT_COUNT" \
                     VITRIOL_OUTPUT_CACHE="$OUTPUT_CACHE" \
                     VITRIOL_PIN_FIRST_N_LAYERS="$PIN_FIRST_N_LAYERS" \

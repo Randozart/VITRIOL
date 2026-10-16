@@ -56,7 +56,9 @@ mmproj =
 mode = stream
 max_locked_mb = 16384
 # LRU VRAM cache in MB (0 to disable; only effective with FP16/FP32 experts)
-lru_mb = 4096
+lru_mb = 0
+# Per-device pools fill both cards: dev0 3.4G (desktop 1.5G + weights 5.5G), dev1 4.8G
+lru_mb_gpu = 3400,4800
 # Verbose logging
 verbose = false
 # Expert output caching: on | off (approximate — reuses previous token's expert outputs)

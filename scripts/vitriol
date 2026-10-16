@@ -140,6 +140,8 @@ config_fingerprint() {
     [[ -n "${CFG_CHAT_TEMPLATE:-}" ]] && fp="$fp ct=$(basename "$CFG_CHAT_TEMPLATE")"
     [[ -n "${CFG_MMPROJ:-}" && -f "${CFG_MMPROJ:-}" ]] && fp="$fp vis=on"
     [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && fp="$fp cis=0"
+    [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && fp="$fp ncmoe=${CFG_N_CPU_MOE}"
+    [[ "${CFG_MMAP:-off}" == "on" ]] && fp="$fp mmap=on"
     printf '%s' "$fp"
 }
 
@@ -292,6 +294,8 @@ CFG_MODEL="$DEFAULT_MODEL"
 CFG_CTX="$DEFAULT_CTX"
 CFG_THREADS="$DEFAULT_THREADS"
 CFG_NGL="$DEFAULT_NGL"
+CFG_N_CPU_MOE="${DEFAULT_N_CPU_MOE:-0}"
+CFG_MMAP="${DEFAULT_MMAP:-off}"
 CFG_MODE="$DEFAULT_MODE"
 CFG_LRU_MB="$DEFAULT_LRU_MB"
 CFG_VERBOSE="$DEFAULT_VERBOSE"
@@ -375,6 +379,8 @@ parse_config() {
                 model.context)         CFG_CTX="$val" ;;
                 model.threads)         CFG_THREADS="$val" ;;
                 model.ngl)             CFG_NGL="$val" ;;
+                model.n_cpu_moe)       CFG_N_CPU_MOE="$val" ;;
+                model.mmap)            CFG_MMAP="$val" ;;
                 model.alias)           CFG_MODEL_ALIAS="$val" ;;
                 vitriol.mode)          CFG_MODE="$val" ;;
                 vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
@@ -464,6 +470,10 @@ expert_count = $CFG_EXPERT_COUNT
 alias = $CFG_MODEL_ALIAS
 # Vision projector GGUF (empty = text-only) — LOAD-BEARING
 mmproj = $CFG_MMPROJ
+# CPU-MoE: keep first N layers' expert weights in host RAM (0 = off)
+n_cpu_moe = $CFG_N_CPU_MOE
+# mmap weights from disk (on) vs hot-loaded no-mmap (off)
+mmap = $CFG_MMAP
 
 [vitriol]
 # Operation mode: stream | sync | async | off
@@ -666,6 +676,8 @@ config_reset() {
     CFG_CTX="$DEFAULT_CTX"
     CFG_THREADS="$DEFAULT_THREADS"
     CFG_NGL="$DEFAULT_NGL"
+CFG_N_CPU_MOE="${DEFAULT_N_CPU_MOE:-0}"
+CFG_MMAP="${DEFAULT_MMAP:-off}"
     CFG_MODE="$DEFAULT_MODE"
     CFG_LRU_MB="$DEFAULT_LRU_MB"
     CFG_VERBOSE="$DEFAULT_VERBOSE"
@@ -697,6 +709,8 @@ config_set() {
         model.context)         CFG_CTX="$val" ;;
         model.threads)         CFG_THREADS="$val" ;;
         model.ngl)             CFG_NGL="$val" ;;
+        model.n_cpu_moe)       CFG_N_CPU_MOE="$val" ;;
+        model.mmap)            CFG_MMAP="$val" ;;
         model.expert_count)    CFG_EXPERT_COUNT="$val" ;;
         vitriol.mode)          CFG_MODE="$val" ;;
         vitriol.lru_mb)        CFG_LRU_MB="$val" ;;
@@ -2101,6 +2115,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
         [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT specak=1"
+        [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT ncmoe=${CFG_N_CPU_MOE}"
+        [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2373,6 +2389,8 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         [[ -n "${CHAT_TEMPLATE:-}" ]] && FINGERPRINT="$FINGERPRINT ct=$(basename "$CHAT_TEMPLATE")"
         [[ ${#MMPROJ_ARGS[@]} -gt 0 ]] && FINGERPRINT="$FINGERPRINT vis=on"
         [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && FINGERPRINT="$FINGERPRINT cis=0"
+        [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT ncmoe=${CFG_N_CPU_MOE}"
+        [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
         REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
@@ -2476,6 +2494,13 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
         KV_CACHE_ARGS=""
         [[ "$KV_QUANT" != "f16" ]] && KV_CACHE_ARGS="--cache-type-k $KV_QUANT"
         [[ "${KV_QUANT_V:-f16}" != "f16" ]] && KV_CACHE_ARGS="$KV_CACHE_ARGS --cache-type-v $KV_QUANT_V"
+        # CPU-MoE expert residency: first N layers' experts stay in host RAM
+        # (paging from mmap'd GGUF; pair with mmap=on for oversize MoE models)
+        CPU_MOE_ARGS=""
+        [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && CPU_MOE_ARGS="--n-cpu-moe ${CFG_N_CPU_MOE}"
+        # Weight mapping: off (default) = --no-mmap hot load; on = file-backed mmap
+        MMAP_ARGS="--no-mmap"
+        [[ "${CFG_MMAP:-off}" == "on" ]] && MMAP_ARGS="--mmap"
         # Speculative decoding args
         SPEC_ARGS=""
         [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS="--spec-type $SPEC_TYPE"
@@ -2594,9 +2619,9 @@ DISK_OFFLOAD="${CLI_DISK_OFFLOAD:-0}"
                         "${CHAT_TEMPLATE_ARGS[@]}" \
                         "${MMPROJ_ARGS[@]}" \
                         --slots --metrics \
-                        --no-mmap \
+                        $MMAP_ARGS \
                          -t "$THREADS" \
-$KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
+$KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS $CPU_MOE_ARGS \
                             "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/llama-server.pid"
@@ -2665,9 +2690,9 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                         "${CHAT_TEMPLATE_ARGS[@]}" \
                         "${MMPROJ_ARGS[@]}" \
                         --slots --metrics \
-                        --no-mmap \
+                        $MMAP_ARGS \
                         -t "$THREADS" \
-                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
+                        $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS $CPU_MOE_ARGS \
                         "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
                 echo $! > "${CONFIG_DIR}/server.pid"
@@ -2730,8 +2755,8 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                         "${CHAT_TEMPLATE_ARGS[@]}" \
                         "${MMPROJ_ARGS[@]}" \
                         --slots --metrics \
-                        --no-mmap \
-                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS &
+                        $MMAP_ARGS \
+                        -t "$THREADS" $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS $CPU_MOE_ARGS &
                 LLAMA_PID=$!
                 echo "  llama-server running (PID $LLAMA_PID, internal port $LLAMA_PORT)"
 
@@ -2796,9 +2821,9 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     "${CHAT_TEMPLATE_ARGS[@]}" \
                         "${MMPROJ_ARGS[@]}" \
                     --slots --metrics \
-                    --no-mmap \
+                    $MMAP_ARGS \
                     -t "$THREADS" \
-                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS \
+                    $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS $CPU_MOE_ARGS \
                     "$@"
             fi
         fi

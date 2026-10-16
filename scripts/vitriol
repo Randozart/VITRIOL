@@ -2287,7 +2287,6 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
             VITRIOL_LOOKUP="$LOOKUP" \
             VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
             VITRIOL_DISK_OFFLOAD="$DISK_OFFLOAD" \
-
             VITRIOL_STORE="$STORE_EN" \
             VITRIOL_STORE_PATH="$STORE_PATH" \
             VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
@@ -2665,7 +2664,6 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     VITRIOL_DISK_OFFLOAD="$DISK_OFFLOAD" \
-
                     VITRIOL_STORE="$STORE_EN" \
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
@@ -2743,7 +2741,6 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     VITRIOL_DISK_OFFLOAD="$DISK_OFFLOAD" \
-
                     VITRIOL_STORE="$STORE_EN" \
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
@@ -2783,6 +2780,21 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                 echo "  Server PID: $!"
             fi
 
+            # Anti-silent-break guard (DMA revival 2026-10-16): when streaming
+            # is requested, the engine init lines MUST appear in GEN_LOG. The
+            # architecture has twice disarmed with zero errors (env-chain
+            # blanks, unregistered wrap procs) - this turns that class loud.
+            if [[ "${MODE:-off}" != "off" ]] || [[ "${STORE_EN:-0}" == "1" ]]; then
+                sleep 2
+                if ! grep -qE 'VITRIOL: (stream mode|disk offload|store-backed|lazy buffer)' "$GEN_LOG" 2>/dev/null; then
+                    echo "  ==========================================================" >&2
+                    echo "  WARNING: vitriol.mode=${MODE} requested but the engine" >&2
+                    echo "  logged no streaming init line in $GEN_LOG." >&2
+                    echo "  The architecture is likely DISARMED (silent-off state)." >&2
+                    echo "  ==========================================================" >&2
+                fi
+            fi
+
             echo "  Log:       $GEN_LOG"
             echo ""
             echo "  curl http://${HOST}:${PORT}/v1/chat/completions \\"
@@ -2815,7 +2827,6 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     VITRIOL_DISK_OFFLOAD="$DISK_OFFLOAD" \
-
                     VITRIOL_STORE="$STORE_EN" \
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \
@@ -2888,7 +2899,6 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
                     VITRIOL_LOOKUP="$LOOKUP" \
                     VITRIOL_ENGINE_MODE="$ENGINE_MODE" \
                     VITRIOL_DISK_OFFLOAD="$DISK_OFFLOAD" \
-
                     VITRIOL_STORE="$STORE_EN" \
                     VITRIOL_STORE_PATH="$STORE_PATH" \
                     VITRIOL_STORE_SOURCE="$STORE_SOURCE" \

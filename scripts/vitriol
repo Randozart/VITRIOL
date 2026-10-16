@@ -143,6 +143,7 @@ config_fingerprint() {
     [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && fp="$fp ncmoe=${CFG_N_CPU_MOE}"
     [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && fp="$fp dor=1"
     [[ "${CFG_STORE:-0}" == "1" ]] && fp="$fp st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
+    [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && fp="$fp pf=1"
     [[ "${CFG_MMAP:-off}" == "on" ]] && fp="$fp mmap=on"
     printf '%s' "$fp"
 }
@@ -2154,6 +2155,7 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
         [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT ncmoe=${CFG_N_CPU_MOE}"
         [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT dor=1"
         [[ "${CFG_STORE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
+        [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT pf=1"
         [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
@@ -2440,6 +2442,7 @@ MAX_LOCKED_MB="${CFG_MAX_LOCKED_MB:-0}"
         [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT ncmoe=${CFG_N_CPU_MOE}"
         [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT dor=1"
         [[ "${CFG_STORE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
+        [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT pf=1"
         [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
         REASONING="${CFG_REASONING}"

@@ -1,5 +1,5 @@
 # VITRIOL Configuration — Nemotron 3.5 Super VL 120B-A12B UD-IQ1_M, CPU-MoE baseline
-# DMA STORE TIER (revival): mode=stream + raw-zone store (38GiB, mkfs 2m43s) + max_locked_mb=8192 lazy pin + LRU 4096. Loader skips GGUF expert read; Optane->pinned bounce->VRAM LRU.
+# DMA STORE TIER (revival): mode=stream + raw-zone store (38GiB, mkfs 2m43s) + max_locked_mb=8192 lazy pin + LRU 1024, ts 12,36 (dev0 hosts sterling+desktop ~6.7G). Loader skips GGUF expert read; Optane->pinned bounce->VRAM LRU.
 # 2026-10-16 bring-up (.opencode/plans/nemotron35-super-vl-bringup-2026-10-16.md):
 # hybrid Mamba-2/MoE/attn (40/40/8), LatentMoE 512E top-22, vision C-RADIO.
 # --n-cpu-moe 88: ALL experts in host RAM, mmap'd from Optane (/scratch/models);
@@ -41,7 +41,7 @@ threads = 8
 # GPU layers to offload
 ngl = 99
 # CPU-MoE: all 88 layers' experts in host RAM (paged from Optane mmap)
-n_cpu_moe = 0
+n_cpu_moe = 88
 # file-backed mmap (required for CPU-MoE paging; default off = no-mmap)
 mmap = on
 # Expert count override (0 = model default, 4-8 recommended)
@@ -59,7 +59,7 @@ store_path = /scratch/vitriol-store-nemo.bin
 store_source = store
 max_locked_mb = 8192
 # LRU VRAM cache in MB (0 to disable; only effective with FP16/FP32 experts)
-lru_mb = 4096
+lru_mb = 1024
 # Verbose logging
 verbose = false
 # Expert output caching: on | off (approximate — reuses previous token's expert outputs)

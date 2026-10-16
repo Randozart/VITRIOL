@@ -42,6 +42,55 @@
 - **Downloads** (`hf_fetch.py`: ranged-resume + sha256 vs `lfs.oid`): MiniCPM
   Q4 + mmproj ✓, Nemotron mmproj BF16 ✓, IQ1_M shard1 ✓; shard2 (46.1 G) in
   flight → `/scratch/models/`.
+- **2026-10-16 15:30 — Addendum A: model-load fixes + GATE RESULTS.**
+  - Shard layout: shard1 = 7.5 MiB **metadata-only** (0 tensors), shard2 =
+    46.1 G with all 781 tensors. Loader handles it; our earlier "(7,6M) [MTP]"
+    size display = shard1 only (cosmetic).
+  - Engine fix 1 (`f4518576a`, inner): Unsloth UD quants omit
+    `attention.layer_norm_rms_epsilon` (they emit only
+    `attention.layer_norm_epsilon`) → required-key load failure. Fallback to
+    1e-5 (HF config value) when absent.
+  - Engine fix 2 (`90cb995a1`, inner): MTP block (blk.88) in Nemotron 3.5 has
+    **latent MoE** (`ffn_latent_down/up`, experts 1024-wide) — upstream
+    graph_mtp lacked the bottleneck (2 unclaimed tensors + would-be
+    shape mismatch). Registered in `load_arch_tensors`, applied in
+    `graph_mtp`.
+  - Stale Qwen slot mirror renamed `/scratch/kvtier/slot0.bin` →
+    `slot0.bin.qwen38-bak` (was rejected on Nemotron boot; kept for rollback).
+  - **Path 1 — CPU-MoE baseline** (`nemotron35-super-vl` profile, ncmoe=88,
+    mmap, threads 8): loads ~380 s, correct output. Warm decode
+    **0.70–0.83 t/s** (4×256 tok), prefill 3.23 t/s @1452 tok batched,
+    prompt cache works (1453 cached → 2.5 s). **GATE FAIL** (<2 t/s).
+  - **Path 2 — DMA store-tier revival** (`nemotron35-super-vl-store`):
+    root-caused the dormancy chain:
+    1. expert buft (`vitriol_get_expert_buffer_type`) only exists in
+       `VITRIOL_MODE=stream`; SYNC/ASYNC are placement no-ops.
+    2. buft intercepts only tensors **already flagged for host placement**
+       → requires `n_cpu_moe > 0` as a placement FLAG (CPU never computes —
+       weights stream Optane→pinned bounce→VRAM LRU). With ncmoe=0+ngl99,
+       experts hit plain cudaMalloc (31.9 G OOM on CUDA1).
+    3. `disk_offload=1` tier pins the whole expert range
+       (mmap+cudaHostRegister) → impossible >RAM; the raw-zone **store**
+       tier (mkfs, split-aware, `--scan`) is the designed one: 38 GiB store
+       built in 2m43s (`/scratch/vitriol-store-nemo.bin`), loader **skips
+       the 46 G GGUF expert read**, load 145 s, lazy per-expert pin budget
+       (`max_locked_mb=8192`), VRAM LRU 1024 M/device.
+    4. Launcher: `vitriol.store/store_path/store_source/max_locked_mb` keys
+       wired (5 exec sites + fingerprint `st=/mlm=`), profile
+       `nemotron35-super-vl-store` = working config (ts 24,24, ncmoe=88 as
+       placement flag, mmap on).
+    - Result: warm decode **0.73–0.82 t/s** — statistically identical to
+      CPU-MoE. **GATE FAIL** (<2 t/s).
+  - **Verdict: gate fails on BOTH paths; the binding constraint is Optane
+    bandwidth, not the path.** Decode needs ~1 GB expert bytes/token
+    (41 MoE layers × ~23 experts × ~1 MB); P4800X delivers ~750 MB/s
+    effective at that granularity → ~0.75 t/s ceiling for ANY per-token
+    streaming scheme on this device. CPU-MoE hides reads under compute and
+    lands on the same number. Prefill: CPU-MoE batched GEMM wins (3.2 vs
+    ~1 t/s).
+  - Hardware escape hatches (not present on box): 2nd Optane / NVMe stripe
+    (~×2-3), VRAM-resident hot tier ≥12 G with skewed-expert LRU hits,
+    or a smaller model. Not pursued today.
 
 ## Goal
 

@@ -165,3 +165,61 @@ No new third-party code. All work on fork-owned files (Apache-2.0 OR MIT).
   4. Rust arm after crate store-default fix; same protocol
   5. ship best arm as the working profile; Addendum C; AGENTS note
   Success = oracle-clean decode + t/s scaling with tier residency.
+
+## Addendum C - verification results (2026-10-16 20:55)
+
+Sticky-error fix landed (integration.cpp ensure_expert_locked + trace probe +
+MemGetInfo failure branch: `cudaGetLastError()` after caught failures).
+Result: the launch abort is GONE - decode runs end-to-end on the wrap arm.
+**But output is corrupt**: 48-64 tokens generated, content AND reasoning both
+empty, finish=length - the token stream is garbage. Reproduced on:
+
+| arm | config | result |
+|---|---|---|
+| wrap (mmap=on, file pages) | pf on / off, MATMUL_SYNC on | corrupt, 0.32-0.40 t/s |
+| anon (mmap=off, 36 GiB lazy buffer) | plain | corrupt, 0.18 t/s, first-touch crawl |
+
+VITRIOL_MATMUL_SYNC does NOT heal (unlike September's partial heals), predictive
+prefetch off does not heal, VmLck stays 0 (slice registration EINVALs on mmap
+pages; on the anon arm pin did not engage either - separate follow-up).
+
+**Verdict**: the September Heisenbug class is confirmed on Nemotron and it is
+NOT the storage arm, NOT the implementation language (matches September's Rust
+reproduction), NOT the prefetcher, NOT fixable with the sync knobs. Corrupt
+from the FIRST decode (Nemotron hybrid graphs exceed the ~1022-node safe depth
+immediately; the 35B needed ~1272). The defect lives in the interaction between
+the streaming remap (host buffer -> per-expert VRAM slots + event protocol) and
+ggml's graph execution/scheduler - the "ggml scheduler workstream" opens now:
+
+- O-N1: minimal repro outside llama-server (vitriol-stream tests/ or a
+  ggml-cgraph harness: one mul_mat_id over a vitriol buffer, LRU remap,
+  known-answer). September's oracle tooling (greedy-defect-localization doc)
+  is the template.
+- O-N2: GGML_SCHED_DEBUG=2 capture on a Nemotron decode - which split runs
+  which expert MUL_MAT_ID (Nemotron is gate-less LatentMoE: up/down only,
+  so September's gate/up-on-CPU mechanism does not map 1:1; the host buffer
+  is FILLED on both arms, ruling out the zero-buffer class).
+- O-N3: candidate mechanism to check first: LRU event ordering vs ggml's
+  compute-stream semantics for the mamba layers interleaved between MoE
+  layers (state ops may read/write across streams the event protocol does
+  not cover).
+- Note: the September 35B control GGUF is no longer on disk; a re-download
+  (~17 GB) would establish whether the architecture still works end-to-end
+  on the old model with today's fixes (worth it once O-N1 exists).
+
+### What "working like Qwen3.5 MoE" requires
+
+1. O-N1/O-N2 root-cause + fix in the streaming/graph interaction (the
+   scheduler-level hunt), OR
+2. a Nemotron-side constraint that keeps graphs under the safe depth
+   (none known - hybrid depth is architectural), OR
+3. upstream ggml: a supported per-expert-weight streaming interface
+   (ggml_backend_sched MoE branch already host-buffer aware at
+   ggml-backend.cpp:1703-1745 - the seam exists upstream; VITRIOL's LRU
+   would need to plug under THAT instead of its own remap).
+
+Everything else built today stands: wiring fixes, wrap procs, engagement,
+store tier, Rust crate, launcher keys, profiles. The machine now fails LOUD,
+at a precisely known location, with a provenance trail of four root causes
+(RC1 blanks, RC2 unregistered procs, RC3 store-source defaults, RC4 sticky
+error) - versus one silent Heisenbug this morning.

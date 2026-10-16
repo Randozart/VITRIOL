@@ -101,3 +101,46 @@ engagement confirmed (with the anti-silent-break guard noted).
 ## Provenance
 
 No new third-party code. All work on fork-owned files (Apache-2.0 OR MIT).
+
+## Progress log
+
+- **2026-10-16 19:40 - Stage 1 DONE** (outer `758ce99`): 5 blank lines deleted,
+  scanner clean across 9 env-chain blocks, engagement guard installed. The
+  52-cycle crash loop stopped.
+- **2026-10-16 19:50 - Stage 2 DONE** (inner `3d055419a` + follow-up `bb8c17943`):
+  wrap procs registered and working - `VITRIOL: wrapped mmap region (40573 MiB)`
+  binds the expert pages into the vitriol buft. Follow-up fixes found by the
+  first engaged runs:
+  1. eager wrap cudaHostRegister pins the whole mapping -> removed (lazy pin
+     tier registers slices on demand; note cudaHostRegister EINVALs on mmap
+     pages, so the mmap arm's pin tier is mlock-only - residency without
+     DMA registration; H2D stages through the driver at reduced rate)
+  2. THREE ungated `g_store_source` checks (source_device(), pool-init
+     bounce ring, mul_mat_id fill) routed non-store runs into store reads
+     against no store - now all require `store_backed`
+  3. fit pass executes graphs through 0-size dummy vitriol buffers -> route
+     gate now requires buffer size > 0
+- **2026-10-16 19:55 - ENGAGEMENT PROVEN, launch defect isolated.** With the
+  wrap live: route gate fires on real decode, LRU pool allocates (3400 MB,
+  6631 slots, GPU 0), per-expert H2D fills and hit-remaps execute. First
+  remapped decode aborts in ggml's launch path (`quantize_row_q8_1_cuda`
+  EINVAL inside `mul_mat_vec_q`), deterministic, NOT fixed by
+  VITRIOL_LRU_STRICT / VITRIOL_MATMUL_SYNC / CUDA_LAUNCH_BLOCKING. Same
+  failure signature class as the September campaign (nondeterministic
+  primitive failures under the streaming remap; transport byte-clean).
+- **2026-10-16 20:00 - Rust arm status**: `vitriol-stream` builds clean
+  (static link via -DVITRIOL_RUST_LIB). VITRIOL_RUST=1 engages the crate but
+  it carries the same latent store-default assumption ("store fill but store
+  not open" -> protocol violation): the crate was left mid-hunt in September
+  before the non-store path was exercised. Fixing the crate default is
+  mechanical; the ggml launch defect is the real blocker on both arms.
+- **REMAINING (next session)**: (a) crate: default source to gguf when
+  VITRIOL_STORE unset, exercise non-store path; (b) the ggml launch-path
+  defect: compute-sanitizer + PDL interaction audit on the first remapped
+  decode (quantize_row_q8_1 EINVAL with slots as src0) - this is the
+  September "ggml scheduler workstream" resurfaced at Nemotron scale.
+  Consider testing small-ne02 + minimal repro outside llama-server.
+- Daily driver state: Qwen engine still down (since 2026-10-14, pre-session);
+  live config = nemotron35-super-vl-ramshot; rollback = `vitriol config load
+  qwen38-buffedmod-262k` + restart. Nemotron store file
+  (/scratch/vitriol-store-nemo.bin, 38 GiB) kept on disk for the store arm.

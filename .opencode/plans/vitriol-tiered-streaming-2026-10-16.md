@@ -90,3 +90,32 @@ Engagement guard stays; failures loud.
 
 No new third-party code. Fork-owned files, Apache-2.0 OR MIT. Rust crate
 extends existing vitriol-stream (same license, PROVENANCE headers kept).
+
+## Progress log
+
+- **2026-10-17 00:45 - S1 code landed, verification blocked by placement
+  determinism.** Remap now default-OFF (`VITRIOL_REMAP` env re-enters it,
+  loudly); `needs_sync` override gated the same way -> CUDA graphs legal.
+  Manual-harness runs (minimal env) load in <1 s with the wrap binding
+  40.5 GiB host-side, but flip run-to-run between (a) full load+listen and
+  (b) `unable to allocate CUDA0 buffer` (experts GPU-placed). Cause: the
+  fit pass aborts (`n_gpu_layers already set by user to 99`) and expert
+  placement then falls out of a fixed `ngl=99` attempt nondeterministically.
+- Unit-harness findings this round (all real, all logged):
+  - `max_locked_mb>0` selects the LAZY buft and grinds the sched-fed load
+    (60-67% CPU, RSS climbing past 12 GiB, no wrap). L1 profile must NOT
+    set it; the pinned arena (S2) replaces that tier.
+  - `n_cpu_moe=88` is remap-era cargo cult in this design: its override
+    path grinds identically. L1 profile: `n_cpu_moe = 0`.
+  - Engagement guard fired correctly during the ABRT loop (394 restarts
+    observed, message emitted every cycle).
+  - Tool-hygiene note: `pkill/pgrep -f` patterns that appear anywhere in
+    the same tool call's command line self-match (the wrapper carries the
+    plain binary name) - killed three sessions' worth of spawns. Kills go
+    through pidfiles only, in calls that do not spawn.
+- **S1 completion criteria (next session)**: make expert placement
+  deterministic under `mode=stream` - the fit pass must place oversize
+  expert tensors host-side (respect `mode=stream` as a placement constraint
+  instead of aborting on fixed `ngl=99`), or honor an explicit
+  `ngl_experts=host` style knob. Then: L1 oracle -> greedy n=3 -> 3x256
+  bench -> commit. Ladder continues at L2 (graphs measurement).

@@ -119,3 +119,26 @@ extends existing vitriol-stream (same license, PROVENANCE headers kept).
   instead of aborting on fixed `ngl=99`), or honor an explicit
   `ngl_experts=host` style knob. Then: L1 oracle -> greedy n=3 -> 3x256
   bench -> commit. Ladder continues at L2 (graphs measurement).
+- **2026-10-17 08:20 - S1 DONE. L1 VERIFIED CORRECT.** Root cause of the
+  placement lottery: the weak cross-DSO symbol (`vitriol_loader_stream_mode`)
+  silently fell back to false - routing never fired. Fixed by reading
+  `VITRIOL_MODE` directly in the loader (getenv, no linkage). Expert routing
+  now deterministic: 80/80 expert tensors -> vitriol buft, wrap binds 40.5 GiB
+  zero-copy, load <1.5 s through clean VRAM.
+  - L1 verification: oracle 391 PASS + full coherent reasoning; greedy
+    determinism 3/3 identical (sha 1b385ae83d); decode ~0.77 t/s (64-token
+    samples). The "corrupt empty content" scare was a reasoning-model
+    artifact: max_tokens=64 exhausts reasoning_content before content
+    renders (CPU-MoE control differed only via --reasoning off).
+  - Graphs exonerated earlier same day (VITRIOL_NO_GRAPHS=1: same empty
+    output = same reasoning artifact, 3/3 deterministic).
+  - Profile findings (L1 must NOT set these): `max_locked_mb>0` -> lazy
+    buft grinds the sched-fed load; `n_cpu_moe=88` -> override path grinds
+    identically. Both are remap-era remnants.
+  - Box state: Nemotron L1 serving on :8279 via manual launch (full unit
+    flag set + --reasoning off) - correct answers confirmed end to end.
+- **NEXT SESSION (opener, ~30 min)**: unit-env bisect. The unit harness
+  stalls where the manual harness (identical flags) loads - delta is the
+  exported env group (H1: LRU_MB=0 + empty LRU_MB_0/1 + STORE trio +
+  PREDICTIVE empty + DISK_OFFLOAD=0; MAX_LOCKED already ruled out). Then
+  L2 graphs measurement, then S3 arena+CE (Rust) per the ladder.

@@ -1,0 +1,55 @@
+# VITRIOL Configuration — Qwen3.8-27B Ultra-Dense Q3_K_XL, max native ctx
+# Native engine (dense model, no experts). ctx 262144 = full train context.
+# MTP off: MTP head + 262K KV is ~18.5 GiB and eats the margin on the 20 GB card.
+# Weights ~11.7 GiB + KV ~4.6 GiB @262K + compute ~0.5 GiB ≈ fits, but no slack.
+
+[gpu]
+device = 0
+exclude_secondary = false
+tensor_split =
+
+[model]
+path = /home/test/Downloads/Qwen3.8-27B-UD-Q3_K_XL.gguf
+context = 262144
+threads = 8
+ngl = 99
+expert_count = 0
+
+[vitriol]
+mode = stream
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8279
+parallel = 1
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+quant_mode = q4_0
+quant_mode_v = q4_0
+frozen_prompt = off
+ubatch_size = 128
+
+[engine]
+mode = native
+
+[lookup]
+tokens = 0
+
+[spec]
+type =
+draft_n_max = 0
+
+[chimera]
+mode = auto

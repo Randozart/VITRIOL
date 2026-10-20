@@ -1,0 +1,58 @@
+# VITRIOL Configuration — Qwen3.8-27B Ultra-Dense Q3_K_XL (native engine)
+# RTX 4000 SFF Ada 20 GB (sm_89), single GPU. This is the expert-merged ("UD")
+# dense variant: NO MoE expert tensors, so VITRIOL DMA expert offload is N/A —
+# engine.mode=native (plain llama.cpp), full 65/65-layer GPU offload.
+# Embedded MTP head (blk.64.nextn.*): spec.mtp with draft_n_max=1 (proven depth
+# for this arch family). KV q4_0/q4_0 keeps context cheap on the 20 GB card.
+# Weights ~11.7 GiB + MTP head ~1.2 GiB + KV ~2.3 GiB @131K + compute ~0.5 GiB.
+
+[gpu]
+device = 0
+exclude_secondary = false
+tensor_split =
+
+[model]
+path = /home/test/Downloads/Qwen3.8-27B-UD-Q3_K_XL.gguf
+context = 131072
+threads = 8
+ngl = 99
+expert_count = 0
+
+[vitriol]
+mode = stream
+lru_mb = 0
+verbose = false
+output_cache = off
+predictive_prefetch = off
+pin_first_n_layers = 0
+prune_experts = 0
+reasoning = off
+
+[server]
+host = 127.0.0.1
+port = 8279
+parallel = 1
+
+[memory]
+mode = off
+semantic_mode = off
+
+[kv]
+mode = standard
+quant_mode = q4_0
+quant_mode_v = q4_0
+frozen_prompt = off
+ubatch_size = 128
+
+[engine]
+mode = native
+
+[lookup]
+tokens = 0
+
+[spec]
+type = mtp
+draft_n_max = 1
+
+[chimera]
+mode = auto

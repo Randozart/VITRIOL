@@ -107,3 +107,64 @@ CPU tests).
 - CPU-only verification: inner rebuild compile check where cheap; the Rust
   crate gets `cargo build` + `cargo test` (pure logic, no CUDA).
 - Every benchmark/perf claim stays forbidden until the live A/B gate runs.
+
+---
+
+## Results log
+
+### S0 DONE (2026-10-23 12:30)
+- Inner `d6f9eb0fe`: committed the uncommitted VITRIOL_REMAP gate (outer
+  `8b0042e` had already claimed it; inner commit was missing).
+- Branches `stack-pull` created outer + inner.
+
+### S1 DONE (2026-10-23 13:05) - inner `102b80db2`
+Observability floor, all compile-verified (CPU build to 100%:
+llama + llama-server-impl; CUDA build of ggml-cuda.cu object OK):
+- `ttft_seconds` / `itl_seconds` / `queue_time_seconds` histograms
+  (10/25/50/100/250/500/1000/2000 ms buckets, prometheus `_sum`/`_count`)
+- `cache_reuse_lcp_bucket` reuse-depth series + `cache_reuse_lcp_zero_total`
+- `cache_hit_ratio` gauge, `sampling_time_seconds_total` / `sampling_calls_total`
+- CUDA-graph counters via `ggml_cuda_graph_stats()` (weak-symbol resolved;
+  zero with CPU-only/backend-DL builds) -> `graph_{captures,reuse,updates,evicts}_total`
+- `server_task.t_post` set at first post, survives deferral
+- ITL semantics: one sample per decode step; per MTP verify round when
+  drafting (tokens arrive together)
+- test: `test_metrics_latency_and_cache_observability` (structural, needs
+  server run - first GPU window)
+NOTE: CPU-only llama-server link fails in this fork independent of these
+changes (libllama references CUDA backend symbols unconditionally); all
+server TUs compiled clean.
+
+### S2 DONE (2026-10-23 13:10) - inner `31bfe305d`
+Grammar parse cache: process-wide LRU (16 entries) keyed
+(vocab ptr, root, text); hit path skips parse + validation +
+left-recursion detection; per-request stacks/triggers still fresh.
+libllama build green.
+
+### S3 DONE (2026-10-23 13:15) - inner `30b128504`
+Prompt-cache touch-LRU (was FIFO) in update() + alloc() make-room;
+entries carry n_hits/t_last_hit, shown in /cache; VITRIOL_CACHE_KEEP=1
+opt-in keeps blob+tokens resident on restore (identical resend = pure
+hit); default stays consume-on-load for OOM discipline. alloc()
+containment skip prevents duplicate kept entries.
+
+### S4 DONE (2026-10-23 13:20) - outer `bad8a4e`
+cache_reuse was ALREADY fully wired (parse -> CACHE_REUSE ->
+--cache-reuse -> creuse= fingerprint; exploration snapshot stale).
+Added: bless-path `creuse=` parity in config_fingerprint +
+VITRIOL_LLGUIDANCE=1 build opt-in (cargo-gated, default off).
+
+### S5 DONE (2026-10-23 13:30) - outer `3c3d668`
+vitriol-cache crate: radix trie (deepest-ancestor match, edge split,
+pin+recency eviction) + Megiddo-Modha ARC + panic-free C ABI
+(vc_* / vc_arc_*). cargo test 17/17 green (CPU-only). NOT wired into
+the server yet by design.
+
+## Deferred to first GPU window (in order)
+1. Wire vitriol-cache into server_prompt_cache (index+eviction; ARC for
+   disk mirror) behind an env gate; identical-resend + branch-fork +
+   restart-warm live gates.
+2. Run new metrics unit test + read a real agent-loop trace off the
+   TTFT/ITL/LCP/grammar-time series.
+3. VITRIOL_CACHE_KEEP=1 A/B vs consume-on-load (host RAM headroom).
+4. Then P3 jump-forward, P4 priority+graphs per plan above.

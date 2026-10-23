@@ -66,7 +66,7 @@ user_sysctl daemon-reload 2>/dev/null || true
 echo "==> [C] system-scope units"
 cat > /etc/systemd/system/$UNIT <<EOF
 [Unit]
-Description=VITRIOL llama-server (Lapis Occultus, dual-slot) — SYSTEM scope
+Description=VITRIOL server (vitriol-server, Lapis Occultus) — SYSTEM scope
 Wants=$AUTO
 
 [Service]
@@ -133,7 +133,7 @@ sleep 6
 echo "system engine: $(systemctl is-active $UNIT)"
 echo "system sidecar: $(systemctl is-active $AUTO)"
 echo "user units: $(user_sysctl is-active $UNIT $AUTO 2>/dev/null | tr '\n' ' ')"
-EP=$(pgrep -f "llama-server -m" | head -1)
+EP=$(pgrep -f "(vitriol-server|llama-server) -m" | head -1)
 if [ -n "$EP" ]; then
   ADJ="$(cat /proc/$EP/oom_score_adj)"
   CG="$(cat /proc/$EP/cgroup)"

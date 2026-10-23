@@ -28,6 +28,9 @@ pub fn log(msg: &str) {
 
 pub fn engine_pids(unit: &str) -> (HashSet<u32>, bool) {
     let mut pids = pids_from_unit(unit);
+    // vitriol-server is the shipped name (monorepo 2026-10-23);
+    // llama-server accepted until the transition window closes
+    pids.extend(crate::observe::pids_by_comm("vitriol-server"));
     pids.extend(crate::observe::pids_by_comm("llama-server"));
     let up = !pids.is_empty();
     (pids, up)

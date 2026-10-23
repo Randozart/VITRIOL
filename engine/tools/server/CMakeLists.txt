@@ -57,10 +57,13 @@ if(LLAMA_TOOLS_INSTALL)
 endif()
 
 # llama-server executable
+# VITRIOL: shipped as `vitriol-server` (monorepo rename 2026-10-23); the
+# CMake target keeps the upstream name so scripts/builds stay compatible.
 
 set(TARGET llama-server)
 
 add_executable(${TARGET} main.cpp)
+set_target_properties(${TARGET} PROPERTIES OUTPUT_NAME vitriol-server)
 install(TARGETS ${TARGET} RUNTIME)
 
 target_link_libraries(${TARGET} PRIVATE llama-server-impl)

@@ -283,15 +283,18 @@ def save_idle(last_sig):
 
 
 def server_pid():
-    """Current llama-server PID or None. Used as a generation signal: a new
+    """Current engine PID or None. Used as a generation signal: a new
     PID means the server restarted (e.g. systemd resurrected it post-OOM)
-    and disk checkpoints should be replayed into the fresh instance."""
+    and disk checkpoints should be replayed into the fresh instance.
+    vitriol-server is the shipped name (monorepo 2026-10-23); llama-server
+    is accepted until the transition window closes."""
+    names = {"vitriol-server", "llama-server"}
     for p in os.listdir("/proc"):
         if not p.isdigit():
             continue
         try:
             with open(f"/proc/{p}/comm") as f:
-                if f.read().strip() == "llama-server":
+                if f.read().strip() in names:
                     return int(p)
         except Exception:
             continue
@@ -393,8 +396,8 @@ def main():
 
 
 PROTECTED = {
-    "llama-server", "hermes", "lull_slot_persist", "vitriol-tui",
-    "systemd", "python3",
+    "vitriol-server", "llama-server", "hermes", "lull_slot_persist",
+    "vitriol-tui", "systemd", "python3",
 }
 # machine-specific extras (e.g. "firefox,opencode") without editing the file
 PROTECTED.update(

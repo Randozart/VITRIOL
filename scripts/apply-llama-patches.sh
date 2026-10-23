@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# DEPRECATED (2026-10-23 monorepo import): the engine lives in-tree at
+# engine/ - patches no longer apply; VITRIOL sources are already present.
+# Kept only for reference/rollback to the submodule era.
 # Apply VITRIOL patches to llama.cpp submodule
 # Usage: ./scripts/apply-llama-patches.sh [llama.cpp directory]
 

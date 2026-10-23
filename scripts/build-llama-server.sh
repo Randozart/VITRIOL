@@ -43,7 +43,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-LLAMA_DIR="${LLAMA_DIR:-$VITRIOL_ROOT/llama.cpp}"
+# VITRIOL monorepo (2026-10-23): engine lives in-tree at engine/.
+# VITRIOL_ENGINE_DIR is the canonical env; VITRIOL_LLAMA_DIR still honored.
+ENGINE_DIR="${VITRIOL_ENGINE_DIR:-${VITRIOL_LLAMA_DIR:-$VITRIOL_ROOT/engine}}"
+LLAMA_DIR="$ENGINE_DIR"
 BUILD_DIR="$LLAMA_DIR/build"
 
 if [ ! -d "$LLAMA_DIR" ]; then
@@ -173,6 +176,14 @@ fi
 echo "CMake args: $CMAKE_ARGS"
 cmake .. $CMAKE_ARGS
 make -j"$(nproc)" llama-server
+
+# VITRIOL: the CMake target is llama-server but the binary ships as
+# vitriol-server (OUTPUT_NAME). Keep a llama-server symlink so path-based
+# scripts and any external tooling keep working during the transition.
+if [ -f "$BUILD_DIR/bin/vitriol-server" ]; then
+    ln -sf vitriol-server "$BUILD_DIR/bin/llama-server"
+    echo "Compat symlink: $BUILD_DIR/bin/llama-server -> vitriol-server"
+fi
 echo ""
 echo "Build complete."
 echo "Server: $BUILD_DIR/bin/llama-server"

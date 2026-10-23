@@ -121,3 +121,4 @@ vitriol-gpu-rs/*.ptx
 vitriol-gpu-rs/*.ll
 vitriol-gpu-rs/*.ltoir
 vitriol-gpu-rs/*.cubin
+/llama.cpp

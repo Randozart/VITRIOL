@@ -13,6 +13,7 @@ echo "[watchdog] guarding http://127.0.0.1:${PORT} every ${INTERVAL}s"
 while true; do
     if ! curl -sf -m 5 "http://127.0.0.1:${PORT}/health" | grep -q '"ok"'; then
         echo "[watchdog $(date '+%F %T')] unhealthy — restarting server"
+        killall -9 vitriol-server 2>/dev/null
         killall -9 llama-server 2>/dev/null
         sleep 2
         export VITRIOL_KV_SCORE="${VITRIOL_KV_SCORE:-probe}"

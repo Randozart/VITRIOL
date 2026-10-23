@@ -12,9 +12,14 @@ set -euo pipefail
 # ── paths ────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LLAMA_DIR="${PROJECT_DIR}/llama.cpp"
-BINARY="${LLAMA_DIR}/build/bin/llama-cli"
-SERVER_BINARY="${LLAMA_DIR}/build/bin/llama-server"
+# VITRIOL monorepo (2026-10-23): engine lives in-tree at engine/.
+ENGINE_DIR="${VITRIOL_ENGINE_DIR:-${VITRIOL_LLAMA_DIR:-${PROJECT_DIR}/engine}}"
+LLAMA_DIR="$ENGINE_DIR"
+BINARY="${ENGINE_DIR}/build/bin/llama-cli"
+# shipped as vitriol-server (CMake OUTPUT_NAME); llama-server is the
+# transition symlink built by scripts/build-llama-server.sh
+SERVER_BINARY="${ENGINE_DIR}/build/bin/vitriol-server"
+[[ -x "$SERVER_BINARY" ]] || SERVER_BINARY="${ENGINE_DIR}/build/bin/llama-server"
 
 # Sparse-KV guard (context lifecycle 2026-09-03): a config that requests
 # kv.mode=sparse against an engine built WITHOUT the lull KV code would
@@ -1675,7 +1680,7 @@ fix_rpath() {
     fi
     echo "→ Fixing RUNPATH in $dir (replacing \$ORIGIN with absolute path)"
     local count=0
-    for f in "$dir"/llama-server "$dir"/llama-cli "$dir"/llama-bench "$dir"/lib*.so*; do
+    for f in "$dir"/vitriol-server "$dir"/llama-server "$dir"/llama-cli "$dir"/llama-bench "$dir"/lib*.so*; do
         [[ -f "$f" ]] || continue
         if patchelf --set-rpath "$dir" "$f" 2>/dev/null; then
             count=$((count + 1))
@@ -2538,7 +2543,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ "${REASONING}" == "off" ]] && echo "  Reasoning:    off (Qwen3.6 mode)"
         if [[ "$MEMORY_MODE" == "on" ]]; then
             LLAMA_PORT=$((PORT - 1))
-            echo "  Server:      http://${HOST}:${LLAMA_PORT} (llama-server, internal)"
+            echo "  Server:      http://${HOST}:${LLAMA_PORT} (vitriol-server, internal)"
             echo "  Proxy:       http://${HOST}:${PORT} (VITRIOL shim, memory intercept)"
         else
             echo "  Server:      http://${HOST}:${PORT}"
@@ -2700,8 +2705,8 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
 $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASONING_ARGS $CKPT_ARGS $CKPTS_ARGS $CACHE_ARGS $CPU_MOE_ARGS \
                             "$@" &>"$GEN_LOG" &
                             printf '%s\n' "$FINGERPRINT" >> "$GEN_LOG"
-                echo $! > "${CONFIG_DIR}/llama-server.pid"
-                echo "  llama-server PID: $! (internal port $LLAMA_PORT)"
+                echo $! > "${CONFIG_DIR}/vitriol-server.pid"
+                echo "  vitriol-server PID: $! (internal port $LLAMA_PORT)"
 
                 # Start Python shim on external port
                 env \
@@ -2984,7 +2989,9 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         fi
 
         # Stop llama-server (internal port in memory mode, or standard)
-        LLAMA_PID_FILE="${CONFIG_DIR}/llama-server.pid"
+        # new name first, legacy pidfile (pre-monorepo engine) as fallback
+        LLAMA_PID_FILE="${CONFIG_DIR}/vitriol-server.pid"
+        [[ -f "$LLAMA_PID_FILE" ]] || LLAMA_PID_FILE="${CONFIG_DIR}/llama-server.pid"
         if [[ -f "$LLAMA_PID_FILE" ]]; then
             PID=$(cat "$LLAMA_PID_FILE")
             echo "→ Stopping llama-server (PID $PID)..."

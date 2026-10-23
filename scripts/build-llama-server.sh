@@ -157,10 +157,22 @@ case "$BACKEND" in
         ;;
 esac
 
+# VITRIOL stack-pull S4: opt-in llguidance backend for structured output.
+# VITRIOL_LLGUIDANCE=1 adds -DLLAMA_LLGUIDANCE=ON; requires cargo (the
+# ExternalProject builds llguidance from source). Default off - the GBNF
+# path stays the shipped default.
+if [ "${VITRIOL_LLGUIDANCE:-0}" = "1" ]; then
+    if ! command -v cargo &>/dev/null; then
+        echo "Error: VITRIOL_LLGUIDANCE=1 needs cargo on PATH"
+        exit 1
+    fi
+    CMAKE_ARGS="$CMAKE_ARGS -DLLAMA_LLGUIDANCE=ON"
+    echo "llguidance: ON (structured output via guidance-ai/llguidance)"
+fi
+
 echo "CMake args: $CMAKE_ARGS"
 cmake .. $CMAKE_ARGS
 make -j"$(nproc)" llama-server
-
 echo ""
 echo "Build complete."
 echo "Server: $BUILD_DIR/bin/llama-server"

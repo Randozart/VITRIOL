@@ -131,6 +131,7 @@ config_fingerprint() {
         "${CFG_KV_MODE}" "${CFG_KV_SCORE:-off}" "0" \
         "${CFG_SPEC_TYPE:-none}" "${CFG_SPEC_DRAFT_N_MAX:-0}" "${CFG_PARALLEL:-1}")
     [[ "${CFG_SPEC_ADAPTIVE_K:-0}" == "1" ]] && fp="$fp specak=1"
+    [[ -n "${CFG_CACHE_REUSE:-}" && "${CFG_CACHE_REUSE:-0}" != "0" ]] && fp="$fp creuse=$CFG_CACHE_REUSE"
     # Mirror the serve path's conditional fields so blessed-vs-launch
     # diffs stay clean (only REAL differences show up).
     [[ -n "${CFG_RPC_SERVERS:-}" ]] && fp="$fp rpc=$CFG_RPC_SERVERS"

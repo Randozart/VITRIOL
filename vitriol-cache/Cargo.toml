@@ -1,0 +1,12 @@
+[package]
+name = "vitriol-cache"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "Radix prefix index + ARC eviction for the VITRIOL prompt cache (policy brain; C++ owns the KV bytes)"
+
+[lib]
+name = "vitriol_cache"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]

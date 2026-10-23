@@ -1,0 +1,13 @@
+# clangd (clang 22) cannot parse C++26 contract syntax (P2900 pre/post) and
+# rejects GCC 16's -fcontract flags from compile_commands.json. Neuter both
+# for clangd only. Real builds (g++ 16.2, -fcontracts) are unaffected: this
+# file is never consulted by the compiler.
+# Docs: docs/cpp26-conventions.md. Remove this file when clangd gains
+# P2900 support.
+If:
+  PathMatch:
+    - ggml/src/ggml-cuda/vitriol-.*\.cpp
+    - ggml/src/ggml-cuda/vitriol-.*\.h
+CompileFlags:
+  Remove: [-fcontract*]
+  Add: [-Dpre(x)=]

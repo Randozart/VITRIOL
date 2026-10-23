@@ -1,0 +1,46 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint n_embd;
+    uint hc;
+    uint n_tokens;
+    uint sx0;  // nbx0 / sizeof(float)
+    uint sx1;  // nbx1 / sizeof(float)
+    uint sr0;  // nbr0 / sizeof(float)
+    uint sr1;  // nbr1 / sizeof(float)
+    uint sr2;  // nbr2 / sizeof(float)
+    uint sp0;  // nbp0 / sizeof(float)
+    uint sp1;  // nbp1 / sizeof(float)
+    uint sc0;  // nbc0 / sizeof(float)
+    uint sc1;  // nbc1 / sizeof(float)
+    uint sc2;  // nbc2 / sizeof(float)
+    uint sd0;  // nbd0 / sizeof(float)
+    uint sd1;  // nbd1 / sizeof(float)
+    uint sd2;  // nbd2 / sizeof(float)
+};
+
+layout(binding = 0) readonly  buffer XBuf        { float x[];        };
+layout(binding = 1) readonly  buffer ResidualBuf  { float residual[];  };
+layout(binding = 2) readonly  buffer PostBuf      { float post[];      };
+layout(binding = 3) readonly  buffer CombBuf      { float comb[];      };
+layout(binding = 4)           buffer DstBuf       { float dst[];       };
+
+void main() {
+    const uint ir = gl_GlobalInvocationID.x;
+    const uint nr = n_embd * hc * n_tokens;
+
+    if (ir >= nr) return;
+
+    const uint i0   = ir % n_embd;
+    const uint idst = (ir / n_embd) % hc;
+    const uint it   = ir / (n_embd * hc);
+
+    float sum = x[i0 * sx0 + it * sx1] * post[idst * sp0 + it * sp1];
+    for (uint isrc = 0u; isrc < hc; ++isrc) {
+        sum += residual[i0 * sr0 + isrc * sr1 + it * sr2] * comb[idst * sc0 + isrc * sc1 + it * sc2];
+    }
+
+    dst[i0 * sd0 + idst * sd1 + it * sd2] = sum;
+}

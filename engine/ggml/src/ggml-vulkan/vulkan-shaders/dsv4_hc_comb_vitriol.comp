@@ -1,0 +1,95 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+const uint HC = 4u;
+
+layout(push_constant) uniform PushConstants {
+    uint n_tokens;
+    uint sm0;  // nbm0 / sizeof(float)
+    uint sm1;  // nbm1 / sizeof(float)
+    uint ss0;  // nbs0 / sizeof(float)
+    uint sb0;  // nbb0 / sizeof(float)
+    uint sd0;  // nbd0 / sizeof(float)
+    uint sd1;  // nbd1 / sizeof(float)
+    uint sd2;  // nbd2 / sizeof(float)
+    float eps;
+    uint n_iter;
+};
+
+layout(binding = 0) readonly  buffer MixesBuf { float mixes[]; };
+layout(binding = 1) readonly  buffer ScaleBuf { float scale[]; };
+layout(binding = 2) readonly  buffer BaseBuf  { float base[];  };
+layout(binding = 3)           buffer DstBuf   { float dst[];   };
+
+void norm_cols(inout float comb[16]) {
+    for (uint idst = 0u; idst < HC; ++idst) {
+        float sum = eps;
+        for (uint isrc = 0u; isrc < HC; ++isrc) {
+            sum += comb[idst + HC * isrc];
+        }
+        const float inv_sum = 1.0 / sum;
+        for (uint isrc = 0u; isrc < HC; ++isrc) {
+            comb[idst + HC * isrc] *= inv_sum;
+        }
+    }
+}
+
+void norm_rows(inout float comb[16]) {
+    for (uint isrc = 0u; isrc < HC; ++isrc) {
+        float sum = eps;
+        for (uint idst = 0u; idst < HC; ++idst) {
+            sum += comb[idst + HC * isrc];
+        }
+        const float inv_sum = 1.0 / sum;
+        for (uint idst = 0u; idst < HC; ++idst) {
+            comb[idst + HC * isrc] *= inv_sum;
+        }
+    }
+}
+
+void main() {
+    const uint it = gl_GlobalInvocationID.x;
+    if (it >= n_tokens) return;
+
+    const uint comb_offset = 2u * HC;
+    const float scale_comb = scale[2u * ss0];
+
+    float comb[16];
+
+    for (uint isrc = 0u; isrc < HC; ++isrc) {
+        float max_val = -1.0 / 0.0;
+        for (uint idst = 0u; idst < HC; ++idst) {
+            const uint idx = idst + HC * isrc;
+            const float v = mixes[(comb_offset + idx) * sm0 + it * sm1] * scale_comb + base[(comb_offset + idx) * sb0];
+            comb[idx] = v;
+            max_val = max(max_val, v);
+        }
+
+        float sum = 0.0;
+        for (uint idst = 0u; idst < HC; ++idst) {
+            const uint idx = idst + HC * isrc;
+            const float v = exp(comb[idx] - max_val);
+            comb[idx] = v;
+            sum += v;
+        }
+
+        const float inv_sum = 1.0 / sum;
+        for (uint idst = 0u; idst < HC; ++idst) {
+            const uint idx = idst + HC * isrc;
+            comb[idx] = comb[idx] * inv_sum + eps;
+        }
+    }
+
+    norm_cols(comb);
+    for (uint i = 1u; i < n_iter; ++i) {
+        norm_rows(comb);
+        norm_cols(comb);
+    }
+
+    for (uint isrc = 0u; isrc < HC; ++isrc) {
+        for (uint idst = 0u; idst < HC; ++idst) {
+            dst[idst * sd0 + isrc * sd1 + it * sd2] = comb[idst + HC * isrc];
+        }
+    }
+}

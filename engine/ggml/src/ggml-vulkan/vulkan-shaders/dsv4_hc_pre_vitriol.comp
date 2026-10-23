@@ -1,0 +1,37 @@
+#version 450
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform PushConstants {
+    uint n_embd;
+    uint hc;
+    uint n_tokens;
+    uint sx0; // nbx0 / sizeof(float)
+    uint sx1; // nbx1 / sizeof(float)
+    uint sx2; // nbx2 / sizeof(float)
+    uint sw0; // nbw0 / sizeof(float)
+    uint sw1; // nbw1 / sizeof(float)
+    uint sd0; // nbd0 / sizeof(float)
+    uint sd1; // nbd1 / sizeof(float)
+};
+
+layout(binding = 0) readonly  buffer XBuf       { float x[];       };
+layout(binding = 1) readonly  buffer WeightsBuf { float weights[]; };
+layout(binding = 2)           buffer DstBuf     { float dst[];     };
+
+void main() {
+    const uint ir = gl_GlobalInvocationID.x;
+    const uint nr = n_embd * n_tokens;
+
+    if (ir >= nr) return;
+
+    const uint i0 = ir % n_embd;
+    const uint it = ir / n_embd;
+
+    float sum = x[i0 * sx0 + it * sx2] * weights[it * sw1];
+    for (uint ih = 1; ih < hc; ++ih) {
+        sum += x[i0 * sx0 + ih * sx1 + it * sx2] * weights[ih * sw0 + it * sw1];
+    }
+
+    dst[i0 * sd0 + it * sd1] = sum;
+}

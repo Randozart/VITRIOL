@@ -25,7 +25,7 @@ must stay OUT of the ggml-cuda source GLOB.
 
 2. **CAP_IPC_LOCK is optional on this host**: CUDA pinned allocations do not count against RLIMIT_MEMLOCK; all 2026-08-24 certifications ran uncapped. `scripts/build-llama-server.sh` reapplies caps best-effort after builds; `sudo vitriol setup` remains for hosts where mlock fails. Never pass `--ctx-checkpoints 0` (heap corruption) or `--cache-ram 0` (no readiness).
 
-3. **Always kill stale servers** with `killall -9 llama-server` before starting a new one.
+3. **Always kill stale servers** with `killall -9 vitriol-server` (legacy name `llama-server` accepted during the monorepo transition) before starting a new one.
 
    **OOM discipline (2026-09-04)**: the engine's host-memory reservoir
    made it the system's OOM-kill kingpin (5 kills in one day) — a
@@ -59,9 +59,17 @@ must stay OUT of the ggml-cuda source GLOB.
 
 ## Code Conventions
 
-- This is a fork of `ggml-org/llama.cpp` with VITRIOL modifications. **`main` is the canonical daily-driver branch in BOTH repos** (consolidated 2026-09-01 — see `.opencode/plans/branch-consolidation-2026-09-01.md`). Outer repo: all feature work lives on `main` (was `officina`). Inner fork (`llama.cpp/`): `main` is the live line ported onto ggml-org upstream (was `vitriol-ku`); `vitriol` is the frozen pre-port archive, `master` tracks the fork's published state. **lull-kv (probe-scored sparse KV) was ported from the `VITRIOL-lull` worktree to `main` 2026-09-22** (inner commits 6f9316128 + d86cdbb59 + fa7a75f4e) — `VITRIOL-lull` is now historical; do not branch feature work there.
-- The VITRIOL predictor is in `ggml/src/ggml-cuda/vitriol-cuda-integration.cpp`.
-- The server context checkpoint logic is in `tools/server/server-context.cpp`.
+- **`main` is the canonical branch of this monorepo.** The engine is no
+  longer a submodule: since 2026-10-23 the llama.cpp fork lives in-tree at
+  `engine/` (imported at fork commit `30b128504`, upstream sync FROZEN -
+  see `docs/ENGINE_PROVENANCE.md`). The old fork repo
+  (`Randozart/llama.cpp`, branches `main`/`vitriol`/`master`) is an
+  archived read-only record; do not commit there. Engine work happens on
+  outer branches touching `engine/`. The VITRIOL predictor is in
+  `engine/ggml/src/ggml-cuda/vitriol-cuda-integration.cpp`; the server
+  context checkpoint logic is in `engine/tools/server/server-context.cpp`;
+  the server binary ships as `vitriol-server` (CMake target
+  `llama-server`, compat symlink in `engine/build/bin/`).
 - All VITRIOL env vars are prefixed with `VITRIOL_`.
 - **Sidebar-refresh contract (2026-09-04)**: any extension whose TOOL mutates sidebar-visible state (task list, scratchpad — anything surfaced by session-panel's `registerSidebarSection`) MUST call `requestSidebarUpdate()` (from `_shared/sidebar.ts`) after persisting. The `emitHarnessEvent` records are a passive audit log — they never signal the sidebar. Regression test: `.pi/extensions/task-state/sidebar-refresh.test.ts`.
 - **Cross-extension state contract (2026-09-06) — jiti isolation**: pi loads EVERY `-e` extension through a **separate jiti instance** with `moduleCache: false` (pi `loader.js:325-332`). Module-level state does **not** cross extension boundaries — three silent bugs came from exactly this (stale sidebar listener Set; task/scratchpad session-file paths updated in one instance while session-panel's imported getters read another; three parallel engine pollers). Rule: any module-level mutable that crosses an extension boundary MUST be a `globalThis`-backed singleton (pattern: `__officina*State` — see `_shared/sidebar.ts`, `_shared/engine.ts`, task-state, scratchpad, skill-inject, knowledge-inject). Guard: `.pi/extensions/_shared/jiti-isolation.test.ts` loads two jiti instances and asserts the contracts — new cross-extension state gets a test there.
@@ -135,9 +143,11 @@ switches models. Sensitive/confidential turns never reach the cloud.
 
 ## Licensing and Provenance (Apache-2.0 OR MIT)
 
-VITRIOL and its llama.cpp fork are dual-licensed under the
-**Apache License 2.0 OR the MIT License** (SPDX: `Apache-2.0 OR MIT`; see
-`LICENSE` and `LICENSE-MIT`). Downstream recipients choose either term.
+VITRIOL (monorepo, including the in-tree `engine/` fork) is dual-licensed
+under the **Apache License 2.0 OR the MIT License** (SPDX:
+`Apache-2.0 OR MIT`; see `LICENSE` and `LICENSE-MIT`; upstream MIT text
+retained at `engine/LICENSE`, attribution in `NOTICE`). Downstream
+recipients choose either term.
 History: GPL-2.0 → Apache-2.0 on 2026-08-28; dual Apache-2.0/MIT from
 2026-08-31 (both repos are owned by the same author; no external contributors
 are affected). `officina/package.json` carries the same SPDX expression.

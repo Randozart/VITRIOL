@@ -145,7 +145,7 @@ cd0a472 phase1: complete with semantic search
 
 ## Critical Gotchas for Agents
 
-1. **The patched llama.cpp is a git submodule.** C++ changes live inside `llama.cpp/` and are tracked as submodule commits. After modifying C++, rebuild with: `cd llama.cpp && cmake --build build -j$(nproc)`
+1. **The engine is an in-tree directory, not a submodule** (since 2026-10-23 the llama.cpp fork lives at `engine/`, upstream frozen - see `docs/ENGINE_PROVENANCE.md`). C++ changes are normal monorepo commits under `engine/`. Rebuild with: `cmake --build engine/build -j$(nproc) --target llama-server` (binary ships as `vitriol-server`).
 
 2. **`libvitriol/types.py` was renamed to `vitriol_types.py`** to avoid shadowing Python stdlib `types` module. Don't recreate `types.py`.
 

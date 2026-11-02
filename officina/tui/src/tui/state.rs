@@ -19,7 +19,11 @@ pub enum ToolVerbosity {
 }
 
 impl ToolVerbosity {
-    pub const ALL: [ToolVerbosity; 3] = [ToolVerbosity::Line, ToolVerbosity::Block, ToolVerbosity::Full];
+    pub const ALL: [ToolVerbosity; 3] = [
+        ToolVerbosity::Line,
+        ToolVerbosity::Block,
+        ToolVerbosity::Full,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -39,11 +43,19 @@ impl ToolVerbosity {
     }
 
     pub fn max(self, other: ToolVerbosity) -> ToolVerbosity {
-        if self > other { self } else { other }
+        if self > other {
+            self
+        } else {
+            other
+        }
     }
 
     pub fn min(self, other: ToolVerbosity) -> ToolVerbosity {
-        if self < other { self } else { other }
+        if self < other {
+            self
+        } else {
+            other
+        }
     }
 }
 
@@ -97,7 +109,11 @@ impl ToolOverride {
 }
 
 /// Resolve effective tool verbosity given global default + per-tool overrides.
-pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMap<String, ToolOverride>) -> ToolVerbosity {
+pub fn effective_mode(
+    tool_name: &str,
+    global: ToolVerbosity,
+    overrides: &HashMap<String, ToolOverride>,
+) -> ToolVerbosity {
     match overrides.get(tool_name) {
         None => global,
         Some(o) => match o.strictness {
@@ -108,85 +124,119 @@ pub fn effective_mode(tool_name: &str, global: ToolVerbosity, overrides: &HashMa
     }
 }
 
-    /// Known pi tool names for the modal picker.
-    pub const KNOWN_TOOLS: &[&str] = &["bash", "read", "write", "edit", "find", "grep", "ls"];
+/// Known pi tool names for the modal picker.
+pub const KNOWN_TOOLS: &[&str] = &["bash", "read", "write", "edit", "find", "grep", "ls"];
 
-    // ── /help modal (owner request 2026-09-03) ───────────────────────────
+// ── /help modal (owner request 2026-09-03) ───────────────────────────
 
-    /// Sidebar glossary — every row explained. DRIFT GUARD (standing rule,
-    /// plan officina-sidebar-declutter-help-2026-09-03): keep in sync with
-    /// officina/.pi/extensions/session-panel/index.ts — any sidebar content
-    /// change must touch this up.
-    pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
-        ("◈ <name>", "coupling — the engine endpoint identity (gold anchor)"),
-        ("ctx", "context window fill: tokens used / window size + percent"),
-        ("eng", "live engine rate (tok/s / idle); 'N decoded this boot' = engine decode total"),
-        ("[>] n / [ ] n", "plan checklist: tasks in progress / open"),
-        ("n done", "plan checklist: completed tasks"),
-        ("note", "scratchpad: N facts · N leads · N dead ends, lines used/cap"),
-        ("files: +n −n", "recently touched files: lines added / deleted"),
-        ("↑ ↓", "session tokens: prompt tokens in / generated out"),
-        ("turns", "your prompts this session"),
-        ("tools", "recently used tools"),
-        ("ref · n injected", "knowledge documents injected into context"),
-        ("header center", "the model id behind this session"),
-        ("header right", "session name or id @ working folder"),
-        ("silver column", "quicksilver scroll gauge — fills as you scroll up"),
-        ("gauge colors", "teal = ctx fill · silver = idle · green/cyan = decoding"),
-    ];
+/// Sidebar glossary — every row explained. DRIFT GUARD (standing rule,
+/// plan officina-sidebar-declutter-help-2026-09-03): keep in sync with
+/// officina/.pi/extensions/session-panel/index.ts — any sidebar content
+/// change must touch this up.
+pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
+    (
+        "◈ <name>",
+        "coupling — the engine endpoint identity (gold anchor)",
+    ),
+    (
+        "ctx",
+        "context window fill: tokens used / window size + percent",
+    ),
+    (
+        "eng",
+        "live engine rate (tok/s / idle); 'N decoded this boot' = engine decode total",
+    ),
+    ("[>] n / [ ] n", "plan checklist: tasks in progress / open"),
+    ("n done", "plan checklist: completed tasks"),
+    (
+        "note",
+        "scratchpad: N facts · N leads · N dead ends, lines used/cap",
+    ),
+    (
+        "files: +n −n",
+        "recently touched files: lines added / deleted",
+    ),
+    ("↑ ↓", "session tokens: prompt tokens in / generated out"),
+    ("turns", "your prompts this session"),
+    ("tools", "recently used tools"),
+    (
+        "ref · n injected",
+        "knowledge documents injected into context",
+    ),
+    ("header center", "the model id behind this session"),
+    ("header right", "session name or id @ working folder"),
+    (
+        "silver column",
+        "quicksilver scroll gauge — fills as you scroll up",
+    ),
+    (
+        "gauge colors",
+        "teal = ctx fill · silver = idle · green/cyan = decoding",
+    ),
+];
 
-    /// /help key reference.
-    pub const HELP_KEYS: &[(&str, &str)] = &[
-        ("enter", "send the message"),
-        ("tab", "autocomplete / cycle agent mode"),
-        ("esc", "abort streaming · close overlays — NEVER quits"),
-        ("drag", "select transcript text (left button across the chat)"),
-        ("^c", "copy — the selection, or the last reply"),
-        ("^esc", "quit (the only quit chord — /quit also works)"),
-        ("pgup/pgdn", "scroll back through history (wheel = 3 rows)"),
-        ("home/end", "oldest line / live tail (when the input is empty)"),
-        ("^v", "cycle tool verbosity (line/block/full)"),
-        ("^t", "tool verbosity picker"),
-        ("F9", "stderr diagnostics overlay"),
-        ("F1", "this help"),
-    ];
+/// /help key reference.
+pub const HELP_KEYS: &[(&str, &str)] = &[
+    ("enter", "send the message"),
+    ("tab", "autocomplete / cycle agent mode"),
+    ("esc", "abort streaming · close overlays — NEVER quits"),
+    (
+        "drag",
+        "select transcript text (left button across the chat)",
+    ),
+    ("^c", "copy — the selection, or the last reply"),
+    ("^esc", "quit (the only quit chord — /quit also works)"),
+    ("pgup/pgdn", "scroll back through history (wheel = 3 rows)"),
+    (
+        "home/end",
+        "oldest line / live tail (when the input is empty)",
+    ),
+    ("^v", "cycle tool verbosity (line/block/full)"),
+    ("^t", "tool verbosity picker"),
+    ("F9", "stderr diagnostics overlay"),
+    ("F1", "this help"),
+];
 
-    /// One /help modal line. Header rows render as gold section titles;
-    /// item rows as `left` (cyan, fixed width) + `right` (text).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum HelpRowKind {
-        Header,
-        Item,
+/// One /help modal line. Header rows render as gold section titles;
+/// item rows as `left` (cyan, fixed width) + `right` (text).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpRowKind {
+    Header,
+    Item,
+}
+
+#[derive(Debug, Clone)]
+pub struct HelpRow {
+    pub kind: HelpRowKind,
+    pub left: String,
+    pub right: String,
+}
+
+/// The full /help content: sidebar glossary, keys, then every local
+/// command (rendered FROM LOCAL_COMMANDS so it cannot drift).
+pub fn help_rows() -> Vec<HelpRow> {
+    let mut rows: Vec<HelpRow> = Vec::new();
+    let mut push = |kind: HelpRowKind, left: &str, right: &str| {
+        rows.push(HelpRow {
+            kind,
+            left: left.to_string(),
+            right: right.to_string(),
+        });
+    };
+    push(HelpRowKind::Header, "SIDEBAR", "");
+    for (l, r) in SIDEBAR_GLOSSARY {
+        push(HelpRowKind::Item, l, r);
     }
-
-    #[derive(Debug, Clone)]
-    pub struct HelpRow {
-        pub kind: HelpRowKind,
-        pub left: String,
-        pub right: String,
+    push(HelpRowKind::Header, "KEYS", "");
+    for (l, r) in HELP_KEYS {
+        push(HelpRowKind::Item, l, r);
     }
-
-    /// The full /help content: sidebar glossary, keys, then every local
-    /// command (rendered FROM LOCAL_COMMANDS so it cannot drift).
-    pub fn help_rows() -> Vec<HelpRow> {
-        let mut rows: Vec<HelpRow> = Vec::new();
-        let mut push = |kind: HelpRowKind, left: &str, right: &str| {
-            rows.push(HelpRow { kind, left: left.to_string(), right: right.to_string() });
-        };
-        push(HelpRowKind::Header, "SIDEBAR", "");
-        for (l, r) in SIDEBAR_GLOSSARY {
-            push(HelpRowKind::Item, l, r);
-        }
-        push(HelpRowKind::Header, "KEYS", "");
-        for (l, r) in HELP_KEYS {
-            push(HelpRowKind::Item, l, r);
-        }
-        push(HelpRowKind::Header, "COMMANDS", "");
-        for (name, _short, long) in AppState::LOCAL_COMMANDS {
-            push(HelpRowKind::Item, &format!("/{name}"), long);
-        }
-        rows
+    push(HelpRowKind::Header, "COMMANDS", "");
+    for (name, _short, long) in AppState::LOCAL_COMMANDS {
+        push(HelpRowKind::Item, &format!("/{name}"), long);
     }
+    rows
+}
 
 /// Output cap at ingest (sliced at render for Block/Line).
 const TOOL_OUTPUT_CAP: usize = 2000;
@@ -402,7 +452,16 @@ impl Default for AppState {
 }
 
 impl AppState {
-    pub fn apply_state(&mut self, model: Option<Model>, thinking_level: Option<String>, is_streaming: bool, is_compacting: bool, session_id: Option<String>, session_name: Option<String>, message_count: Option<u64>) {
+    pub fn apply_state(
+        &mut self,
+        model: Option<Model>,
+        thinking_level: Option<String>,
+        is_streaming: bool,
+        is_compacting: bool,
+        session_id: Option<String>,
+        session_name: Option<String>,
+        message_count: Option<u64>,
+    ) {
         if let Some(m) = model {
             self.model = Some(m);
         }
@@ -437,10 +496,11 @@ impl AppState {
     /// Tool execution started — add a running tool entry with full args.
     pub fn tool_start(&mut self, tool_call_id: Option<&str>, name: &str, args: &serde_json::Value) {
         let summary = summarize_args(args);
-        let timeout_s = args
-            .get("timeout")
-            .and_then(|v| v.as_u64())
-            .or_else(|| args.get("timeout").and_then(|v| v.as_i64()).and_then(|i| u64::try_from(i).ok()));
+        let timeout_s = args.get("timeout").and_then(|v| v.as_u64()).or_else(|| {
+            args.get("timeout")
+                .and_then(|v| v.as_i64())
+                .and_then(|i| u64::try_from(i).ok())
+        });
         self.entries.push(ChatEntry::Tool {
             tool_call_id: tool_call_id.map(String::from),
             name: name.to_string(),
@@ -494,7 +554,13 @@ impl AppState {
     }
 
     /// Tool execution finished — match by toolCallId first, name fallback.
-    pub fn tool_end(&mut self, tool_call_id: Option<&str>, name: &str, result_text: &str, error: bool) {
+    pub fn tool_end(
+        &mut self,
+        tool_call_id: Option<&str>,
+        name: &str,
+        result_text: &str,
+        error: bool,
+    ) {
         // Append result text to output.
         if !result_text.is_empty() {
             self.tool_update(tool_call_id, name, result_text);
@@ -635,7 +701,11 @@ impl AppState {
             // independent of the flame itself.
             "tint" => {
                 self.fire_tint = !self.fire_tint;
-                return if self.fire_tint { "tint on".to_string() } else { "tint off".to_string() };
+                return if self.fire_tint {
+                    "tint on".to_string()
+                } else {
+                    "tint off".to_string()
+                };
             }
             word => {
                 if let Some(s) = crate::fire::FireStyle::parse(word) {
@@ -669,7 +739,10 @@ impl AppState {
     // ── Scrollback (owner request 2026-09-02) ────────────────────────────
 
     pub fn scroll_up(&mut self, rows: u16) {
-        self.scroll = self.scroll.saturating_add(rows).min(self.scroll_max.max(self.scroll));
+        self.scroll = self
+            .scroll
+            .saturating_add(rows)
+            .min(self.scroll_max.max(self.scroll));
     }
 
     pub fn scroll_down(&mut self, rows: u16) {
@@ -759,17 +832,20 @@ impl AppState {
         for (idx, entry) in self.entries.iter_mut().enumerate() {
             match entry {
                 ChatEntry::User(text) => {
-                    for (i, seg) in wrap_text(text, width.saturating_sub(2)).into_iter().enumerate() {
+                    for (i, seg) in wrap_text(text, width.saturating_sub(2))
+                        .into_iter()
+                        .enumerate()
+                    {
                         if i == 0 {
                             lines.push(Line::from(vec![
-                                Span::styled(format!("{} ", theme::GLYPH_USER), Style::default().fg(theme::GREEN)),
+                                Span::styled(
+                                    format!("{} ", theme::GLYPH_USER),
+                                    Style::default().fg(theme::GREEN),
+                                ),
                                 Span::raw(seg),
                             ]));
                         } else {
-                            lines.push(Line::from(vec![
-                                Span::raw("  "),
-                                Span::raw(seg),
-                            ]));
+                            lines.push(Line::from(vec![Span::raw("  "), Span::raw(seg)]));
                         }
                     }
                     lines.push(Line::from(""));
@@ -807,7 +883,12 @@ impl AppState {
                     for seg in wrap_text(text, width.saturating_sub(8)) {
                         lines.push(Line::from(vec![
                             Span::styled("  ·    ", Style::default().fg(theme::MUTED)),
-                            Span::styled(seg, Style::default().fg(theme::MUTED).add_modifier(ratatui::style::Modifier::ITALIC)),
+                            Span::styled(
+                                seg,
+                                Style::default()
+                                    .fg(theme::MUTED)
+                                    .add_modifier(ratatui::style::Modifier::ITALIC),
+                            ),
                         ]));
                     }
                 }
@@ -840,7 +921,10 @@ impl AppState {
                         } else {
                             format!("{} {}", name, summary)
                         };
-                        for (i, seg) in wrap_text(&body, width.saturating_sub(8)).into_iter().enumerate() {
+                        for (i, seg) in wrap_text(&body, width.saturating_sub(8))
+                            .into_iter()
+                            .enumerate()
+                        {
                             if i == 0 {
                                 lines.push(Line::from(vec![
                                     Span::styled(format!("  {} ", icon), st),
@@ -902,7 +986,10 @@ impl AppState {
                 }
                 ChatEntry::Diag(text) => {
                     let st = theme::crit();
-                    for (i, seg) in wrap_text(text, width.saturating_sub(8)).into_iter().enumerate() {
+                    for (i, seg) in wrap_text(text, width.saturating_sub(8))
+                        .into_iter()
+                        .enumerate()
+                    {
                         if i == 0 {
                             lines.push(Line::from(vec![
                                 Span::styled(format!("  {} ", theme::GLYPH_SULFUR), st),
@@ -1004,9 +1091,8 @@ impl AppState {
                 if args.is_empty() {
                     Some(RpcCommand::CycleThinkingLevel { id: None })
                 } else {
-                    const LEVELS: [&str; 7] = [
-                        "off", "minimal", "low", "medium", "high", "xhigh", "max",
-                    ];
+                    const LEVELS: [&str; 7] =
+                        ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
                     if LEVELS.contains(&args) {
                         Some(RpcCommand::SetThinkingLevel {
                             id: None,
@@ -1126,7 +1212,16 @@ fn strip_ansi(s: &str) -> String {
 /// Short args summary for tool entries — first meaningful value.
 fn summarize_args(args: &serde_json::Value) -> String {
     if let Some(obj) = args.as_object() {
-        for key in ["file_path", "path", "command", "pattern", "query", "url", "name", "skill"] {
+        for key in [
+            "file_path",
+            "path",
+            "command",
+            "pattern",
+            "query",
+            "url",
+            "name",
+            "skill",
+        ] {
             if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
                 let mut s: String = v.chars().take(48).collect();
                 if v.chars().count() > 48 {
@@ -1184,8 +1279,17 @@ fn render_tool_block(
     {
         let mut spans = vec![
             Span::styled("╭─ ", border),
-            Span::styled(format!("{} ", theme::GLYPH_CRUCIBLE), Style::default().fg(theme::GOLD).bg(surf)),
-            Span::styled(name.to_string(), Style::default().fg(theme::SILVER).bg(surf).add_modifier(ratatui::style::Modifier::BOLD)),
+            Span::styled(
+                format!("{} ", theme::GLYPH_CRUCIBLE),
+                Style::default().fg(theme::GOLD).bg(surf),
+            ),
+            Span::styled(
+                name.to_string(),
+                Style::default()
+                    .fg(theme::SILVER)
+                    .bg(surf)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
         ];
         let head_w = width.saturating_sub(6 + name.chars().count());
         if !summary.is_empty() && head_w > 4 {
@@ -1214,14 +1318,15 @@ fn render_tool_block(
         }
         (false, Some(a)) if !a.is_null() => {
             let one = serde_json::to_string(a).unwrap_or_default();
-            let compact = if summary.is_empty() { one } else { format!("{} {}", summary, one) };
+            let compact = if summary.is_empty() {
+                one
+            } else {
+                format!("{} {}", summary, one)
+            };
             lines.push(Line::from(vec![
                 Span::styled("│ ", border),
                 Span::styled("args  ", muted_st),
-                Span::styled(
-                    trunc_str(compact.trim(), width.saturating_sub(9)),
-                    text_st,
-                ),
+                Span::styled(trunc_str(compact.trim(), width.saturating_sub(9)), text_st),
             ]));
         }
         _ => {}
@@ -1249,7 +1354,10 @@ fn render_tool_block(
             output
         };
         for ol in slice {
-            for (i, seg) in wrap_text(ol, width.saturating_sub(5)).into_iter().enumerate() {
+            for (i, seg) in wrap_text(ol, width.saturating_sub(5))
+                .into_iter()
+                .enumerate()
+            {
                 let prefix = if i == 0 { "│   " } else { "│   " };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, border),
@@ -1261,25 +1369,22 @@ fn render_tool_block(
         if hidden > 0 {
             lines.push(Line::from(vec![
                 Span::styled("│   ", border),
-                Span::styled(
-                    format!("… {} more lines", hidden),
-                    muted_st,
-                ),
+                Span::styled(format!("… {} more lines", hidden), muted_st),
             ]));
         }
         if truncated {
             lines.push(Line::from(vec![
                 Span::styled("│   ", border),
-                Span::styled(
-                    "… output truncated (storage cap)",
-                    muted_st,
-                ),
+                Span::styled("… output truncated (storage cap)", muted_st),
             ]));
         }
     } else if running {
         let mut spans = vec![
             Span::styled("│ ", border),
-            Span::styled("running…", Style::default().fg(theme::LIGHT_YELLOW).bg(surf)),
+            Span::styled(
+                "running…",
+                Style::default().fg(theme::LIGHT_YELLOW).bg(surf),
+            ),
         ];
         if let Some(secs) = elapsed {
             spans.push(Span::styled(
@@ -1305,7 +1410,11 @@ fn render_tool_block(
     // Bottom status.
     {
         let (icon, label, st) = if running {
-            (theme::GLYPH_CRUCIBLE, " running", Style::default().fg(theme::ORANGE).bg(surf))
+            (
+                theme::GLYPH_CRUCIBLE,
+                " running",
+                Style::default().fg(theme::ORANGE).bg(surf),
+            )
         } else if error {
             ("✗", " failed", Style::default().fg(theme::RED).bg(surf))
         } else {
@@ -1325,10 +1434,7 @@ fn render_tool_block(
             Span::styled(status, st),
         ]));
     }
-    lines
-        .into_iter()
-        .map(|l| pad_panel(l, width))
-        .collect()
+    lines.into_iter().map(|l| pad_panel(l, width)).collect()
 }
 
 /// Pad a tool-block line to `width` with PANEL-surfaced spaces — the last
@@ -1371,8 +1477,14 @@ fn json_line_spans(line: &str, width: usize) -> Vec<Span<'static>> {
     if let Some(pos) = t.find("\":") {
         let split = pos + 2; // include the colon
         return vec![
-            Span::styled(t[..split].to_string(), Style::default().fg(theme::CYAN).bg(surf)),
-            Span::styled(t[split..].to_string(), Style::default().fg(theme::TEXT).bg(surf)),
+            Span::styled(
+                t[..split].to_string(),
+                Style::default().fg(theme::CYAN).bg(surf),
+            ),
+            Span::styled(
+                t[split..].to_string(),
+                Style::default().fg(theme::TEXT).bg(surf),
+            ),
         ];
     }
     vec![Span::styled(t, Style::default().fg(theme::TEXT).bg(surf))]
@@ -1439,7 +1551,10 @@ mod tests {
     #[test]
     fn parse_agent_mode_captures_current_and_next() {
         let mut s = AppState::default();
-        s.parse_agent_mode(&["\x1b[1m\x1b[38;2;46;161m▪ BUILD\x1b[0m · writes unlocked · TAB / /mode plan\x1b[0m".to_string()]);
+        s.parse_agent_mode(&[
+            "\x1b[1m\x1b[38;2;46;161m▪ BUILD\x1b[0m · writes unlocked · TAB / /mode plan\x1b[0m"
+                .to_string(),
+        ]);
         assert_eq!(s.agent_mode_label.as_deref(), Some("BUILD"));
         assert_eq!(s.agent_mode_glyph.as_deref(), Some("▪"));
         assert_eq!(s.agent_mode.as_deref(), Some("plan"));
@@ -1495,7 +1610,7 @@ mod tests {
         assert_eq!(s.set_fire("pulse"), "prismatic"); // legacy alias
         assert_eq!(s.set_fire("alchemy"), "alchemy");
         assert!(s.fire_on); // naming a style ignites
-        // Cycle order: prismatic → emerald → alchemy → prismatic.
+                            // Cycle order: prismatic → emerald → alchemy → prismatic.
         assert_eq!(s.set_fire("style"), "prismatic");
         assert_eq!(s.set_fire("style"), "emerald");
         assert_eq!(s.set_fire("emerald"), "emerald");
@@ -1526,8 +1641,14 @@ mod tests {
         assert_eq!(ToolVerbosity::Full.next(), ToolVerbosity::Line);
         assert_eq!(ToolVerbosity::parse("block"), Some(ToolVerbosity::Block));
         assert_eq!(ToolVerbosity::parse("nope"), None);
-        assert_eq!(ToolVerbosity::Line.max(ToolVerbosity::Full), ToolVerbosity::Full);
-        assert_eq!(ToolVerbosity::Full.min(ToolVerbosity::Line), ToolVerbosity::Line);
+        assert_eq!(
+            ToolVerbosity::Line.max(ToolVerbosity::Full),
+            ToolVerbosity::Full
+        );
+        assert_eq!(
+            ToolVerbosity::Full.min(ToolVerbosity::Line),
+            ToolVerbosity::Line
+        );
     }
 
     #[test]
@@ -1555,24 +1676,39 @@ mod tests {
         let mut ov: HashMap<String, ToolOverride> = HashMap::new();
         ov.insert(
             "write".into(),
-            ToolOverride { mode: ToolVerbosity::Block, strictness: Strictness::AtLeast },
+            ToolOverride {
+                mode: ToolVerbosity::Block,
+                strictness: Strictness::AtLeast,
+            },
         );
         ov.insert(
             "bash".into(),
-            ToolOverride { mode: ToolVerbosity::Block, strictness: Strictness::AtMost },
+            ToolOverride {
+                mode: ToolVerbosity::Block,
+                strictness: Strictness::AtMost,
+            },
         );
         ov.insert(
             "read".into(),
-            ToolOverride { mode: ToolVerbosity::Full, strictness: Strictness::Pinned },
+            ToolOverride {
+                mode: ToolVerbosity::Full,
+                strictness: Strictness::Pinned,
+            },
         );
         let g = ToolVerbosity::Line;
         // AtLeast bumps up when global less verbose.
         assert_eq!(effective_mode("write", g, &ov), ToolVerbosity::Block);
         // AtMost caps when global more verbose.
-        assert_eq!(effective_mode("bash", ToolVerbosity::Full, &ov), ToolVerbosity::Block);
+        assert_eq!(
+            effective_mode("bash", ToolVerbosity::Full, &ov),
+            ToolVerbosity::Block
+        );
         // Pinned ignores global both ways.
         assert_eq!(effective_mode("read", g, &ov), ToolVerbosity::Full);
-        assert_eq!(effective_mode("read", ToolVerbosity::Full, &ov), ToolVerbosity::Full);
+        assert_eq!(
+            effective_mode("read", ToolVerbosity::Full, &ov),
+            ToolVerbosity::Full
+        );
         // No override → global.
         assert_eq!(effective_mode("grep", g, &ov), ToolVerbosity::Line);
     }
@@ -1580,8 +1716,16 @@ mod tests {
     #[test]
     fn tool_start_update_end_by_id() {
         let mut s = AppState::default();
-        s.tool_start(Some("call-1"), "write", &serde_json::json!({"path": "a.rs"}));
-        s.tool_start(Some("call-2"), "write", &serde_json::json!({"path": "b.rs"}));
+        s.tool_start(
+            Some("call-1"),
+            "write",
+            &serde_json::json!({"path": "a.rs"}),
+        );
+        s.tool_start(
+            Some("call-2"),
+            "write",
+            &serde_json::json!({"path": "b.rs"}),
+        );
         // Two same-named tools running — id must disambiguate.
         s.tool_update(Some("call-1"), "write", "line one\nline two\n");
         s.tool_update(Some("call-2"), "write", "other\n");
@@ -1591,7 +1735,9 @@ mod tests {
             .entries
             .iter()
             .filter_map(|e| match e {
-                ChatEntry::Tool { output, running, .. } => Some((*running, output.clone())),
+                ChatEntry::Tool {
+                    output, running, ..
+                } => Some((*running, output.clone())),
                 _ => None,
             })
             .collect();
@@ -1623,9 +1769,17 @@ mod tests {
     fn tool_output_cap_marks_truncated() {
         let mut s = AppState::default();
         s.tool_start(Some("c"), "bash", &serde_json::json!({}));
-        let flood = (0..(TOOL_OUTPUT_CAP + 50)).map(|i| format!("l{}", i)).collect::<Vec<_>>().join("\n");
+        let flood = (0..(TOOL_OUTPUT_CAP + 50))
+            .map(|i| format!("l{}", i))
+            .collect::<Vec<_>>()
+            .join("\n");
         s.tool_update(Some("c"), "bash", &flood);
-        if let Some(ChatEntry::Tool { output, output_truncated, .. }) = s.entries.last() {
+        if let Some(ChatEntry::Tool {
+            output,
+            output_truncated,
+            ..
+        }) = s.entries.last()
+        {
             assert_eq!(output.len(), TOOL_OUTPUT_CAP);
             assert!(output_truncated);
         } else {
@@ -1637,9 +1791,18 @@ mod tests {
     fn line_mode_renders_like_legacy() {
         let mut s = AppState::default();
         assert_eq!(s.tool_default, ToolVerbosity::Line);
-        s.tool_start(Some("c"), "write", &serde_json::json!({"path": "src/main.rs"}));
+        s.tool_start(
+            Some("c"),
+            "write",
+            &serde_json::json!({"path": "src/main.rs"}),
+        );
         s.tool_end(Some("c"), "write", "", false);
-        let text = s.chat_lines(80).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("✓"), "done icon present: {}", text);
         assert!(text.contains("write"), "name present: {}", text);
         assert!(text.contains("src/main.rs"), "summary present: {}", text);
@@ -1652,11 +1815,23 @@ mod tests {
         let mut s = AppState::default();
         s.tool_overrides.insert(
             "write".into(),
-            ToolOverride { mode: ToolVerbosity::Block, strictness: Strictness::AtLeast },
+            ToolOverride {
+                mode: ToolVerbosity::Block,
+                strictness: Strictness::AtLeast,
+            },
         );
-        s.tool_start(Some("c"), "write", &serde_json::json!({"path": "src/main.rs"}));
+        s.tool_start(
+            Some("c"),
+            "write",
+            &serde_json::json!({"path": "src/main.rs"}),
+        );
         s.tool_end(Some("c"), "write", "out line\n", false);
-        let text = s.chat_lines(80).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains('╭'), "block header present: {}", text);
         assert!(text.contains('╰'), "block footer present: {}", text);
         assert!(text.contains("args"), "args section present: {}", text);
@@ -1667,9 +1842,18 @@ mod tests {
     fn full_mode_shows_pretty_args() {
         let mut s = AppState::default();
         s.tool_default = ToolVerbosity::Full;
-        s.tool_start(Some("c"), "edit", &serde_json::json!({"path": "a.rs", "old": "x", "new": "y"}));
+        s.tool_start(
+            Some("c"),
+            "edit",
+            &serde_json::json!({"path": "a.rs", "old": "x", "new": "y"}),
+        );
         s.tool_end(Some("c"), "edit", "", false);
-        let text = s.chat_lines(80).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("args"), "args header: {}", text);
         assert!(text.contains("\"path\""), "pretty json key: {}", text);
         assert!(text.contains("\"old\""), "second key: {}", text);
@@ -1692,7 +1876,12 @@ mod tests {
         let _ = s.chat_lines(60);
         // Config change → cache must rebuild for every entry.
         s.tools_gen += 1;
-        let text = s.chat_lines(60).iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text = s
+            .chat_lines(60)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("one"), "streamed lines visible: {}", text);
         assert!(text.contains("two"), "streamed lines visible: {}", text);
     }
@@ -1721,7 +1910,11 @@ mod panel_tests {
             Some(30),
             false,
         );
-        assert!(lines.len() >= 4, "header + args + out + status: {}", lines.len());
+        assert!(
+            lines.len() >= 4,
+            "header + args + out + status: {}",
+            lines.len()
+        );
         for l in &lines {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(w, 40, "panel line fills its width: {:?}", l.to_string());
@@ -1773,10 +1966,18 @@ mod panel_tests {
             Some(1800),
             true,
         );
-        let text = lines.iter().map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.contains("1m 33s"), "elapsed shown: {}", text);
         assert!(text.contains("timeout 30m"), "timeout shown: {}", text);
-        assert!(text.contains("pipe-buffered"), "buffer hint shown: {}", text);
+        assert!(
+            text.contains("pipe-buffered"),
+            "buffer hint shown: {}",
+            text
+        );
     }
 
     #[test]

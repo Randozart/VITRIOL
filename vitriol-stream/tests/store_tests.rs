@@ -1,4 +1,4 @@
-use vitriol_stream::{crc32};
+use vitriol_stream::crc32;
 use vitriol_stream::store::Store;
 
 #[test]
@@ -6,7 +6,10 @@ fn crc32_known_vectors() {
     // IEEE CRC32 reference vectors.
     assert_eq!(crc32(b""), 0x0000_0000);
     assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
-    assert_eq!(crc32(b"The quick brown fox jumps over the lazy dog"), 0x414F_A339);
+    assert_eq!(
+        crc32(b"The quick brown fox jumps over the lazy dog"),
+        0x414F_A339
+    );
 }
 
 #[test]

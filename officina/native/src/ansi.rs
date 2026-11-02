@@ -139,7 +139,11 @@ pub fn merge_split_rows(
     let total = main_lines.len().max(sb_lines.len() + sb_pad as usize);
     let mut out = Vec::with_capacity(total);
     for r in 0..total {
-        let mut left = main_lines.get(r).map(|s| s.as_str()).unwrap_or("").to_string();
+        let mut left = main_lines
+            .get(r)
+            .map(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
         let lw = visible_width(&left);
         if lw > main_w {
             left = cut(&left, main_w);
@@ -225,9 +229,22 @@ mod tests {
 
     #[test]
     fn merge_split_rows_matches_split_render() {
-        let main = vec!["hello".to_string(), "long line that overflows the column".to_string()];
+        let main = vec![
+            "hello".to_string(),
+            "long line that overflows the column".to_string(),
+        ];
         let sb = vec!["◈ coupling".to_string(), "ctx gauge".to_string()];
-        let out = merge_split_rows(&main, 12, &sb, 20, 0, 1, "\x1b[48;2;22;27;34m", "\x1b[0m", "");
+        let out = merge_split_rows(
+            &main,
+            12,
+            &sb,
+            20,
+            0,
+            1,
+            "\x1b[48;2;22;27;34m",
+            "\x1b[0m",
+            "",
+        );
         assert_eq!(out.len(), 2);
         // row 0: "hello" + 7 pad + 1 gap + bg + "◈ coupling" + 10 pad + reset
         assert!(out[0].starts_with("hello        \x1b[48;2;22;27;34m◈ coupling"));

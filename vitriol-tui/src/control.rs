@@ -68,7 +68,12 @@ impl Action {
             Action::Setup => "vitriol setup (CAP_IPC_LOCK)".into(),
             Action::LaunchRebis => "launch rebis (Sol+Luna+Mercury)".into(),
             Action::StopRebis => "stop rebis (tear down all)".into(),
-            Action::RunSweepConfig { model, devices, ctx, .. } => {
+            Action::RunSweepConfig {
+                model,
+                devices,
+                ctx,
+                ..
+            } => {
                 let file = std::path::Path::new(model)
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -187,14 +192,20 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
         ],
         Action::LaunchRebis => vec![Step {
             label: action.label(),
-            program: cfg.repo_root.join("scripts/rebis-servers.sh")
-                .to_string_lossy().into_owned(),
+            program: cfg
+                .repo_root
+                .join("scripts/rebis-servers.sh")
+                .to_string_lossy()
+                .into_owned(),
             args: vec!["rebis".into()],
         }],
         Action::StopRebis => vec![Step {
             label: action.label(),
-            program: cfg.repo_root.join("scripts/rebis-servers.sh")
-                .to_string_lossy().into_owned(),
+            program: cfg
+                .repo_root
+                .join("scripts/rebis-servers.sh")
+                .to_string_lossy()
+                .into_owned(),
             args: vec!["stop".into()],
         }],
         Action::Setup => {
@@ -208,7 +219,12 @@ fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
                 args: vec!["-n".into(), cli, "setup".into()],
             }]
         }
-        Action::RunSweepConfig { model, devices, ts, ctx } => {
+        Action::RunSweepConfig {
+            model,
+            devices,
+            ts,
+            ctx,
+        } => {
             let mut args = vec![
                 "libvitriol/sweep_controller.py".to_string(),
                 "-m".to_string(),
@@ -395,7 +411,10 @@ mod tests {
         assert_eq!(started.len(), 2);
         assert_eq!(started[0].args, vec!["config", "load", "anything"]);
         assert_eq!(started[1].program, "systemctl");
-        assert_eq!(started[1].args, vec!["--user", "start", "vitriol-server.service"]);
+        assert_eq!(
+            started[1].args,
+            vec!["--user", "start", "vitriol-server.service"]
+        );
     }
 
     #[test]
@@ -421,10 +440,12 @@ mod tests {
         assert_eq!(actions[2], Action::Restart { selected: None });
         assert_eq!(actions[3], Action::Doctor);
         assert_eq!(actions[4], Action::Setup);
-        assert!(!actions.iter().any(|a| matches!(
-            a, Action::LaunchRebis | Action::StopRebis)));
-        assert!(!actions.iter().any(|a| matches!(
-            a, Action::RunSweepConfig { .. })));
+        assert!(!actions
+            .iter()
+            .any(|a| matches!(a, Action::LaunchRebis | Action::StopRebis)));
+        assert!(!actions
+            .iter()
+            .any(|a| matches!(a, Action::RunSweepConfig { .. })));
         let with_sel = Action::all(&[], Some("qwen"));
         assert_eq!(
             with_sel[0],

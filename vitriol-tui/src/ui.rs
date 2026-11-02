@@ -11,7 +11,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
-use crate::app::{App, LogSource, Tab, SWEEP_CTX_PRESETS, SWEEP_GPU_OPTS, SWEEP_MINFREE_PRESETS, SweepState};
+use crate::app::{
+    App, LogSource, SweepState, Tab, SWEEP_CTX_PRESETS, SWEEP_GPU_OPTS, SWEEP_MINFREE_PRESETS,
+};
 use crate::control::Action;
 use crate::model::Snapshot;
 use crate::{braille, subsystems, theme};
@@ -48,7 +50,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 /// click switches straight to it.
 fn render_header(frame: &mut Frame, area: Rect, app: &mut App) {
     app.reset_tab_hits();
-    let tab_labels: Vec<(Tab, String)> = Tab::ALL.iter().map(|t| (*t, format!(" {} ", t.label()))).collect();
+    let tab_labels: Vec<(Tab, String)> = Tab::ALL
+        .iter()
+        .map(|t| (*t, format!(" {} ", t.label())))
+        .collect();
     let mut constraints = vec![Constraint::Length((" VITRIOL ".len()) as u16)];
     for (_, label) in &tab_labels {
         constraints.push(Constraint::Length(label.chars().count() as u16));
@@ -57,10 +62,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &mut App) {
     let segs = Layout::horizontal(constraints).split(area);
 
     frame.render_widget(
-        Paragraph::new(Line::from(vec![Span::styled(
-            " VITRIOL ",
-            theme::banner(),
-        )])),
+        Paragraph::new(Line::from(vec![Span::styled(" VITRIOL ", theme::banner())])),
         segs[0],
     );
 
@@ -137,17 +139,10 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     // across the tab's panels by thematic fit:
     //   🜂 GEN (fire, the forge) · 🜄 DECODE (water, the stream that flows)
     //   🜃 GAUGES (earth, silicon matter) · 🜁 PROCESSES (air, living breath)
-    let rows = Layout::vertical([
-        Constraint::Ratio(1, 4),
-        Constraint::Min(0),
-    ])
-    .split(area);
+    let rows = Layout::vertical([Constraint::Ratio(1, 4), Constraint::Min(0)]).split(area);
 
-    let cards = Layout::horizontal([
-        Constraint::Ratio(1, 2),
-        Constraint::Ratio(1, 2),
-    ])
-    .split(rows[0]);
+    let cards =
+        Layout::horizontal([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)]).split(rows[0]);
 
     render_gen_card(frame, cards[0], &app.snapshot);
     render_decode_card(frame, cards[1], app);
@@ -286,7 +281,10 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
     let t = g.totals;
     if t.prompt_tokens_total > 0 || t.tokens_predicted_total > 0 {
         let lifetime = if t.tokens_predicted_total > 0 && t.predicted_tokens_seconds > 0.0 {
-            format!(" · {:.1} t/s lifetime", t.tokens_predicted_total as f64 / t.predicted_tokens_seconds)
+            format!(
+                " · {:.1} t/s lifetime",
+                t.tokens_predicted_total as f64 / t.predicted_tokens_seconds
+            )
         } else {
             String::new()
         };
@@ -345,14 +343,17 @@ fn render_gen_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
             Span::styled(format!("slot {}  ", s.id), theme::muted()),
             Span::styled(
                 format!("{state}{ctx}"),
-                if s.is_processing { theme::info() } else { theme::muted() },
+                if s.is_processing {
+                    theme::info()
+                } else {
+                    theme::muted()
+                },
             ),
         ]));
     }
 
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
-
 
 /// GPU card: one compact btop-style block per GPU (VRAM + UTIL gauges), then
 /// the compute-process table.
@@ -398,9 +399,10 @@ fn render_gpu_card(frame: &mut Frame, area: Rect, snap: &Snapshot) {
             .replace("NVIDIA ", "");
         frame.render_widget(
             Paragraph::new(Line::from({
-                let mut spans = vec![
-                    Span::styled(format!("[{}] {}", gpu.index, short), theme::text()),
-                ];
+                let mut spans = vec![Span::styled(
+                    format!("[{}] {}", gpu.index, short),
+                    theme::text(),
+                )];
                 // Only show power/temp when available (non-zero).
                 if gpu.power_w > 0.0 || gpu.temp_c > 0 {
                     spans.push(Span::styled(
@@ -467,7 +469,9 @@ fn process_line(p: &crate::model::GpuProcess) -> Line<'static> {
         Span::styled(
             format!(
                 "GPU{} ",
-                p.gpu_index.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+                p.gpu_index
+                    .map(|i| i.to_string())
+                    .unwrap_or_else(|| "?".into())
             ),
             theme::muted(),
         ),
@@ -590,9 +594,12 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
 /// the token counts. 2026-09-01: slots still in prompt-eval (processing but
 /// zero tokens decoded) show a phase label instead of a meaningless 0% bar.
 fn render_slot_progress_row(frame: &mut Frame, area: Rect, slot: &crate::model::SlotSnapshot) {
-    let cols =
-        Layout::horizontal([Constraint::Length(12), Constraint::Min(0), Constraint::Length(14)])
-            .split(area);
+    let cols = Layout::horizontal([
+        Constraint::Length(12),
+        Constraint::Min(0),
+        Constraint::Length(14),
+    ])
+    .split(area);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("task {:<7}", slot.id_task.unwrap_or(slot.id).to_string()),
@@ -602,10 +609,7 @@ fn render_slot_progress_row(frame: &mut Frame, area: Rect, slot: &crate::model::
     );
     if slot.is_prompt_eval() {
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                "prompt-eval …",
-                theme::info(),
-            ))),
+            Paragraph::new(Line::from(Span::styled("prompt-eval …", theme::info()))),
             cols[1],
         );
         frame.render_widget(
@@ -642,7 +646,8 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
 
     // 8 rows per GPU section (header + 6 metrics + spacer), plus borders.
     let gauges_height = (app.snapshot.gpus.len() as u16) * 8 + 2;
-    let rows = Layout::vertical([Constraint::Length(gauges_height), Constraint::Min(0)]).split(area);
+    let rows =
+        Layout::vertical([Constraint::Length(gauges_height), Constraint::Min(0)]).split(area);
 
     let g_title = format!(" {} GAUGES ", theme::GLYPH_GPU);
     let gauge_panel = panel_neutral(&g_title);
@@ -673,9 +678,10 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
             .replace("NVIDIA ", "");
         frame.render_widget(
             Paragraph::new(Line::from({
-                let mut spans = vec![
-                    Span::styled(format!("[{}] {}", gpu.index, short), theme::title()),
-                ];
+                let mut spans = vec![Span::styled(
+                    format!("[{}] {}", gpu.index, short),
+                    theme::title(),
+                )];
                 // Only show power/temp when available (non-zero).
                 if gpu.power_w > 0.0 || gpu.temp_c > 0 {
                     spans.push(Span::styled(
@@ -791,7 +797,9 @@ fn render_gpu_tab(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled(
                 format!(
                     "{:<5}",
-                    p.gpu_index.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+                    p.gpu_index
+                        .map(|i| i.to_string())
+                        .unwrap_or_else(|| "?".into())
                 ),
                 theme::muted(),
             ),
@@ -876,10 +884,7 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
             let absent = log_file_absent(app, src);
             let mut span = chip_span(src);
             if absent {
-                span = Span::styled(
-                    format!("{}·absent", span.content),
-                    theme::muted(),
-                );
+                span = Span::styled(format!("{}·absent", span.content), theme::muted());
             }
             v.push(span);
         }
@@ -909,12 +914,9 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
                 }
                 if s.trim_start().starts_with('{') && s.contains("\"kind\"") {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(l) {
-                        let g = |k: &str| {
-                            v.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string()
-                        };
-                        let num = |k: &str| {
-                            v.get(k).and_then(|x| x.as_u64()).unwrap_or(0)
-                        };
+                        let g =
+                            |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("-").to_string();
+                        let num = |k: &str| v.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
                         let kind = g("kind");
                         let styled = if kind == "audit" {
                             theme::gold_muted()
@@ -923,8 +925,12 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
                         };
                         return Rendered::Shown(format!(
                             "{} {:>12} {}→{}  {}→{} chars",
-                            g("ts"), kind, g("from"), g("to"),
-                            num("prompt_chars"), num("response_chars")
+                            g("ts"),
+                            kind,
+                            g("from"),
+                            g("to"),
+                            num("prompt_chars"),
+                            num("response_chars")
                         ));
                     }
                 }
@@ -937,8 +943,7 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     fn suppressed_line(n: usize, latest: &str, width: u16) -> Line<'static> {
-        let mut t =
-            format!("  ⋮ {} suppressed · latest: {}", n, latest);
+        let mut t = format!("  ⋮ {} suppressed · latest: {}", n, latest);
         let max = (width as usize).saturating_sub(4).max(24);
         let chars: Vec<char> = t.chars().collect();
         if chars.len() > max {
@@ -968,11 +973,18 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &App) {
     if run > 0 {
         shown.push(suppressed_line(run, &last_suppressed, inner.width));
     }
-    let hint = if app.logs_verbose { "verbose" } else { "concise" };
-    let mut out: Vec<Line> = vec![chips, Line::from(Span::styled(
-        format!(" [v: {} — v toggles detail] ", hint),
-        theme::muted(),
-    ))];
+    let hint = if app.logs_verbose {
+        "verbose"
+    } else {
+        "concise"
+    };
+    let mut out: Vec<Line> = vec![
+        chips,
+        Line::from(Span::styled(
+            format!(" [v: {} — v toggles detail] ", hint),
+            theme::muted(),
+        )),
+    ];
     out.extend(shown);
     frame.render_widget(Paragraph::new(out), inner);
 }
@@ -1433,7 +1445,11 @@ fn render_profiles_tab(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_profile_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
     let list_focused = app.profile_focus == crate::app::ProfileFocus::List;
-    let delete_label = if list_focused { "delete profile" } else { "remove entry" };
+    let delete_label = if list_focused {
+        "delete profile"
+    } else {
+        "remove entry"
+    };
     render_button_row(
         frame,
         rows[0],
@@ -1468,15 +1484,16 @@ fn render_button_row(
 ) {
     let mut constraints = Vec::with_capacity(buttons.len());
     for (key, label, _) in buttons {
-        constraints.push(Constraint::Length((key.chars().count() + label.chars().count() + 5) as u16));
+        constraints.push(Constraint::Length(
+            (key.chars().count() + label.chars().count() + 5) as u16,
+        ));
     }
     let segs = Layout::horizontal(constraints).split(area);
     for ((key, label, action), seg) in buttons.iter().zip(segs.iter()) {
-        app.profile_buttons
-            .push(crate::app::ProfileButton {
-                action: *action,
-                area: *seg,
-            });
+        app.profile_buttons.push(crate::app::ProfileButton {
+            action: *action,
+            area: *seg,
+        });
         let line = Line::from(vec![
             Span::styled(format!("[{key}] "), theme::gold_muted()),
             Span::styled(format!("{label} "), theme::muted()),
@@ -1906,9 +1923,13 @@ mod tests {
 
 /// Compact token count formatting: 1234567 -> "1.23M".
 fn fmt_tokens(n: u64) -> String {
-    if n >= 1_000_000 { format!("{:.2}M", n as f64 / 1e6) }
-    else if n >= 1_000 { format!("{:.1}k", n as f64 / 1e3) }
-    else { format!("{n}") }
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1e6)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1e3)
+    } else {
+        format!("{n}")
+    }
 }
 
 /// SWEEP tab: form on the left (model/GPU/ctx/min-free + feasibility),
@@ -1924,7 +1945,11 @@ fn render_sweep_tab(frame: &mut Frame, area: Rect, app: &App) {
 
     let sw = &app.sweep;
     let cursor_mark = |focus_idx: usize| {
-        if sw.focus == focus_idx { "▸ " } else { "  " }
+        if sw.focus == focus_idx {
+            "▸ "
+        } else {
+            "  "
+        }
     };
     let (fits, used, budget) = sw.feasibility();
     let feas_line = if sw.model_path.is_empty() {
@@ -1945,7 +1970,9 @@ fn render_sweep_tab(frame: &mut Frame, area: Rect, app: &App) {
         "(type path)".to_string()
     } else {
         let mut shown = sw.model_path.clone();
-        if sw.focus == 0 { shown.push('▏'); }
+        if sw.focus == 0 {
+            shown.push('▏');
+        }
         shown
     };
     let mut lines = vec![
@@ -1959,7 +1986,11 @@ fn render_sweep_tab(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("GPU    ", theme::muted()),
             Span::styled(
                 SWEEP_GPU_OPTS[sw.gpu_sel].to_string(),
-                if sw.focus == 1 { theme::text() } else { theme::muted() },
+                if sw.focus == 1 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
             ),
             Span::styled("  ◄ ►", theme::muted()),
         ]),
@@ -1968,7 +1999,11 @@ fn render_sweep_tab(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("CTX    ", theme::muted()),
             Span::styled(
                 format!("{}  ◄ ►", SWEEP_CTX_PRESETS[sw.ctx_idx]),
-                if sw.focus == 2 { theme::text() } else { theme::muted() },
+                if sw.focus == 2 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
             ),
         ]),
         Line::from(vec![
@@ -1976,7 +2011,11 @@ fn render_sweep_tab(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("MIN FREE ", theme::muted()),
             Span::styled(
                 format!("{} MiB  ◄ ►", SWEEP_MINFREE_PRESETS[sw.min_free_idx]),
-                if sw.focus == 3 { theme::text() } else { theme::muted() },
+                if sw.focus == 3 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
             ),
         ]),
     ];
@@ -2013,9 +2052,9 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let r = &app.snapshot.rebis;
 
     let rows = Layout::vertical([
-        Constraint::Length(6),   // head status cells + host RAM guardrail
-        Constraint::Length(7),   // routes + audit ledger | CONFIG
-        Constraint::Min(1),      // event stream
+        Constraint::Length(6), // head status cells + host RAM guardrail
+        Constraint::Length(7), // routes + audit ledger | CONFIG
+        Constraint::Min(1),    // event stream
     ])
     .split(area);
 
@@ -2030,48 +2069,84 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .split(h_inner);
 
-    let head_cell = |f: &mut Frame, area: Rect, name: &str, up: bool,
-                     line2: String, line3: String| {
-        let color = if up { theme::live() } else { theme::muted() };
-        let cell_rows =
-            Layout::vertical([Constraint::Length(1), Constraint::Length(1),
-                              Constraint::Length(1)])
-                .split(area);
-        let title_line = Line::from(Span::styled(
-            format!("{name} {}", if up { "●" } else { "·" }),
-            color.add_modifier(Modifier::BOLD),
-        ));
-        f.render_widget(Paragraph::new(title_line), cell_rows[0]);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(line2, theme::text()))),
-            cell_rows[1],
-        );
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(line3, theme::muted()))),
-            cell_rows[2],
-        );
-    };
+    let head_cell =
+        |f: &mut Frame, area: Rect, name: &str, up: bool, line2: String, line3: String| {
+            let color = if up { theme::live() } else { theme::muted() };
+            let cell_rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+            let title_line = Line::from(Span::styled(
+                format!("{name} {}", if up { "●" } else { "·" }),
+                color.add_modifier(Modifier::BOLD),
+            ));
+            f.render_widget(Paragraph::new(title_line), cell_rows[0]);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(line2, theme::text()))),
+                cell_rows[1],
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(line3, theme::muted()))),
+                cell_rows[2],
+            );
+        };
     let g = &app.snapshot.gen;
     let sol_line = if app.snapshot.gen.up {
-        format!("{} · {:.1} t/s · {}ms",
-                g.model.as_deref().unwrap_or("-"),
-                g.decode_t_s, r.sol_latency_ms)
-    } else { "down".into() };
-    let sol_load = format!("load {}% · {} tokens",
-                           r.sol_util_pct, fmt_tokens(r.sol_tokens_total));
+        format!(
+            "{} · {:.1} t/s · {}ms",
+            g.model.as_deref().unwrap_or("-"),
+            g.decode_t_s,
+            r.sol_latency_ms
+        )
+    } else {
+        "down".into()
+    };
+    let sol_load = format!(
+        "load {}% · {} tokens",
+        r.sol_util_pct,
+        fmt_tokens(r.sol_tokens_total)
+    );
     let luna_line = if r.luna_up {
-        format!("{} · {:.1} t/s · {}ms",
-                r.luna_model.as_deref().unwrap_or("-"),
-                r.luna_decode_t_s, r.luna_latency_ms)
-    } else { "down".into() };
-    let luna_load = format!("load {}% · {} tokens",
-                            r.luna_util_pct, fmt_tokens(r.luna_tokens_total));
-    head_cell(frame, cols[0], "MERCURY :8280", r.mercury_up,
-              "gateway".into(),
-              format!("{}ms", r.mercury_latency_ms));
-    head_cell(frame, cols[1], "SOL :8279", r.sol_up || app.snapshot.gen.up,
-              sol_line, sol_load);
-    head_cell(frame, cols[2], "LUNA :8247", r.luna_up, luna_line, luna_load);
+        format!(
+            "{} · {:.1} t/s · {}ms",
+            r.luna_model.as_deref().unwrap_or("-"),
+            r.luna_decode_t_s,
+            r.luna_latency_ms
+        )
+    } else {
+        "down".into()
+    };
+    let luna_load = format!(
+        "load {}% · {} tokens",
+        r.luna_util_pct,
+        fmt_tokens(r.luna_tokens_total)
+    );
+    head_cell(
+        frame,
+        cols[0],
+        "MERCURY :8280",
+        r.mercury_up,
+        "gateway".into(),
+        format!("{}ms", r.mercury_latency_ms),
+    );
+    head_cell(
+        frame,
+        cols[1],
+        "SOL :8279",
+        r.sol_up || app.snapshot.gen.up,
+        sol_line,
+        sol_load,
+    );
+    head_cell(
+        frame,
+        cols[2],
+        "LUNA :8247",
+        r.luna_up,
+        luna_line,
+        luna_load,
+    );
 
     // Host RAM guardrail line under the heads.
     let avail = r.host_avail_mib;
@@ -2083,7 +2158,9 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
         (theme::muted(), "ok")
     };
     let ram_row = Layout::vertical([
-        Constraint::Length(1), Constraint::Length(1), Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(h_inner)[3];
@@ -2101,9 +2178,11 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(mid, rows[1]);
 
     let [routes_area, audit_area, cfg_area] = Layout::horizontal([
-        Constraint::Percentage(34), Constraint::Percentage(33),
-        Constraint::Percentage(33)])
-        .areas(m_inner);
+        Constraint::Percentage(34),
+        Constraint::Percentage(33),
+        Constraint::Percentage(33),
+    ])
+    .areas(m_inner);
 
     let total_routes: u32 = r.routes.iter().sum();
     let route_lines = vec![
@@ -2128,25 +2207,32 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
         ]),
     ];
     frame.render_widget(
-        Paragraph::new(route_lines).block(Block::default()
-            .borders(Borders::RIGHT)), routes_area);
+        Paragraph::new(route_lines).block(Block::default().borders(Borders::RIGHT)),
+        routes_area,
+    );
 
     let pct = |n: u32| {
         if total_routes > 0 {
             format!("{:>3}", (n * 100 / total_routes.max(1)) as u8)
-        } else { "  0".to_string() }
+        } else {
+            "  0".to_string()
+        }
     };
     let audit_lines = vec![
         Line::from(vec![
             Span::styled("audits PASS      ", theme::muted()),
-            Span::styled(format!("{:>4}", r.audits_pass),
-                         theme::live().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{:>4}", r.audits_pass),
+                theme::live().add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!("  {}%", pct(r.audits_pass)), theme::muted()),
         ]),
         Line::from(vec![
             Span::styled("audits FAIL      ", theme::muted()),
-            Span::styled(format!("{:>4}", r.audits_fail),
-                         theme::warn().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{:>4}", r.audits_fail),
+                theme::warn().add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!("  {}%", pct(r.audits_fail)), theme::muted()),
         ]),
         Line::from(vec![
@@ -2165,33 +2251,69 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let c_inner = cfg_panel.inner(cfg_area);
     frame.render_widget(cfg_panel, cfg_area);
     let rc = &app.rebis_cfg;
-    let mark = |i: usize| if app.rebis_cfg_focus == i { "▸ " } else { "  " };
+    let mark = |i: usize| {
+        if app.rebis_cfg_focus == i {
+            "▸ "
+        } else {
+            "  "
+        }
+    };
     let dirty_tag = if app.rebis_cfg_dirty { " *" } else { "" };
     let cfg_lines = vec![
         Line::from(vec![
             Span::styled(format!("{}think cap ", mark(0)), theme::muted()),
-            Span::styled(format!("{} tok", rc.reasoning_budget),
-                         if app.rebis_cfg_focus == 0 { theme::text() } else { theme::muted() }),
+            Span::styled(
+                format!("{} tok", rc.reasoning_budget),
+                if app.rebis_cfg_focus == 0 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
+            ),
         ]),
         Line::from(vec![
             Span::styled(format!("{}sol ram  ", mark(1)), theme::muted()),
-            Span::styled(format!("{} MiB", rc.sol_cache_ram),
-                         if app.rebis_cfg_focus == 1 { theme::text() } else { theme::muted() }),
+            Span::styled(
+                format!("{} MiB", rc.sol_cache_ram),
+                if app.rebis_cfg_focus == 1 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
+            ),
         ]),
         Line::from(vec![
             Span::styled(format!("{}luna ram ", mark(2)), theme::muted()),
-            Span::styled(format!("{} MiB", rc.luna_cache_ram),
-                         if app.rebis_cfg_focus == 2 { theme::text() } else { theme::muted() }),
+            Span::styled(
+                format!("{} MiB", rc.luna_cache_ram),
+                if app.rebis_cfg_focus == 2 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
+            ),
         ]),
         Line::from(vec![
             Span::styled(format!("{}backoff  ", mark(3)), theme::muted()),
-            Span::styled(format!("{} s", rc.backoff_s),
-                         if app.rebis_cfg_focus == 3 { theme::text() } else { theme::muted() }),
+            Span::styled(
+                format!("{} s", rc.backoff_s),
+                if app.rebis_cfg_focus == 3 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
+            ),
         ]),
         Line::from(vec![
             Span::styled(format!("{}compact ", mark(4)), theme::muted()),
-            Span::styled(format!("{} tok", rc.compact_threshold),
-                         if app.rebis_cfg_focus == 4 { theme::text() } else { theme::muted() }),
+            Span::styled(
+                format!("{} tok", rc.compact_threshold),
+                if app.rebis_cfg_focus == 4 {
+                    theme::text()
+                } else {
+                    theme::muted()
+                },
+            ),
         ]),
         Line::from(Span::styled(
             format!("  applies on launch{dirty_tag}"),
@@ -2208,22 +2330,29 @@ fn render_rebis_tab(frame: &mut Frame, area: Rect, app: &App) {
     let lines: Vec<Line> = if r.recent.is_empty() {
         vec![Line::from(Span::styled(
             "no gateway events yet — route traffic through :8280",
-            theme::muted()))]
+            theme::muted(),
+        ))]
     } else {
-        r.recent.iter().rev().map(|e| {
-            let kind_style = match e.kind.as_str() {
-                "pipeline_audited" => theme::gold_muted(),
-                "steer_correct" => theme::warn(),
-                "compaction" => theme::info(),
-                _ => theme::muted(),
-            };
-            Line::from(vec![
-                Span::styled(format!("{} ", &e.ts.get(11..19).unwrap_or("")),
-                             theme::muted()),
-                Span::styled(format!("{:<18}", e.kind), kind_style),
-                Span::styled(e.detail.clone(), theme::text()),
-            ])
-        }).collect()
+        r.recent
+            .iter()
+            .rev()
+            .map(|e| {
+                let kind_style = match e.kind.as_str() {
+                    "pipeline_audited" => theme::gold_muted(),
+                    "steer_correct" => theme::warn(),
+                    "compaction" => theme::info(),
+                    _ => theme::muted(),
+                };
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", &e.ts.get(11..19).unwrap_or("")),
+                        theme::muted(),
+                    ),
+                    Span::styled(format!("{:<18}", e.kind), kind_style),
+                    Span::styled(e.detail.clone(), theme::text()),
+                ])
+            })
+            .collect()
     };
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), e_inner);
 }

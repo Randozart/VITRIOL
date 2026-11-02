@@ -21,22 +21,23 @@ const TINT: Color = Color::Rgb(0x1c, 0x26, 0x34);
 
 fn logo_lines(repo_root: &Path) -> Option<&'static Vec<String>> {
     static LOGO: OnceLock<Option<Vec<String>>> = OnceLock::new();
-    LOGO
-        .get_or_init(|| {
-            // canonical location only: the VITRIOL repo's assets dir
-            let p = repo_root.join("assets").join("braille-logo-80c.txt");
-            std::fs::read_to_string(p)
-                .ok()
-                .map(|text| text.lines().map(|l| l.to_string()).collect())
-        })
-        .as_ref()
+    LOGO.get_or_init(|| {
+        // canonical location only: the VITRIOL repo's assets dir
+        let p = repo_root.join("assets").join("braille-logo-80c.txt");
+        std::fs::read_to_string(p)
+            .ok()
+            .map(|text| text.lines().map(|l| l.to_string()).collect())
+    })
+    .as_ref()
 }
 
 /// Draw the FULL logo, horizontally centered, inside `area` - but only if
 /// the area fits every row (plus breathing room). No partial reveal: a cut
 /// braille stone looks broken, so too-small areas get nothing.
 pub fn render(frame: &mut Frame, area: Rect, repo_root: &Path) {
-    let Some(lines) = logo_lines(repo_root) else { return };
+    let Some(lines) = logo_lines(repo_root) else {
+        return;
+    };
     if area.height < 4 || area.width < 20 {
         return;
     }
@@ -47,7 +48,12 @@ pub fn render(frame: &mut Frame, area: Rect, repo_root: &Path) {
     let width = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
     let left_pad = area.width.saturating_sub(width as u16) / 2;
     let y = area.y + area.height - show as u16;
-    let rect = Rect { x: area.x, y, width: area.width, height: show as u16 };
+    let rect = Rect {
+        x: area.x,
+        y,
+        width: area.width,
+        height: show as u16,
+    };
     let style = Style::default().fg(TINT).add_modifier(Modifier::DIM);
     let spans: Vec<Line> = lines
         .iter()

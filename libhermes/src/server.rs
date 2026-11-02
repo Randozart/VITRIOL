@@ -104,7 +104,10 @@ fn scrub_secrets(content: &str) -> String {
     // plus known key prefixes. Captures are intentionally greedy to avoid leaks.
     let patterns: &[(&str, &str)] = &[
         // Key-value assignments (covers "key=xxx", "token: xxx", "secret xxx", etc.)
-        (r"(?i)(api[_-]?key|token|secret|password|credential|auth)[\s:=]+[^\s,;]{8,}", "[REDACTED:secret]"),
+        (
+            r"(?i)(api[_-]?key|token|secret|password|credential|auth)[\s:=]+[^\s,;]{8,}",
+            "[REDACTED:secret]",
+        ),
         // Google API key
         (r"AIza[0-9A-Za-z_-]{20,}", "[REDACTED:google-key]"),
         // OpenAI / generic sk- (12+ chars after prefix)
@@ -122,7 +125,10 @@ fn scrub_secrets(content: &str) -> String {
         // AWS
         (r"AKIA[0-9A-Z]{10,}", "[REDACTED:aws-key]"),
         // Stripe
-        (r"(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{10,}", "[REDACTED:stripe-key]"),
+        (
+            r"(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{10,}",
+            "[REDACTED:stripe-key]",
+        ),
         // Anthropic
         (r"sk-ant-[A-Za-z0-9_-]{10,}", "[REDACTED:anthropic-key]"),
     ];

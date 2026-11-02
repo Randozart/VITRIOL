@@ -64,7 +64,10 @@ impl Default for Config {
             full_n_ctx: 262_144,
             resize_enabled: true,
             engine_port: 8279,
-            project_dir: format!("{}/Desktop/Projects/VITRIOL", std::env::var("HOME").unwrap_or_default()),
+            project_dir: format!(
+                "{}/Desktop/Projects/VITRIOL",
+                std::env::var("HOME").unwrap_or_default()
+            ),
             engine_unit: "vitriol-server".into(),
             health_timeout_secs: 120,
             state_path: "/var/lib/vitriol-governor/state.json".into(),
@@ -75,8 +78,7 @@ impl Default for Config {
 
 impl Config {
     pub fn load(path: &str) -> Result<Config, String> {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {path}: {e}"))?;
+        let raw = std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))?;
         toml::from_str(&raw).map_err(|e| format!("parse {path}: {e}"))
     }
 

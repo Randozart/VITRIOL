@@ -152,8 +152,7 @@ impl Renderer {
                 self.flush();
                 let (bullet, pw) = self.item_prefix();
                 self.cur.push(Span::styled(bullet, theme::muted()));
-                self.cur
-                    .push(Span::styled(" ".repeat(pw), theme::text()));
+                self.cur.push(Span::styled(" ".repeat(pw), theme::text()));
                 self.indent += pw;
                 self.hang = self.indent;
                 self.prefix_widths.push(pw);
@@ -229,10 +228,8 @@ impl Renderer {
                     } else {
                         line.to_string()
                     };
-                    self.out.push(Line::from(Span::styled(
-                        shown,
-                        code_block_style(),
-                    )));
+                    self.out
+                        .push(Line::from(Span::styled(shown, code_block_style())));
                 }
             }
             pulldown_cmark::Event::End(pulldown_cmark::TagEnd::CodeBlock) => {
@@ -339,7 +336,11 @@ impl Renderer {
     /// start and never if one already exists (owner request 2026-09-03).
     fn gap(&mut self) {
         if !self.out.is_empty() && self.cur.is_empty() {
-            if self.out.last().map_or(false, |l: &Line| l.to_string().is_empty()) {
+            if self
+                .out
+                .last()
+                .map_or(false, |l: &Line| l.to_string().is_empty())
+            {
                 return;
             }
             self.out.push(Line::from(""));
@@ -404,7 +405,12 @@ fn wrap_line(line: &Line, width: usize, hang: usize) -> Vec<Line<'static>> {
 
 /// Coalesce a char+style run into spans, prepending `hang` blank spaces
 /// on continuation lines (line_idx > 0), and push as one wrapped line.
-fn push_chars_hang(out: &mut Vec<Line<'static>>, cur: &mut Vec<(char, Style)>, hang: usize, line_idx: usize) {
+fn push_chars_hang(
+    out: &mut Vec<Line<'static>>,
+    cur: &mut Vec<(char, Style)>,
+    hang: usize,
+    line_idx: usize,
+) {
     let mut spans: Vec<Span<'static>> = Vec::new();
     if hang > 0 && line_idx > 0 {
         spans.push(Span::styled(" ".repeat(hang), Style::default()));
@@ -502,7 +508,8 @@ mod tests {
     fn list_item_hanging_indent() {
         // A long item whose text wraps: continuation lines must align
         // under the item's text start (column 2), not under the bullet.
-        let text = "- this is a very long list item that should definitely wrap at the width boundary\n";
+        let text =
+            "- this is a very long list item that should definitely wrap at the width boundary\n";
         let lines = render(text, 30);
         let strs = text_lines(&lines);
         // First line has the bullet; continuation lines start with 2 spaces.
@@ -538,7 +545,11 @@ mod tests {
         let lines = render("first\n\nsecond\n", 40);
         let strs = text_lines(&lines);
         let gap_pos = strs.iter().position(|s| s.is_empty());
-        assert!(gap_pos.is_some(), "blank line between paragraphs: {:?}", strs);
+        assert!(
+            gap_pos.is_some(),
+            "blank line between paragraphs: {:?}",
+            strs
+        );
     }
 
     #[test]
@@ -561,7 +572,11 @@ mod tests {
         let lines = render("- item\n\nnext paragraph\n", 40);
         let strs = text_lines(&lines);
         let gap_pos = strs.iter().position(|s| s.is_empty());
-        assert!(gap_pos.is_some(), "blank line between list and paragraph: {:?}", strs);
+        assert!(
+            gap_pos.is_some(),
+            "blank line between list and paragraph: {:?}",
+            strs
+        );
     }
 
     #[test]

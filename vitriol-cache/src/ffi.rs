@@ -84,8 +84,10 @@ pub unsafe extern "C" fn vc_match(
     out_value: *mut u64,
     out_depth: *mut usize,
 ) -> c_int {
-    if engine.is_null() || (tokens.is_null() && n_tokens > 0)
-        || out_value.is_null() || out_depth.is_null()
+    if engine.is_null()
+        || (tokens.is_null() && n_tokens > 0)
+        || out_value.is_null()
+        || out_depth.is_null()
     {
         return VC_ERR;
     }
@@ -209,11 +211,7 @@ pub unsafe extern "C" fn vc_arc_free(arc: *mut VcArc) {
 /// # Safety
 /// `arc` valid; `out_evicted` writable (may be null to ignore the victim).
 #[no_mangle]
-pub unsafe extern "C" fn vc_arc_touch(
-    arc: *mut VcArc,
-    key: u64,
-    out_evicted: *mut u64,
-) -> c_int {
+pub unsafe extern "C" fn vc_arc_touch(arc: *mut VcArc, key: u64, out_evicted: *mut u64) -> c_int {
     if arc.is_null() {
         return VC_ERR;
     }
@@ -272,7 +270,10 @@ mod tests {
 
             let mut value: u64 = 0;
             let mut depth: usize = 0;
-            assert_eq!(vc_match(e, toks.as_ptr(), 4, &mut value, &mut depth), VC_HIT);
+            assert_eq!(
+                vc_match(e, toks.as_ptr(), 4, &mut value, &mut depth),
+                VC_HIT
+            );
             assert_eq!((value, depth), (100, 4));
 
             // replace: old handle comes back
@@ -285,7 +286,10 @@ mod tests {
             assert_eq!(vc_evict(e, 0, out.as_mut_ptr(), 8, &mut n), VC_OK);
             assert_eq!(n, 1);
             assert_eq!(out[0], 101);
-            assert_eq!(vc_match(e, toks.as_ptr(), 4, &mut value, &mut depth), VC_MISS);
+            assert_eq!(
+                vc_match(e, toks.as_ptr(), 4, &mut value, &mut depth),
+                VC_MISS
+            );
 
             vc_free(e);
         }
@@ -316,7 +320,16 @@ mod tests {
     #[test]
     fn null_args_are_errors_not_crashes() {
         unsafe {
-            assert_eq!(vc_insert(std::ptr::null_mut(), std::ptr::null(), 0, 1, std::ptr::null_mut()), VC_ERR);
+            assert_eq!(
+                vc_insert(
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    0,
+                    1,
+                    std::ptr::null_mut()
+                ),
+                VC_ERR
+            );
             let e = vc_new(0);
             let mut v = 0u64;
             let mut d = 0usize;

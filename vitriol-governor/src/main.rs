@@ -2,12 +2,12 @@
 //! YIELD/RESTORE via profile swap + systemd restart. RELIEVE (/kv-policy) and
 //! RESIZE (/ctx/resize) hooks land with engine stages G2/G3.
 
+use std::time::Duration;
 use vitriol_governor::config::Config;
 use vitriol_governor::engine;
 use vitriol_governor::observe::Observer;
 use vitriol_governor::policy::{Action, Policy, Sample};
 use vitriol_governor::state;
-use std::time::Duration;
 
 /// CLI parsing: (config path, once, dry-run).
 fn parse_cli() -> (String, bool, bool) {
@@ -101,8 +101,10 @@ fn execute_relieve(cfg: &Config, s: &Sample, floor: f32, dry_run: bool) {
         return;
     }
     match engine::kv_policy(cfg.engine_port, floor, true) {
-        Ok(v) => engine::log(&format!("relieve ok: swept={} resident={} buffer={}",
-            v["swept"], v["resident"], v["buffer_bytes"])),
+        Ok(v) => engine::log(&format!(
+            "relieve ok: swept={} resident={} buffer={}",
+            v["swept"], v["resident"], v["buffer_bytes"]
+        )),
         Err(e) => engine::log(&format!("ERROR relieve: {e}")),
     }
 }
@@ -126,8 +128,10 @@ fn execute_resize(cfg: &Config, n_ctx: u32, why: &str, dry_run: bool) {
         return;
     }
     match engine::ctx_resize(cfg.engine_port, n_ctx) {
-        Ok(v) => engine::log(&format!("resize ok: {} -> {} ({} slots spooled, {} tokens)",
-            v["n_ctx_old"], v["n_ctx_new"], v["n_spooled"], v["n_tokens_spooled"])),
+        Ok(v) => engine::log(&format!(
+            "resize ok: {} -> {} ({} slots spooled, {} tokens)",
+            v["n_ctx_old"], v["n_ctx_new"], v["n_spooled"], v["n_tokens_spooled"]
+        )),
         Err(e) => engine::log(&format!("ERROR resize: {e}")),
     }
 }
@@ -162,7 +166,9 @@ fn execute_yield(cfg: &Config, s: &Sample, dry_run: bool) {
             .map(|v| format!(
                 "model={} n_ctx={}",
                 v["model_path"].as_str().unwrap_or("?"),
-                v["default_generation_settings"]["n_ctx"].as_i64().unwrap_or(-1)
+                v["default_generation_settings"]["n_ctx"]
+                    .as_i64()
+                    .unwrap_or(-1)
             ))
             .unwrap_or_else(|| "props unavailable".into())
     ));

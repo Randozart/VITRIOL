@@ -18,21 +18,36 @@ impl Observer {
     /// `engine_pids` are the engine's; a foreign compute PID holding at
     /// least `tenant_min_mib` counts as a tenant (desktop compositor /
     /// browser GPU contexts stay below it and must not trigger yields).
-    pub fn sample(&self, engine_pids: &HashSet<u32>, engine_up: bool, tenant_min_mib: u64) -> Sample {
+    pub fn sample(
+        &self,
+        engine_pids: &HashSet<u32>,
+        engine_up: bool,
+        tenant_min_mib: u64,
+    ) -> Sample {
         let Ok(count) = self.nvml.device_count() else {
-            return Sample { free_mib_per_gpu: vec![], foreign_tenant: false, engine_up };
+            return Sample {
+                free_mib_per_gpu: vec![],
+                foreign_tenant: false,
+                engine_up,
+            };
         };
         let mut free = Vec::new();
         let mut foreign = false;
         for i in 0..count {
-            let Ok(dev) = self.nvml.device_by_index(i) else { continue };
+            let Ok(dev) = self.nvml.device_by_index(i) else {
+                continue;
+            };
             let (free_mib, dev_foreign) = device_sample(&dev, engine_pids, tenant_min_mib);
             if let Some(mib) = free_mib {
                 free.push(mib);
             }
             foreign = foreign || dev_foreign;
         }
-        Sample { free_mib_per_gpu: free, foreign_tenant: foreign, engine_up }
+        Sample {
+            free_mib_per_gpu: free,
+            foreign_tenant: foreign,
+            engine_up,
+        }
     }
 }
 
@@ -61,11 +76,19 @@ fn device_sample(
 /// children beyond the unit's MainPID).
 pub fn pids_by_comm(name: &str) -> HashSet<u32> {
     let mut out = HashSet::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else { return out };
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return out;
+    };
     for e in entries.flatten() {
-        let Some(fname) = e.file_name().to_str().map(String::from) else { continue };
-        let Ok(pid) = fname.parse::<u32>() else { continue };
-        let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else { continue };
+        let Some(fname) = e.file_name().to_str().map(String::from) else {
+            continue;
+        };
+        let Ok(pid) = fname.parse::<u32>() else {
+            continue;
+        };
+        let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) else {
+            continue;
+        };
         if comm.trim() == name {
             out.insert(pid);
         }

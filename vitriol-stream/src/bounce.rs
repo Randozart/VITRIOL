@@ -65,8 +65,7 @@ impl BounceRing {
             ));
         }
         driver::event_sync(slot.event)?;
-        let slice =
-            unsafe { std::slice::from_raw_parts_mut(slot.aligned, slot.capacity) };
+        let slice = unsafe { std::slice::from_raw_parts_mut(slot.aligned, slot.capacity) };
         Ok((&mut slice[0..len], slot.event))
     }
 }

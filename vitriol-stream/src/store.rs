@@ -50,8 +50,8 @@ unsafe impl Sync for AlignedBuf {}
 
 impl AlignedBuf {
     pub fn zeroed(len: usize, align: usize) -> AlignedBuf {
-        let layout = std::alloc::Layout::from_size_align(len.max(1), align)
-            .expect("AlignedBuf layout");
+        let layout =
+            std::alloc::Layout::from_size_align(len.max(1), align).expect("AlignedBuf layout");
         let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
@@ -199,7 +199,11 @@ impl Store {
         if scratch.len() < d.slice_bytes as usize {
             return Err("scratch smaller than slice_bytes".to_string());
         }
-        pread_exact(&self.file, &mut scratch.as_mut_slice()[0..d.slice_bytes as usize], off)?;
+        pread_exact(
+            &self.file,
+            &mut scratch.as_mut_slice()[0..d.slice_bytes as usize],
+            off,
+        )?;
         dst.copy_from_slice(&scratch.as_slice()[0..d.data_bytes as usize]);
         Ok(())
     }

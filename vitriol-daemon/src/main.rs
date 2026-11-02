@@ -170,10 +170,7 @@ async fn handle_status(state: &Mutex<DaemonState>) -> Result<serde_json::Value> 
     }))
 }
 
-async fn handle_load_model(
-    state: &Mutex<DaemonState>,
-    path: &str,
-) -> Result<serde_json::Value> {
+async fn handle_load_model(state: &Mutex<DaemonState>, path: &str) -> Result<serde_json::Value> {
     info!("Loading model from: {}", path);
 
     // TODO: Integrate llama.cpp
@@ -218,10 +215,7 @@ async fn handle_set_safety(state: &Mutex<DaemonState>, level: u32) -> Result<ser
 // Socket Handler
 // ============================================================================
 
-async fn handle_connection(
-    sock: tokio::net::UnixStream,
-    state: Mutex<DaemonState>,
-) -> Result<()> {
+async fn handle_connection(sock: tokio::net::UnixStream, state: Mutex<DaemonState>) -> Result<()> {
     let mut buf = vec![0u8; 4096];
     let mut stream = tokio::io::BufStream::new(sock);
     let mut recv_buf = Vec::new();
@@ -230,7 +224,7 @@ async fn handle_connection(
         // Read length prefix (4 bytes)
         let n = stream.read(&mut buf[..4]).await?;
         if n == 0 {
-            break;  // Connection closed
+            break; // Connection closed
         }
         if n < 4 {
             warn!("Short read on length prefix");
@@ -263,57 +257,59 @@ async fn handle_connection(
 
         // Handle command
         let response = match request.cmd.as_str() {
-            "STATUS" => {
-                match handle_status(&state).await {
-                    Ok(data) => Response::ok(data, request.id),
-                    Err(e) => Response::error(VitriolError::ProtocolError(e.to_string()), request.id),
-                }
-            }
+            "STATUS" => match handle_status(&state).await {
+                Ok(data) => Response::ok(data, request.id),
+                Err(e) => Response::error(VitriolError::ProtocolError(e.to_string()), request.id),
+            },
             "LOAD_MODEL" => {
-                let path = request.params.get("path")
+                let path = request
+                    .params
+                    .get("path")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 match handle_load_model(&state, path).await {
                     Ok(data) => Response::ok(data, request.id),
-                    Err(e) => Response::error(
-                        VitriolError::ModelLoadFailed(e.to_string()),
-                        request.id,
-                    ),
+                    Err(e) => {
+                        Response::error(VitriolError::ModelLoadFailed(e.to_string()), request.id)
+                    }
                 }
             }
             "INFER" => {
-                let prompt = request.params.get("prompt")
+                let prompt = request
+                    .params
+                    .get("prompt")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let max_tokens = request.params.get("max_tokens")
+                let max_tokens = request
+                    .params
+                    .get("max_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(100) as u32;
                 match handle_infer(&state, prompt, max_tokens).await {
                     Ok(data) => Response::ok(data, request.id),
-                    Err(e) => Response::error(
-                        VitriolError::InferenceFailed(e.to_string()),
-                        request.id,
-                    ),
+                    Err(e) => {
+                        Response::error(VitriolError::InferenceFailed(e.to_string()), request.id)
+                    }
                 }
             }
             "SET_SAFETY" => {
-                let level = request.params.get("level")
+                let level = request
+                    .params
+                    .get("level")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1) as u32;
                 match handle_set_safety(&state, level).await {
                     Ok(data) => Response::ok(data, request.id),
-                    Err(e) => Response::error(VitriolError::ProtocolError(e.to_string()), request.id),
+                    Err(e) => {
+                        Response::error(VitriolError::ProtocolError(e.to_string()), request.id)
+                    }
                 }
             }
-            "PING" => {
-                Response::ok(serde_json::json!({"pong": true}), request.id)
-            }
-            cmd => {
-                Response::error(
-                    VitriolError::ProtocolError(format!("Unknown command: {}", cmd)),
-                    request.id,
-                )
-            }
+            "PING" => Response::ok(serde_json::json!({"pong": true}), request.id),
+            cmd => Response::error(
+                VitriolError::ProtocolError(format!("Unknown command: {}", cmd)),
+                request.id,
+            ),
         };
 
         // Send response
@@ -332,9 +328,7 @@ async fn handle_connection(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info")
-    ).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     info!("VITRIOL Daemon starting...");
 

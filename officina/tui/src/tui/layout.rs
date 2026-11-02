@@ -61,7 +61,10 @@ fn mode_spans(
             format!("{} {}", symbol, label),
             Style::new().fg(color).bg(bg).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" · tab to switch mode", Style::new().fg(theme::MUTED).bg(bg)),
+        Span::styled(
+            " · tab to switch mode",
+            Style::new().fg(theme::MUTED).bg(bg),
+        ),
     ]
 }
 
@@ -151,10 +154,7 @@ fn elide_path_tail(label: &str, cap: usize) -> String {
 fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     // Brand line (owner request 2026-09-02): 🜖VITRIOL·OFFICINA lives in the
     // top-left permanently; the agent mode moved to the composer title.
-    let mut left = vec![Span::styled(
-        "🜖 VITRIOL·OFFICINA",
-        theme::banner(),
-    )];
+    let mut left = vec![Span::styled("🜖 VITRIOL·OFFICINA", theme::banner())];
     if state.is_streaming {
         // Light yellow, the informational voice (owner request 2026-09-02):
         // same tint the engine TUI uses for "prompt-eval …" — the process
@@ -176,9 +176,16 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
 
     // Right-align the session label; model id sits before it.
     let right_w = (right.chars().count() + 2) as u16;
-    let mid_w = if right.is_empty() { area.width } else { area.width.saturating_sub(right_w) };
-    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w.max(0))])
-        .split(Rect { width: area.width, ..area });
+    let mid_w = if right.is_empty() {
+        area.width
+    } else {
+        area.width.saturating_sub(right_w)
+    };
+    let cols =
+        Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w.max(0))]).split(Rect {
+            width: area.width,
+            ..area
+        });
 
     let mut mid_spans = left;
     if !model.is_empty() {
@@ -192,7 +199,13 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     // pad to push right span flush
     let _ = &mut line;
 
-    frame.render_widget(Paragraph::new(line), Rect { width: mid_w, ..cols[0] });
+    frame.render_widget(
+        Paragraph::new(line),
+        Rect {
+            width: mid_w,
+            ..cols[0]
+        },
+    );
     if !right.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(right, theme::muted())))
@@ -244,7 +257,6 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
-
     // Fresh screen → the stone rises, lifted four rows clear of the editor,
     // centered in the space it occupies, glimmering (mode: /glimmer).
     if state.entries.is_empty() {
@@ -487,7 +499,8 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let bw = badge.chars().count() as u16;
         if chat_area.width > bw {
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(badge, theme::muted()))).alignment(Alignment::Right),
+                Paragraph::new(Line::from(Span::styled(badge, theme::muted())))
+                    .alignment(Alignment::Right),
                 Rect {
                     x: chat_area.x,
                     width: chat_area.width,
@@ -575,7 +588,10 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Span::raw(after),
         ])
     };
-    frame.render_widget(Paragraph::new(line).style(Style::default().bg(theme::PANEL)), inner);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme::PANEL)),
+        inner,
+    );
 }
 
 fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
@@ -616,10 +632,7 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
 
     let view: Vec<Line> = lines.into_iter().take(inner.height as usize).collect();
-    frame.render_widget(
-        Paragraph::new(view).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(view).wrap(Wrap { trim: false }), inner);
 }
 
 // ── Popups / overlays ─────────────────────────────────────────────────────
@@ -695,7 +708,10 @@ fn render_command_popup(
         let selected = absolute == sel;
         let (name_style, desc_style, marker) = if selected {
             (
-                Style::new().fg(theme::GOLD).bg(theme::PANEL).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(theme::GOLD)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::BOLD),
                 Style::new().fg(theme::TEXT).bg(theme::PANEL),
                 "▸ ",
             )
@@ -707,10 +723,7 @@ fn render_command_popup(
             )
         };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{}{:<14}", marker, c.name),
-                name_style,
-            ),
+            Span::styled(format!("{}{:<14}", marker, c.name), name_style),
             Span::styled(
                 trunc(&desc, (inner.width as usize).saturating_sub(18)),
                 desc_style,
@@ -735,7 +748,12 @@ fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {
     let lines: Vec<Line> = state
         .diag_view
         .iter()
-        .map(|l| Line::from(Span::raw(trunc(l, (inner.width as usize).saturating_sub(1)))))
+        .map(|l| {
+            Line::from(Span::raw(trunc(
+                l,
+                (inner.width as usize).saturating_sub(1),
+            )))
+        })
         .collect();
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -779,7 +797,9 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
 }
 
 fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let h = area.height.min((state.resume_entries.len() as u16 + 3).max(8));
+    let h = area
+        .height
+        .min((state.resume_entries.len() as u16 + 3).max(8));
     let w = area.width.min(70);
     let modal = Rect {
         y: area.y + area.height.saturating_sub(h + 1),
@@ -805,7 +825,11 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.resume_sel;
-    let skip = if sel + 1 > visible { sel + 1 - visible } else { 0 };
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
     let entries = &state.resume_entries[skip.min(state.resume_entries.len())..];
 
     let mut lines: Vec<Line> = Vec::new();
@@ -838,7 +862,10 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         } else {
             lines.push(Line::from(vec![
                 Span::styled(format!("{:>5} ", when), Style::new().fg(theme::CYAN)),
-                Span::styled(format!("{:>3} ", e.msg_count), Style::new().fg(theme::MUTED)),
+                Span::styled(
+                    format!("{:>3} ", e.msg_count),
+                    Style::new().fg(theme::MUTED),
+                ),
                 Span::styled(format!(" {}", e.title), Style::new().fg(theme::TEXT)),
             ]));
         }
@@ -878,7 +905,11 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.tools_modal_sel;
-    let skip = if sel + 1 > visible { sel + 1 - visible } else { 0 };
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
 
     let mut lines: Vec<Line> = Vec::new();
     for row in skip..row_count {
@@ -912,7 +943,10 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         };
         if selected {
             lines.push(Line::from(Span::styled(
-                trunc(&format!("▸ {:<8} {}", label, status), (inner.width as usize).saturating_sub(1)),
+                trunc(
+                    &format!("▸ {:<8} {}", label, status),
+                    (inner.width as usize).saturating_sub(1),
+                ),
                 Style::new()
                     .fg(theme::BG)
                     .bg(theme::GOLD)
@@ -992,7 +1026,7 @@ fn gauge_row_bits(row: usize, h: usize, fill: f64) -> u32 {
 /// 2026-09-03). Commands render FROM AppState::LOCAL_COMMANDS so they
 /// cannot drift. ↑↓/jk scrolls, esc/enter/q closes.
 fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    use crate::tui::state::{HelpRowKind, help_rows};
+    use crate::tui::state::{help_rows, HelpRowKind};
     let rows = help_rows();
     let h = area.height.min(24);
     let w = area.width.min(78);
@@ -1020,7 +1054,11 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.help_sel;
-    let skip = if sel + 1 > visible { sel + 1 - visible } else { 0 };
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
     let label_w = 16usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1051,7 +1089,6 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
-
 
 fn trunc(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
@@ -1088,9 +1125,15 @@ mod tests {
 
     #[test]
     fn shorten_home_tilde_prefix() {
-        assert_eq!(shorten_home(std::path::Path::new("/home/randozart/Projects/VITRIOL")), "~/Projects/VITRIOL");
+        assert_eq!(
+            shorten_home(std::path::Path::new("/home/randozart/Projects/VITRIOL")),
+            "~/Projects/VITRIOL"
+        );
         assert_eq!(shorten_home(std::path::Path::new("/home/randozart")), "~");
-        assert_eq!(shorten_home(std::path::Path::new("/opt/stuff")), "/opt/stuff");
+        assert_eq!(
+            shorten_home(std::path::Path::new("/opt/stuff")),
+            "/opt/stuff"
+        );
     }
 
     #[test]
@@ -1101,9 +1144,15 @@ mod tests {
         s.session_id = "01a06380-1234".into();
         assert_eq!(session_label(&s).unwrap(), "SESSION ID: #01a06380 @ ~");
         s.cwd = std::path::PathBuf::from("/home/randozart/Projects/ontic");
-        assert_eq!(session_label(&s).unwrap(), "SESSION ID: #01a06380 @ ~/Projects/ontic");
+        assert_eq!(
+            session_label(&s).unwrap(),
+            "SESSION ID: #01a06380 @ ~/Projects/ontic"
+        );
         s.session_name = Some("vitriol session".into());
-        assert_eq!(session_label(&s).unwrap(), "\"vitriol session\" @ ~/Projects/ontic");
+        assert_eq!(
+            session_label(&s).unwrap(),
+            "\"vitriol session\" @ ~/Projects/ontic"
+        );
     }
 
     #[test]
@@ -1160,8 +1209,14 @@ mod motto_tests {
         assert_eq!(motto_for(64).as_deref(), Some(full));
         assert_eq!(motto_for(200).as_deref(), Some(full));
         // Tail words drop whole — never mid-word.
-        assert_eq!(motto_for(56).as_deref(), Some("VISITA INTERIOREM TERRAE RECTIFICANDO INVENIES OCCULTUM"));
-        assert_eq!(motto_for(38).as_deref(), Some("VISITA INTERIOREM TERRAE RECTIFICANDO"));
+        assert_eq!(
+            motto_for(56).as_deref(),
+            Some("VISITA INTERIOREM TERRAE RECTIFICANDO INVENIES OCCULTUM")
+        );
+        assert_eq!(
+            motto_for(38).as_deref(),
+            Some("VISITA INTERIOREM TERRAE RECTIFICANDO")
+        );
         assert_eq!(motto_for(24).as_deref(), Some("VISITA INTERIOREM TERRAE"));
         assert_eq!(motto_for(17).as_deref(), Some("VISITA INTERIOREM"));
         assert_eq!(motto_for(6).as_deref(), Some("VISITA"));

@@ -46,7 +46,11 @@ pub struct Sample {
 
 impl Sample {
     pub fn min_free(&self) -> u64 {
-        self.free_mib_per_gpu.iter().copied().min().unwrap_or(u64::MAX)
+        self.free_mib_per_gpu
+            .iter()
+            .copied()
+            .min()
+            .unwrap_or(u64::MAX)
     }
 }
 
@@ -109,7 +113,9 @@ impl Policy {
     fn cleared(&self, s: &Sample, cfg: &Config) -> bool {
         !s.foreign_tenant
             && !s.free_mib_per_gpu.is_empty()
-            && s.free_mib_per_gpu.iter().all(|&f| f >= cfg.ceiling_free_mib)
+            && s.free_mib_per_gpu
+                .iter()
+                .all(|&f| f >= cfg.ceiling_free_mib)
     }
 
     /// Feed one sample; returns actions to execute (possibly empty).

@@ -63,30 +63,34 @@ fn main() -> io::Result<()> {
 
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
-                    // SWEEP tab consumes navigation/typing keys itself.
-                    Event::Key(key)
-                        if key.kind == KeyEventKind::Press
-                            && app.tab == app::Tab::Sweep
-                            && !app.control_running
-                            && key.code != KeyCode::Tab
-                            && key.code != KeyCode::BackTab
-                    => match key.code {
-                            KeyCode::Up => app.sweep.focus_up(),
-                            KeyCode::Down => app.sweep.focus_down(),
-                            KeyCode::Left => app.sweep.adjust(-1),
-                            KeyCode::Right => app.sweep.adjust(1),
-                            KeyCode::Enter => {
-                                let action = app.sweep_action();
-                                app.run_action(action, &ctrl_tx);
-                            }
-                            KeyCode::Backspace => app.sweep.backspace(),
-                            KeyCode::Char(c) => {
-                                if c == 'q' { break; }
-                                app.sweep.type_char(c);
-                            }
-                            _ => {}
+                // SWEEP tab consumes navigation/typing keys itself.
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && app.tab == app::Tab::Sweep
+                        && !app.control_running
+                        && key.code != KeyCode::Tab
+                        && key.code != KeyCode::BackTab =>
+                {
+                    match key.code {
+                        KeyCode::Up => app.sweep.focus_up(),
+                        KeyCode::Down => app.sweep.focus_down(),
+                        KeyCode::Left => app.sweep.adjust(-1),
+                        KeyCode::Right => app.sweep.adjust(1),
+                        KeyCode::Enter => {
+                            let action = app.sweep_action();
+                            app.run_action(action, &ctrl_tx);
                         }
-                    Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                        KeyCode::Backspace => app.sweep.backspace(),
+                        KeyCode::Char(c) => {
+                            if c == 'q' {
+                                break;
+                            }
+                            app.sweep.type_char(c);
+                        }
+                        _ => {}
+                    }
+                }
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char('q') | KeyCode::Char('Q')
                         if app.tab != app::Tab::Officina
                             && (app.tab != app::Tab::Hermetis || app.search_query.is_empty()) =>

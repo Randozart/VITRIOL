@@ -27,7 +27,11 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     // Mouse capture: wheel scrolling through session history (owner request
     // 2026-09-02). Trade-off: terminals usually need Shift+drag to select
     // text while captured.
-    execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -110,7 +114,10 @@ fn fire_path() -> std::path::PathBuf {
 }
 
 fn load_fire(state: &mut AppState) {
-    if std::env::var("OFFICINA_FIRE").map(|v| v == "0").unwrap_or(false) {
+    if std::env::var("OFFICINA_FIRE")
+        .map(|v| v == "0")
+        .unwrap_or(false)
+    {
         state.fire_on = false;
     }
     if let Ok(s) = std::env::var("OFFICINA_FIRE_STYLE") {
@@ -156,7 +163,11 @@ fn persist_fire(state: &AppState) {
     } else {
         "off".to_string()
     };
-    let tint = if state.fire_tint { "tint on" } else { "tint off" };
+    let tint = if state.fire_tint {
+        "tint on"
+    } else {
+        "tint off"
+    };
     let _ = std::fs::write(fire_path(), format!("{line}\n{tint}\n"));
 }
 
@@ -227,7 +238,8 @@ fn tools_command(state: &mut state::AppState, args: &str) {
                     state.tool_default = m;
                     state.tools_gen += 1;
                     persist_tools_config(state);
-                    state.notice = Some((format!("tools default: {}", m.label()), "info".to_string()));
+                    state.notice =
+                        Some((format!("tools default: {}", m.label()), "info".to_string()));
                 }
                 None => tools_usage(state),
             }
@@ -490,9 +502,9 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     let path = entry.path.to_string_lossy().to_string();
                     state.resume_open = false;
                     if state.is_streaming {
-                        state
-                            .entries
-                            .push(state::ChatEntry::Diag("dissolve first — session not switched".into()));
+                        state.entries.push(state::ChatEntry::Diag(
+                            "dissolve first — session not switched".into(),
+                        ));
                         return;
                     }
                     let _ = bridge
@@ -529,14 +541,15 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         // ^c — copy (owner request 2026-09-03). Selection first, else the
         // last assistant reply. Never aborts, never quits.
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            let text = state
-                .extract_selection()
-                .or_else(|| state.last_assistant());
+            let text = state.extract_selection().or_else(|| state.last_assistant());
             match text.filter(|t| !t.trim().is_empty()) {
                 Some(t) => {
                     let n = t.chars().count();
                     let via = copy_to_clipboard(&t);
-                    state.notice = Some((format!("copied {} chars via {}", n, via), "info".to_string()));
+                    state.notice = Some((
+                        format!("copied {} chars via {}", n, via),
+                        "info".to_string(),
+                    ));
                 }
                 None => {
                     state.notice = Some(("nothing to copy".to_string(), "info".to_string()));
@@ -622,7 +635,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             }
             // /settings (alias /config) — consolidated UI settings.
             if msg.starts_with("/settings") || msg.starts_with("/config") {
-                let start = if msg.starts_with("/settings") { "/settings" } else { "/config" };
+                let start = if msg.starts_with("/settings") {
+                    "/settings"
+                } else {
+                    "/config"
+                };
                 let rest = msg[start.len()..].trim();
                 if rest.is_empty() {
                     state.entries.push(state::ChatEntry::Diag(format!(
@@ -654,8 +671,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                         }
                         "fire" => {
                             let label = state.set_fire(args);
-                            state.notice =
-                                Some((format!("fire: {}", label), "info".to_string()));
+                            state.notice = Some((format!("fire: {}", label), "info".to_string()));
                             persist_fire(state);
                             return;
                         }
@@ -763,7 +779,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     state.push_user(msg.clone());
                 }
                 let _ = bridge
-                    .request(RpcCommand::Steer { id: None, message: msg })
+                    .request(RpcCommand::Steer {
+                        id: None,
+                        message: msg,
+                    })
                     .await;
             } else {
                 if echo {
@@ -820,7 +839,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         }
         _ => {
             if let KeyCode::Char(c) = key.code {
-                if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                {
                     insert_char_at(&mut state.input, state.cursor, c);
                     state.cursor += 1;
                     state.cand_sel = 0;
@@ -878,8 +900,16 @@ fn b64(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -977,12 +1007,23 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
         }
         Some("get_state") => {
             state.apply_state(
-                data.get("model").and_then(|m| serde_json::from_value(m.clone()).ok()),
-                data.get("thinkingLevel").and_then(|v| v.as_str()).map(String::from),
-                data.get("isStreaming").and_then(|v| v.as_bool()).unwrap_or(false),
-                data.get("isCompacting").and_then(|v| v.as_bool()).unwrap_or(false),
-                data.get("sessionId").and_then(|v| v.as_str()).map(String::from),
-                data.get("sessionName").and_then(|v| v.as_str()).map(String::from),
+                data.get("model")
+                    .and_then(|m| serde_json::from_value(m.clone()).ok()),
+                data.get("thinkingLevel")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                data.get("isStreaming")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                data.get("isCompacting")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                data.get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                data.get("sessionName")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 data.get("messageCount").and_then(|v| v.as_u64()),
             );
         }
@@ -999,7 +1040,8 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                     let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
                     match role {
                         "user" => {
-                            let text = content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
+                            let text =
+                                content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
                             if !text.is_empty() {
                                 state.push_user(text);
                             }
@@ -1011,16 +1053,23 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                                 for b in blocks {
                                     match b.get("type").and_then(|t| t.as_str()).unwrap_or("") {
                                         "text" => {
-                                            if let Some(t) = b.get("text").and_then(|v| v.as_str()) {
+                                            if let Some(t) = b.get("text").and_then(|v| v.as_str())
+                                            {
                                                 if !t.trim().is_empty() {
-                                                    state.entries.push(state::ChatEntry::Assistant(t.to_string()));
+                                                    state.entries.push(
+                                                        state::ChatEntry::Assistant(t.to_string()),
+                                                    );
                                                 }
                                             }
                                         }
                                         "toolCall" => {
-                                            let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("tool");
-                                            let id = b.get("id").and_then(|v| v.as_str())
-                                                .or_else(|| b.get("toolCallId").and_then(|v| v.as_str()));
+                                            let name = b
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("tool");
+                                            let id = b.get("id").and_then(|v| v.as_str()).or_else(
+                                                || b.get("toolCallId").and_then(|v| v.as_str()),
+                                            );
                                             let args = b
                                                 .get("arguments")
                                                 .or_else(|| b.get("args"))
@@ -1043,11 +1092,15 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                             }
                         }
                         "toolResult" => {
-                            let id = m.get("toolCallId").and_then(|v| v.as_str())
+                            let id = m
+                                .get("toolCallId")
+                                .and_then(|v| v.as_str())
                                 .or_else(|| m.get("id").and_then(|v| v.as_str()));
                             let name = m.get("toolName").and_then(|v| v.as_str()).unwrap_or("");
-                            let text = content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
-                            let is_err = m.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+                            let text =
+                                content_text(m.get("content").unwrap_or(&serde_json::Value::Null));
+                            let is_err =
+                                m.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
                             // id-matched completion; name only when the record
                             // lacks ids (legacy sessions).
                             state.tool_end(id, name, &text, is_err);
@@ -1086,8 +1139,7 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
 /// One shot of the compaction auto-continue (owner choice B): sent once
 /// per threshold compaction. Deliberately generic — the model knows what
 /// it was doing; we just hand it back the wheel.
-const CONTINUE_PROMPT: &str =
-    "Continue the open work — pick up exactly where you left off.";
+const CONTINUE_PROMPT: &str = "Continue the open work — pick up exactly where you left off.";
 
 /// Handle one agent event. Returns true when the run loop should submit
 /// the compaction auto-continue (see CONTINUE_PROMPT).
@@ -1135,13 +1187,22 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             }
         }
         "tool_execution_start" => {
-            let name = fields.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool");
+            let name = fields
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
             let tool_call_id = fields.get("toolCallId").and_then(|v| v.as_str());
-            let args = fields.get("args").cloned().unwrap_or(serde_json::Value::Null);
+            let args = fields
+                .get("args")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             state.tool_start(tool_call_id, name, &args);
         }
         "tool_execution_update" => {
-            let name = fields.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool");
+            let name = fields
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
             let tool_call_id = fields.get("toolCallId").and_then(|v| v.as_str());
             // partialResult can be a string or an object with a "content" array.
             let text = fields
@@ -1160,14 +1221,25 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                         c.as_str().map(String::from)
                     }
                 })
-                .or_else(|| fields.get("partialResult").and_then(|v| v.as_str()).map(String::from))
+                .or_else(|| {
+                    fields
+                        .get("partialResult")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                })
                 .unwrap_or_default();
             state.tool_update(tool_call_id, name, &text);
         }
         "tool_execution_end" => {
-            let name = fields.get("toolName").and_then(|v| v.as_str()).unwrap_or("tool");
+            let name = fields
+                .get("toolName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("tool");
             let tool_call_id = fields.get("toolCallId").and_then(|v| v.as_str());
-            let is_err = fields.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_err = fields
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             // Extract result text from result.content[]
             let result_text = fields
                 .get("result")
@@ -1195,7 +1267,10 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.tool_end(tool_call_id, name, &result_text, is_err);
         }
         "extension_error" => {
-            let path = fields.get("extensionPath").and_then(|v| v.as_str()).unwrap_or("?");
+            let path = fields
+                .get("extensionPath")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let err = fields.get("error").and_then(|v| v.as_str()).unwrap_or("?");
             state.entries.push(state::ChatEntry::Diag(format!(
                 "extension {}: {}",
@@ -1213,7 +1288,9 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.is_streaming = true;
         }
         "auto_retry_end" => {
-            state.entries.push(state::ChatEntry::Diag("retry settled".to_string()));
+            state
+                .entries
+                .push(state::ChatEntry::Diag("retry settled".to_string()));
         }
         "compaction_start" => {
             state.is_compacting = true;
@@ -1223,8 +1300,14 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         "compaction_end" => {
             state.is_compacting = false;
             let reason = fields.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-            let will_retry = fields.get("willRetry").and_then(|v| v.as_bool()).unwrap_or(false);
-            let aborted = fields.get("aborted").and_then(|v| v.as_bool()).unwrap_or(false);
+            let will_retry = fields
+                .get("willRetry")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let aborted = fields
+                .get("aborted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let err = fields
                 .get("errorMessage")
                 .and_then(|v| v.as_str())
@@ -1232,10 +1315,9 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             if let Some(e) = err {
                 // Overflow-recovery failures carried this silently before —
                 // the owner saw "compacted and stopped" with no explanation.
-                state.entries.push(state::ChatEntry::Diag(format!(
-                    "compaction failed: {}",
-                    e
-                )));
+                state
+                    .entries
+                    .push(state::ChatEntry::Diag(format!("compaction failed: {}", e)));
             } else {
                 let result = fields.get("result");
                 let before = result
@@ -1252,7 +1334,11 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                     "context compacted{} ({}){}",
                     nums,
                     reason,
-                    if will_retry { " — auto-retry follows" } else { "" },
+                    if will_retry {
+                        " — auto-retry follows"
+                    } else {
+                        ""
+                    },
                 )));
             }
             // Pick-the-work-back-up: threshold compactions end the run BY
@@ -1274,7 +1360,10 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         }
         "model_select" => {
             if let Ok(m) = serde_json::from_value::<crate::rpc::protocol::Model>(
-                fields.get("model").cloned().unwrap_or(serde_json::Value::Null),
+                fields
+                    .get("model")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             ) {
                 state.model = Some(m);
             }
@@ -1296,7 +1385,10 @@ async fn handle_ui_request(
 ) {
     match method {
         "setWidget" => {
-            let key = fields.get("widgetKey").and_then(|v| v.as_str()).unwrap_or("widget");
+            let key = fields
+                .get("widgetKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("widget");
             let lines: Vec<String> = fields
                 .get("widgetLines")
                 .and_then(|l| l.as_array())
@@ -1316,7 +1408,10 @@ async fn handle_ui_request(
         }
         "notify" => {
             let msg = fields.get("message").and_then(|v| v.as_str()).unwrap_or("");
-            let ntype = fields.get("notifyType").and_then(|v| v.as_str()).unwrap_or("info");
+            let ntype = fields
+                .get("notifyType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("info");
             if ntype == "error" || ntype == "warning" {
                 state.entries.push(state::ChatEntry::Diag(msg.to_string()));
             } else {
@@ -1324,8 +1419,14 @@ async fn handle_ui_request(
             }
         }
         "setStatus" => {
-            let key = fields.get("statusKey").and_then(|v| v.as_str()).unwrap_or("");
-            let text = fields.get("statusText").and_then(|v| v.as_str()).unwrap_or("");
+            let key = fields
+                .get("statusKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let text = fields
+                .get("statusText")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if key == "engine" {
                 // vitriol engine status surfaces as a notice line
                 state.notice = Some((text.to_string(), "info".to_string()));
@@ -1388,7 +1489,12 @@ mod tests {
         // Viewport tall enough for every line (6): "☿ alpha", "", "☿ beta",
         // "", "☿ gamma", "" — offset-from-bottom anchoring with scroll 0
         // maps screen rows 1:1 onto lines.
-        s.last_chat_area = Some(Rect { x: 0, y: 0, width: 40, height: 6 });
+        s.last_chat_area = Some(Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 6,
+        });
         s.sel_anchor = Some((0, 0));
         s.sel_head = Some((30, 0));
         let t = s.extract_selection().unwrap();
@@ -1455,7 +1561,12 @@ mod replay_tests {
                     assistants += 1;
                     assert_eq!(t, "Done.");
                 }
-                state::ChatEntry::Tool { running, error, output, .. } => {
+                state::ChatEntry::Tool {
+                    running,
+                    error,
+                    output,
+                    ..
+                } => {
                     tools.push((*running, *error, output.clone()));
                 }
                 _ => {}
@@ -1516,7 +1627,11 @@ mod compaction_tests {
                 _ => None,
             })
             .collect();
-        assert!(diag.iter().any(|d| d.contains("81000 → 32000 tok")), "{:?}", diag);
+        assert!(
+            diag.iter().any(|d| d.contains("81000 → 32000 tok")),
+            "{:?}",
+            diag
+        );
         assert!(diag.iter().any(|d| d.contains("picking the work back up")));
     }
 
@@ -1549,6 +1664,8 @@ mod compaction_tests {
                 _ => None,
             })
             .collect();
-        assert!(diag.iter().any(|d| d.contains("compaction failed: Context overflow recovery failed")));
+        assert!(diag
+            .iter()
+            .any(|d| d.contains("compaction failed: Context overflow recovery failed")));
     }
 }

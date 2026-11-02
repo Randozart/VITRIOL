@@ -104,10 +104,8 @@ pub fn query_processes(gpus: &[GpuSnapshot]) -> Vec<GpuProcess> {
         Ok(o) if o.status.success() => o,
         _ => return Vec::new(),
     };
-    let uuid_to_index: HashMap<&str, u8> = gpus
-        .iter()
-        .map(|g| (g.uuid.as_str(), g.index))
-        .collect();
+    let uuid_to_index: HashMap<&str, u8> =
+        gpus.iter().map(|g| (g.uuid.as_str(), g.index)).collect();
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter(|l| !l.trim().is_empty())

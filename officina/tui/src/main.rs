@@ -13,7 +13,10 @@ use clap::Parser;
 use rpc::bridge::RpcBridge;
 
 #[derive(Parser)]
-#[command(name = "officina", about = "Ratatui TUI for Officina — pi-coding-agent frontend")]
+#[command(
+    name = "officina",
+    about = "Ratatui TUI for Officina — pi-coding-agent frontend"
+)]
 struct Cli {
     /// Working directory (where pi-coding-agent will run). Defaults to the
     /// directory officina was LAUNCHED from — the old compile-time default

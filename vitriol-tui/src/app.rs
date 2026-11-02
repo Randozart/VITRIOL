@@ -178,7 +178,12 @@ impl LogSource {
         let rebis = std::env::var("VITRIOL_TUI_ENABLE_REBIS").as_deref() == Ok("1");
         let hermetis = std::env::var("VITRIOL_TUI_ENABLE_HERMETIS").as_deref() == Ok("1");
         if rebis {
-            order.extend([LogSource::Luna, LogSource::Mercury, LogSource::Traffic, LogSource::Supervise]);
+            order.extend([
+                LogSource::Luna,
+                LogSource::Mercury,
+                LogSource::Traffic,
+                LogSource::Supervise,
+            ]);
         }
         if hermetis {
             order.extend([LogSource::Hermetis, LogSource::Embed]);
@@ -198,8 +203,11 @@ impl LogSource {
 /// Application state held across the event loop.
 // 2026-09-01 spring cleaning: GPU labels updated from the retired REBIS
 // naming (Sol/Luna cards) to the actual hardware.
-pub const SWEEP_GPU_OPTS: [&str; 3] =
-    ["GPU0 — RTX 3060 (12 GiB)", "GPU1 — GTX 1070 Ti (8 GiB)", "split across both"];
+pub const SWEEP_GPU_OPTS: [&str; 3] = [
+    "GPU0 — RTX 3060 (12 GiB)",
+    "GPU1 — GTX 1070 Ti (8 GiB)",
+    "split across both",
+];
 pub const SWEEP_CTX_PRESETS: [u32; 4] = [8192, 16384, 32768, 65536];
 pub const SWEEP_MINFREE_PRESETS: [u32; 3] = [1024, 2048, 4096];
 /// Tensor-split presets for the "split across both" target. The live
@@ -231,8 +239,12 @@ impl Default for SweepState {
 }
 
 impl SweepState {
-    pub fn focus_down(&mut self) { self.focus = (self.focus + 1) % 4; }
-    pub fn focus_up(&mut self) { self.focus = (self.focus + 3) % 4; }
+    pub fn focus_down(&mut self) {
+        self.focus = (self.focus + 1) % 4;
+    }
+    pub fn focus_up(&mut self) {
+        self.focus = (self.focus + 3) % 4;
+    }
 
     pub fn adjust(&mut self, dir: i32) {
         match self.focus {
@@ -240,9 +252,8 @@ impl SweepState {
                 self.gpu_sel = (self.gpu_sel as i32 + dir).rem_euclid(3) as usize;
             }
             2 => {
-                self.ctx_idx = (self.ctx_idx as i32 + dir)
-                    .rem_euclid(SWEEP_CTX_PRESETS.len() as i32)
-                    as usize;
+                self.ctx_idx =
+                    (self.ctx_idx as i32 + dir).rem_euclid(SWEEP_CTX_PRESETS.len() as i32) as usize;
             }
             3 => {
                 self.min_free_idx = (self.min_free_idx as i32 + dir)
@@ -278,7 +289,11 @@ impl SweepState {
             .unwrap_or(0);
         let kv = SWEEP_CTX_PRESETS[self.ctx_idx] * 32 / 1024; // ~32 KiB/tok conservative
         let used = weights + kv;
-        (weights > 0 && used <= vram.saturating_sub(min_free), used, vram - min_free)
+        (
+            weights > 0 && used <= vram.saturating_sub(min_free),
+            used,
+            vram - min_free,
+        )
     }
 
     pub fn devices_arg(&self) -> (String, Option<String>) {
@@ -303,9 +318,13 @@ pub struct RebisConfig {
 
 impl Default for RebisConfig {
     fn default() -> Self {
-        Self { reasoning_budget: 2048, sol_cache_ram: 1024,
-               luna_cache_ram: 512, backoff_s: 15,
-               compact_threshold: 48000 }
+        Self {
+            reasoning_budget: 2048,
+            sol_cache_ram: 1024,
+            luna_cache_ram: 512,
+            backoff_s: 15,
+            compact_threshold: 48000,
+        }
     }
 }
 
@@ -315,11 +334,17 @@ impl RebisConfig {
     pub fn load(home: &std::path::Path) -> Self {
         let mut cfg = Self::default();
         let path = home.join(REBIS_ENV_PATH);
-        let Ok(text) = std::fs::read_to_string(path) else { return cfg };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return cfg;
+        };
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             let v: u32 = v.trim().parse().unwrap_or(0);
-            if v == 0 { continue; }
+            if v == 0 {
+                continue;
+            }
             match k.trim() {
                 "REBIS_REASONING_BUDGET" => cfg.reasoning_budget = v,
                 "REBIS_SOL_CACHE_RAM" => cfg.sol_cache_ram = v,
@@ -1022,23 +1047,36 @@ impl App {
             (v as i32 + d * sz as i32).clamp(lo as i32, hi as i32) as u32
         };
         let changed = match self.rebis_cfg_focus {
-            0 => { self.rebis_cfg.reasoning_budget =
-                       step(self.rebis_cfg.reasoning_budget, dir, 256, 8192, 256); true }
-            1 => { self.rebis_cfg.sol_cache_ram =
-                       step(self.rebis_cfg.sol_cache_ram, dir, 256, 8192, 256); true }
-            2 => { self.rebis_cfg.luna_cache_ram =
-                       step(self.rebis_cfg.luna_cache_ram, dir, 128, 4096, 128); true }
-            3 => { self.rebis_cfg.backoff_s =
-                       step(self.rebis_cfg.backoff_s, dir, 5, 120, 5); true }
-            4 => { self.rebis_cfg.compact_threshold =
-                       step(self.rebis_cfg.compact_threshold, dir, 8000, 120000, 4000); true }
+            0 => {
+                self.rebis_cfg.reasoning_budget =
+                    step(self.rebis_cfg.reasoning_budget, dir, 256, 8192, 256);
+                true
+            }
+            1 => {
+                self.rebis_cfg.sol_cache_ram =
+                    step(self.rebis_cfg.sol_cache_ram, dir, 256, 8192, 256);
+                true
+            }
+            2 => {
+                self.rebis_cfg.luna_cache_ram =
+                    step(self.rebis_cfg.luna_cache_ram, dir, 128, 4096, 128);
+                true
+            }
+            3 => {
+                self.rebis_cfg.backoff_s = step(self.rebis_cfg.backoff_s, dir, 5, 120, 5);
+                true
+            }
+            4 => {
+                self.rebis_cfg.compact_threshold =
+                    step(self.rebis_cfg.compact_threshold, dir, 8000, 120000, 4000);
+                true
+            }
             _ => false,
         };
         if changed {
             match self.rebis_cfg.save(&self.cfg.home_dir) {
                 Ok(()) => self.rebis_cfg_dirty = false,
-                Err(e) => self.push_control_line(format!(
-                    "rebis config save failed: {e}")),
+                Err(e) => self.push_control_line(format!("rebis config save failed: {e}")),
             }
         }
     }

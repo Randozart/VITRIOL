@@ -137,7 +137,10 @@ fn parse_gguf(path: &str) -> std::io::Result<(u64, Vec<GgufTensor>)> {
     // list is contiguous).
     let _ = max_end;
     let data_start = derive_data_start(&mut f, list_start, &tensors, alignment)?;
-    eprintln!("shard {path}: header_end={} data_start={data_start}", f.stream_position()?);
+    eprintln!(
+        "shard {path}: header_end={} data_start={data_start}",
+        f.stream_position()?
+    );
     Ok((data_start, tensors))
 }
 
@@ -171,7 +174,7 @@ fn derive_data_start(
 fn dtype_size(dtype: u32, n_elements: u64) -> Option<u64> {
     // bytes per element for the types ffn_down_exps uses here
     let bpe: f64 = match dtype {
-        8 => 34.0 / 32.0,   // q8_0
+        8 => 34.0 / 32.0,    // q8_0
         11 => 144.0 / 256.0, // q3_K
         12 => 144.0 / 256.0, // q4_K is 64/256.. keep table honest:
         23 => 110.0 / 256.0, // IQ3_S
@@ -188,7 +191,11 @@ fn main() {
         std::process::exit(1);
     }
     let layers: Vec<u32> = (0u32..48).collect();
-    let kinds: [(u32, &str); 3] = [(0, "ffn_up_exps"), (1, "ffn_gate_exps"), (2, "ffn_down_exps")];
+    let kinds: [(u32, &str); 3] = [
+        (0, "ffn_up_exps"),
+        (1, "ffn_gate_exps"),
+        (2, "ffn_down_exps"),
+    ];
 
     let store = Store::open(&args[1]).expect("store open");
     println!("store tensors: {}", store.n_tensors());
@@ -202,7 +209,9 @@ fn main() {
         for t in tensors {
             // First shard wins: split shards repeat the full tensor list;
             // a tensor's data lives in the shard that first declares it.
-            by_name.entry(t.name.clone()).or_insert((shard_path.clone(), t, data_start));
+            by_name
+                .entry(t.name.clone())
+                .or_insert((shard_path.clone(), t, data_start));
         }
     }
 
@@ -210,57 +219,55 @@ fn main() {
     let mut total_checked = 0usize;
     for layer in layers {
         for (kind, kind_name) in kinds {
-        let Some(tid) = store.find_tensor(layer, kind) else {
-            println!("layer {layer} {kind_name}: no store tensor");
-            continue;
-        };
-        let d = store.desc(tid).unwrap();
-        let name = format!("blk.{layer}.{kind_name}.weight");
-        let Some((shard_path, t, data_start)) = by_name.get(&name) else {
-            println!("layer {layer}: not in gguf shards");
-            continue;
-        };
-        // The GGUF expert stride equals the store slice stride (mkfs wrote
-        // the store from these tensors with this very stride).
-        println!(
-            "layer {layer} {kind_name}: tid={tid} experts={} slice={} gguf_shard={}",
-            d.n_experts, d.slice_bytes,
-            shard_path.rsplit('/').next().unwrap_or("?")
-        );
+            let Some(tid) = store.find_tensor(layer, kind) else {
+                println!("layer {layer} {kind_name}: no store tensor");
+                continue;
+            };
+            let d = store.desc(tid).unwrap();
+            let name = format!("blk.{layer}.{kind_name}.weight");
+            let Some((shard_path, t, data_start)) = by_name.get(&name) else {
+                println!("layer {layer}: not in gguf shards");
+                continue;
+            };
+            // The GGUF expert stride equals the store slice stride (mkfs wrote
+            // the store from these tensors with this very stride).
+            println!(
+                "layer {layer} {kind_name}: tid={tid} experts={} slice={} gguf_shard={}",
+                d.n_experts,
+                d.slice_bytes,
+                shard_path.rsplit('/').next().unwrap_or("?")
+            );
 
-        let mut f = std::fs::File::open(shard_path).unwrap();
-        use std::io::{Read, Seek, SeekFrom};
-        let mut sbuf = AlignedBuf::zeroed(d.slice_bytes as usize, 512);
-        let mut gbuf = vec![0u8; d.data_bytes as usize];
-        let mut layer_bad = 0usize;
-        for e in 0..d.n_experts {
-            store
-                .read_expert_padded(tid, e, sbuf.as_mut_slice())
-                .unwrap_or_else(|err| panic!("store read l{layer} {kind_name} e{e}: {err}"));
-            let goff = data_start + t.offset + e as u64 * u64::from(d.slice_bytes);
-            f.seek(SeekFrom::Start(goff)).unwrap();
-            f.read_exact(&mut gbuf).unwrap();
-            total_checked += 1;
-            if &sbuf.as_slice()[0..d.data_bytes as usize] != gbuf.as_slice() {
-                layer_bad += 1;
-                total_mismatch += 1;
-                if layer_bad <= 3 {
-                    println!(
+            let mut f = std::fs::File::open(shard_path).unwrap();
+            use std::io::{Read, Seek, SeekFrom};
+            let mut sbuf = AlignedBuf::zeroed(d.slice_bytes as usize, 512);
+            let mut gbuf = vec![0u8; d.data_bytes as usize];
+            let mut layer_bad = 0usize;
+            for e in 0..d.n_experts {
+                store
+                    .read_expert_padded(tid, e, sbuf.as_mut_slice())
+                    .unwrap_or_else(|err| panic!("store read l{layer} {kind_name} e{e}: {err}"));
+                let goff = data_start + t.offset + e as u64 * u64::from(d.slice_bytes);
+                f.seek(SeekFrom::Start(goff)).unwrap();
+                f.read_exact(&mut gbuf).unwrap();
+                total_checked += 1;
+                if &sbuf.as_slice()[0..d.data_bytes as usize] != gbuf.as_slice() {
+                    layer_bad += 1;
+                    total_mismatch += 1;
+                    if layer_bad <= 3 {
+                        println!(
                         "  MISMATCH layer {layer} expert {e}: store[0..8]={:02x?} gguf[0..8]={:02x?}",
                         &sbuf.as_slice()[0..8],
                         &gbuf[0..8]
                     );
+                    }
                 }
             }
-        }
-        println!(
-            "layer {layer} {kind_name}: {} / {} experts differ",
-            layer_bad,
-            d.n_experts
-        );
+            println!(
+                "layer {layer} {kind_name}: {} / {} experts differ",
+                layer_bad, d.n_experts
+            );
         }
     }
-    println!(
-        "TOTAL: {total_mismatch} / {total_checked} expert slices differ"
-    );
+    println!("TOTAL: {total_mismatch} / {total_checked} expert slices differ");
 }

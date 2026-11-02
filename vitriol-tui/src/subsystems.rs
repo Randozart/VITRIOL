@@ -75,16 +75,14 @@ fn service_rows(cfg: &Config, snap: &Snapshot) -> Vec<Row> {
     // services (SS2 gateway fold-in). Pollers retained; restore by
     // re-adding the rows here if those services ever return.
 
-    vec![
-        Row {
-            glyph: theme::GLYPH_GEN,
-            name: "GEN",
-            value: gen.1,
-            status: gen.0,
-            config: vec!["server.port", "vitriol.mode"],
-            group: GROUP_SERVICES,
-        },
-    ]
+    vec![Row {
+        glyph: theme::GLYPH_GEN,
+        name: "GEN",
+        value: gen.1,
+        status: gen.0,
+        config: vec!["server.port", "vitriol.mode"],
+        group: GROUP_SERVICES,
+    }]
 }
 
 /// officina auto-route launch config, shown with the ascensus row.
@@ -112,7 +110,12 @@ fn layer_rows(cfg: &Config) -> Vec<Row> {
         } else {
             secrets.model.clone()
         };
-        format!("cloud escalation · {} · {model}{}{}", secrets.mask(), route_suffix(), "")
+        format!(
+            "cloud escalation · {} · {model}{}{}",
+            secrets.mask(),
+            route_suffix(),
+            ""
+        )
     } else {
         format!("cloud escalation · no key{}", route_suffix())
     };

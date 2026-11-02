@@ -75,10 +75,7 @@ pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, Opt
     let oh: f64 = if hw.gpus.is_empty() {
         2000.0
     } else {
-        hw.gpus
-            .iter()
-            .map(|g| gpu_overhead(&g.compute_cap))
-            .sum()
+        hw.gpus.iter().map(|g| gpu_overhead(&g.compute_cap)).sum()
     };
     let max_block = model.block_count.min(24) as u32;
 

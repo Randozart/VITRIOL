@@ -63,7 +63,10 @@ impl GlimmerMode {
     }
 
     pub fn next(self) -> GlimmerMode {
-        let i = GlimmerMode::ALL.iter().position(|m| *m == self).unwrap_or(0);
+        let i = GlimmerMode::ALL
+            .iter()
+            .position(|m| *m == self)
+            .unwrap_or(0);
         GlimmerMode::ALL[(i + 1) % GlimmerMode::ALL.len()]
     }
 }
@@ -124,10 +127,7 @@ fn glint_color(peak: (u8, u8, u8), t: f64) -> ratatui::style::Color {
 
 /// Deterministic 32-bit cell hash (no RNG state; any frame reproducible).
 pub(crate) fn cell_hash(x: u32, y: u32, step: u32) -> u32 {
-    let mut h = x
-        .wrapping_mul(73856093)
-        ^ y.wrapping_mul(19349663)
-        ^ step.wrapping_mul(83492791);
+    let mut h = x.wrapping_mul(73856093) ^ y.wrapping_mul(19349663) ^ step.wrapping_mul(83492791);
     h ^= h >> 16;
     h = h.wrapping_mul(0x7FEB352D);
     h ^= h >> 15;
@@ -138,10 +138,7 @@ pub(crate) fn cell_hash(x: u32, y: u32, step: u32) -> u32 {
 
 /// Non-empty art lines from an embedded asset (trailing blank rows dropped).
 fn art_lines(raw: &'static str) -> Vec<String> {
-    let mut lines: Vec<String> = raw
-        .lines()
-        .map(|l| l.trim_end().to_string())
-        .collect();
+    let mut lines: Vec<String> = raw.lines().map(|l| l.trim_end().to_string()).collect();
     strip_braille_margins(&mut lines);
     lines
 }
@@ -232,15 +229,20 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
         GlimmerMode::Off | GlimmerMode::Breathe => {
             let style = if mode == GlimmerMode::Breathe {
                 let t = 0.5
-                    - 0.5 * (2.0 * std::f64::consts::PI * phase_ms as f64 / BREATHE_PERIOD_MS)
-                        .cos();
+                    - 0.5
+                        * (2.0 * std::f64::consts::PI * phase_ms as f64 / BREATHE_PERIOD_MS).cos();
                 Style::default().fg(glint_color(BREATHE_PEAK, t))
             } else {
                 base
             };
             lines
                 .iter()
-                .map(|l| Line::from(Span::styled(format!("{}{}", " ".repeat(left_pad as usize), l), style)))
+                .map(|l| {
+                    Line::from(Span::styled(
+                        format!("{}{}", " ".repeat(left_pad as usize), l),
+                        style,
+                    ))
+                })
                 .collect()
         }
         GlimmerMode::Shimmer => {
@@ -311,7 +313,11 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
                     let mut cur: Option<u32> = None;
                     for (col, ch) in l.chars().enumerate() {
                         let h = cell_hash(col as u32, row as u32, step);
-                        let g = if h % 1024 < TWINKLE_ODDS { Some(h % 128) } else { None };
+                        let g = if h % 1024 < TWINKLE_ODDS {
+                            Some(h % 128)
+                        } else {
+                            None
+                        };
                         match (cur, g) {
                             (Some(c), Some(n)) if (c / 32) == (n / 32) => plain.push(ch),
                             (Some(c), _) => {
@@ -348,9 +354,18 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
 /// `green` selects the emerald streak peak (owner request 2026-09-03).
 fn glint_span2(text: &str, i: f64, green: bool) -> Span<'static> {
     if i <= 0.02 {
-        Span::styled(text.to_string(), Style::default().fg(theme::WATERMARK).add_modifier(Modifier::DIM))
+        Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(theme::WATERMARK)
+                .add_modifier(Modifier::DIM),
+        )
     } else {
-        let peak = if green { SHIMMER_STREAK_PEAK } else { SHIMMER_PEAK };
+        let peak = if green {
+            SHIMMER_STREAK_PEAK
+        } else {
+            SHIMMER_PEAK
+        };
         Span::styled(text.to_string(), Style::default().fg(glint_color(peak, i)))
     }
 }
@@ -359,9 +374,17 @@ fn glint_span2(text: &str, i: f64, green: bool) -> Span<'static> {
 fn twinkle_span(text: &str, seed: u32) -> Span<'static> {
     let t = seed as f64 / 128.0 * 0.75; // cap below full peak for subtlety
     if t <= 0.02 {
-        Span::styled(text.to_string(), Style::default().fg(theme::WATERMARK).add_modifier(Modifier::DIM))
+        Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(theme::WATERMARK)
+                .add_modifier(Modifier::DIM),
+        )
     } else {
-        Span::styled(text.to_string(), Style::default().fg(glint_color(TWINKLE_PEAK, t)))
+        Span::styled(
+            text.to_string(),
+            Style::default().fg(glint_color(TWINKLE_PEAK, t)),
+        )
     }
 }
 
@@ -374,11 +397,16 @@ mod tests {
     #[test]
     fn streak_peak_luminance_bounded_by_silver() {
         let lum = |c: ratatui::style::Color| match c {
-            ratatui::style::Color::Rgb(r, g, b) => 0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64,
+            ratatui::style::Color::Rgb(r, g, b) => {
+                0.2126 * r as f64 + 0.7152 * g as f64 + 0.0722 * b as f64
+            }
             _ => 0.0,
         };
         for i in [0.2f64, 0.5, 0.8, 1.0] {
-            assert!(lum(glint_color(SHIMMER_STREAK_PEAK, i)) <= lum(glint_color(SHIMMER_PEAK, i)) + 1e-6);
+            assert!(
+                lum(glint_color(SHIMMER_STREAK_PEAK, i))
+                    <= lum(glint_color(SHIMMER_PEAK, i)) + 1e-6
+            );
         }
     }
 
@@ -405,9 +433,9 @@ mod tests {
         let (width, show) = (80.0f64, 38.0f64);
         let max_d = width + show * 2.0; // travel basis used by render
         let d_max = max_d - 3.0; // deepest live cell (corner col/row)
-        // The PARKED position (p clamps to 1.0 for the whole rest phase —
-        // 55% of the cycle) must be fully off-stone for both bands.
-        // (p < 1.0 is mid-sweep: bands legitimately transit the stone.)
+                                 // The PARKED position (p clamps to 1.0 for the whole rest phase —
+                                 // 55% of the cycle) must be fully off-stone for both bands.
+                                 // (p < 1.0 is mid-sweep: bands legitimately transit the stone.)
         let pos = sweep_pos(1.0, max_d);
         assert_eq!(band_i(d_max, pos, SHIMMER_BAND), 0.0, "silver parked");
         assert_eq!(
@@ -417,8 +445,8 @@ mod tests {
         );
         // Mid-sweep the crest truly crosses the stone: at the cycle fraction
         // that places the crest mid-stone, the center cell burns at full.
-        let mid_p = (max_d / 2.0 + SHIMMER_BAND)
-            / (max_d + SHIMMER_BAND * 2.0 + SHIMMER_STREAK_OFFSET);
+        let mid_p =
+            (max_d / 2.0 + SHIMMER_BAND) / (max_d + SHIMMER_BAND * 2.0 + SHIMMER_STREAK_OFFSET);
         assert!(band_i(max_d / 2.0, sweep_pos(mid_p, max_d), SHIMMER_BAND) > 0.99);
     }
 
@@ -428,14 +456,17 @@ mod tests {
     #[test]
     fn strip_removes_shared_margins_but_keeps_relative_offsets() {
         let mut lines = vec![
-            "⠀⠀⠀⠀⢀⣠⡀⠀".to_string(),   // lead 4, content, trailing blank
+            "⠀⠀⠀⠀⢀⣠⡀⠀".to_string(),  // lead 4, content, trailing blank
             "⠀⠀⠀⠀⢺⣟⣻⢿⣿".to_string(), // lead 4
-            "⠀⠀⠀⠀⠀⠀⣼⣽".to_string(),   // lead 6 — the "motto" indent
+            "⠀⠀⠀⠀⠀⠀⣼⣽".to_string(),  // lead 6 — the "motto" indent
         ];
         strip_braille_margins(&mut lines);
         assert_eq!(lines[0], "⢀⣠⡀");
         assert_eq!(lines[1], "⢺⣟⣻⢿⣿");
-        assert_eq!(lines[2], "⠀⠀⣼⣽", "extra indent beyond the shared run survives");
+        assert_eq!(
+            lines[2], "⠀⠀⣼⣽",
+            "extra indent beyond the shared run survives"
+        );
     }
 
     #[test]
@@ -458,7 +489,11 @@ mod tests {
         let lead = |l: &str| l.chars().take_while(|c| is_blank(*c)).count();
         let plain = art_lines(LOGO_RAW);
         let w = plain.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        assert!(w < 80, "plain block should tighten below the raw 80, got {}", w);
+        assert!(
+            w < 80,
+            "plain block should tighten below the raw 80, got {}",
+            w
+        );
         assert_eq!(plain.len(), 32, "no rows dropped — the taper IS the logo");
         let motto = art_lines(LOGO_MOTTO_RAW);
         assert_eq!(motto.len(), 38, "no rows dropped from the motto version");
@@ -467,6 +502,9 @@ mod tests {
         let raw: Vec<&str> = LOGO_MOTTO_RAW.lines().collect();
         let delta_raw = lead(raw[32]) as isize - lead(raw[0]) as isize;
         let delta_out = lead(&motto[32]) as isize - lead(&motto[0]) as isize;
-        assert_eq!(delta_raw, delta_out, "motto offset relative to stone unchanged");
+        assert_eq!(
+            delta_raw, delta_out,
+            "motto offset relative to stone unchanged"
+        );
     }
 }

@@ -139,11 +139,7 @@ impl RpcBridge {
     /// imports their pure data getters, which stay empty without them).
     pub async fn spawn(cli_path: &Path, cwd: &Path) -> Result<Self> {
         let mut command = Command::new("node");
-        command
-            .arg(cli_path)
-            .arg("--mode")
-            .arg("rpc")
-            .arg("-a");
+        command.arg(cli_path).arg("--mode").arg("rpc").arg("-a");
         for ext in officina_extensions_to_carry(cli_path, cwd) {
             command.arg("-e").arg(ext);
         }
@@ -295,7 +291,10 @@ impl RpcBridge {
 
     /// Kill the subprocess.
     pub async fn kill(&mut self) -> Result<()> {
-        self.child.kill().await.context("failed to kill subprocess")?;
+        self.child
+            .kill()
+            .await
+            .context("failed to kill subprocess")?;
         Ok(())
     }
 }
@@ -310,7 +309,14 @@ mod tests {
         let root = std::env::temp_dir().join(format!("officina-carry-{}", std::process::id()));
         let bin = root.join("node_modules").join(".bin");
         let exts = root.join(".pi").join("extensions");
-        for name in ["llama-cpp-provider", "agent-mode", "vitriol-decode", "session-panel", "task-state", "scratchpad"] {
+        for name in [
+            "llama-cpp-provider",
+            "agent-mode",
+            "vitriol-decode",
+            "session-panel",
+            "task-state",
+            "scratchpad",
+        ] {
             std::fs::create_dir_all(exts.join(name)).unwrap();
         }
         std::fs::create_dir_all(&bin).unwrap();

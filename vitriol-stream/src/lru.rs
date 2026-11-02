@@ -203,11 +203,7 @@ impl Lru {
                     driver::memcpy_sync_h_to_d(dst, buf.as_ptr().cast(), expert_size)?;
                 }
                 None => {
-                    driver::memcpy_sync_h_to_d(
-                        dst,
-                        expert_data,
-                        expert_size,
-                    )?;
+                    driver::memcpy_sync_h_to_d(dst, expert_data, expert_size)?;
                 }
             }
             return Ok(dst);
@@ -238,7 +234,10 @@ impl Lru {
             // Three-state victim selection (kimi-k3-in-c inspiration): skip
             // slots whose consumer matmul has not completed yet (pending),
             // then prefer slots whose fill event has completed.
-            let mut evict = *self.order.back().ok_or("LRU order/map desync: empty order")?;
+            let mut evict = *self
+                .order
+                .back()
+                .ok_or("LRU order/map desync: empty order")?;
             for k in self.order.iter().rev().skip(1) {
                 let Some(s) = self.map.get(k) else { continue };
                 if s.0 as usize >= self.n_slots || self.pending[s.0 as usize] {

@@ -38,7 +38,10 @@ fn full_to_relieved_on_pressure() {
 
 #[test]
 fn relieved_recovers_without_resize() {
-    let mut p = Policy { phase: Phase::Relieved, ..Policy::default() };
+    let mut p = Policy {
+        phase: Phase::Relieved,
+        ..Policy::default()
+    };
     let c = cfg();
     let clear = sample(9000, false, true);
     p.decide(&clear, &c, 1000);
@@ -49,7 +52,10 @@ fn relieved_recovers_without_resize() {
 
 #[test]
 fn relieved_to_resized_then_yielded() {
-    let mut p = Policy { phase: Phase::Relieved, ..Policy::default() };
+    let mut p = Policy {
+        phase: Phase::Relieved,
+        ..Policy::default()
+    };
     let c = cfg();
     let s = sample(1000, true, true);
     // resize tier at +60s of sustained pressure
@@ -66,12 +72,18 @@ fn relieved_to_resized_then_yielded() {
 
 #[test]
 fn resized_recovers_with_full_undo() {
-    let mut p = Policy { phase: Phase::Resized, ..Policy::default() };
+    let mut p = Policy {
+        phase: Phase::Resized,
+        ..Policy::default()
+    };
     p.last_transition = 1000;
     let c = cfg();
     let clear = sample(9000, false, true);
     p.decide(&clear, &c, 1100); // streak starts, dwell (600) holds until 1600
-    assert!(p.decide(&clear, &c, 1500).is_empty(), "streak done (300), dwell holds");
+    assert!(
+        p.decide(&clear, &c, 1500).is_empty(),
+        "streak done (300), dwell holds"
+    );
     let acts = p.decide(&clear, &c, 1600);
     assert_eq!(acts, vec![Action::ResizeUndo(262_144), Action::RelieveUndo]);
     assert_eq!(p.phase, Phase::Full);
@@ -79,8 +91,14 @@ fn resized_recovers_with_full_undo() {
 
 #[test]
 fn resize_disabled_skips_straight_to_yield() {
-    let mut p = Policy { phase: Phase::Relieved, ..Policy::default() };
-    let c = Config { resize_enabled: false, ..cfg() };
+    let mut p = Policy {
+        phase: Phase::Relieved,
+        ..Policy::default()
+    };
+    let c = Config {
+        resize_enabled: false,
+        ..cfg()
+    };
     let s = sample(1000, true, true);
     p.decide(&s, &c, 1000);
     assert_eq!(p.decide(&s, &c, 1060), vec![Action::Yield]);
@@ -89,13 +107,26 @@ fn resize_disabled_skips_straight_to_yield() {
 
 #[test]
 fn yielded_restores_after_recovery_and_dwell() {
-    let mut p = Policy { phase: Phase::Yielded, ..Policy::default() };
+    let mut p = Policy {
+        phase: Phase::Yielded,
+        ..Policy::default()
+    };
     p.last_transition = 1000;
     let c = cfg();
     let clear = sample(9000, false, true);
-    assert!(p.decide(&clear, &c, 1200).is_empty(), "streak starts, dwell holds");
-    assert!(p.decide(&clear, &c, 1500).is_empty(), "streak done (300), dwell holds");
-    assert_eq!(p.decide(&clear, &c, 1600), vec![Action::Restore], "dwell passes (1600)");
+    assert!(
+        p.decide(&clear, &c, 1200).is_empty(),
+        "streak starts, dwell holds"
+    );
+    assert!(
+        p.decide(&clear, &c, 1500).is_empty(),
+        "streak done (300), dwell holds"
+    );
+    assert_eq!(
+        p.decide(&clear, &c, 1600),
+        vec![Action::Restore],
+        "dwell passes (1600)"
+    );
     assert_eq!(p.phase, Phase::Full);
 }
 

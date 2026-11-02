@@ -283,10 +283,7 @@ impl RadixTree {
 
     /// Remove a specific registration (e.g. caller dropped the state).
     pub fn remove(&mut self, value: u64) -> bool {
-        let idx = self
-            .nodes
-            .iter()
-            .position(|n| n.value == value);
+        let idx = self.nodes.iter().position(|n| n.value == value);
         match idx {
             Some(i) => {
                 self.nodes[i].value = NO_VALUE;
@@ -363,7 +360,7 @@ mod tests {
         t.insert(&toks(&[3]), 3);
         t.pin(2);
         t.match_prefix(&toks(&[3])); // touch 3
-        // cap 2: must evict 1 (never hit), keep 2 (pinned) and 3 (recent)
+                                     // cap 2: must evict 1 (never hit), keep 2 (pinned) and 3 (recent)
         let evicted = t.evict_lru(2);
         assert_eq!(evicted, vec![1]);
         assert_eq!(t.match_prefix(&toks(&[2])), Some((2, 1)));

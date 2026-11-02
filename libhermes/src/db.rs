@@ -7,8 +7,8 @@
 
 use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -186,7 +186,6 @@ impl Hermes {
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
-
 
     /// Open a store rooted at `~/.vitriol` (honoring `VITRIOL_MEMORY_DIR`).
     pub fn default_root() -> PathBuf {

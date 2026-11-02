@@ -20,11 +20,11 @@ use serde_json::Value;
 use ureq::{Agent, AgentBuilder};
 
 use crate::config::Config;
+use crate::intel;
 use crate::model::{
     DraftSnapshot, EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, MetricsTotals,
     PerfSnapshot, RebisEvent, RebisSnapshot, RecentStore, SlotSnapshot, Snapshot,
 };
-use crate::intel;
 use crate::nvidia;
 
 /// Number of trailing lines kept per service log.
@@ -145,7 +145,10 @@ impl Poller {
         // RETIRED 2026-09-01 (see hermetis_enabled): Hermetis/embed probes
         // skipped unless explicitly re-enabled.
         let (hermetis, embed) = if hermetis_enabled() {
-            (poll_hermetis(agent, &self.cfg), poll_embed(agent, &self.cfg))
+            (
+                poll_hermetis(agent, &self.cfg),
+                poll_embed(agent, &self.cfg),
+            )
         } else {
             (HermetisSnapshot::default(), EmbedSnapshot::default())
         };
@@ -188,8 +191,11 @@ impl Poller {
                 for line in text.lines() {
                     if let Some(v) = line.strip_prefix("llamacpp:tokens_predicted_total ") {
                         let n: u64 = v.trim().parse().unwrap_or(0);
-                        if slot == 0 { snap.sol_tokens_total = n; }
-                        else { snap.luna_tokens_total = n; }
+                        if slot == 0 {
+                            snap.sol_tokens_total = n;
+                        } else {
+                            snap.luna_tokens_total = n;
+                        }
                     }
                 }
             }
@@ -207,25 +213,30 @@ impl Poller {
 
         if snap.luna_up {
             if let Some(models) = get_json(
-                agent, &format!("http://127.0.0.1:{}/v1/models", self.cfg.luna_port))
-            {
+                agent,
+                &format!("http://127.0.0.1:{}/v1/models", self.cfg.luna_port),
+            ) {
                 snap.luna_model = models["models"]
                     .as_array()
                     .and_then(|a| a.first())
                     .and_then(|m| m.get("model"))
                     .and_then(|v| v.as_str())
                     .map(str::to_owned)
-                    .or_else(|| models["data"].as_array()
-                        .and_then(|a| a.first())
-                        .and_then(|m| m.get("id"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned));
+                    .or_else(|| {
+                        models["data"]
+                            .as_array()
+                            .and_then(|a| a.first())
+                            .and_then(|m| m.get("id"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_owned)
+                    });
             }
         }
         // Luna heartbeat lives in her log (same format as Sol's).
         snap.luna_decode_t_s = parse_decode_speed(
             &std::path::PathBuf::from("/tmp/mellum.log"),
-            &mut self.luna_beat_offset);
+            &mut self.luna_beat_offset,
+        );
 
         // Shim/distill event stream: aggregate + recent tail.
         const MAX_LINES: usize = 400;
@@ -238,8 +249,16 @@ impl Poller {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            let kind = v.get("type").and_then(|x| x.as_str()).unwrap_or("").to_string();
-            let session = v.get("session").and_then(|x| x.as_str()).unwrap_or("").to_string();
+            let kind = v
+                .get("type")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let session = v
+                .get("session")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
             let session_c = session.clone();
             match kind.as_str() {
                 "gateway_turn" => {
@@ -259,13 +278,16 @@ impl Poller {
                 }
                 "pipeline_audited" => {
                     let complete = v.get("complete").and_then(|x| x.as_bool()).unwrap_or(false);
-                    if complete { snap.audits_pass += 1 } else { snap.audits_fail += 1 }
+                    if complete {
+                        snap.audits_pass += 1
+                    } else {
+                        snap.audits_fail += 1
+                    }
                     snap.recent.push(RebisEvent {
                         ts: v.get("ts").cloned().unwrap_or_default().to_string(),
                         kind: kind.clone(),
                         session: session.clone(),
-                        detail: format!("audit {}",
-                            if complete { "PASS" } else { "FAIL" }),
+                        detail: format!("audit {}", if complete { "PASS" } else { "FAIL" }),
                     });
                 }
                 _ => {}
@@ -277,19 +299,33 @@ impl Poller {
                     kind: kind.clone(),
                     session,
                     detail: match kind.as_str() {
-                        "steer_correct" => format!("corrected: {}",
-                            v.get("missing_actions").and_then(|x| x.as_array())
-                                .map(|a| a.len()).unwrap_or(0)),
-                        "compaction" => format!("digested {} turns",
-                            v.get("summarized_turns").and_then(|x| x.as_u64()).unwrap_or(0)),
+                        "steer_correct" => format!(
+                            "corrected: {}",
+                            v.get("missing_actions")
+                                .and_then(|x| x.as_array())
+                                .map(|a| a.len())
+                                .unwrap_or(0)
+                        ),
+                        "compaction" => format!(
+                            "digested {} turns",
+                            v.get("summarized_turns")
+                                .and_then(|x| x.as_u64())
+                                .unwrap_or(0)
+                        ),
                         _ => String::new(),
                     },
                 });
-                if kind == "compaction" { snap.compactions += 1; }
+                if kind == "compaction" {
+                    snap.compactions += 1;
+                }
             }
         }
         // de-dup: pipeline_audited pushed once above already handled; trim
-        for ev in snap.recent.iter_mut() { if ev.ts.is_empty() { ev.ts = "-".into(); } }
+        for ev in snap.recent.iter_mut() {
+            if ev.ts.is_empty() {
+                ev.ts = "-".into();
+            }
+        }
         if snap.recent.len() > 60 {
             let cut = snap.recent.len() - 60;
             snap.recent.drain(0..cut);
@@ -346,7 +382,11 @@ impl Poller {
         let busy = slots.iter().any(|s| s.is_processing);
         // 2026-09-01: n_parallel was hardcoded None even though the GEN card
         // renders it — derive it from the /slots length instead.
-        let n_parallel = if slots.is_empty() { None } else { Some(slots.len() as u64) };
+        let n_parallel = if slots.is_empty() {
+            None
+        } else {
+            Some(slots.len() as u64)
+        };
         // Heartbeat rate, replayed while a slot is busy but the block-buffered
         // log has not flushed a fresh beat yet.
         let mut live = parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset);
@@ -395,7 +435,11 @@ fn read_mem_available_mib() -> u32 {
         .lines()
     {
         if let Some(v) = line.strip_prefix("MemAvailable:") {
-            let kib = v.split_whitespace().next().and_then(|t| t.parse::<u64>().ok()).unwrap_or(0);
+            let kib = v
+                .split_whitespace()
+                .next()
+                .and_then(|t| t.parse::<u64>().ok())
+                .unwrap_or(0);
             return (kib / 1024) as u32;
         }
     }
@@ -769,7 +813,10 @@ fn parse_perf_line(line: &str) -> Option<PerfSnapshot> {
         .filter_map(|k| {
             let i = line.find(k)?;
             let rest = &line[i + k.len()..];
-            let n: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let n: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             n.parse::<f64>().ok()
         })
         .collect();
@@ -784,7 +831,11 @@ fn parse_perf_line(line: &str) -> Option<PerfSnapshot> {
         let rest = &line[i + 6..];
         let mut cap = String::new();
         for c in rest.chars() {
-            if c.is_ascii_digit() { cap.push(c); } else { break; }
+            if c.is_ascii_digit() {
+                cap.push(c);
+            } else {
+                break;
+            }
         }
         p.n_capture = cap.parse().unwrap_or(0);
         if let Some(c_idx) = rest.find('C') {
@@ -805,14 +856,22 @@ fn parse_perf_line(line: &str) -> Option<PerfSnapshot> {
         let rest = &line[i + 5..];
         let mut n = String::new();
         for c in rest.chars() {
-            if c.is_ascii_digit() { n.push(c); } else { break; }
+            if c.is_ascii_digit() {
+                n.push(c);
+            } else {
+                break;
+            }
         }
         p.n_sync = n.parse().unwrap_or(0);
         if let Some(j) = rest.find('(') {
             let tail = &rest[j + 1..];
             let mut m = String::new();
             for c in tail.chars() {
-                if c.is_ascii_digit() || c == '.' { m.push(c); } else { break; }
+                if c.is_ascii_digit() || c == '.' {
+                    m.push(c);
+                } else {
+                    break;
+                }
             }
             p.sync_ms = m.parse().unwrap_or(0.0);
         }
@@ -1122,21 +1181,31 @@ mod tests {
         let mut last = None;
         // No heartbeat line yet: nothing decoding.
         assert_eq!(parse_decode_speed(&p, &mut last), 0.0);
-        std::fs::write(&p, [
-            "slot test: id 0 | task 1 | ...\n",
-            "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
-        ].join("")).unwrap();
+        std::fs::write(
+            &p,
+            [
+                "slot test: id 0 | task 1 | ...\n",
+                "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
+            ]
+            .join(""),
+        )
+        .unwrap();
         // First appearance is fresh → 23.40.
         assert_eq!(parse_decode_speed(&p, &mut last), 23.40);
         assert!(last.is_some());
         // No new bytes appended → idle again.
         assert_eq!(parse_decode_speed(&p, &mut last), 0.0);
         // A second, later beat advances past the first.
-        std::fs::write(&p, [
-            "slot test: id 0 | task 1 | ...\n",
-            "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
-            "decode heartbeat: 42 tokens,  40.12 tokens per second (live)\n",
-        ].join("")).unwrap();
+        std::fs::write(
+            &p,
+            [
+                "slot test: id 0 | task 1 | ...\n",
+                "decode heartbeat: 17 tokens,  23.40 tokens per second (live)\n",
+                "decode heartbeat: 42 tokens,  40.12 tokens per second (live)\n",
+            ]
+            .join(""),
+        )
+        .unwrap();
         assert_eq!(parse_decode_speed(&p, &mut last), 40.12);
         let _ = std::fs::remove_file(&p);
     }
@@ -1196,7 +1265,11 @@ mod tests {
         let mut last = None;
         assert_eq!(parse_decode_speed(&p, &mut last), 30.00);
         // Log rotated to a shorter file (no filler) with a fresh beat.
-        std::fs::write(&p, "decode heartbeat: 5 tokens,  25.00 tokens per second (live)\n").unwrap();
+        std::fs::write(
+            &p,
+            "decode heartbeat: 5 tokens,  25.00 tokens per second (live)\n",
+        )
+        .unwrap();
         assert_eq!(parse_decode_speed(&p, &mut last), 25.00);
         let _ = std::fs::remove_file(&p);
     }

@@ -91,7 +91,9 @@ fn parse_session_file(path: &Path, cwd: &str) -> Option<SessionEntry> {
                 if title.is_empty() {
                     if let Some(msg) = v.get("message") {
                         if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
-                            title = extract_text(msg.get("content").unwrap_or(&serde_json::Value::Null));
+                            title = extract_text(
+                                msg.get("content").unwrap_or(&serde_json::Value::Null),
+                            );
                         }
                     }
                 }

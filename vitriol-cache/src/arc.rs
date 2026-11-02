@@ -59,9 +59,7 @@ impl Arc {
         if self.t1.len() + self.t2.len() < self.capacity {
             return None;
         }
-        if self.t1.len() >= 1
-            && (self.t1.len() > self.p || (x_in_b2 && self.t1.len() == self.p))
-        {
+        if self.t1.len() >= 1 && (self.t1.len() > self.p || (x_in_b2 && self.t1.len() == self.p)) {
             let old = self.t1.pop_back()?;
             self.b1.push_front(old);
             if self.b1.len() > self.capacity {
@@ -175,7 +173,7 @@ mod tests {
         arc.touch(1);
         arc.touch(2);
         arc.touch(1); // 1 -> T2 (frequent)
-        // fresh miss evicts LRU of T1 (2), not the frequent 1
+                      // fresh miss evicts LRU of T1 (2), not the frequent 1
         assert_eq!(arc.touch(3), Some(2));
         arc.touch(1); // still resident, no panic
     }

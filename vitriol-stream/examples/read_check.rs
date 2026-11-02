@@ -7,14 +7,18 @@
 use vitriol_stream::store::{AlignedBuf, Store};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: read_check <store-path>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: read_check <store-path>");
     let store = Store::open(&path).expect("store open");
     let tid = store
         .find_tensor(0, 2) // blk.0, ffn_down
         .expect("blk.0 ffn_down not found");
     let d = store.desc(tid).unwrap();
-    println!("tid={tid} n_experts={} data_bytes={} slice_bytes={} offset={}",
-        d.n_experts, d.data_bytes, d.slice_bytes, d.store_offset);
+    println!(
+        "tid={tid} n_experts={} data_bytes={} slice_bytes={} offset={}",
+        d.n_experts, d.data_bytes, d.slice_bytes, d.store_offset
+    );
 
     let expert = 106u32;
     let mut buf = AlignedBuf::zeroed(d.slice_bytes as usize, 512);

@@ -38,10 +38,10 @@ pub const LIGHT_YELLOW: Color = Color::Rgb(0xFF, 0xE0, 0x66);
 pub const DEEP_RED: Color = Color::Rgb(0x8A, 0x15, 0x15);
 /// Dark teal — activity ramp start.
 pub const DARK_TEAL: Color = Color::Rgb(0x0B, 0x5E, 0x4C);
-    /// Mercury silver — pulse ramp start.
-    pub const MERCURY: Color = Color::Rgb(0x55, 0x60, 0x6E);
-    /// Bright silver — PLAN mode (the moon metal, owner request 2026-09-02).
-    pub const SILVER: Color = Color::Rgb(0xC0, 0xC7, 0xCF);
+/// Mercury silver — pulse ramp start.
+pub const MERCURY: Color = Color::Rgb(0x55, 0x60, 0x6E);
+/// Bright silver — PLAN mode (the moon metal, owner request 2026-09-02).
+pub const SILVER: Color = Color::Rgb(0xC0, 0xC7, 0xCF);
 /// Watermark tint — the stone rising (brightened 2026-09-02 per owner:
 /// #1c2634 was nearly invisible on BG; #2a3a52 reads as faint stone).
 pub const WATERMARK: Color = Color::Rgb(0x2A, 0x3A, 0x52);

@@ -206,12 +206,17 @@ pub fn render(
             // Column envelope — the fire CLIMBS THE SIDES (owner request):
             // dead in the middle band, full burn at the edges, soft
             // shoulder so the inner falloff isn't a hard cliff.
-            let u = if w <= 2 { 0.5 } else { x as f64 / (w - 1) as f64 };
+            let u = if w <= 2 {
+                0.5
+            } else {
+                x as f64 / (w - 1) as f64
+            };
             let edge = (((2.0 * u - 1.0).abs() - 0.12).max(0.0) / 0.88).powf(0.65);
             // Column height in [0,1] of the strip + per-column flicker so
             // the tips stay ragged and alive; the 1.15 reach lets a full
             // load run the whole strip height along the edges.
-            let col_h = (edge * level * 1.15).clamp(0.0, 1.0) * (0.7 + 0.6 * hash01(x as u32, 0, step));
+            let col_h =
+                (edge * level * 1.15).clamp(0.0, 1.0) * (0.7 + 0.6 * hash01(x as u32, 0, step));
             let frac_from_base = from_base / rows as f64;
             if frac_from_base > col_h {
                 // Above the flame — a rising ember? (owner request: little
@@ -278,12 +283,18 @@ mod density_tests {
         assert_eq!(bits(DENSITY[4]), 0x47); // full left column
         assert_eq!(bits(DENSITY[5]), 0xC7); // + dot 8 (bottom-right)
         assert_eq!(bits(DENSITY[6]), 0xE7); // + dot 6
-        // Ceiling: ⣷ = 0xF7 — every dot except the top-right (dot 4). The
-        // original readability rule stands: never the full ⣿ block.
+                                            // Ceiling: ⣷ = 0xF7 — every dot except the top-right (dot 4). The
+                                            // original readability rule stands: never the full ⣿ block.
         assert_eq!(bits(DENSITY[7]), 0xF7);
         // Monotone: each step only ADDS dots.
         for w in DENSITY.windows(2) {
-            assert_eq!(bits(w[0]) & bits(w[1]), bits(w[0]), "{:?} → {:?}", w[0], w[1]);
+            assert_eq!(
+                bits(w[0]) & bits(w[1]),
+                bits(w[0]),
+                "{:?} → {:?}",
+                w[0],
+                w[1]
+            );
             assert_ne!(bits(w[0]), bits(w[1]));
         }
         assert_eq!(*DENSITY.last().unwrap(), '⣷');

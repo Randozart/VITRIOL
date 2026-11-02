@@ -4,8 +4,8 @@
 
 use crate::lru::{config, Lru};
 use crate::store::{path_from_c_ptr, Store};
-use std::ffi::{c_char, c_void};
 use std::collections::HashMap;
+use std::ffi::{c_char, c_void};
 use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_DEVICES: usize = 16;
@@ -78,7 +78,9 @@ pub extern "C" fn vs_init() -> i32 {
 /// Open the global store. 0 on success, -1 on failure.
 #[no_mangle]
 pub extern "C" fn vs_open_store(path: *const c_char) -> i32 {
-    let Some(p) = path_from_c_ptr(path) else { return -1 };
+    let Some(p) = path_from_c_ptr(path) else {
+        return -1;
+    };
     match Store::open(&p) {
         Ok(s) => {
             let _ = store().set(Arc::new(s));
@@ -108,11 +110,17 @@ pub extern "C" fn vs_bind_tensor_named(
     tensor_bytes: usize,
     row_bytes: usize,
 ) -> i32 {
-    let Some(name) = path_from_c_ptr(name) else { return 0 };
+    let Some(name) = path_from_c_ptr(name) else {
+        return 0;
+    };
     let Some(kind) = kind_of(&name) else { return 0 };
-    let Some(layer) = layer_of(&name) else { return 0 };
+    let Some(layer) = layer_of(&name) else {
+        return 0;
+    };
     let Some(s) = store().get() else { return 0 };
-    let Some(tid) = s.find_tensor(layer, kind) else { return 0 };
+    let Some(tid) = s.find_tensor(layer, kind) else {
+        return 0;
+    };
     let Some(d) = s.desc(tid) else { return 0 };
     if d.n_experts == 0
         || d.data_bytes == 0
@@ -210,11 +218,7 @@ pub extern "C" fn vs_lru_mark_compute_done(vram_ptr: usize, stream: *mut c_void)
 
 /// Out-parameter form (FFI-safe): pass non-null pointers to receive counts.
 #[no_mangle]
-pub extern "C" fn vs_lru_stats(
-    hits: *mut u64,
-    misses: *mut u64,
-    evictions: *mut u64,
-) -> i32 {
+pub extern "C" fn vs_lru_stats(hits: *mut u64, misses: *mut u64, evictions: *mut u64) -> i32 {
     let st = state().lock().unwrap();
     let (mut h, mut m, mut e) = (0u64, 0u64, 0u64);
     for l in st.lrus.iter().flatten() {

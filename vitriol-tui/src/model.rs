@@ -84,7 +84,11 @@ mod tests {
 
     #[test]
     fn total_tokens_sums() {
-        let snapshot = SlotSnapshot { n_decoded: 123, n_remain: 389, ..Default::default() };
+        let snapshot = SlotSnapshot {
+            n_decoded: 123,
+            n_remain: 389,
+            ..Default::default()
+        };
         assert_eq!(snapshot.total_tokens(), 512);
     }
 }

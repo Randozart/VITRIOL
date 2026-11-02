@@ -14,12 +14,18 @@ use crate::model::{GpuProcess, GpuSnapshot};
 
 /// Standard sysfs root for the first DRM card's xe device.
 fn sysfs_card_dir(card: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from("/sys/class/drm").join(card).join("device")
+    std::path::PathBuf::from("/sys/class/drm")
+        .join(card)
+        .join("device")
 }
 
 /// Read one integer from a sysfs file; `None` when unreadable.
 fn read_sysfs_u64(path: &std::path::Path) -> Option<u64> {
-    std::fs::read_to_string(path).ok()?.trim().parse::<u64>().ok()
+    std::fs::read_to_string(path)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 /// Read CPU/package temperature from thermal zones (millidegrees → Celsius).
@@ -112,8 +118,8 @@ fn query_intel_sysfs() -> Vec<GpuSnapshot> {
     };
 
     // Idle state (gt-c6 deep idle, gt-c0 running) as a coarse cross-check.
-    let idle_status = std::fs::read_to_string(gt0.join("gtidle").join("idle_status"))
-        .unwrap_or_default();
+    let idle_status =
+        std::fs::read_to_string(gt0.join("gtidle").join("idle_status")).unwrap_or_default();
     let util_pct = if idle_status.contains("c6") || idle_status.contains("c9") {
         util_pct.min(5) // deep idle → treat as ~idle
     } else {

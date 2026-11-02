@@ -22,8 +22,12 @@ fn main() -> anyhow::Result<()> {
             for gpu in &hw.gpus {
                 println!(
                     "  -> [{}] {} {} MiB (cc {}, pcie gen {} x{})",
-                    gpu.index, gpu.name, gpu.vram_mib, gpu.compute_cap,
-                    gpu.pcie_gen, gpu.pcie_width
+                    gpu.index,
+                    gpu.name,
+                    gpu.vram_mib,
+                    gpu.compute_cap,
+                    gpu.pcie_gen,
+                    gpu.pcie_width
                 );
             }
             println!("  -> {} GPU(s) total", hw.gpu_count);

@@ -24,7 +24,10 @@ struct Ramp {
 }
 
 fn ramp(name: &'static str, stops: &[(f64, Rgb)]) -> Ramp {
-    let mut v: Vec<Stop> = stops.iter().map(|&(at, color)| Stop { at, color }).collect();
+    let mut v: Vec<Stop> = stops
+        .iter()
+        .map(|&(at, color)| Stop { at, color })
+        .collect();
     v.sort_by(|a, b| a.at.partial_cmp(&b.at).unwrap());
     Ramp { stops: v, name }
 }
@@ -33,37 +36,38 @@ fn ramp(name: &'static str, stops: &[(f64, Rgb)]) -> Ramp {
 fn find_ramp(name: &str) -> Option<&'static Ramp> {
     use std::sync::OnceLock;
     static RAMPS: OnceLock<[Ramp; 3]> = OnceLock::new();
-    RAMPS.get_or_init(|| {
-        [
-            ramp(
-                "capacity",
-                &[
-                    (0.0, (0xff, 0xff, 0xff)),
-                    (0.25, (0xff, 0xe0, 0x66)), // lightYellow
-                    (0.5, (0xff, 0x5f, 0x1f)),  // antidote
-                    (0.75, (0xf8, 0x51, 0x49)), // substrate
-                    (1.0, (0x8a, 0x15, 0x15)),  // deepRed
-                ],
-            ),
-            ramp(
-                "activity",
-                &[
-                    (0.0, (0x0b, 0x5e, 0x4c)), // darkTeal
-                    (0.5, (0x3f, 0xb9, 0x50)), // safety
-                    (1.0, (0x00, 0xff, 0xff)), // solvent
-                ],
-            ),
-            ramp(
-                "mercury",
-                &[
-                    (0.0, (0x55, 0x60, 0x6e)), // mercury
-                    (1.0, (0x00, 0xff, 0xff)), // solvent
-                ],
-            ),
-        ]
-    })
-    .iter()
-    .find(|r| r.name == name)
+    RAMPS
+        .get_or_init(|| {
+            [
+                ramp(
+                    "capacity",
+                    &[
+                        (0.0, (0xff, 0xff, 0xff)),
+                        (0.25, (0xff, 0xe0, 0x66)), // lightYellow
+                        (0.5, (0xff, 0x5f, 0x1f)),  // antidote
+                        (0.75, (0xf8, 0x51, 0x49)), // substrate
+                        (1.0, (0x8a, 0x15, 0x15)),  // deepRed
+                    ],
+                ),
+                ramp(
+                    "activity",
+                    &[
+                        (0.0, (0x0b, 0x5e, 0x4c)), // darkTeal
+                        (0.5, (0x3f, 0xb9, 0x50)), // safety
+                        (1.0, (0x00, 0xff, 0xff)), // solvent
+                    ],
+                ),
+                ramp(
+                    "mercury",
+                    &[
+                        (0.0, (0x55, 0x60, 0x6e)), // mercury
+                        (1.0, (0x00, 0xff, 0xff)), // solvent
+                    ],
+                ),
+            ]
+        })
+        .iter()
+        .find(|r| r.name == name)
 }
 
 fn lerp(a: Rgb, b: Rgb, t: f64) -> Rgb {
@@ -120,7 +124,11 @@ pub fn render_gauge(ramp_name: &str, ratio: f64, cells: u32, muted: Rgb) -> Resu
         if mask == 0 {
             out.push_str(&ansi_fg(muted));
         } else {
-            let t = if cells > 1 { i as f64 / (cells - 1) as f64 } else { 0.0 };
+            let t = if cells > 1 {
+                i as f64 / (cells - 1) as f64
+            } else {
+                0.0
+            };
             out.push_str(&ansi_fg(ramp_color(r, t)));
         }
         out.push(glyph(mask));
@@ -177,7 +185,11 @@ mod tests {
         // cells: 6,6,0,0 → masks 3f,3f,00,00; t = 0, 1/3, 0, 0
         let g = render_gauge("activity", 0.5, 4, (1, 2, 3)).unwrap();
         let chars: Vec<char> = g.chars().collect();
-        let glyphs: Vec<char> = chars.iter().copied().filter(|c| (*c as u32) >= 0x2800 && (*c as u32) <= 0x28ff).collect();
+        let glyphs: Vec<char> = chars
+            .iter()
+            .copied()
+            .filter(|c| (*c as u32) >= 0x2800 && (*c as u32) <= 0x28ff)
+            .collect();
         assert_eq!(glyphs, vec!['\u{283f}', '\u{283f}', '\u{2800}', '\u{2800}']);
     }
 

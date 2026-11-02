@@ -86,8 +86,7 @@ impl Config {
         let distill_dir = env::var_os("VITRIOL_DISTILL_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                PathBuf::from(env::var("HOME").unwrap_or_default())
-                    .join(".vitriol/distill")
+                PathBuf::from(env::var("HOME").unwrap_or_default()).join(".vitriol/distill")
             });
         let log_dir = env::var_os("COPULA_LOG_DIR")
             .map(PathBuf::from)

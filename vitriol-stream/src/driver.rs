@@ -46,12 +46,7 @@ extern "C" {
     // Runtime API.
     fn cudaHostAlloc(ptr: *mut *mut c_void, size: usize, flags: usize) -> i32;
     fn cudaFreeHost(ptr: *mut c_void) -> i32;
-    fn cudaMemcpy(
-        dst: *mut c_void,
-        src: *const c_void,
-        bytes: usize,
-        kind: i32,
-    ) -> i32;
+    fn cudaMemcpy(dst: *mut c_void, src: *const c_void, bytes: usize, kind: i32) -> i32;
 }
 
 fn check(res: i32, what: &str) -> Result<(), String> {
@@ -92,7 +87,10 @@ pub fn stream_create() -> Result<CUstream, String> {
 }
 
 pub fn stream_sync(stream: CUstream) -> Result<(), String> {
-    check(unsafe { cuStreamSynchronize(stream) }, "cuStreamSynchronize")
+    check(
+        unsafe { cuStreamSynchronize(stream) },
+        "cuStreamSynchronize",
+    )
 }
 
 pub fn stream_wait_event(stream: CUstream, event: CUevent) -> Result<(), String> {
@@ -138,7 +136,11 @@ pub fn memcpy_h_to_d_async(
 }
 
 /// Blocking H2D on the current context (legacy NULL stream semantics).
-pub fn memcpy_sync_h_to_d(dst: CUdeviceptr, src: *const c_void, bytes: usize) -> Result<(), String> {
+pub fn memcpy_sync_h_to_d(
+    dst: CUdeviceptr,
+    src: *const c_void,
+    bytes: usize,
+) -> Result<(), String> {
     check(
         unsafe { cuMemcpyHtoD_v2(dst, src, bytes) },
         "cuMemcpyHtoD_v2",
@@ -146,7 +148,10 @@ pub fn memcpy_sync_h_to_d(dst: CUdeviceptr, src: *const c_void, bytes: usize) ->
 }
 
 pub fn memcpy_d_to_h(dst: *mut c_void, src: CUdeviceptr, bytes: usize) -> Result<(), String> {
-    check(unsafe { cuMemcpyDtoH_v2(dst, src, bytes) }, "cuMemcpyDtoH_v2")
+    check(
+        unsafe { cuMemcpyDtoH_v2(dst, src, bytes) },
+        "cuMemcpyDtoH_v2",
+    )
 }
 
 pub unsafe fn host_alloc(bytes: usize) -> Result<*mut c_void, String> {

@@ -1,0 +1,26 @@
+* text=auto
+
+*.sh text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+
+*.gguf binary
+*.bin binary
+*.pt binary
+*.pth binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.mp4 binary
+*.so binary
+*.a binary
+*.o binary
+
+engine/models/*.gguf binary
+engine/vendor/** linguist-vendored

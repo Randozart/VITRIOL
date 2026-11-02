@@ -1,0 +1,43 @@
+name: Bug report
+description: Something is broken or crashes
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, tokens, model contents, or `~/.vitriol/secrets`.
+        Security issues must be reported privately — see SECURITY.md.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Include the exact error/stack trace.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps / commands
+      render: bash
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit / version
+      placeholder: "output of: git rev-parse --short HEAD"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, GPU/driver, CUDA, Rust/Node versions, relevant `VITRIOL-FINGERPRINT` line.
+    validations:
+      required: true

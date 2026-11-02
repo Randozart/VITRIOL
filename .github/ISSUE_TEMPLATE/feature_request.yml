@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / measurements
+      description: VITRIOL prefers measured changes; include numbers if you have them.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - engine / CUDA
+        - launcher / config / profiles
+        - KV / context lifecycle
+        - governor / ops
+        - TUI / Officina
+        - docs / tooling
+        - other
+    validations:
+      required: true

@@ -153,3 +153,29 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+
+# In-source CMake artifacts (out-of-source builds are canonical)
+
+/CMakeCache.txt
+/CMakeFiles/
+/CTestTestfile.cmake
+/DartConfiguration.tcl
+/cmake_install.cmake
+/compile_commands.json
+/llama.pc
+/license.cpp
+/llama-version.h
+/src/llama-version.h
+/ggml/src/ggml-version.h
+/ggml/ggml-config.cmake
+/ggml/ggml-config-version.cmake
+/bin/
+/Testing/
+/tools/server/webui/
+**/CMakeFiles/
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/Makefile
+!/Makefile
+!/examples/batched.swift/Makefile
+!/examples/model-conversion/Makefile

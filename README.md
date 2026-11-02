@@ -182,31 +182,32 @@ died. Sections of this README dated to Wars I–II are preserved as history.
 
 ### Hardware assumptions (what's tuned where)
 
-This tree is tuned for one specific machine: i7-3770 (no AVX2), 16 GiB DDR3 +
-zram, RTX 3060 12 GiB + GTX 1070 Ti 8 GiB. Tensor splits (`ts 24,12`), KV
-quant choices, cache caps, and sidecar thresholds are all *this-box* numbers.
-They live in `profiles/` (personal) and `profiles/examples/` (generic
-starting points) — re-tune there, not in code.
+This tree is tuned for one specific machine: Xeon E5-1620 v4 (AVX2 + FMA),
+39 GiB DDR4 + zram/swap, 2× RTX 3060 12 GiB (sm_86). Tensor splits
+(`ts 27,21`), KV quant choices, cache caps, and sidecar thresholds are all
+*this-box* numbers. They live in `profiles/` (personal) and
+`profiles/examples/` (generic starting points) — re-tune there, not in code.
+The historical i7-3770 (no AVX2) + GTX 1070 Ti numbers in old reports are
+preserved as history; they are not the current baseline.
 
 ### Upstream posture
 
-`main` is the canonical daily-driver branch in **both** repos: the outer
-repo and the inner `llama.cpp/` fork. The inner `vitriol` branch is a frozen
-pre-port archive; `master` tracks the fork's published state. Merge cadence:
-when upstream grows something we want, not before.
+`main` is the canonical daily-driver branch. Since 2026-10-23 the engine is
+in-tree at `engine/` (imported from the fork at `30b128504`); there is no
+submodule and upstream sync is **frozen** — see `docs/ENGINE_PROVENANCE.md`.
+Security/model-support fixes are ported manually as `PROVENANCE:`-tagged
+patches. Merge cadence: when upstream grows something we actually need.
 
 ## Quick Start
 
 ```bash
-# 1. Clone with submodule (llama.cpp is pinned)
-git clone --recursive https://github.com/Randozart/VITRIOL.git
-# Or if already cloned: git submodule update --init --recursive
+# 1. Clone (engine is in-tree at engine/; no submodules)
+git clone https://github.com/Randozart/VITRIOL.git
+cd VITRIOL
 
-# 2. Build. The dual-GPU daily driver needs BOTH archs (sm_61 Pascal + sm_86 Ampere).
-cd vitriol/llama.cpp && cmake -B build -DGGML_CUDA=ON -DGGML_NATIVE=ON \
-  -DCMAKE_CUDA_ARCHITECTURES="61;86" \
-  -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF \
-  && cmake --build build -j$(nproc)
+# 2. Build. The dual-3060 daily driver only needs sm_86; add 61 only if you
+#    still run a Pascal card. VITRIOL patches are already in engine/.
+CUDA_ARCHITECTURES=86 ./scripts/build-llama-server.sh --backend cuda
 
 # 3. One-time capability grant (CAP_IPC_LOCK; optional on hosts where mlock is free)
 ./vitriol setup
@@ -239,14 +240,14 @@ save|load`) switch between blessed operating points.
 | Flag | Effect | Notes |
 |------|--------|-------|
 | `VITRIOL_MODE` | `off` (default) resident · `stream` RAM Shot MoE streaming | Residency rule: stream only when weights exceed combined VRAM |
-| `-ts 24,12` / `--tensor-split` | Split model across mismatched GPUs | Per-device VRAM headroom balancing |
-| `--spec-type mtp --spec-draft-n-max 1` | MTP speculative decoding, single draft | `n_max=1` is load-bearing; `>=2` regresses (acceptance decay) |
+| `-ts 27,21` / `--tensor-split` | Split model across GPUs | Dual-3060 daily-driver split; per-device VRAM headroom balancing |
+| `--spec-type mtp --spec-draft-n-max 3` | MTP speculative decoding | `n=3` is the fastest that fits on the 262K profile; `n=4` load-OOMs |
 | `--cache-type-k/-v tq3_0` | TurboQuant KV, 3.5 bpw | ~22% smaller than q4_0; per-device overrides via `VITRIOL_KV_QUANT[_K\|_V]_GPU<d>` |
 | `--cache-ram 12288` | Host RAM prompt cache (LRU, prefix-matched states) | Was 2048/256; measured slot states run 2.5-7 GiB so smaller caps rejected every mega-session. Never `0` (no readiness). Disk mirror budget = 8× this |
 | `--ctx-checkpoints 4` | RAM ring of in-slot KV copies | Never pass `--ctx-checkpoints 0` (heap corruption) |
 | `[kv] score=probe, score_every=16` | Attention-probe sparse eviction | Sink + recent cells protected; `VITRIOL_KV_FLOOR` (eager sweep) off by default |
 | `VITRIOL_POOL_RESET=1` | Rewind compute pools at graph end | Recovers ~20% usable depth |
-| `-ngl 99 --main-gpu 0 -ub 64` | Full offload + batch size | Depth-certified operating point |
+| `-ngl 99 --main-gpu 0 -ub 128` | Full offload + batch size | Current live operating point (see `~/.vitriol/config`) |
 | `vitriol.pin_first_n_layers` | Pin hot layers' experts in VRAM | Streaming mode only |
 | `vitriol.predictive_prefetch` | Cross-layer + temporal expert prefetch | Streaming mode only |
 | `vitriol.lru_mb` | LRU VRAM cache size | Streaming mode only |

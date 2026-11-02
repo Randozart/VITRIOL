@@ -11,8 +11,9 @@ using the environment variables defined here.
 | Env Variable | Default | Description |
 |---|---|---|
 | `VITRIOL_HOME` | *(project root)* | Root of the VITRIOL project |
-| `VITRIOL_LLAMA_DIR` | `./llama.cpp` | llama.cpp source + build tree |
-| `VITRIOL_LLAMA_BIN` | `$VITRIOL_LLAMA_DIR/build/bin` | Built llama.cpp executables |
+| `VITRIOL_ENGINE_DIR` | `./engine` | In-tree engine source + build tree |
+| `VITRIOL_LLAMA_DIR` | `$VITRIOL_ENGINE_DIR` | Legacy alias (still honored by scripts) |
+| `VITRIOL_LLAMA_BIN` | `$VITRIOL_ENGINE_DIR/build/bin` | Built engine executables |
 | `VITRIOL_MODEL_DIR` | *(see below)* | Directory containing model .gguf files |
 | `VITRIOL_DATA_DIR` | `$VITRIOL_HOME/data` | Large data files (models, swap, temp) |
 | `VITRIOL_ALKA_DIR` | *(external)* | Alka language compiler project root |
@@ -34,18 +35,18 @@ using the environment variables defined here.
 
 ## Third-Party Projects
 
-### llama.cpp (required)
+### llama.cpp (in-tree engine, required)
 
 | Resource | Default Path | Description |
 |---|---|---|
-| Source | `$VITRIOL_LLAMA_DIR` | git submodule at `https://github.com/ggerganov/llama.cpp.git` |
-| Build | `$VITRIOL_LLAMA_DIR/build` | CMake build directory |
-| Server binary | `$VITRIOL_LLAMA_BIN/llama-server` | The inference server |
+| Source | `$VITRIOL_ENGINE_DIR` | In-tree fork, imported at `30b128504` (2026-10-23) |
+| Build | `$VITRIOL_ENGINE_DIR/build` | CMake build directory (out-of-source) |
+| Server binary | `$VITRIOL_LLAMA_BIN/vitriol-server` | The inference server (`llama-server` compat link) |
 | CUDA backend | `$VITRIOL_LLAMA_BIN/libggml-cuda.so` | CUDA-accelerated GGML backend |
-| VITRIOL hooks | `$VITRIOL_LLAMA_DIR/ggml/src/ggml-cuda/vitriol-cuda-integration.{h,cpp}` | Our patched integration files |
+| VITRIOL hooks | `$VITRIOL_ENGINE_DIR/ggml/src/ggml-cuda/vitriol-cuda-integration.{h,cpp}` | Already applied at import |
 
-**Commit pinned:** `1e5ad35d5` (b9090 + 3 commits)
-**To apply VITRIOL patches:** `./scripts/apply-llama-patches.sh`
+**Sync policy:** frozen. See `docs/ENGINE_PROVENANCE.md`; no submodule and no
+patch step. Build with `./scripts/build-llama-server.sh --backend cuda`.
 
 ### Alka Language Compiler (required for DMA path, optional for benchmarking)
 
@@ -79,7 +80,7 @@ using the environment variables defined here.
 
 ## Defaults by Platform
 
-### Development Machine (GTX 1070 Ti, 8GB)
+### Development Machine (historical: i7-3770 + GTX 1070 Ti, 8GB)
 
 | Variable | Value |
 |---|---|
@@ -95,7 +96,7 @@ using the environment variables defined here.
 | Variable | Suggested Value |
 |---|---|
 | `VITRIOL_MODEL_DIR` | `$VITRIOL_DATA_DIR/models/` |
-| `VITRIOL_LLAMA_DIR` | `$VITRIOL_HOME/llama.cpp/` (submodule) |
+| `VITRIOL_ENGINE_DIR` | `$VITRIOL_HOME/engine/` (in-tree) |
 | `VITRIOL_ALKA_DIR` | `$VITRIOL_HOME/../alka-lang/` or system install |
 | `CUDA_VISIBLE_DEVICES` | adjust for your GPU topology |
 
@@ -104,23 +105,19 @@ using the environment variables defined here.
 ## Quick Start (Setting Up)
 
 ```bash
-# 1. Set up the project
-git clone https://github.com/anomalyco/VITRIOL
+# 1. Set up the project (engine is in-tree; no submodules)
+git clone https://github.com/Randozart/VITRIOL.git
 cd VITRIOL
-git submodule update --init
 
 # 2. Configure resource locations
 export VITRIOL_MODEL_DIR="/path/to/models"
-export VITRIOL_LLAMA_DIR="$PWD/llama.cpp"
+export VITRIOL_ENGINE_DIR="$PWD/engine"
 
-# 3. Apply VITRIOL patches to llama.cpp
-./scripts/apply-llama-patches.sh
+# 3. Build (VITRIOL patches are already in engine/)
+CUDA_ARCHITECTURES=86 ./scripts/build-llama-server.sh --backend cuda
 
-# 4. Build
-./scripts/build-llama-server.sh
-
-# 5. Run
-CUDA_VISIBLE_DEVICES=0 ./llama.cpp/build/bin/llama-server \
+# 4. Run
+CUDA_VISIBLE_DEVICES=0 ./engine/build/bin/vitriol-server \
     -m "$VITRIOL_MODEL_DIR/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf" \
     -ngl 20 -ot ".*exps.*=CPU" --port 8279 --no-mmap -c 4096
 ```

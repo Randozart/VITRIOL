@@ -61,6 +61,36 @@ Engine import verification: `90416d1:engine` tree =
 - rebuild from promoted tree when GPU is free (currently owner gaming)
 - start at 262K, verify health/fingerprint/slot restore
 
+## Outcome (2026-11-02)
+
+- Fetched origin; `origin/main` was `dcba2f1` (profiles `qwen38-ud*`).
+- Merged `origin/main` into `engine-monorepo` (`9cad300`, clean).
+- Deleted `engine/.rebis-bak-archive/` and the stray `VITRIOL_EXPERT_COUNT=0`.
+- `git clean -fd engine`: removed 301 paths / 1,102 files of in-source CMake
+  artifacts (kept ignored `engine/build*` shims/dirs). Added ignore rules to
+  `engine/.gitignore` so in-source configures cannot repollute the tree.
+- Removed empty tracked `engine/.gitmodules`; refreshed `README.md` and
+  `docs/RESOURCE_LOCATIONS.md` (in-tree engine, no submodule, current hardware
+  and live flags).
+- Committed `profiles/gemma4-12b-16k` (created → epoch `1792757220`).
+- Fast-forwarded `main` to `ab6c72a`; pushed `dcba2f1..ab6c72a`.
+- Created and pushed annotated tag `engine-import-2026-10-23` at `90416d1`.
+- Working tree: clean (`untracked=0`), `main == origin/main`.
+- Legacy `lull-kv` / `vllm-031` worktrees and `.git/modules` untouched.
+
+Promotion commits:
+
+```
+ab6c72a docs: AVX2 rebuild results and monorepo promotion plan
+766b9f4 profiles: gemma4-12b-16k voice fast-lane
+17b04bd chore: clean in-source build artifacts and refresh engine docs
+9cad300 Merge remote-tracking branch 'origin/main' into engine-monorepo
+```
+
+Phase 4 (build/run smoke at 262K) is deferred: GPU is busy with Pathfinder.
+The AVX2 native build remains at `/scratch/builds/build-ku-cu12-native`;
+`engine/build` currently points at the known-good `build-ku-cu12`.
+
 ## Rollback
 
 - Local: `engine-monorepo` remains intact until `main` is pushed.

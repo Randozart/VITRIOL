@@ -1,0 +1,3 @@
+name=qwen38-ud-262k
+description=Qwen3.8-27B Ultra-Dense Q3_K_XL: native engine, max ctx 262K, MTP off, q4k/q4v, single RTX 4000 SFF Ada 20 GB
+created=2026-08-21

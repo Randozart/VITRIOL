@@ -86,7 +86,7 @@ forcing a destructive clean.
 7. **Record:** report with A/B numbers, cmake cache, portability caveat;
    commit the report only (build artifacts stay untracked).
 
-## Execution results (2026-11-02 20:00–20:13 CET, partial)
+## Execution results (2026-11-02, completed)
 
 ### Build
 
@@ -119,26 +119,33 @@ new `{avx:1, avx2:1, fma:1, f16c:1, bmi2:1}`.
 
 ≈ +74% prefill, +79% token-gen on the CPU backend.
 
-### Engine-level A/B (INCOMPLETE)
+### Engine-level A/B (completed 22:38–22:40 CET)
 
-New build loaded the 262K profile and reached `/health` ok with the same
-fingerprint. The first bench warmup OOM'd on GPU0 (`cudaMalloc failed: out of
-memory`, 1311 MiB compute buffer) because **Firefox started at 20:05 and took
-~1.5 GB of GPU0 VRAM**; only 115 MiB was free. This is desktop VRAM pressure,
-not a build regression (the 19:38 baseline ran without Firefox).
+First attempt at 20:05 OOM'd on GPU0 (`cudaMalloc failed: out of memory`, 1311 MiB
+compute buffer) because Firefox took ~1.5 GB of GPU0 VRAM; only 115 MiB was
+free. That was desktop pressure, not a build regression. After the owner closed
+Pathfinder/Firefox (GPU0 free: 11.3 GiB), the A/B was repeated cleanly:
 
-Owner paused the session at 20:13. State left:
-- `engine/build` reverted to the known-good `build-ku-cu12` (old build).
-- `vitriol-server` **inactive**; autosave + governor remain active.
-- No engine process; GPU0 2.3 GB desktop, GPU1 35 MiB.
-- Config/fingerprint untouched (262K profile).
+| build | bench shallow median | runs | prompt t/s |
+|---|---|---|---|
+| old `build-ku-cu12` | 27.387 | 25.909 / 30.147 / 27.387 | 24.0–24.5 |
+| new `build-ku-cu12-native` | 27.338 | 27.338 / 28.380 / 30.923 | 24.8–25.4 |
 
-### Next session
+Decode is statistically identical (GPU-bound, as expected). New build VRAM is
+slightly lower or equal (GPU0 10,820 vs 10,834 MiB after bench). Fingerprint
+identical; slot restore 17 tokens / 119 ms; no OOM.
 
-1. Close GPU-heavy desktop apps (Firefox/Pathfinder + Discord/Code) or accept
-   the 208k profile.
-2. Repeat engine-level A/B at 262K, then adopt/revert per the decision gate.
-3. Record final numbers here and commit the report.
+**Decision: adopt the native build.**
+- `engine/build -> build-ku-cu12-native`
+- engine restarted via the unit, `/health` ok, fingerprint unchanged
+- old build remains as instantaneous rollback at
+  `/scratch/builds/build-ku-cu12`
+
+### Follow-up
+
+- Re-bless `fingerprint.blessed` at leisure (still 2026-09-17).
+- Firefox/Pathfinder need ~1.5 GB GPU0; 262K + MTP n=3 fits only with that
+  closed (or switch to `qwen38-buffedmod-208k`).
 
 ## Rollback
 

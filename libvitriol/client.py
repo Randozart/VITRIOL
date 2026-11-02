@@ -113,7 +113,7 @@ class VitriolClient:
         """Set safety level (1=safe, 2=dma, 3=raw pci)"""
         return self._send_request("SET_SAFETY", {"level": level})
 
-    def get_status(self) -> "VitriolStatus":
+    def get_status(self) -> Dict[str, Any]:
         """Get typed status"""
         resp = self.status()
         if resp["status"] != "ok":

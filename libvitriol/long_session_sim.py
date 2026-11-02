@@ -68,7 +68,7 @@ def main() -> None:
             _d, dt = send(args.url, messages)
             err = ""
         except urllib.error.HTTPError as e:
-            dt = round(time.time() - t0, 1) if False else -1
+            dt = -1
             err = f"HTTP {e.code}"
         rows.append((i, len(messages), dt, err))
         # keep assistant replies so history grows like a real session

@@ -4,48 +4,56 @@ updates:
   - package-ecosystem: cargo
     directory: /libvitriol
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /libhermes
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /vitriol-cache
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /vitriol-governor
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /vitriol-stream
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /vitriol-tui
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /officina/tui
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
   - package-ecosystem: cargo
     directory: /demiurge
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 3
     groups:
       cargo: { patterns: ["*"] }
@@ -53,6 +61,7 @@ updates:
   - package-ecosystem: npm
     directory: /officina
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 5
     groups:
       npm: { patterns: ["*"] }
@@ -60,6 +69,7 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
+    rebase-strategy: auto
     open-pull-requests-limit: 5
     groups:
       actions: { patterns: ["*"] }

@@ -36,7 +36,6 @@ eggs/
 /target/
 **/target/
 *.rs.bk
-Cargo.lock
 
 # Brief compiler output
 out_test/
@@ -46,6 +45,8 @@ out_test/
 # IDE
 .idea/
 .vscode/
+.crush/
+.pytest_cache/
 *.swp
 *.swo
 *~

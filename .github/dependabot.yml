@@ -1,0 +1,65 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /libvitriol
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /libhermes
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /vitriol-cache
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /vitriol-governor
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /vitriol-stream
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /vitriol-tui
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /officina/tui
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+  - package-ecosystem: cargo
+    directory: /demiurge
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 3
+    groups:
+      cargo: { patterns: ["*"] }
+
+  - package-ecosystem: npm
+    directory: /officina
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      npm: { patterns: ["*"] }
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      actions: { patterns: ["*"] }

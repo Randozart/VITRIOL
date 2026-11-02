@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # vitriol-ports.sh — single source of truth for VITRIOL stack ports (Tria Prima).
 #
 # Three live processes map onto the three alchemical principles; each port encodes

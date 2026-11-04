@@ -73,11 +73,18 @@ static void ggml_gen_hadamard(ggml_tensor * tensor) {
 // e.g. keep f16 KV on the 12 GB card, q8_0 KV on the 8 GB card.
 
 static int vitriol_gpu_index_for_dev(const ggml_backend_dev_t dev) {
-    ggml_backend_reg_t cuda_reg = ggml_backend_cuda_reg();
-    const int n_cuda = ggml_backend_cuda_get_device_count();
-    for (int i = 0; i < n_cuda; i++) {
-        if (ggml_backend_reg_dev_get(cuda_reg, i) == dev) {
-            return i;
+    // CUDA-only device indexing without referencing ggml_backend_cuda_* symbols:
+    // the CUDA backend may not be compiled in (Vulkan-only boxes). Devices are
+    // named GGML_CUDA_NAME ("CUDA") + index, so a name prefix identifies them.
+    int cuda_index = 0;
+    const int n_dev = ggml_backend_dev_count();
+    for (int i = 0; i < n_dev; i++) {
+        ggml_backend_dev_t d = ggml_backend_dev_get(i);
+        if (std::string(ggml_backend_dev_name(d)).rfind(GGML_CUDA_NAME, 0) == 0) {
+            if (d == dev) {
+                return cuda_index;
+            }
+            cuda_index++;
         }
     }
     return -1;

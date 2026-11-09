@@ -1222,10 +1222,9 @@ fn generate(
             cfg.gen_base()
         )
     })?;
-    let text = crate::poller::read_response_text(&mut resp)
-        .map_err(|_| "bad gen response".to_string())?;
-    serde_json::from_str::<serde_json::Value>(&text)
-        .map_err(|_| "bad gen response".to_string())
+    let text =
+        crate::poller::read_response_text(&mut resp).map_err(|_| "bad gen response".to_string())?;
+    serde_json::from_str::<serde_json::Value>(&text).map_err(|_| "bad gen response".to_string())
 }
 
 /// The mask name from `into <name>` args, if present.
@@ -1318,8 +1317,8 @@ fn gemini_generate(api_key: &str, model: &str, prompt: &str) -> Result<String, S
         .map_err(|e| format!("gemini request failed: {e}"))?;
     let text = crate::poller::read_response_text(&mut resp)
         .map_err(|_| "bad gemini response".to_string())?;
-    let payload: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|_| "bad gemini response".to_string())?;
+    let payload: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "bad gemini response".to_string())?;
     let mut text = String::new();
     for part in payload
         .get("candidates")

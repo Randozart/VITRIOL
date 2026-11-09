@@ -8,8 +8,8 @@ use std::sync::mpsc::Sender;
 use std::thread;
 use std::time::Duration;
 
-use serde_json::json;
 use crate::poller::{http_agent, read_response_text};
+use serde_json::json;
 
 use crate::config::Config;
 

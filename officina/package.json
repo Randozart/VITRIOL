@@ -9,7 +9,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-tui": "0.83.0",
     "@sinclair/typebox": "^0.34.52"
   },

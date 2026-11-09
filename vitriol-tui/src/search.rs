@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::json;
-use ureq::AgentBuilder;
+use crate::poller::{http_agent, read_response_text};
 
 use crate::config::Config;
 
@@ -40,13 +40,16 @@ pub fn spawn(cfg: Config, project_id: String, query: String, tx: Sender<Vec<Sear
 fn search(cfg: &Config, project_id: &str, query: &str) -> Vec<SearchHit> {
     // Retrieval embeds the query on the CPU bge server and takes ~15 s, so the
     // timeout must be generous; the work runs on a background thread.
-    let agent = AgentBuilder::new().timeout(Duration::from_secs(30)).build();
+    let agent = http_agent(Duration::from_secs(30));
     let url = format!("{}/hermetis/search", cfg.hermetis_base());
     let body = json!({"project_id": project_id, "query": query, "top_k": 5});
-    let Ok(resp) = agent.post(&url).send_json(body) else {
+    let Ok(mut resp) = agent.post(&url).send_json(body) else {
         return Vec::new();
     };
-    let Ok(payload) = resp.into_json::<serde_json::Value>() else {
+    let Ok(text) = read_response_text(&mut resp) else {
+        return Vec::new();
+    };
+    let Ok(payload) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Vec::new();
     };
     let Some(results) = payload.get("results").and_then(|r| r.as_array()) else {

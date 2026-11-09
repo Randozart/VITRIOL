@@ -1206,9 +1206,7 @@ fn generate(
     n_predict: u64,
     rectify: bool,
 ) -> Result<serde_json::Value, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(120))
-        .build();
+    let agent = crate::poller::http_agent(std::time::Duration::from_secs(120));
     let url = format!("{}/v1/completions", cfg.gen_base());
     let mut body = serde_json::json!({
         "prompt": prompt,
@@ -1218,13 +1216,15 @@ fn generate(
     if rectify {
         body["rectify"] = serde_json::json!(true);
     }
-    let resp = agent.post(&url).send_json(body).map_err(|_| {
+    let mut resp = agent.post(&url).send_json(body).map_err(|_| {
         format!(
             "gen server unreachable at {} — start the stack first",
             cfg.gen_base()
         )
     })?;
-    resp.into_json::<serde_json::Value>()
+    let text = crate::poller::read_response_text(&mut resp)
+        .map_err(|_| "bad gen response".to_string())?;
+    serde_json::from_str::<serde_json::Value>(&text)
         .map_err(|_| "bad gen response".to_string())
 }
 
@@ -1304,22 +1304,21 @@ fn describe_dross(dross: &[u32], n_expert: u64) -> String {
 
 /// Call the Gemini generateContent API and return the combined text.
 fn gemini_generate(api_key: &str, model: &str, prompt: &str) -> Result<String, String> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(60))
-        .build();
+    let agent = crate::poller::http_agent(std::time::Duration::from_secs(60));
     let url =
         format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
     let body = serde_json::json!({
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": 4096, "temperature": 0.8},
     });
-    let resp = agent
+    let mut resp = agent
         .post(&url)
         .query("key", api_key)
         .send_json(body)
         .map_err(|e| format!("gemini request failed: {e}"))?;
-    let payload: serde_json::Value = resp
-        .into_json()
+    let text = crate::poller::read_response_text(&mut resp)
+        .map_err(|_| "bad gemini response".to_string())?;
+    let payload: serde_json::Value = serde_json::from_str(&text)
         .map_err(|_| "bad gemini response".to_string())?;
     let mut text = String::new();
     for part in payload

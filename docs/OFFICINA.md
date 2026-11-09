@@ -181,6 +181,23 @@ Provider-specific fields (Azure resource/version, Bedrock region/keys, Vertex
 project, etc.) go verbatim in `provider_specific_data`; OmniRoute validates
 them at import time.
 
+## OpenCode session import (2026-11-09)
+
+Officina can import an OpenCode session as a native pi session:
+
+    vitriol opencode                 # TUI picker, current project
+    vitriol opencode list --json
+    vitriol opencode import latest --dry-run
+    vitriol opencode import <id> --no-launch
+    vitriol opencode import <id> --fork
+
+Defaults import the whole transcript; `--last N` and `--max-chars N` are
+explicit trims. Tool outputs are capped at 500 chars each by default (4k with
+`--full`) because OpenCode can store multi-GB tool bodies. Imported sessions
+are written under `~/.pi/agent/sessions/` and opened with
+`vitriol officina --session <path>` unless `--no-launch` is passed. Source DB
+is read-only.
+
 ## Settings TUI (2026-11-09)
 
 `vitriol settings` opens a searchable full-screen menu for **every key in

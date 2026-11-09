@@ -26,8 +26,8 @@ if [[ -z "$HITS" ]]; then ok "no live external project paths"; else bad "externa
 echo "── 2. officina tests + typecheck ──"
 if (cd "$HERE" && npx vitest --run .pi/extensions >/dev/null 2>&1); then ok "vitest extensions"; else bad "vitest extensions"; fi
 if (cd "$HERE" && npm run typecheck >/dev/null 2>&1); then ok "typecheck"; else bad "typecheck"; fi
-if (cd "$HERE" && npx vitest --run scripts/omniroute-lib.test.mjs scripts/omniroute-accounts-lib.test.mjs scripts/omniroute-oauth-lib.test.mjs scripts/cache-report-lib.test.mjs >/dev/null 2>&1); then ok "omniroute cli helpers"; else bad "omniroute cli helpers"; fi
-for f in omniroute.mjs omniroute-lib.mjs omniroute-accounts-lib.mjs omniroute-oauth-lib.mjs cache-report.mjs cache-report-lib.mjs settings-tui.mjs; do
+if (cd "$HERE" && npx vitest --run scripts/omniroute-lib.test.mjs scripts/omniroute-accounts-lib.test.mjs scripts/omniroute-oauth-lib.test.mjs scripts/opencode-import-lib.test.mjs scripts/cache-report-lib.test.mjs >/dev/null 2>&1); then ok "omniroute cli helpers"; else bad "omniroute cli helpers"; fi
+for f in omniroute.mjs omniroute-lib.mjs omniroute-accounts-lib.mjs omniroute-oauth-lib.mjs cache-report.mjs cache-report-lib.mjs settings-tui.mjs opencode.mjs opencode-import-lib.mjs; do
   if node --check "$HERE/scripts/$f" >/dev/null 2>&1; then ok "omniroute cli syntax: $f"; else bad "omniroute cli syntax: $f"; fi
 done
 

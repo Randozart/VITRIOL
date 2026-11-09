@@ -17,7 +17,7 @@ use std::thread;
 use std::time::Duration;
 
 use serde_json::Value;
-use ureq::{Agent, AgentBuilder};
+use ureq::Agent;
 
 use crate::config::Config;
 use crate::intel;
@@ -84,7 +84,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
     thread::Builder::new()
         .name("vitriol-tui-poller".into())
         .spawn(move || {
-            let agent = AgentBuilder::new().timeout(Duration::from_secs(3)).build();
+            let agent = http_agent(Duration::from_secs(3));
             let mut poller = Poller {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
                 luna_beat_offset: None,
@@ -446,10 +446,25 @@ fn read_mem_available_mib() -> u32 {
     0
 }
 
+/// Build a ureq 3 agent with a global timeout.
+pub fn http_agent(timeout: Duration) -> Agent {
+    Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
+}
+
+/// Read a ureq 3 response body as text.
+pub fn read_response_text(
+    resp: &mut ureq::http::Response<ureq::Body>,
+) -> Result<String, ureq::Error> {
+    resp.body_mut().read_to_string()
+}
+
 /// Plain GET returning the body as String (for /metrics text endpoints).
 fn req_text(agent: &Agent, url: &str) -> Option<String> {
     match agent.get(url).call() {
-        Ok(resp) => resp.into_string().ok(),
+        Ok(mut resp) => read_response_text(&mut resp).ok(),
         Err(_) => None,
     }
 }
@@ -570,7 +585,7 @@ fn parse_draft(props: Value) -> Option<DraftSnapshot> {
 /// dashboard shows; defaults when the endpoint is disabled.
 fn poll_metrics_totals(agent: &Agent, base: &str) -> MetricsTotals {
     let text = match agent.get(&format!("{base}/metrics")).call() {
-        Ok(resp) => match resp.into_string() {
+        Ok(mut resp) => match read_response_text(&mut resp) {
             Ok(t) => t,
             Err(_) => return MetricsTotals::default(),
         },
@@ -676,8 +691,9 @@ fn poll_embed(agent: &Agent, cfg: &Config) -> EmbedSnapshot {
 
 /// GET a JSON body, returning `None` on any transport or parse failure.
 fn get_json(agent: &Agent, url: &str) -> Option<Value> {
-    let resp = agent.get(url).call().ok()?;
-    resp.into_json::<Value>().ok()
+    let mut resp = agent.get(url).call().ok()?;
+    let text = read_response_text(&mut resp).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// Live-decode rates at or above this are server rounding artifacts (a 1-token

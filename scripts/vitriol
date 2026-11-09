@@ -1732,6 +1732,8 @@ usage() {
    vitriol omniroute egress status|set|clear|test
                               fixed proxy/VPN egress (no quota rotation)
    vitriol omniroute doctor   one-shot health report
+   vitriol omniroute use <model> [--local]
+                              persist default pi provider/model
    vitriol omniroute service install|status|remove
                               systemd user unit (boot persistence)
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL

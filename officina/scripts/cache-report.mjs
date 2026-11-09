@@ -3,7 +3,7 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { computeCacheReport, parseSessionJsonl } from "./cache-report-lib.mjs";
 
 function expand(path) {
@@ -44,6 +44,7 @@ function parseArgs(argv) {
     if (arg === "--json") opts.json = true;
     else if (arg === "--file") opts.file = argv[++i];
     else if (arg === "--sessions") opts.sessions = argv[++i];
+    else if (arg === "--cwd") opts.cwd = argv[++i];
     else if (arg === "--help" || arg === "-h") opts.help = true;
     else if (!arg.startsWith("--")) opts.file ??= arg;
   }
@@ -59,14 +60,21 @@ function fmt(n) {
 function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log(`usage: cache-report [--file SESSION.jsonl] [--sessions DIR] [--json]
+    console.log(`usage: cache-report [--file SESSION.jsonl] [--sessions DIR] [--cwd DIR] [--json]
 
 Reports prompt-cache reads/writes, hit rate, and likely misses for a pi session.
-Default session root: ~/.pi/agent/sessions (latest .jsonl by mtime).`);
+Default session root: ~/.pi/agent/sessions (latest .jsonl by mtime).
+--cwd scopes to that project's encoded session directory.`);
     return;
   }
 
-  const root = expand(opts.sessions ?? "~/.pi/agent/sessions");
+  const sessionsRoot = expand(opts.sessions ?? "~/.pi/agent/sessions");
+  const root = opts.cwd
+    ? join(
+        sessionsRoot,
+        `--${resolve(expand(opts.cwd)).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`,
+      )
+    : sessionsRoot;
   const file = opts.file ? expand(opts.file) : latestSession(root);
   if (!file || !existsSync(file)) {
     console.error(`[cache-report] no session JSONL found (${file ?? root})`);

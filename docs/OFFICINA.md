@@ -25,6 +25,7 @@ across sessions, and a fresh session still selects the local engine.
     vitriol omniroute setup --free --opencode-key-stdin < ~/.config/opencode-go.key
     vitriol omniroute doctor
     vitriol omniroute service install
+    vitriol omniroute use ddgw/gpt-5.4-mini   # persist cloud default
     vitriol officina        # then /model -> omniroute/<model>
 
 What `setup` does:
@@ -39,7 +40,9 @@ What `setup` does:
 - writes `OFFICINA_OMNIROUTE*` to `~/.vitriol/officina/env` (mode 600).
 
 `setup --free` additionally runs free onboarding, reuses existing OpenCode auth,
-and enables provider cache overrides. `doctor` is a read-only health report;
+and enables provider cache overrides. `use <model>` writes the pi default
+provider/model so new sessions open directly on OmniRoute; `use --local
+<model>` restores the local default. `doctor` is a read-only health report;
 `service install` writes `~/.config/systemd/user/vitriol-omniroute.service`,
 enables it, and best-effort enables lingering so the gateway survives reboot.
 
@@ -192,6 +195,7 @@ with `cache disable` if it ignores or rejects the hint.
 Telemetry:
 
     vitriol cache-report                 # latest session
+    vitriol cache-report --cwd .         # current project's sessions
     vitriol cache-report --file S.jsonl --json
 
 The sidebar cache row shows cumulative `cacheRead`, `cacheWrite`, and an

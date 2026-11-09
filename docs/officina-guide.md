@@ -33,6 +33,7 @@ Zero-key free providers:
     vitriol omniroute setup --free
     vitriol omniroute doctor
     vitriol omniroute service install
+    vitriol omniroute use ddgw/gpt-5.4-mini       # persist cloud default
     vitriol omniroute accounts free --template    # fill-in free API-key list
     vitriol omniroute accounts free --apply
     vitriol omniroute accounts discover --apply   # reuse OpenCode auth

@@ -48,6 +48,7 @@ const ACCOUNTS_FILE = join(HOME, ".vitriol", "officina", "accounts.json");
 const EGRESS_FILE = join(HOME, ".vitriol", "officina", "egress.json");
 const EGRESS_ENV_FILE = join(HOME, ".vitriol", "officina", "egress.env");
 const SERVICE_UNIT = join(HOME, ".config", "systemd", "user", "vitriol-omniroute.service");
+const PI_SETTINGS = join(HOME, ".pi", "agent", "settings.json");
 const OPENCODE_AUTH_FILE =
   process.env.OPENCODE_AUTH_FILE || join(HOME, ".local", "share", "opencode", "auth.json");
 const DATA_DIR = process.env.DATA_DIR || join(HOME, ".omniroute");
@@ -937,6 +938,59 @@ async function fetchConnectionsApi() {
   return Array.isArray(body) ? body : body?.connections ?? body?.providers ?? [];
 }
 
+
+async function cmdUse(flags) {
+  const localValue = typeof flags.local === "string" ? flags.local.trim() : "";
+  const requested =
+    typeof flags._[0] === "string" ? flags._[0].trim() : typeof flags.model === "string" ? flags.model.trim() : localValue;
+  const settings = existsSync(PI_SETTINGS)
+    ? JSON.parse(readFileSync(PI_SETTINGS, "utf8"))
+    : {};
+
+  if (flags.local) {
+    settings.defaultProvider = "llamacpp";
+    if (requested) settings.defaultModel = requested;
+    writeJsonAtomic(PI_SETTINGS, settings);
+    chmodSync(PI_SETTINGS, 0o600);
+    log(`Default provider set to llamacpp${requested ? ` (${requested})` : ""}.`);
+    return;
+  }
+
+  if (!requested) fail("usage: vitriol omniroute use <model-id> [--local]");
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  await startServer();
+
+  const env = readEnv();
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
+  if (!apiKey) fail("missing inference key; run: vitriol omniroute setup");
+  const catalog = await fetchModels(apiKey);
+  if (!catalog.ok) fail(`catalog fetch failed with HTTP ${catalog.status}`);
+
+  const model = catalog.data.find((entry) => entry?.id === requested);
+  if (!model) {
+    const suggestions = catalog.data
+      .map((entry) => String(entry?.id ?? ""))
+      .filter((id) => id.toLowerCase().includes(requested.toLowerCase()))
+      .slice(0, 10);
+    fail(
+      `unknown model: ${requested}${suggestions.length > 0 ? `\nDid you mean:\n  ${suggestions.join("\n  ")}` : ""}`,
+    );
+  }
+
+  settings.defaultProvider = "omniroute";
+  settings.defaultModel = model.id;
+  writeJsonAtomic(PI_SETTINGS, settings);
+  chmodSync(PI_SETTINGS, 0o600);
+
+  if (flags.json) {
+    log(JSON.stringify({ provider: "omniroute", model: model.id, settings: PI_SETTINGS }, null, 2));
+  } else {
+    log(`Default model set to omniroute/${model.id}`);
+    log(`Settings: ${PI_SETTINGS}`);
+    log("Next: vitriol officina");
+  }
+}
+
 async function cmdCache(flags) {
   if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
   const sub = flags._[0] || "status";
@@ -1716,6 +1770,7 @@ Usage:
   vitriol omniroute egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
   vitriol omniroute service install|status|remove
   vitriol omniroute doctor [--json]
+  vitriol omniroute use <model-id> [--local] [--json]
 
 Setup installs omniroute@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
 creates a local inference key, disables compression/semantic-cache/memory, and
@@ -1739,6 +1794,7 @@ async function main() {
   if (command === "egress") return cmdEgress(parseFlags(argv.slice(1)));
   if (command === "service") return cmdService(parseFlags(argv.slice(1)));
   if (command === "doctor") return cmdDoctor(parseFlags(argv.slice(1)));
+  if (command === "use") return cmdUse(parseFlags(argv.slice(1)));
   if (command === "setup") return setup(flags);
   if (command === "up") return cmdUp();
   if (command === "down") return cmdDown();

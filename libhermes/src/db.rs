@@ -553,7 +553,11 @@ impl Hermes {
     pub fn content_hash(content: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(content.as_bytes());
-        hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect()
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
     }
 
     /// Retrieve a cached embedding blob by content hash.

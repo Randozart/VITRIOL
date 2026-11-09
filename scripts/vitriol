@@ -1739,6 +1739,7 @@ usage() {
    vitriol omniroute service install|status|remove
                               systemd user unit (boot persistence)
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL
+   vitriol settings           interactive settings TUI (engine + Officina)
    vitriol validate           harness config gate (ex-tris)
   vitriol lanes              GPU lane report (ex-tris)
   vitriol budget             allocation vs measured ledger (ex-tris)
@@ -3208,6 +3209,22 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
             (cd "${PROJECT_DIR}/vitriol-tui" && cargo build --release) || exit 1
         fi
         exec env VITRIOL_REPO="$PROJECT_DIR" "$TUI_BIN"
+        ;;
+
+    settings)
+        # Interactive settings TUI for ~/.vitriol/config + Officina env.
+        shift
+        SETTINGS_TUI="${PROJECT_DIR}/officina/scripts/settings-tui.mjs"
+        if ! command -v node >/dev/null 2>&1; then
+            NODE_BIN="$(find "${HOME}/.local/share/fnm/node-versions" -path '*/installation/bin/node' 2>/dev/null | sort -V | tail -1)"
+            [[ -z "$NODE_BIN" && -x /usr/bin/node ]] && NODE_BIN=/usr/bin/node
+            if [[ -z "$NODE_BIN" ]]; then
+                echo "[vitriol] settings TUI needs node (fnm or system) — not found." >&2
+                exit 1
+            fi
+            PATH="$(dirname "$NODE_BIN"):$PATH"
+        fi
+        exec node "$SETTINGS_TUI" "$@"
         ;;
 
     cache-report)

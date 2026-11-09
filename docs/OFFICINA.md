@@ -181,6 +181,21 @@ Provider-specific fields (Azure resource/version, Bedrock region/keys, Vertex
 project, etc.) go verbatim in `provider_specific_data`; OmniRoute validates
 them at import time.
 
+## Settings TUI (2026-11-09)
+
+`vitriol settings` opens a searchable full-screen menu for **every key in
+`~/.vitriol/config`** plus the Officina env file. Inline config comments become
+the explanations; known env keys have curated descriptions.
+
+- `↑/↓` move, type to search, `Enter` edit/cycle, `Esc` quit.
+- Enum settings cycle; free-form values open a one-line editor.
+- Engine config writes are atomic and backed up once as `~/.vitriol/config.bak`.
+- Engine changes need `systemctl restart vitriol-server`.
+- Officina env changes apply to the next session.
+- Secret env keys are shown masked and are not editable in the TUI; use
+  `$EDITOR ~/.vitriol/officina/env`.
+- Non-interactive inspection: `vitriol settings --list` or `--json`.
+
 ## Cloud cache mode (2026-11-09)
 
 Officina stays low-context on the local engine. When a non-local provider is

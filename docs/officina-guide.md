@@ -54,6 +54,7 @@ Web-cookie and local providers stay manual.
 
 Config toggles:
 
+    vitriol settings                       # full-screen searchable settings TUI
     vitriol omniroute config set cache auto
     vitriol omniroute config set praetor on
 

@@ -59,13 +59,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    const headers = auth.headers
+      ? Object.entries(auth.headers).reduce<Record<string, string>>((acc, [key, value]) => {
+          if (value !== null) acc[key] = value;
+          return acc;
+        }, {})
+      : undefined;
+
     try {
       const { text, usage } = await generateSummaryWithUsage(
         [...messagesToSummarize, ...turnPrefixMessages],
         model,
         0, // reserveTokens — the lane summarizes into its own window, not the master's
         auth.apiKey,
-        auth.headers,
+        headers,
         signal,
         undefined, // customInstructions — pi's battle-tested summary prompt
         previousSummary,

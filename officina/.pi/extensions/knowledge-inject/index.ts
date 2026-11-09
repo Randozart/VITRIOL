@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSkillFile } from "../skill-inject/frontmatter.ts";
-import { injectionResult, makeDedupe } from "../_shared/inject.ts";
+import { injectionResult, makeDedupe, promptFromBeforeAgentStart } from "../_shared/inject.ts";
 import { allowedToolSet, toolsAvailable } from "../_shared/allowed-tools.ts";
 
 // ── Knowledge-entry registry ────────────────────────────────────────────
@@ -118,7 +118,7 @@ export default function (pi: ExtensionAPI) {
     const contextLimit: number = lc.contextLimit ?? 8192;
     if (estimateTokens(base) > contextLimit * 0.4) return;
 
-    const prompt = event.prompt ?? "";
+    const prompt = promptFromBeforeAgentStart(event);
     if (!prompt) return;
 
     // Never inject an entry that instructs tools this process cannot call.

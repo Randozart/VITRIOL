@@ -85,3 +85,27 @@ export function makeDedupe(env: NodeJS.ProcessEnv = process.env): (block: string
     return true;
   };
 }
+
+
+/** Extract the prompt text from pi 1.5's discriminated before_agent_start event.
+ *  User runs carry `prompt`; idle custom-message runs carry `message.content`. */
+export function promptFromBeforeAgentStart(event: {
+  messageType?: string;
+  prompt?: string;
+  message?: { content?: unknown };
+}): string {
+  if (event?.messageType === "user" || typeof event?.prompt === "string") return String(event.prompt ?? "");
+  const content = event?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) =>
+        block && typeof block === "object" && (block as { type?: string }).type === "text"
+          ? String((block as { text?: unknown }).text ?? "")
+          : "",
+      )
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}

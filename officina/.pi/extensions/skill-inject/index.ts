@@ -3,7 +3,7 @@ import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseSkillFile } from "./frontmatter.ts";
-import { injectionResult, makeDedupe } from "../_shared/inject.ts";
+import { injectionResult, makeDedupe, promptFromBeforeAgentStart } from "../_shared/inject.ts";
 import { allowedToolSet, toolsAvailable } from "../_shared/allowed-tools.ts";
 
 // ── Tool-skill registry ─────────────────────────────────────────────────
@@ -302,8 +302,9 @@ export default function (pi: ExtensionAPI) {
       if (!recentToolCalls.includes(t)) recentToolCalls.unshift(t);
     }
 
-    const selected = selectSkills(event.prompt ?? "", budget, allowed);
-    const researchTask = looksLikeResearchTask(event.prompt ?? "");
+    const prompt = promptFromBeforeAgentStart(event);
+    const selected = selectSkills(prompt, budget, allowed);
+    const researchTask = looksLikeResearchTask(prompt);
 
     if (selected.length === 0 && !researchTask) return;
 

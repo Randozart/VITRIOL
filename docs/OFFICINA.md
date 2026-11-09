@@ -22,8 +22,9 @@ OmniRoute gateway adds subscription providers (starting with OpenCode Go)
 without weakening that coupling: an explicit OmniRoute selection persists
 across sessions, and a fresh session still selects the local engine.
 
-    vitriol omniroute setup --opencode-key-stdin < ~/.config/opencode-go.key
-    vitriol omniroute status
+    vitriol omniroute setup --free --opencode-key-stdin < ~/.config/opencode-go.key
+    vitriol omniroute doctor
+    vitriol omniroute service install
     vitriol officina        # then /model -> omniroute/<model>
 
 What `setup` does:
@@ -36,6 +37,11 @@ What `setup` does:
 - disables compression, semantic cache, and memory globally; prompt cache
   stays on;
 - writes `OFFICINA_OMNIROUTE*` to `~/.vitriol/officina/env` (mode 600).
+
+`setup --free` additionally runs free onboarding, reuses existing OpenCode auth,
+and enables provider cache overrides. `doctor` is a read-only health report;
+`service install` writes `~/.config/systemd/user/vitriol-omniroute.service`,
+enables it, and best-effort enables lingering so the gateway survives reboot.
 
 Strict passthrough is also enforced per request by the Officina provider,
 so a global toggle drift cannot silently rewrite prompts:
@@ -81,6 +87,7 @@ Zero-key free providers and existing local credentials:
     vitriol omniroute accounts free --json       # preview
     vitriol omniroute accounts free --apply      # add eligible free providers
     vitriol omniroute accounts free --plans      # 123 free API-key providers + signup URLs
+    vitriol omniroute accounts free --template    # write them disabled to accounts.json
     vitriol omniroute accounts discover --json   # preview OpenCode auth reuse
     vitriol omniroute accounts discover --apply  # import OpenCode auth keys
 

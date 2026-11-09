@@ -30,6 +30,10 @@ for the passthrough contract and rollback steps.
 
 Zero-key free providers:
 
+    vitriol omniroute setup --free
+    vitriol omniroute doctor
+    vitriol omniroute service install
+    vitriol omniroute accounts free --template    # fill-in free API-key list
     vitriol omniroute accounts free --apply
     vitriol omniroute accounts discover --apply   # reuse OpenCode auth
 

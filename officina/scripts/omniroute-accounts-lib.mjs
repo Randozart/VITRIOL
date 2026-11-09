@@ -295,3 +295,26 @@ export function selectOptionalFreeProviders(catalog, existingProviders = new Set
 
   return { entries, skipped, errors };
 }
+
+
+export const FREE_OAUTH_PROVIDERS = [
+  "openference",
+  "qoder",
+  "agy",
+  "kiro",
+  "amazon-q",
+  "freebuff",
+];
+
+export function buildFreeAccountTemplate(plans, oauth = FREE_OAUTH_PROVIDERS) {
+  return {
+    accounts: (Array.isArray(plans) ? plans : []).map((plan) => ({
+      provider: plan.provider,
+      name: plan.name,
+      credential_env: plan.credential_env,
+      website: plan.website,
+      enabled: false,
+    })),
+    oauth: [...oauth],
+  };
+}

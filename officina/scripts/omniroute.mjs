@@ -14,13 +14,15 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseEnvFile, upsertEnvFile } from "./omniroute-lib.mjs";
+import { parseEnvFile, systemdUnit, upsertEnvFile } from "./omniroute-lib.mjs";
 import {
+  buildFreeAccountTemplate,
   buildImportPayload,
   catalogMap,
   mapOpenCodeAuth,
@@ -44,6 +46,8 @@ const ENV_FILE = join(HOME, ".vitriol", "officina", "env");
 const CACHE_FILE = join(HOME, ".vitriol", "officina", "omniroute-models.json");
 const ACCOUNTS_FILE = join(HOME, ".vitriol", "officina", "accounts.json");
 const EGRESS_FILE = join(HOME, ".vitriol", "officina", "egress.json");
+const EGRESS_ENV_FILE = join(HOME, ".vitriol", "officina", "egress.env");
+const SERVICE_UNIT = join(HOME, ".config", "systemd", "user", "vitriol-omniroute.service");
 const OPENCODE_AUTH_FILE =
   process.env.OPENCODE_AUTH_FILE || join(HOME, ".local", "share", "opencode", "auth.json");
 const DATA_DIR = process.env.DATA_DIR || join(HOME, ".omniroute");
@@ -203,16 +207,29 @@ async function waitForDown(timeoutMs = 15_000) {
 
 async function startServer() {
   if (await serverUp()) return false;
-  runCli(["serve", "--headless", "--daemon", "--port", String(PORT)], {
-    env: { PORT: String(PORT), OMNIROUTE_HEADLESS: "1", ...egressEnv() },
-    timeout: 120_000,
-  });
+  if (existsSync(SERVICE_UNIT)) {
+    const res = systemctlUser(["start", "vitriol-omniroute.service"]);
+    if (!res.ok) fail(`could not start vitriol-omniroute.service: ${res.out}`);
+  } else {
+    runCli(["serve", "--headless", "--daemon", "--port", String(PORT)], {
+      env: { PORT: String(PORT), OMNIROUTE_HEADLESS: "1", ...egressEnv() },
+      timeout: 120_000,
+    });
+  }
   if (!(await waitForServer())) fail(`gateway did not become healthy at ${ORIGIN}/api/health`);
   return true;
 }
 
 async function stopServer() {
   if (!(await serverUp())) return true;
+  if (existsSync(SERVICE_UNIT)) {
+    const res = systemctlUser(["stop", "vitriol-omniroute.service"]);
+    if (!res.ok) {
+      warn(`could not stop vitriol-omniroute.service: ${res.out}`);
+      return false;
+    }
+    return waitForDown();
+  }
   try {
     runCli(["stop", "--port", String(PORT)], { timeout: 30_000 });
   } catch (error) {
@@ -515,6 +532,13 @@ async function setup(flags) {
     log(`  env:      ${ENV_FILE}`);
     log("");
     log("Next: vitriol officina, then /model -> omniroute/<model>.");
+
+    if (flags.free) {
+      log("");
+      log("[omniroute] --free: adding zero-key providers and reusing local auth");
+      await cmdAccountsFree({ ...flags, apply: true, _: [] });
+      await cmdCache({ _: ["enable"], providers: "opencode-go,glm" });
+    }
   } catch (error) {
     if (startedByUs) {
       warn("setup failed; stopping the gateway started by this run");
@@ -589,9 +613,8 @@ function readEgress() {
   }
 }
 
-function egressEnv() {
+function buildEgressEnv(egress) {
   if (process.env.OFFICINA_EGRESS === "0") return {};
-  const egress = readEgress();
   if (egress.mode !== "fixed" || !egress.proxy) return {};
   const noProxy = ["127.0.0.1", "localhost", "::1", ...egress.no_proxy].join(",");
   return {
@@ -604,6 +627,19 @@ function egressEnv() {
     NO_PROXY: noProxy,
     no_proxy: noProxy,
   };
+}
+
+function egressEnv() {
+  return buildEgressEnv(readEgress());
+}
+
+function writeEgressEnv(value) {
+  const env = buildEgressEnv(value);
+  const text = Object.entries(env)
+    .map(([key, val]) => `${key}=${String(val).replace(/\n/g, "")}`)
+    .join("\n");
+  writeFileSync(EGRESS_ENV_FILE, text ? `${text}\n` : "", { mode: 0o600 });
+  chmodSync(EGRESS_ENV_FILE, 0o600);
 }
 
 function maskProxy(proxy) {
@@ -622,6 +658,7 @@ function maskProxy(proxy) {
 function writeEgress(value) {
   writeJsonAtomic(EGRESS_FILE, value);
   chmodSync(EGRESS_FILE, 0o600);
+  writeEgressEnv(value);
 }
 
 async function restartIfRunning() {
@@ -711,6 +748,183 @@ async function cmdEgress(flags) {
   }
 
   fail(`unknown egress command: ${sub}`);
+}
+
+
+function praetorArmed() {
+  return process.env.OFFICINA_PRAETOR === "1" || process.env.TRIS_DIAG_PRAETOR === "1";
+}
+
+function systemctlUser(args) {
+  if (!hasCommand("systemctl")) return { ok: false, out: "systemctl not found" };
+  const res = spawnSync("systemctl", ["--user", ...args], {
+    encoding: "utf8",
+    timeout: 20_000,
+  });
+  return { ok: res.status === 0, out: String(res.stdout || res.stderr || "").trim() };
+}
+
+async function cmdService(flags) {
+  const sub = flags._[0] || "status";
+  if (sub === "status") {
+    const enabled = systemctlUser(["is-enabled", "vitriol-omniroute.service"]);
+    const active = systemctlUser(["is-active", "vitriol-omniroute.service"]);
+    const up = await serverUp();
+    const report = {
+      installed: existsSync(SERVICE_UNIT),
+      enabled: enabled.ok,
+      active: active.ok,
+      gateway: up ? "up" : "down",
+      unit: SERVICE_UNIT,
+    };
+    if (flags.json) {
+      log(JSON.stringify(report, null, 2));
+      return;
+    }
+    log(`Service: ${report.installed ? "installed" : "not installed"}`);
+    log(`  enabled: ${report.enabled ? "yes" : "no"}`);
+    log(`  active:  ${report.active ? "yes" : "no"}`);
+    log(`  gateway: ${report.gateway}`);
+    log(`  unit:    ${report.unit}`);
+    return;
+  }
+
+  if (sub === "install") {
+    if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+    mkdirSync(join(HOME, ".config", "systemd", "user"), { recursive: true });
+    writeEgressEnv(readEgress());
+    const unit = systemdUnit({
+      bin: "%h/.vitriol/vendor/omniroute/node_modules/.bin/omniroute",
+      envFile: "%h/.vitriol/officina/egress.env",
+      port: PORT,
+    });
+    writeFileSync(SERVICE_UNIT, unit, { mode: 0o644 });
+    if (await serverUp()) {
+      log("[omniroute] stopping the running gateway to free the port for the user service");
+      await stopServer();
+    }
+    const reload = systemctlUser(["daemon-reload"]);
+    if (!reload.ok) fail(`systemctl --user daemon-reload failed: ${reload.out}`);
+    const enable = systemctlUser(["enable", "--now", "vitriol-omniroute.service"]);
+    if (!enable.ok) fail(`could not enable vitriol-omniroute.service: ${enable.out}`);
+    const linger = spawnSync("loginctl", ["enable-linger", process.env.USER || ""], {
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    if (linger.status !== 0) {
+      warn("loginctl enable-linger failed; the service may not start until you log in");
+    }
+    if (!(await waitForServer())) fail("service started but gateway is not healthy");
+    log(`Installed and started ${SERVICE_UNIT}`);
+    log("Next: vitriol omniroute service status");
+    return;
+  }
+
+  if (sub === "remove") {
+    systemctlUser(["disable", "--now", "vitriol-omniroute.service"]);
+    if (existsSync(SERVICE_UNIT)) {
+      rmSync(SERVICE_UNIT, { force: true });
+      log(`Removed ${SERVICE_UNIT}`);
+    } else {
+      log("Service unit was not installed");
+    }
+    systemctlUser(["daemon-reload"]);
+    return;
+  }
+
+  fail(`unknown service command: ${sub}`);
+}
+
+async function cmdDoctor(flags) {
+  const checks = [];
+  const add = (name, status, detail) => checks.push({ name, status, detail });
+
+  const version = installedVersion();
+  if (!version) add("omniroute binary", "fail", `missing at ${BIN}`);
+  else if (version === PIN) add("omniroute binary", "ok", version);
+  else add("omniroute binary", "warn", `${version} (pinned ${PIN})`);
+
+  const up = await serverUp();
+  add("gateway", up ? "ok" : "fail", up ? ORIGIN : `down at ${ORIGIN}`);
+
+  const env = readEnv();
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
+  add("inference key", apiKey ? "ok" : "fail", apiKey ? `set (...${apiKey.slice(-4)})` : "missing");
+
+  if (existsSync(ENV_FILE)) {
+    const mode = statSync(ENV_FILE).mode & 0o777;
+    add("env permissions", mode === 0o600 ? "ok" : "warn", `${mode.toString(8)} ${ENV_FILE}`);
+  } else {
+    add("env permissions", "warn", `missing ${ENV_FILE}`);
+  }
+
+  let connections = [];
+  if (up) {
+    try {
+      connections = await fetchConnectionsApi();
+    } catch (error) {
+      add("connections", "fail", error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (up && connections.length >= 0) {
+    add(
+      "connections",
+      connections.length > 0 ? "ok" : "fail",
+      connections.length > 0 ? connections.map((c) => c.provider).join(", ") : "none",
+    );
+  }
+
+  if (up && apiKey) {
+    const catalog = await fetchModels(apiKey);
+    add("catalog", catalog.ok && catalog.data.length > 0 ? "ok" : "warn", catalog.ok ? `${catalog.data.length} models` : `HTTP ${catalog.status}`);
+  }
+
+  const cacheTargets = new Set(["opencode-go", "glm"]);
+  const cacheRows = connections.filter((c) => cacheTargets.has(String(c.provider)));
+  if (cacheRows.length === 0) add("cache overrides", "warn", "targets not configured");
+  else {
+    const disabled = cacheRows.filter((c) => !c.providerSpecificData?.cache?.supportsPromptCaching);
+    add(
+      "cache overrides",
+      disabled.length === 0 ? "ok" : "warn",
+      disabled.length === 0 ? "opencode-go/glm enabled" : disabled.map((c) => c.provider).join(", ") + " disabled",
+    );
+  }
+
+  add("browser runtime", browserRuntimePresent() ? "ok" : "warn", browserRuntimePresent() ? "Playwright + Chromium" : "missing Chromium");
+
+  if (hasCommand("praetor")) {
+    const armed = praetorArmed();
+    add("praetor", "ok", armed ? "binary armed" : "binary available (OFFICINA_PRAETOR not set)");
+  } else {
+    add("praetor", "warn", "binary not found");
+  }
+
+  const egress = readEgress();
+  add("egress", egress.mode === "fixed" ? "ok" : "warn", egress.mode === "fixed" ? maskProxy(egress.proxy) : "off");
+
+  const enabled = systemctlUser(["is-enabled", "vitriol-omniroute.service"]);
+  const active = systemctlUser(["is-active", "vitriol-omniroute.service"]);
+  add(
+    "boot service",
+    enabled.ok && active.ok ? "ok" : "warn",
+    enabled.ok && active.ok ? "enabled + active" : existsSync(SERVICE_UNIT) ? "installed but inactive" : "not installed",
+  );
+
+  add("accounts config", existsSync(ACCOUNTS_FILE) ? "ok" : "warn", existsSync(ACCOUNTS_FILE) ? ACCOUNTS_FILE : "missing; run accounts init or accounts free --template");
+
+  const failures = checks.filter((c) => c.status === "fail");
+  const warnings = checks.filter((c) => c.status === "warn");
+  if (flags.json) {
+    log(JSON.stringify({ ok: failures.length === 0, failures: failures.length, warnings: warnings.length, checks }, null, 2));
+  } else {
+    for (const check of checks) {
+      log(`${check.status.toUpperCase().padEnd(4)} ${check.name}: ${check.detail}`);
+    }
+    log("");
+    log(`${failures.length} failure(s), ${warnings.length} warning(s)`);
+  }
+  if (failures.length > 0) process.exitCode = 1;
 }
 
 async function fetchConnectionsApi() {
@@ -811,9 +1025,12 @@ function printAccountIssues(payload) {
   for (const error of payload.errors) {
     log(`  ERROR ${error.provider || "?"}/${error.name || "?"}: ${error.reason}`);
   }
+  const quiet = new Set(["disabled", "filtered"]);
   for (const skip of payload.skipped) {
-    log(`  SKIP  ${skip.provider}/${skip.name}: ${skip.reason}`);
+    if (!quiet.has(skip.reason)) log(`  SKIP  ${skip.provider}/${skip.name}: ${skip.reason}`);
   }
+  const disabled = payload.skipped.filter((skip) => skip.reason === "disabled").length;
+  if (disabled > 0) log(`  SKIP  ${disabled} disabled entry(s)`);
 }
 
 function printImportSummary(summary) {
@@ -988,6 +1205,21 @@ async function cmdAccountsFree(flags) {
   if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
 
   const catalog = loadProviderCatalog();
+  if (flags.template) {
+    const plans = freePlanRows(catalog);
+    const path = resolveAccountsPath(flags);
+    if (existsSync(path) && !flags.force) {
+      log(`Accounts config already exists: ${path} (use --force to overwrite)`);
+      return;
+    }
+    const template = buildFreeAccountTemplate(plans);
+    writeJsonAtomic(path, template);
+    chmodSync(path, 0o600);
+    log(`Wrote ${plans.length} disabled free-tier entries to ${path}`);
+    log("Set enabled=true for chosen providers, add their env vars, then run accounts sync.");
+    return;
+  }
+
   if (flags.plans) {
     const plans = freePlanRows(catalog);
     if (flags.json) {
@@ -1454,7 +1686,8 @@ Usage:
   vitriol omniroute accounts status [--file PATH] [--json]
   vitriol omniroute accounts free [--apply] [--json] [--strict]
                                   [--no-optional] [--no-existing-auth]
-                                  [--no-browser] [--plans]
+                                  [--no-browser] [--plans] [--template]
+                                  [--file PATH] [--force]
   vitriol omniroute accounts discover [--apply] [--json] [--strict]
   vitriol omniroute accounts oauth list
   vitriol omniroute accounts oauth login <id> [--no-browser]
@@ -1472,6 +1705,7 @@ function printHelp() {
 
 Usage:
   vitriol omniroute setup [--opencode-key-stdin] [--no-install] [--force]
+                          [--free] [--no-browser]
   vitriol omniroute up
   vitriol omniroute down
   vitriol omniroute status
@@ -1480,6 +1714,8 @@ Usage:
   vitriol omniroute accounts oauth list|login|status
   vitriol omniroute cache status|enable|disable [--providers a,b] [--json]
   vitriol omniroute egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
+  vitriol omniroute service install|status|remove
+  vitriol omniroute doctor [--json]
 
 Setup installs omniroute@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
 creates a local inference key, disables compression/semantic-cache/memory, and
@@ -1501,6 +1737,8 @@ async function main() {
   if (command === "accounts") return cmdAccounts(parseFlags(argv.slice(1)));
   if (command === "cache") return cmdCache(parseFlags(argv.slice(1)));
   if (command === "egress") return cmdEgress(parseFlags(argv.slice(1)));
+  if (command === "service") return cmdService(parseFlags(argv.slice(1)));
+  if (command === "doctor") return cmdDoctor(parseFlags(argv.slice(1)));
   if (command === "setup") return setup(flags);
   if (command === "up") return cmdUp();
   if (command === "down") return cmdDown();

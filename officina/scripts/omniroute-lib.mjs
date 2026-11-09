@@ -44,3 +44,25 @@ export function upsertEnvFile(content, updates) {
   while (out.length > 0 && out[out.length - 1] === "") out.pop();
   return `${out.join("\n")}\n`;
 }
+
+
+export function systemdUnit({ bin, envFile, port = 20128 }) {
+  return `[Unit]
+Description=OmniRoute local gateway for Officina
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${bin} serve --headless --port ${port}
+Environment=PORT=${port}
+Environment=OMNIROUTE_HEADLESS=1
+EnvironmentFile=-${envFile}
+Restart=on-failure
+RestartSec=2
+KillMode=control-group
+
+[Install]
+WantedBy=default.target
+`;
+}

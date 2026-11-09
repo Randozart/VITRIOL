@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildFreeAccountTemplate,
   buildImportPayload,
   catalogMap,
   mapOpenCodeAuth,
@@ -256,5 +257,25 @@ describe("selectOptionalFreeProviders", () => {
     const result = selectOptionalFreeProviders(catalog, new Set());
     expect(result.entries).toEqual([]);
     expect(result.errors).toEqual([]);
+  });
+});
+
+
+describe("buildFreeAccountTemplate", () => {
+  it("emits disabled free-provider entries with no secrets", () => {
+    const template = buildFreeAccountTemplate([
+      { provider: "groq", name: "groq", credential_env: "GROQ_API_KEY", website: "https://groq.com" },
+    ]);
+    expect(template.accounts).toEqual([
+      {
+        provider: "groq",
+        name: "groq",
+        credential_env: "GROQ_API_KEY",
+        website: "https://groq.com",
+        enabled: false,
+      },
+    ]);
+    expect(template.oauth).toContain("openference");
+    expect(JSON.stringify(template)).not.toContain("apiKey");
   });
 });

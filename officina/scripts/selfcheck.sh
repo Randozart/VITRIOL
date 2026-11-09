@@ -33,7 +33,7 @@ done
 
 echo "── 2b. Vitriolum palette parity (vitriol-tui/src/theme.rs ↔ theme/officina.json ↔ .pi/extensions/_shared/vitriolum.ts) ──"
 PAL_OK=1
-for hex in 0d1117 ffd700 00ffff 39ff14 ff4444 ff5f1f 8b949e e0e0e0 2e5fa3; do
+for hex in 0d1117 ffd700 00ffff f85149 ff5f1f 8b949e e0e0e0 2e5fa3; do
   if grep -qi "$hex" "$VITRIOL/officina/theme/officina.json" \
     && grep -qi "$hex" "$VITRIOL/officina/.pi/extensions/_shared/vitriolum.ts"; then
     ok "palette: #$hex (json + extensions)"

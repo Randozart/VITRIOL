@@ -75,3 +75,15 @@ session.
   - #8 vitriol-tui ureq 3 migration
   - #11 pi 1.5 event/header compatibility
 - #6, #5, #7, #8, #11 local checks pass (Rust tests / npm tests + typecheck).
+
+## Merge sweep (2026-11-09 17:00)
+
+- Merged #3–#14 (squash, branches deleted).
+- #8 needed a rebase after the other `vitriol-tui` merges; lockfile conflict resolved,
+  `cargo test --locked` passed, then merged.
+- Dependabot spawned follow-ups while merging: #16–#20 merged; #22–#23 merged.
+- #15 (minimatch/pi ancestor bump) closed as redundant after #11.
+- #21 (`@sveltejs/kit` 2 → 3, `/engine/tools/ui`) left open for a deliberate
+  major-version review.
+- Local `main` rebased onto the merged tree and pushed; pi 1.5 typecheck/tests
+  pass (631 passed, 18 skipped).

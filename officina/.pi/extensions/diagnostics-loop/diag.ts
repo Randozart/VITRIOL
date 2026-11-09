@@ -17,7 +17,9 @@ export function diagConfig(env: NodeJS.ProcessEnv = process.env): DiagConfig {
   return {
     enabled: env.TRIS_NO_DIAGNOSTICS !== "1",
     budgetChars: 1050,
-    praetor: env.TRIS_DIAG_PRAETOR === "1",
+    // The dedicated praetor extension owns the path when OFFICINA_PRAETOR=1;
+    // keep TRIS_DIAG_PRAETOR as a legacy opt-in for the old single-file path.
+    praetor: env.TRIS_DIAG_PRAETOR === "1" && env.OFFICINA_PRAETOR !== "1",
     praetorTimeoutMs: 60_000,
   };
 }

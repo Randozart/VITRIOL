@@ -15,6 +15,224 @@ engine's native programming environment. Source of truth:
 through to the scaffold CLI: `-p "one-shot"`, `-c` continue, `-r` resume).
 OFFICINA_DIR overrides the location for non-standard installs.
 
+## Subscription providers via OmniRoute (2026-11-09)
+
+Officina keeps the local VITRIOL engine as its default provider. A local
+OmniRoute gateway adds subscription providers (starting with OpenCode Go)
+without weakening that coupling: an explicit OmniRoute selection persists
+across sessions, and a fresh session still selects the local engine.
+
+    vitriol omniroute setup --opencode-key-stdin < ~/.config/opencode-go.key
+    vitriol omniroute status
+    vitriol officina        # then /model -> omniroute/<model>
+
+What `setup` does:
+
+- installs pinned `omniroute@3.8.53` under
+  `~/.vitriol/vendor/omniroute` (PATH-independent);
+- starts the headless gateway on `127.0.0.1:20128`;
+- adds the OpenCode Go credential with `providers add --credential-stdin`;
+- creates a local inference key for Officina;
+- disables compression, semantic cache, and memory globally; prompt cache
+  stays on;
+- writes `OFFICINA_OMNIROUTE*` to `~/.vitriol/officina/env` (mode 600).
+
+Strict passthrough is also enforced per request by the Officina provider,
+so a global toggle drift cannot silently rewrite prompts:
+
+    X-OmniRoute-No-Cache: true
+    X-OmniRoute-Compression: off
+    x-omniroute-no-memory: true
+
+The provider catalog is fetched live from
+`GET /v1/models?prefix=alias`, filtered to active OmniRoute connection
+providers via the local management API, mapped to pi model metadata, and
+cached at `~/.vitriol/officina/omniroute-models.json`. Alias mode is
+required for no-auth providers (`ddgw/`, `cfp/`, `unc/`). `vitriol omniroute
+sync` refreshes the cache; pi's own `/model` refresh also re-fetches.
+
+Operational notes:
+
+- `vitriol omniroute up|down` controls the gateway.
+- `vitriol omniroute status` reports gateway health, provider connection,
+  catalog size, and whether the inference key is present (masked).
+- If the gateway is down, Officina keeps cached models or falls back to
+  the local engine; startup is never blocked.
+- Rollback: `vitriol omniroute down`, remove the `OFFICINA_OMNIROUTE*`
+  lines from `~/.vitriol/officina/env`, re-enable cache/compression in the
+  OmniRoute dashboard. The local engine is untouched.
+- Kill switch: `OFFICINA_OMNIROUTE=0` prevents the provider extension from
+  registering.
+
+### Bulk accounts (API keys + OAuth assist)
+
+OmniRoute 3.8.53 ships 375 catalog providers. Accounts automation is split
+by what can be automated safely:
+
+- **API-key providers (252)** — bulk import. `vitriol omniroute accounts sync`
+  builds one `providers import` payload from `accounts.json`.
+- **OAuth (28 total, 8 CLI flows)** — assisted. Browser/device consent stays
+  interactive; `cursor` and `zed` can import local system credentials.
+- **Web-cookie (35), local (14), noauth (9)** — manual/dashboard or explicit
+  opt-in; no credential scraping.
+
+Zero-key free providers and existing local credentials:
+
+    vitriol omniroute accounts free --json       # preview
+    vitriol omniroute accounts free --apply      # add eligible free providers
+    vitriol omniroute accounts free --plans      # 123 free API-key providers + signup URLs
+    vitriol omniroute accounts discover --json   # preview OpenCode auth reuse
+    vitriol omniroute accounts discover --apply  # import OpenCode auth keys
+
+`accounts free` uses OmniRoute's free-onboarding API and currently adds the
+working no-auth providers: DuckDuckGo AI Chat, Cloudflare AI Playground, and
+AI Horde. `uncloseai` is excluded because its public beta is closed. Naga.ac
+free models need a (free) account key, so they are not auto-added. Existing
+`~/.local/share/opencode/auth.json` entries are reused without printing or
+copying secrets: `opencode-go`, `zai`, and `zai-coding-plan` → `glm`.
+
+DuckDuckGo and Cloudflare are browser-backed. `accounts free --apply` installs
+the pinned Playwright package and Chromium if missing; `--no-browser` skips
+that check. The free-onboarding API is idempotent and skips configured
+providers.
+
+Create and edit the config:
+
+    vitriol omniroute accounts init
+    $EDITOR ~/.vitriol/officina/accounts.json
+    vitriol omniroute accounts sync --dry-run
+    vitriol omniroute accounts sync
+    vitriol omniroute accounts status
+
+`accounts.json` references env vars, never literal secrets:
+
+```json
+{
+  "accounts": [
+    {
+      "provider": "opencode-go",
+      "name": "opencode-go",
+      "credential_env": "OPENCODE_API_KEY"
+    },
+    {
+      "provider": "openai",
+      "name": "openai-main",
+      "credential_env": "OPENAI_API_KEY",
+      "default_model": "gpt-6-luna"
+    },
+    {
+      "provider": "azure-openai",
+      "name": "azure-prod",
+      "credential_env": "AZURE_OPENAI_API_KEY",
+      "provider_specific_data": {
+        "resourceName": "example",
+        "apiVersion": "2024-10-21"
+      }
+    }
+  ],
+  "oauth": ["claude-code", "codex", "copilot"]
+}
+```
+
+`sync` is idempotent by provider + name; existing connections are skipped.
+`--only ID` filters, `--strict` treats missing env vars/config errors as
+failures, `--json` emits a machine-readable report with secrets omitted.
+The temporary import file is mode 600 in a mode-700 directory and deleted
+in `finally`.
+
+OAuth assist:
+
+    vitriol omniroute accounts oauth list
+    vitriol omniroute accounts oauth login cursor
+    vitriol omniroute accounts oauth login copilot
+    vitriol omniroute accounts oauth login codex
+    vitriol omniroute accounts oauth status
+
+Supported CLI flows: `gemini`, `antigravity`, `cursor`, `zed`, `kiro`,
+`claude-code`, `codex`, `copilot`. `cursor`/`zed` default to
+`--import-from-system`; the rest require browser/device consent. `kiro`
+also needs `--social google|github`. OAuth providers outside that list are
+dashboard-only.
+
+Provider-specific fields (Azure resource/version, Bedrock region/keys, Vertex
+project, etc.) go verbatim in `provider_specific_data`; OmniRoute validates
+them at import time.
+
+## Cloud cache mode (2026-11-09)
+
+Officina stays low-context on the local engine. When a non-local provider is
+selected, `OFFICINA_CACHE_MODE=auto` switches to cache-safe behavior:
+
+- system prompt, tool schemas, and earliest history stay byte-identical;
+- dynamic context remains tail-only;
+- `tool-result-clearer` only mutates the prefix near the context ceiling
+  (`OFFICINA_CACHE_CLEAR_PCT`, default 92; force with
+  `OFFICINA_CACHE_FORCE_CLEAR=1`);
+- compaction/model switches are explicit cache epochs (expected misses).
+
+Provider-native caching:
+
+    vitriol omniroute cache status
+    vitriol omniroute cache enable --providers opencode-go,glm
+    vitriol omniroute cache disable --providers glm
+
+`cache enable` sets `providerSpecificData.cache.supportsPromptCaching=true` on
+the OmniRoute connection, so OmniRoute injects `prompt_cache_key` where the
+upstream accepts it. Verified: `opencode-go/glm-5.2` reported
+`cached_tokens=3840/4024` on the second identical request. Revert a provider
+with `cache disable` if it ignores or rejects the hint.
+
+Telemetry:
+
+    vitriol cache-report                 # latest session
+    vitriol cache-report --file S.jsonl --json
+
+The sidebar cache row shows cumulative `cacheRead`, `cacheWrite`, and an
+approximate hit rate. `cache-report` computes missed tokens/cost, idle-TTL
+misses, and model switches from pi session JSONL.
+
+Env:
+- `OFFICINA_CACHE_MODE=auto|local|cloud|off`
+- `OFFICINA_CACHE_CLEAR_PCT=92`
+- `OFFICINA_CACHE_FORCE_CLEAR=1`
+
+## Native Praetor (advisory)
+
+Praetor is a first-class advisory utility, off by default:
+
+    OFFICINA_PRAETOR=1 vitriol officina
+
+- injects `praetor instruct` once (stable block);
+- after edit/write, copies the changed source file to a temp directory and runs
+  `praetor validate --warn --json --target <tmpdir>`;
+- appends a bounded diagnostics tail on failures (`OFFICINA_PRAETOR_BUDGET`,
+  default 300 chars; timeout `OFFICINA_PRAETOR_TIMEOUT_MS`, default 60s);
+- exposes `praetor_report` for `praetor report --target <cwd> --format markdown`.
+
+Advisory only: it never blocks edits. Kill switch: `OFFICINA_NO_PRAETOR=1`.
+`TRIS_DIAG_PRAETOR=1` remains a compatibility alias for the older
+diagnostics-loop path. Missing `praetor` disables cleanly.
+
+## Fixed egress (VPN / proxy)
+
+Egress is **fixed-only by policy**. No automatic IP rotation and no
+quota-triggered proxy switching — those are anti-abuse/ToS risks.
+
+    vitriol omniroute egress status
+    vitriol omniroute egress set --proxy socks5://127.0.0.1:1080
+    vitriol omniroute egress set --proxy http://user:pass@host:8080 --no-proxy 127.0.0.1,localhost
+    vitriol omniroute egress clear
+    vitriol omniroute egress test
+
+Config: `~/.vitriol/officina/egress.json` (mode 600). The proxy URL is applied
+to the OmniRoute daemon via `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` plus
+`NO_PROXY`; OmniRoute's network layer consumes those variables. `set/clear`
+restarts the daemon when running; `status` masks credentials; `test` checks the
+egress IP through the proxy. Kill switch: `OFFICINA_EGRESS=0`.
+
+OS-level WireGuard is documented separately; Officina does not manage root
+network configuration.
+
 ## Project branding: `.officina` vs `.pi` (2026-09-02)
 
 Two namespaces, two owners:

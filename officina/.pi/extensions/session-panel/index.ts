@@ -31,6 +31,8 @@ interface PanelState {
   files: Map<string, { ts: number; add: number; del: number }>;
   tokensIn: number;
   tokensOut: number;
+  cacheRead: number;
+  cacheWrite: number;
   turns: number;
 }
 
@@ -114,7 +116,7 @@ export const embDiv = (name: string): string => {
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
 
-  const state: PanelState = { files: new Map(), tokensIn: 0, tokensOut: 0, turns: 0 };
+  const state: PanelState = { files: new Map(), tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, turns: 0 };
   let cwd = "";
   let modelId = "";
   let sessionId = "";
@@ -178,6 +180,16 @@ export default function (pi: ExtensionAPI) {
     const ejected = getEngineSnapshot().ejected;
     const ej = ejected > 0 ? sc(MUTED, " ⤓ ") + sc(SOLVENT, fmtTokens(ejected)) : "";
     const line = `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct.toFixed(1) + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + "/" + total)}${ej}`;
+    return [truncate(line, CONTENT_W)];
+  });
+
+  // P21: Prompt-cache activity (cloud providers). Shows cumulative cache reads
+  // and writes plus an approximate hit rate for the session.
+  registerSidebarSection("cache", 21, () => {
+    if (state.cacheRead + state.cacheWrite <= 0) return undefined;
+    const prompt = state.tokensIn + state.cacheRead + state.cacheWrite;
+    const hit = prompt > 0 ? (state.cacheRead / prompt) * 100 : 0;
+    const line = `${sc(MUTED, "cache ")}${sc(SOLVENT, fmtTokens(state.cacheRead))}${sc(MUTED, " R · ")}${sc(VIOLET, fmtTokens(state.cacheWrite))}${sc(MUTED, " W · ")}${sc(SAFETY, hit.toFixed(0) + "%")}`;
     return [truncate(line, CONTENT_W)];
   });
 
@@ -424,6 +436,8 @@ export default function (pi: ExtensionAPI) {
     if (u) {
       state.tokensIn += u.input ?? u.input_tokens ?? 0;
       state.tokensOut += u.output ?? u.output_tokens ?? u.tokens ?? 0;
+      state.cacheRead += u.cacheRead ?? u.cache_read ?? 0;
+      state.cacheWrite += u.cacheWrite ?? u.cache_write ?? 0;
     }
     touch();
   });

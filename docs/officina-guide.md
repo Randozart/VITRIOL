@@ -15,6 +15,54 @@
 - **Grammar**: `[COMMIT … >] KEYWORD > target args`. Uppercase keywords first,
   lowercase targets/args, `>` is the work conduit.
 
+## Subscriptions via OmniRoute
+
+Officina remains engine-first. To use subscription providers such as OpenCode
+Go, run:
+
+    vitriol omniroute setup --opencode-key-stdin < keyfile
+    vitriol omniroute status
+
+Then open `vitriol officina` and select `/model` → `omniroute/<model>`. The
+choice persists. A fresh session still defaults to the local VITRIOL engine.
+`vitriol omniroute up|down|sync` manages the gateway. See `docs/OFFICINA.md`
+for the passthrough contract and rollback steps.
+
+Zero-key free providers:
+
+    vitriol omniroute accounts free --apply
+    vitriol omniroute accounts discover --apply   # reuse OpenCode auth
+
+Bulk accounts:
+
+    vitriol omniroute accounts init       # ~/.vitriol/officina/accounts.json
+    vitriol omniroute accounts sync       # API keys via credential_env refs
+    vitriol omniroute accounts status
+    vitriol omniroute accounts oauth list
+
+API-key providers import in bulk. OAuth is assisted, not unattended: browser
+or device consent is still required except `cursor`/`zed` system imports.
+Web-cookie and local providers stay manual.
+
+## Cloud cache, Praetor, egress
+
+Cloud cache mode is automatic for non-local providers:
+
+    vitriol omniroute cache enable --providers opencode-go,glm
+    vitriol cache-report
+
+Praetor is advisory and opt-in:
+
+    OFFICINA_PRAETOR=1 vitriol officina
+
+Fixed egress only (no quota-based IP rotation):
+
+    vitriol omniroute egress set --proxy socks5://127.0.0.1:1080
+    vitriol omniroute egress status
+    vitriol omniroute egress test
+
+See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
+
 ## Probe vs Commit
 
 Every mutating command runs as a **probe** by default — it shows the impact and

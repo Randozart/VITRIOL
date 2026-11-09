@@ -238,6 +238,14 @@ export function windowChange(
   return { from: registeredCtx, to: probed };
 }
 
+/** Auto-sync may only force the local engine when the session is already on
+ *  llamacpp (or has no selection yet). Any explicit non-local selection — e.g.
+ *  the OmniRoute gateway — must survive session_start unchanged. Pure so the
+ *  local-vs-explicit selection rule is testable without a pi runtime. */
+export function shouldArmEngineSync(currentProvider: string | undefined): boolean {
+  return !currentProvider || currentProvider === "llamacpp";
+}
+
 export interface ProbeDeps {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;

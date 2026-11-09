@@ -23,6 +23,7 @@ import {
   formatContextWindow,
   loadProviders,
   probeContextWindow,
+  shouldArmEngineSync,
   windowChange,
   withContextWindow,
   type ProviderModelEntry,
@@ -170,7 +171,8 @@ export default async function (pi: ExtensionAPI) {
   // and registers the alias entry before selecting it.
   if (!probeDisabled && llamacpp) {
     type SyncCtx = {
-      model?: { id?: string };
+      model?: { id?: string; provider?: string };
+      getModel?: () => { id?: string; provider?: string } | undefined;
       modelRegistry?: { find?: (p: string, id: string) => unknown };
       ui?: { notify?: (m: string, level?: string) => void };
       hasUI?: boolean;
@@ -206,6 +208,8 @@ export default async function (pi: ExtensionAPI) {
         if (!alias) return false;
       }
       const ctx = lastCtx;
+      const currentProvider = ctx?.model?.provider ?? ctx?.getModel?.()?.provider;
+      if (!shouldArmEngineSync(currentProvider)) return true;
       const current = ctx?.model?.id;
       if (current === alias) return true; // aligned
       const model = ctx?.modelRegistry?.find?.("llamacpp", alias);
@@ -224,6 +228,10 @@ export default async function (pi: ExtensionAPI) {
 
     const armSync = (ctx: SyncCtx) => {
       lastCtx = ctx;
+      // Officina divergence (2026-11-09): explicit non-local selections (the
+      // OmniRoute gateway, native subscriptions) must survive session_start.
+      // Only an empty selection or llamacpp may be forced to the engine alias.
+      if (!shouldArmEngineSync(ctx.model?.provider ?? ctx.getModel?.()?.provider)) return;
       if (syncTimer) return; // already retrying
       // Officina divergence (2026-09-27): print/json mode has no modelRegistry
       // in ctx, so every retry failed and the bounded loop (12×5s) held the

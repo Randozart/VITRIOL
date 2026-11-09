@@ -30,6 +30,7 @@ const TASK_STATE = join(EXT, "task-state", "index.ts");
 const SCRATCHPAD = join(EXT, "scratchpad", "index.ts");
 const SIDEBAR = join(EXT, "_shared", "sidebar.ts");
 const ENGINE = join(EXT, "_shared", "engine.ts");
+const CACHE_MODE = join(EXT, "_shared", "cache-mode.ts");
 
 /** Two independent jiti instances — the exact loader shape pi uses. */
 function jitiPair() {
@@ -123,6 +124,16 @@ describe("jiti isolation: cross-extension contracts survive separate module inst
     expect(summary).not.toBeNull();
     expect(summary?.facts).toBe(1);
     expect(summary?.lines).toBe(1);
+  });
+
+  it("cache-mode: provider mode is visible across instances", async () => {
+    const { a, b } = jitiPair();
+    const modeA = (await a.import(CACHE_MODE)) as typeof import("./cache-mode.ts");
+    const modeB = (await b.import(CACHE_MODE)) as typeof import("./cache-mode.ts");
+    modeA.setCacheModeFromProvider("omniroute", { OFFICINA_CACHE_MODE: "auto" });
+    expect(modeB.isCloudCacheMode()).toBe(true);
+    modeB.setCacheModeFromProvider("llamacpp", { OFFICINA_CACHE_MODE: "auto" });
+    expect(modeA.isCloudCacheMode()).toBe(false);
   });
 
   it("engine: one startEnginePolling call is visible across instances (single shared poller)", async () => {

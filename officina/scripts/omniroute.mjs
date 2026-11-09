@@ -1,0 +1,1517 @@
+#!/usr/bin/env node
+// OmniRoute bootstrap for Officina. Keeps the local VITRIOL engine as the default
+// provider and registers OmniRoute as an explicit OpenAI-compatible gateway.
+//
+// PROVENANCE: integration glue only; OmniRoute itself is MIT and installed as a
+// pinned vendor package. No OmniRoute source is copied into this repo.
+
+import { spawnSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { parseEnvFile, upsertEnvFile } from "./omniroute-lib.mjs";
+import {
+  buildImportPayload,
+  catalogMap,
+  mapOpenCodeAuth,
+  maskSecret,
+  normalizeAccountsConfig,
+  parseCliJson,
+  selectOptionalFreeProviders,
+  stripAnsi,
+  summarizeImportResults,
+} from "./omniroute-accounts-lib.mjs";
+
+const HOME = process.env.HOME || homedir();
+const PIN = "3.8.53";
+const PLAYWRIGHT_PIN = "1.62.1";
+const PORT = 20128;
+const ORIGIN = `http://127.0.0.1:${PORT}`;
+const VENDOR_DIR = join(HOME, ".vitriol", "vendor", "omniroute");
+const BIN = join(VENDOR_DIR, "node_modules", ".bin", "omniroute");
+const API_MODULE = join(VENDOR_DIR, "node_modules", "omniroute", "bin", "cli", "api.mjs");
+const ENV_FILE = join(HOME, ".vitriol", "officina", "env");
+const CACHE_FILE = join(HOME, ".vitriol", "officina", "omniroute-models.json");
+const ACCOUNTS_FILE = join(HOME, ".vitriol", "officina", "accounts.json");
+const EGRESS_FILE = join(HOME, ".vitriol", "officina", "egress.json");
+const OPENCODE_AUTH_FILE =
+  process.env.OPENCODE_AUTH_FILE || join(HOME, ".local", "share", "opencode", "auth.json");
+const DATA_DIR = process.env.DATA_DIR || join(HOME, ".omniroute");
+const DB_FILE = join(DATA_DIR, "storage.sqlite");
+const PROVIDER_ID = "opencode-go";
+const CACHE_TARGETS = ["opencode-go", "glm", "zai"];
+// Free-onboarding entries that are currently unusable upstream.
+const FREE_ONBOARDING_EXCLUDE = new Set(["uncloseai"]);
+const OAUTH_FLOWS = new Map([
+  ["gemini", { name: "Google Gemini", flow: "browser" }],
+  ["antigravity", { name: "Antigravity", flow: "browser" }],
+  ["cursor", { name: "Cursor", flow: "import" }],
+  ["zed", { name: "Zed", flow: "import" }],
+  ["kiro", { name: "Amazon Kiro", flow: "social" }],
+  ["claude-code", { name: "Claude Code (OAuth)", flow: "browser" }],
+  ["codex", { name: "OpenAI Codex (OAuth)", flow: "callback" }],
+  ["copilot", { name: "GitHub Copilot", flow: "device" }],
+]);
+
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (error) => {
+    if (error?.code === "EPIPE") process.exit(0);
+  });
+}
+
+function log(message) {
+  process.stdout.write(`${message}\n`);
+}
+
+function warn(message) {
+  process.stderr.write(`[omniroute] ${message}\n`);
+}
+
+function fail(message, code = 1) {
+  const error = new Error(message);
+  error.exitCode = code;
+  throw error;
+}
+
+function hasCommand(name) {
+  const res = spawnSync("bash", ["-c", `command -v ${name}`], {
+    encoding: "utf8",
+  });
+  return res.status === 0 && res.stdout.trim().length > 0;
+}
+
+function run(command, args, opts = {}) {
+  const res = spawnSync(command, args, {
+    encoding: "utf8",
+    timeout: opts.timeout ?? 120_000,
+    input: opts.input,
+    env: { ...process.env, ...(opts.env ?? {}) },
+    stdio: opts.inherit ? "inherit" : ["pipe", "pipe", "pipe"],
+  });
+  if (res.error) fail(`${command} failed: ${res.error.message}`);
+  if (res.status !== 0) {
+    const detail = (res.stderr || res.stdout || "").trim();
+    fail(
+      `${command} ${args.join(" ")} failed (exit ${res.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  return res.stdout ?? "";
+}
+
+function runCli(args, opts = {}) {
+  return run(BIN, args, { ...opts, env: { ...egressEnv(), ...(opts.env ?? {}) } });
+}
+
+async function gatewayApi(path, opts = {}) {
+  const mod = await import(pathToFileURL(API_MODULE).href);
+  return mod.apiFetch(path, { baseUrl: ORIGIN, ...opts });
+}
+
+function readStdin() {
+  return readFileSync(0, "utf8");
+}
+
+function parseFlags(argv) {
+  const flags = { _: [] };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg.startsWith("--")) {
+      flags._.push(arg);
+      continue;
+    }
+    const eq = arg.indexOf("=");
+    const key = eq > 0 ? arg.slice(2, eq) : arg.slice(2);
+    if (eq > 0) {
+      flags[key] = arg.slice(eq + 1);
+      continue;
+    }
+    const next = argv[i + 1];
+    if (next && !next.startsWith("--")) {
+      flags[key] = next;
+      i += 1;
+    } else {
+      flags[key] = true;
+    }
+  }
+  return flags;
+}
+
+function readEnv() {
+  if (!existsSync(ENV_FILE)) return new Map();
+  try {
+    return parseEnvFile(readFileSync(ENV_FILE, "utf8"));
+  } catch {
+    return new Map();
+  }
+}
+
+function writeEnv(updates) {
+  const dir = dirname(ENV_FILE);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const current = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, "utf8") : "";
+  const next = upsertEnvFile(current, updates);
+  const tmp = `${ENV_FILE}.tmp-${process.pid}`;
+  writeFileSync(tmp, next, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, ENV_FILE);
+  chmodSync(ENV_FILE, 0o600);
+}
+
+function writeJsonAtomic(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+async function serverUp() {
+  try {
+    const res = await fetch(`${ORIGIN}/api/health`, { signal: AbortSignal.timeout(1500) });
+    return res.status < 500;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForServer(timeoutMs = 60_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await serverUp()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
+async function waitForDown(timeoutMs = 15_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (!(await serverUp())) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return false;
+}
+
+async function startServer() {
+  if (await serverUp()) return false;
+  runCli(["serve", "--headless", "--daemon", "--port", String(PORT)], {
+    env: { PORT: String(PORT), OMNIROUTE_HEADLESS: "1", ...egressEnv() },
+    timeout: 120_000,
+  });
+  if (!(await waitForServer())) fail(`gateway did not become healthy at ${ORIGIN}/api/health`);
+  return true;
+}
+
+async function stopServer() {
+  if (!(await serverUp())) return true;
+  try {
+    runCli(["stop", "--port", String(PORT)], { timeout: 30_000 });
+  } catch (error) {
+    warn(error instanceof Error ? error.message : String(error));
+    return false;
+  }
+  return waitForDown();
+}
+
+function installedVersion() {
+  if (!existsSync(BIN)) return null;
+  const res = spawnSync(BIN, ["--version"], { encoding: "utf8", timeout: 15_000 });
+  if (res.status !== 0) return null;
+  return String(res.stdout || "").trim();
+}
+
+function playwrightInstalled() {
+  return existsSync(join(VENDOR_DIR, "node_modules", "playwright", "package.json"));
+}
+
+function installOmniRoute(force = false) {
+  const version = installedVersion();
+  if (!force && version === PIN && playwrightInstalled()) return;
+  if (!hasCommand("npm")) fail("npm is required to install OmniRoute");
+  log(`[omniroute] installing omniroute@${PIN} + playwright@${PLAYWRIGHT_PIN} under ${VENDOR_DIR}`);
+  mkdirSync(VENDOR_DIR, { recursive: true });
+  run(
+    "npm",
+    [
+      "install",
+      "--prefix",
+      VENDOR_DIR,
+      "--no-save",
+      "--no-audit",
+      "--no-fund",
+      `omniroute@${PIN}`,
+      `playwright@${PLAYWRIGHT_PIN}`,
+    ],
+    { inherit: true, timeout: 900_000 },
+  );
+  const after = installedVersion();
+  if (after !== PIN) fail(`OmniRoute install finished but version is ${after ?? "missing"}`);
+  if (!playwrightInstalled()) fail("playwright package was not installed");
+}
+
+function browserRuntimePresent() {
+  if (!playwrightInstalled()) return false;
+  const cli = join(VENDOR_DIR, "node_modules", "playwright", "cli.js");
+  if (!existsSync(cli)) return false;
+  const script =
+    'import("playwright").then(({chromium}) => process.stdout.write(chromium.executablePath())).catch(() => {})';
+  const res = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: VENDOR_DIR,
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  const browserPath = String(res.stdout || "").trim();
+  return Boolean(browserPath) && existsSync(browserPath);
+}
+
+function ensureBrowserRuntime() {
+  if (browserRuntimePresent()) return true;
+  if (!playwrightInstalled()) installOmniRoute(true);
+  const cli = join(VENDOR_DIR, "node_modules", "playwright", "cli.js");
+  if (!existsSync(cli)) {
+    warn("playwright CLI missing; browser-backed free providers will not work");
+    return false;
+  }
+  log("[omniroute] installing Chromium for browser-backed free providers");
+  try {
+    run(process.execPath, [cli, "install", "chromium"], {
+      inherit: true,
+      timeout: 900_000,
+    });
+  } catch (error) {
+    warn(`Chromium install failed: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+  return browserRuntimePresent();
+}
+
+function providerConnectionCount(provider) {
+  if (!existsSync(DB_FILE)) return 0;
+  if (!hasCommand("sqlite3")) return null;
+  const escaped = provider.replaceAll("'", "''");
+  const res = spawnSync(
+    "sqlite3",
+    [DB_FILE, `SELECT COUNT(*) FROM provider_connections WHERE provider = '${escaped}';`],
+    { encoding: "utf8", timeout: 15_000 },
+  );
+  if (res.status !== 0) return null;
+  const count = Number.parseInt(String(res.stdout || "").trim(), 10);
+  return Number.isFinite(count) ? count : null;
+}
+
+function addOpenCodeProvider(flags = {}) {
+  const existing = providerConnectionCount(PROVIDER_ID);
+  if (existing && existing > 0) {
+    log(`[omniroute] provider ${PROVIDER_ID} already configured`);
+    return false;
+  }
+
+  let credential = process.env.OPENCODE_API_KEY || "";
+  if (!credential) {
+    const useStdin = flags["opencode-key-stdin"] || !process.stdin.isTTY;
+    if (!useStdin) {
+      fail(
+        "OpenCode credential required. Pipe it with --opencode-key-stdin or export OPENCODE_API_KEY.",
+      );
+    }
+    credential = readStdin().trim();
+  }
+  if (!credential) fail("OpenCode credential was empty");
+
+  log(`[omniroute] adding provider ${PROVIDER_ID}`);
+  runCli(
+    [
+      "--base-url",
+      ORIGIN,
+      "providers",
+      "add",
+      PROVIDER_ID,
+      "--credential-stdin",
+      "--name",
+      PROVIDER_ID,
+      "--yes",
+    ],
+    { input: `${credential}\n`, timeout: 120_000 },
+  );
+  return true;
+}
+
+async function createInferenceKey() {
+  log("[omniroute] creating local inference key for Officina");
+  const res = await gatewayApi("/api/keys", {
+    method: "POST",
+    body: { name: "officina" },
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    fail(`could not create inference key (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const parsed = await res.json();
+  const key = typeof parsed?.key === "string" ? parsed.key : "";
+  if (!key) fail("could not parse the inference key from OmniRoute");
+  return key;
+}
+
+async function fetchActiveProviders() {
+  try {
+    const res = await gatewayApi("/api/providers?limit=5000");
+    if (!res.ok) return null;
+    const body = await res.json();
+    const list = Array.isArray(body) ? body : body?.connections ?? body?.providers ?? [];
+    if (!Array.isArray(list)) return null;
+    return new Set(
+      list
+        .filter((connection) => connection?.isActive !== false)
+        .map((connection) => String(connection?.provider ?? "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function filterModelsByActiveProviders(list, activeProviders) {
+  if (!activeProviders) return list;
+  if (activeProviders.size === 0) return [];
+  return list.filter((model) => {
+    const owner = typeof model?.owned_by === "string" ? model.owned_by.toLowerCase() : "";
+    return !owner || owner === "auto" || activeProviders.has(owner);
+  });
+}
+
+async function fetchModels(apiKey) {
+  const url = `${ORIGIN}/v1/models?prefix=alias`;
+  try {
+    const [res, activeProviders] = await Promise.all([
+      fetch(url, {
+        headers: apiKey ? { authorization: `Bearer ${apiKey}` } : undefined,
+        signal: AbortSignal.timeout(10_000),
+      }),
+      fetchActiveProviders(),
+    ]);
+    const text = await res.text();
+    let body = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
+    const list = Array.isArray(body)
+      ? body
+      : body?.data?.data ?? body?.data ?? body?.models ?? [];
+    const data = Array.isArray(list)
+      ? filterModelsByActiveProviders(list, activeProviders)
+      : [];
+    return { ok: res.ok, status: res.status, data, body };
+  } catch (error) {
+    return { ok: false, status: 0, data: [], error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function cacheCatalog(baseUrl, data) {
+  writeJsonAtomic(CACHE_FILE, {
+    fetchedAt: new Date().toISOString(),
+    baseUrl,
+    data,
+  });
+}
+
+function writePassthroughSettings() {
+  if (!existsSync(DB_FILE)) {
+    warn(`OmniRoute DB not found at ${DB_FILE}; relying on per-request headers`);
+    return false;
+  }
+  if (!hasCommand("sqlite3")) {
+    warn("sqlite3 not found; relying on per-request headers");
+    return false;
+  }
+  const sql = [
+    "BEGIN IMMEDIATE;",
+    "INSERT OR REPLACE INTO key_value(namespace, key, value) VALUES",
+    "('databaseSettings','cache.semanticCacheEnabled','false'),",
+    "('databaseSettings','cache.semanticCacheVectorEnabled','false'),",
+    "('databaseSettings','cache.semanticCacheRequireZeroTemp','true'),",
+    "('settings','memoryEnabled','false'),",
+    "('compression','defaultMode','\"off\"'),",
+    "('compression','enabled','false'),",
+    "('compression','activeComboId','null');",
+    "COMMIT;",
+  ].join(" ");
+  const res = spawnSync("sqlite3", [DB_FILE, sql], { encoding: "utf8", timeout: 30_000 });
+  if (res.status !== 0) {
+    warn(`could not write passthrough settings: ${(res.stderr || "").trim()}`);
+    return false;
+  }
+  return true;
+}
+
+function clearCachedResponses() {
+  if (!existsSync(DB_FILE) || !hasCommand("sqlite3")) return;
+  const res = spawnSync("sqlite3", [DB_FILE, "DELETE FROM semantic_cache;"], {
+    encoding: "utf8",
+    timeout: 30_000,
+  });
+  if (res.status !== 0) warn(`could not clear the semantic cache table: ${(res.stderr || "").trim()}`);
+}
+
+function resolveInferenceKey(env) {
+  return env.get("OFFICINA_OMNIROUTE_API_KEY") || "";
+}
+
+async function setup(flags) {
+  if (!flags["no-install"]) installOmniRoute(Boolean(flags.force));
+  else if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN} (remove --no-install)`);
+
+  let startedByUs = false;
+  try {
+    log(`[omniroute] ensuring gateway on ${ORIGIN}`);
+    startedByUs = await startServer();
+
+    addOpenCodeProvider(flags);
+
+    const env = readEnv();
+    let apiKey = resolveInferenceKey(env);
+    if (apiKey) {
+      const probe = await fetchModels(apiKey);
+      if (!probe.ok && probe.status !== 404) apiKey = "";
+    }
+    if (!apiKey) apiKey = await createInferenceKey();
+
+    const stopped = await stopServer();
+    if (stopped) {
+      writePassthroughSettings();
+      clearCachedResponses();
+    } else {
+      warn("gateway did not stop; skipping DB passthrough write (headers still enforce)");
+    }
+    await startServer();
+
+    const catalog = await fetchModels(apiKey);
+    if (!catalog.ok) {
+      warn(`catalog probe failed with HTTP ${catalog.status}; Officina will retry at runtime`);
+    } else {
+      cacheCatalog(`${ORIGIN}/v1`, catalog.data);
+    }
+
+    writeEnv({
+      OFFICINA_OMNIROUTE: "1",
+      OFFICINA_OMNIROUTE_BASE_URL: `${ORIGIN}/v1`,
+      OFFICINA_OMNIROUTE_API_KEY: apiKey,
+    });
+
+    log("");
+    log("OmniRoute ready.");
+    log(`  base URL: ${ORIGIN}/v1`);
+    log(`  models:   ${catalog.ok ? catalog.data.length : "unavailable"}`);
+    log(`  env:      ${ENV_FILE}`);
+    log("");
+    log("Next: vitriol officina, then /model -> omniroute/<model>.");
+  } catch (error) {
+    if (startedByUs) {
+      warn("setup failed; stopping the gateway started by this run");
+      await stopServer().catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function cmdUp() {
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  const started = await startServer();
+  log(started ? "OmniRoute started." : "OmniRoute already running.");
+}
+
+async function cmdDown() {
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}`);
+  const stopped = await stopServer();
+  if (!stopped) fail("OmniRoute did not stop");
+  log("OmniRoute stopped.");
+}
+
+async function cmdStatus() {
+  const env = readEnv();
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
+  const up = await serverUp();
+  const version = installedVersion();
+  const catalog = up ? await fetchModels(apiKey) : { ok: false, status: 0, data: [] };
+  const connections = providerConnectionCount(PROVIDER_ID);
+
+  log(`OmniRoute ${version ?? "not installed"}`);
+  log(`  gateway:    ${up ? `up (${ORIGIN})` : "down"}`);
+  const connectionText =
+    connections === null
+      ? "unknown"
+      : `${connections} connection${connections === 1 ? "" : "s"}`;
+  log(`  provider:   ${PROVIDER_ID} (${connectionText})`);
+  const catalogText = catalog.ok
+    ? `${catalog.data.length} models`
+    : `unavailable (HTTP ${catalog.status})`;
+  log(`  catalog:    ${catalogText}`);
+  log(`  inference:  ${apiKey ? `set (...${apiKey.slice(-4)})` : "missing"}`);
+  log(`  env file:   ${ENV_FILE}`);
+  log(`  passthrough: compression off, semantic cache off, memory off, prompt cache on`);
+}
+
+async function cmdSync() {
+  const env = readEnv();
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
+  if (!apiKey) fail("missing OFFICINA_OMNIROUTE_API_KEY; run: vitriol omniroute setup");
+  if (!(await serverUp())) fail(`gateway is down at ${ORIGIN}; run: vitriol omniroute up`);
+  const catalog = await fetchModels(apiKey);
+  if (!catalog.ok) fail(`catalog fetch failed with HTTP ${catalog.status}`);
+  cacheCatalog(`${ORIGIN}/v1`, catalog.data);
+  log(`Cached ${catalog.data.length} models from ${ORIGIN}/v1/models -> ${CACHE_FILE}`);
+}
+
+
+
+
+function readEgress() {
+  if (!existsSync(EGRESS_FILE)) return { mode: "off", proxy: null, no_proxy: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(EGRESS_FILE, "utf8"));
+    return {
+      mode: parsed?.mode === "fixed" ? "fixed" : "off",
+      proxy: typeof parsed?.proxy === "string" ? parsed.proxy : null,
+      no_proxy: Array.isArray(parsed?.no_proxy) ? parsed.no_proxy.filter((x) => typeof x === "string") : [],
+    };
+  } catch {
+    return { mode: "off", proxy: null, no_proxy: [] };
+  }
+}
+
+function egressEnv() {
+  if (process.env.OFFICINA_EGRESS === "0") return {};
+  const egress = readEgress();
+  if (egress.mode !== "fixed" || !egress.proxy) return {};
+  const noProxy = ["127.0.0.1", "localhost", "::1", ...egress.no_proxy].join(",");
+  return {
+    HTTPS_PROXY: egress.proxy,
+    HTTP_PROXY: egress.proxy,
+    ALL_PROXY: egress.proxy,
+    https_proxy: egress.proxy,
+    http_proxy: egress.proxy,
+    all_proxy: egress.proxy,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+  };
+}
+
+function maskProxy(proxy) {
+  const text = String(proxy ?? "");
+  if (!text) return "(none)";
+  try {
+    const url = new URL(text);
+    if (url.username) url.username = "***";
+    if (url.password) url.password = "***";
+    return url.toString();
+  } catch {
+    return text.replace(/\/\/[^/@]+@/, "//***@");
+  }
+}
+
+function writeEgress(value) {
+  writeJsonAtomic(EGRESS_FILE, value);
+  chmodSync(EGRESS_FILE, 0o600);
+}
+
+async function restartIfRunning() {
+  if (!(await serverUp())) return false;
+  const stopped = await stopServer();
+  if (!stopped) return false;
+  await startServer();
+  return true;
+}
+
+async function cmdEgress(flags) {
+  const sub = flags._[0] || "status";
+  if (sub === "status" || flags.json) {
+    const egress = readEgress();
+    const up = await serverUp();
+    const report = {
+      mode: egress.mode,
+      proxy: egress.mode === "fixed" ? maskProxy(egress.proxy) : null,
+      no_proxy: egress.no_proxy,
+      gateway: up ? "up" : "down",
+      disabled: process.env.OFFICINA_EGRESS === "0",
+    };
+    if (flags.json || sub === "status") {
+      if (flags.json) log(JSON.stringify(report, null, 2));
+      else {
+        log(`Egress mode: ${report.mode}`);
+        log(`  proxy:   ${report.proxy ?? "(none)"}`);
+        log(`  no_proxy: ${report.no_proxy.join(",") || "(defaults)"}`);
+        log(`  gateway: ${report.gateway}`);
+        if (report.disabled) log("  disabled: OFFICINA_EGRESS=0");
+        log("  policy: fixed egress only; no quota-based IP rotation");
+      }
+      if (sub === "status") return;
+    }
+  }
+
+  if (sub === "set") {
+    const proxy = typeof flags.proxy === "string" ? flags.proxy.trim() : "";
+    if (!proxy) fail("--proxy is required");
+    let parsed;
+    try {
+      parsed = new URL(proxy);
+    } catch {
+      fail("--proxy must be a valid http(s) or socks5 URL");
+    }
+    if (!["http:", "https:", "socks5:"].includes(parsed.protocol)) {
+      fail("--proxy must use http, https, or socks5");
+    }
+    const rawNoProxy = typeof flags["no-proxy"] === "string" ? flags["no-proxy"] : "";
+    const noProxy = rawNoProxy
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    writeEgress({ mode: "fixed", proxy, no_proxy: noProxy });
+    const restarted = await restartIfRunning();
+    log(`Fixed egress configured: ${maskProxy(proxy)}${restarted ? " (gateway restarted)" : ""}`);
+    log("Policy: fixed egress only; no quota-based IP rotation.");
+    return;
+  }
+
+  if (sub === "clear") {
+    writeEgress({ mode: "off", proxy: null, no_proxy: [] });
+    const restarted = await restartIfRunning();
+    log(`Fixed egress cleared${restarted ? " (gateway restarted)" : ""}.`);
+    return;
+  }
+
+  if (sub === "test") {
+    const egress = readEgress();
+    if (egress.mode !== "fixed" || !egress.proxy) fail("no fixed egress configured");
+    if (!hasCommand("curl")) fail("curl is required for egress test");
+    const res = spawnSync(
+      "curl",
+      ["--proxy", egress.proxy, "-sS", "-m", "15", "https://api.ipify.org?format=json"],
+      { encoding: "utf8", timeout: 20_000 },
+    );
+    if (res.status !== 0) fail(`proxy test failed: ${(res.stderr || "").trim()}`);
+    let ip = "";
+    try {
+      ip = String(JSON.parse(res.stdout).ip ?? "");
+    } catch {
+      ip = String(res.stdout || "").trim();
+    }
+    log(`Proxy reachable. Egress IP: ${ip || "(unknown)"}`);
+    log(`Gateway: ${(await serverUp()) ? "up" : "down"}`);
+    return;
+  }
+
+  fail(`unknown egress command: ${sub}`);
+}
+
+async function fetchConnectionsApi() {
+  const res = await gatewayApi("/api/providers?limit=5000");
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    fail(`provider list failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const body = await res.json();
+  return Array.isArray(body) ? body : body?.connections ?? body?.providers ?? [];
+}
+
+async function cmdCache(flags) {
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  const sub = flags._[0] || "status";
+  if (sub !== "status" && sub !== "enable" && sub !== "disable") {
+    fail(`unknown cache command: ${sub}`);
+  }
+  await startServer();
+  const connections = await fetchConnectionsApi();
+  const targets = flags.providers
+    ? String(flags.providers).split(",").map((s) => s.trim()).filter(Boolean)
+    : CACHE_TARGETS;
+  const targetSet = new Set(targets);
+  const rows = [];
+  const errors = [];
+
+  for (const connection of connections) {
+    const provider = String(connection?.provider ?? "");
+    if (!targetSet.has(provider)) continue;
+    const psd =
+      connection.providerSpecificData && typeof connection.providerSpecificData === "object"
+        ? connection.providerSpecificData
+        : {};
+    const cache =
+      psd.cache && typeof psd.cache === "object" && !Array.isArray(psd.cache) ? psd.cache : {};
+    const current = cache.supportsPromptCaching === true;
+    const desired = sub === "enable" ? true : sub === "disable" ? false : current;
+
+    if (sub !== "status" && desired !== current) {
+      const res = await gatewayApi(`/api/providers/${encodeURIComponent(String(connection.id))}`, {
+        method: "PUT",
+        body: { providerSpecificData: { ...psd, cache: { ...cache, supportsPromptCaching: desired } } },
+      });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "");
+        errors.push({ provider, name: connection.name, status: res.status, detail });
+        continue;
+      }
+    }
+    rows.push({ provider, name: connection.name, supportsPromptCaching: desired });
+  }
+
+  if (flags.json) {
+    log(JSON.stringify({ action: sub, targets, rows, errors }, null, 2));
+    return;
+  }
+  log(`Prompt-cache override (${sub}) for ${rows.length} connection(s)`);
+  for (const row of rows) {
+    log(`  ${row.provider}/${row.name}: ${row.supportsPromptCaching ? "enabled" : "disabled"}`);
+  }
+  for (const error of errors) {
+    log(`  ERROR ${error.provider}/${error.name}: HTTP ${error.status} ${String(error.detail).trim()}`);
+  }
+  if (rows.length === 0) log("  no matching connections");
+  if (errors.length > 0) fail(`cache override failed for ${errors.length} connection(s)`);
+}
+
+function resolveAccountsPath(flags = {}) {
+  const raw = typeof flags.file === "string" && flags.file.trim() ? flags.file.trim() : ACCOUNTS_FILE;
+  return raw.startsWith("~/") ? join(HOME, raw.slice(2)) : raw;
+}
+
+function loadAccountConfig(flags = {}) {
+  const path = resolveAccountsPath(flags);
+  if (!existsSync(path)) {
+    fail(`accounts config not found at ${path}; run: vitriol omniroute accounts init`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    fail(`cannot read accounts config ${path}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const normalized = normalizeAccountsConfig(parsed);
+  if (normalized.errors.length > 0) fail(`invalid accounts config: ${normalized.errors.join("; ")}`);
+  return { ...normalized, path };
+}
+
+function loadProviderCatalog() {
+  const output = runCli(["--base-url", ORIGIN, "providers", "available", "--json"], {
+    timeout: 60_000,
+  });
+  return catalogMap(parseCliJson(output));
+}
+
+function printAccountIssues(payload) {
+  for (const error of payload.errors) {
+    log(`  ERROR ${error.provider || "?"}/${error.name || "?"}: ${error.reason}`);
+  }
+  for (const skip of payload.skipped) {
+    log(`  SKIP  ${skip.provider}/${skip.name}: ${skip.reason}`);
+  }
+}
+
+function printImportSummary(summary) {
+  log(
+    `Import: created=${summary.counts.created} skipped_existing=${summary.counts.skipped_existing} failed=${summary.counts.failed} other=${summary.counts.other}`,
+  );
+  for (const failure of summary.failed) {
+    log(`  FAILED ${failure.provider}/${failure.name}: ${failure.error}`);
+  }
+}
+
+function accountsTemplate() {
+  return {
+    accounts: [
+      {
+        provider: "opencode-go",
+        name: "opencode-go",
+        credential_env: "OPENCODE_API_KEY",
+      },
+    ],
+    oauth: ["claude-code", "codex", "copilot"],
+  };
+}
+
+function cmdAccountsInit(flags) {
+  const path = resolveAccountsPath(flags);
+  if (existsSync(path) && !flags.force) {
+    log(`Accounts config already exists: ${path} (use --force to overwrite)`);
+    return;
+  }
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const text = `${JSON.stringify(accountsTemplate(), null, 2)}\n`;
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, text, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, path);
+  chmodSync(path, 0o600);
+  log(`Wrote accounts template: ${path}`);
+  log("Add provider entries with credential_env names, then run: vitriol omniroute accounts sync");
+}
+
+
+function readOpenCodeAuth() {
+  if (!existsSync(OPENCODE_AUTH_FILE)) return null;
+  try {
+    return JSON.parse(readFileSync(OPENCODE_AUTH_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function loadConfiguredConnections() {
+  if (!(await serverUp())) return [];
+  const parsed = parseCliJson(
+    runCli(["--base-url", ORIGIN, "providers", "list", "--json"], { timeout: 30_000 }),
+  );
+  return Array.isArray(parsed) ? parsed : parsed?.providers ?? parsed?.connections ?? [];
+}
+
+function identitiesFromConnections(connections) {
+  return new Set(
+    connections.map((connection) => {
+      const provider = String(connection?.provider ?? "").toLowerCase();
+      const name = String(connection?.name || connection?.provider || "").toLowerCase();
+      return `${provider}\0${name}`;
+    }),
+  );
+}
+
+function providersFromConnections(connections) {
+  return new Set(
+    connections
+      .map((connection) => String(connection?.provider ?? "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+async function importProviderEntries(entries, opts = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "vitriol-omniroute-"));
+  const importFile = join(dir, "providers.json");
+  try {
+    chmodSync(dir, 0o700);
+    writeFileSync(importFile, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(importFile, 0o600);
+
+    const args = [
+      "--base-url",
+      ORIGIN,
+      "providers",
+      "import",
+      importFile,
+      "--continue-on-error",
+      "--json",
+    ];
+    if (opts.dryRun) args.push("--dry-run");
+
+    const result = spawnSync(BIN, args, { encoding: "utf8", timeout: 180_000 });
+    let parsed;
+    try {
+      parsed = parseCliJson(result.stdout);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      const detail = stripAnsi(result.stderr || result.stdout || "").trim();
+      fail(`providers import failed (exit ${result.status})${detail ? `: ${detail}` : ""}`);
+    }
+    const results = Array.isArray(parsed) ? parsed : parsed?.results ?? [];
+    return summarizeImportResults(results);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function summarizeFreeOnboarding(results) {
+  const counts = { created: 0, skipped: 0, failed: 0 };
+  const failed = [];
+  for (const result of Array.isArray(results) ? results : []) {
+    if (result?.status === "created") counts.created += 1;
+    else if (result?.status === "skipped") counts.skipped += 1;
+    else {
+      counts.failed += 1;
+      failed.push({
+        provider: typeof result?.providerId === "string" ? result.providerId : "",
+        error: typeof result?.reason === "string" ? result.reason : "free onboarding failed",
+      });
+    }
+  }
+  return { counts, failed };
+}
+
+async function fetchFreeOnboardingCandidates() {
+  const res = await gatewayApi("/api/providers/free-onboarding");
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    fail(`free onboarding list failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const body = await res.json();
+  return Array.isArray(body?.providers) ? body.providers : [];
+}
+
+async function applyFreeOnboarding(ids) {
+  const res = await gatewayApi("/api/providers/free-onboarding", {
+    method: "POST",
+    body: { providerIds: ids, confirmed: true },
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    fail(`free onboarding apply failed (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+  }
+  const body = await res.json();
+  return Array.isArray(body?.results) ? body.results : [];
+}
+
+function freePlanRows(catalog) {
+  return [...catalog.values()]
+    .filter((provider) => provider?.hasFree === true && provider?.category === "api-key")
+    .map((provider) => {
+      let env = `${String(provider.id).toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
+      if (!/^[A-Za-z_]/.test(env)) env = `OMNIROUTE_${env}`;
+      return {
+        provider: provider.id,
+        name: provider.name ?? provider.id,
+        website: provider.website ?? "",
+        credential_env: env,
+      };
+    })
+    .sort((a, b) => a.provider.localeCompare(b.provider));
+}
+
+async function cmdAccountsFree(flags) {
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+
+  const catalog = loadProviderCatalog();
+  if (flags.plans) {
+    const plans = freePlanRows(catalog);
+    if (flags.json) {
+      log(JSON.stringify({ plans }, null, 2));
+      return;
+    }
+    log(`Free-tier API-key providers: ${plans.length} (signup required)`);
+    for (const plan of plans) {
+      log(`  ${plan.provider}\t${plan.credential_env}\t${plan.website}`);
+    }
+    log("Add chosen entries to ~/.vitriol/officina/accounts.json, then run accounts sync.");
+    return;
+  }
+  await startServer();
+  const connections = await loadConfiguredConnections();
+  const configuredIdentities = identitiesFromConnections(connections);
+  const configuredProviders = providersFromConnections(connections);
+
+  const freeProviders = (await fetchFreeOnboardingCandidates()).filter(
+    (provider) => !FREE_ONBOARDING_EXCLUDE.has(provider.id),
+  );
+  const optional = flags["no-optional"]
+    ? { entries: [], skipped: [], errors: [] }
+    : selectOptionalFreeProviders(catalog, configuredProviders);
+
+  let discovered = { entries: [], skipped: [], errors: [] };
+  if (!flags["no-existing-auth"]) {
+    const auth = readOpenCodeAuth();
+    if (auth) discovered = mapOpenCodeAuth(auth, catalog, configuredIdentities);
+  }
+
+  const plannedEntries = [...optional.entries, ...discovered.entries];
+  const human = !flags.json;
+  const apply = Boolean(flags.apply) && !flags["dry-run"];
+
+  if (human) {
+    log(`Free onboarding candidates: ${freeProviders.length}`);
+    for (const provider of freeProviders) {
+      log(`  ${provider.id}${provider.defaultModel ? ` (${provider.defaultModel})` : ""}`);
+    }
+    printAccountIssues(optional);
+    printAccountIssues(discovered);
+    if (discovered.entries.length > 0) {
+      log(
+        `Existing OpenCode credentials: ${discovered.entries.map((entry) => entry.provider).join(", ")}`,
+      );
+    }
+    if (!apply) log("Dry run. Re-run with --apply to add these providers.");
+  }
+
+  if (!apply) {
+    if (flags.json) {
+      log(
+        JSON.stringify(
+          {
+            freeOnboarding: freeProviders.map((provider) => ({
+              provider: provider.id,
+              name: provider.name,
+              defaultModel: provider.defaultModel,
+              website: provider.website,
+            })),
+            optional: {
+              planned: optional.entries.map((entry) => entry.provider),
+              skipped: optional.skipped,
+              errors: optional.errors,
+            },
+            existingAuth: {
+              planned: discovered.entries.map((entry) => ({
+                provider: entry.provider,
+                name: entry.name,
+              })),
+              skipped: discovered.skipped,
+              errors: discovered.errors,
+            },
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    return;
+  }
+
+  if (!flags["no-browser"]) {
+    ensureBrowserRuntime();
+  }
+
+  let onboarding = { counts: { created: 0, skipped: 0, failed: 0 }, failed: [] };
+  if (freeProviders.length > 0) {
+    onboarding = summarizeFreeOnboarding(
+      await applyFreeOnboarding(freeProviders.map((provider) => provider.id)),
+    );
+  }
+
+  let imported = summarizeImportResults([]);
+  if (plannedEntries.length > 0) {
+    imported = await importProviderEntries(plannedEntries);
+  }
+
+  if (human) {
+    log(
+      `Free onboarding: created=${onboarding.counts.created} skipped=${onboarding.counts.skipped} failed=${onboarding.counts.failed}`,
+    );
+    for (const failure of onboarding.failed) log(`  FAILED ${failure.provider}: ${failure.error}`);
+    if (plannedEntries.length > 0) {
+      log(`Existing/optional imports: ${plannedEntries.length} planned`);
+      printImportSummary(imported);
+    }
+  }
+
+  if (flags.json) {
+    log(
+      JSON.stringify(
+        {
+          applied: true,
+          freeOnboarding: onboarding,
+          optional: {
+            planned: optional.entries.map((entry) => entry.provider),
+            skipped: optional.skipped,
+            errors: optional.errors,
+          },
+          existingAuth: {
+            planned: discovered.entries.map((entry) => ({
+              provider: entry.provider,
+              name: entry.name,
+            })),
+            skipped: discovered.skipped,
+            errors: discovered.errors,
+          },
+          import: imported,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+
+  if (flags.strict && (onboarding.counts.failed > 0 || imported.counts.failed > 0)) {
+    fail("strict mode: one or more free providers failed");
+  }
+}
+
+async function cmdAccountsDiscover(flags) {
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  const auth = readOpenCodeAuth();
+  if (!auth) fail(`OpenCode auth file not found or unreadable: ${OPENCODE_AUTH_FILE}`);
+
+  const catalog = loadProviderCatalog();
+  await startServer();
+  const connections = await loadConfiguredConnections();
+  const result = mapOpenCodeAuth(auth, catalog, identitiesFromConnections(connections));
+  const human = !flags.json;
+  const apply = Boolean(flags.apply) && !flags["dry-run"];
+
+  if (human) {
+    log(`OpenCode auth: ${OPENCODE_AUTH_FILE}`);
+    printAccountIssues(result);
+    if (!apply) log("Dry run. Re-run with --apply to import these credentials.");
+  }
+
+  if (result.entries.length === 0 || !apply) {
+    if (flags.json) {
+      log(
+        JSON.stringify(
+          {
+            source: OPENCODE_AUTH_FILE,
+            applied: false,
+            planned: result.entries.map((entry) => ({
+              provider: entry.provider,
+              name: entry.name,
+            })),
+            skipped: result.skipped,
+            errors: result.errors,
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    return;
+  }
+
+  const summary = await importProviderEntries(result.entries);
+  if (human) printImportSummary(summary);
+  if (flags.json) {
+    log(
+      JSON.stringify(
+        {
+          source: OPENCODE_AUTH_FILE,
+          applied: true,
+          planned: result.entries.map((entry) => ({
+            provider: entry.provider,
+            name: entry.name,
+          })),
+          skipped: result.skipped,
+          errors: result.errors,
+          import: summary,
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  if (flags.strict && summary.counts.failed > 0) fail("strict mode: import failures");
+}
+
+async function cmdAccountsSync(flags) {
+  if (flags.only === true) fail("--only needs a value");
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+
+  const loaded = loadAccountConfig(flags);
+  const catalog = loadProviderCatalog();
+  const payload = buildImportPayload(loaded, catalog, process.env, {
+    only: flags.only,
+    strict: Boolean(flags.strict),
+  });
+  const human = !flags.json;
+
+  if (human) {
+    log(`Accounts config: ${loaded.path}`);
+    printAccountIssues(payload);
+  }
+
+  if (payload.errors.length > 0 && flags.strict) {
+    fail(`strict mode: ${payload.errors.length} account error(s)`);
+  }
+  if (payload.entries.length === 0) {
+    if (human) {
+      log("No importable accounts. Set the referenced env vars or fix the config.");
+    } else {
+      log(
+        JSON.stringify(
+          {
+            config: loaded.path,
+            dryRun: Boolean(flags["dry-run"]),
+            planned: [],
+            skipped: payload.skipped,
+            errors: payload.errors,
+            import: summarizeImportResults([]),
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    return;
+  }
+
+  await startServer();
+  const dir = mkdtempSync(join(tmpdir(), "vitriol-omniroute-"));
+  const importFile = join(dir, "providers.json");
+  try {
+    chmodSync(dir, 0o700);
+    writeFileSync(importFile, `${JSON.stringify(payload.entries, null, 2)}\n`, { mode: 0o600 });
+    chmodSync(importFile, 0o600);
+
+    const args = [
+      "--base-url",
+      ORIGIN,
+      "providers",
+      "import",
+      importFile,
+      "--continue-on-error",
+      "--json",
+    ];
+    if (flags["dry-run"]) args.push("--dry-run");
+
+    const result = spawnSync(BIN, args, { encoding: "utf8", timeout: 180_000 });
+    let parsed;
+    try {
+      parsed = parseCliJson(result.stdout);
+    } catch {
+      parsed = null;
+    }
+    if (!parsed) {
+      const detail = stripAnsi(result.stderr || result.stdout || "").trim();
+      fail(`providers import failed (exit ${result.status})${detail ? `: ${detail}` : ""}`);
+    }
+
+    const results = Array.isArray(parsed) ? parsed : parsed?.results ?? [];
+    const summary = summarizeImportResults(results);
+    if (human) {
+      log(`Planned: ${payload.entries.length} account(s)${flags["dry-run"] ? " (dry run)" : ""}`);
+      printImportSummary(summary);
+    }
+
+    if (flags.json) {
+      log(
+        JSON.stringify(
+          {
+            config: loaded.path,
+            dryRun: Boolean(flags["dry-run"]),
+            planned: payload.entries.map((entry) => ({
+              provider: entry.provider,
+              name: entry.name,
+              defaultModel: entry.defaultModel,
+              priority: entry.priority,
+            })),
+            skipped: payload.skipped,
+            errors: payload.errors,
+            import: summary,
+          },
+          null,
+          2,
+        ),
+      );
+    }
+
+    if (flags.strict && summary.counts.failed > 0) {
+      fail(`strict mode: ${summary.counts.failed} import failure(s)`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function cmdAccountsStatus(flags) {
+  const loaded = loadAccountConfig(flags);
+  const catalog = loadProviderCatalog();
+  const catalogCategories = new Map();
+  for (const provider of catalog.values()) {
+    const category = typeof provider.category === "string" ? provider.category : "unknown";
+    catalogCategories.set(category, (catalogCategories.get(category) ?? 0) + 1);
+  }
+
+  const up = await serverUp();
+  let connections = [];
+  let connectionError = "";
+  if (up) {
+    try {
+      const parsed = parseCliJson(
+        runCli(["--base-url", ORIGIN, "providers", "list", "--json"], { timeout: 30_000 }),
+      );
+      connections = Array.isArray(parsed) ? parsed : parsed?.providers ?? parsed?.connections ?? [];
+    } catch (error) {
+      connectionError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  const configured = new Set(
+    connections.map((connection) => {
+      const provider = String(connection?.provider ?? "").toLowerCase();
+      const name = String(connection?.name || connection?.provider || "").toLowerCase();
+      return `${provider}\0${name}`;
+    }),
+  );
+
+  const rows = loaded.accounts.map((account) => {
+    if (!account || typeof account !== "object") {
+      return { provider: "?", name: "?", configured: false, credential: "invalid" };
+    }
+    const provider = typeof account.provider === "string" ? account.provider.trim() : "";
+    const name =
+      typeof account.name === "string" && account.name.trim()
+        ? account.name.trim()
+        : provider;
+    const credentialEnv =
+      account.credential_env ?? account.credentialEnv ?? account.api_key_env ?? account.apiKeyEnv;
+    const credential = credentialEnv
+      ? process.env[String(credentialEnv)]?.trim()
+        ? `env:${credentialEnv} (${maskSecret(process.env[String(credentialEnv)])})`
+        : `env:${credentialEnv} (missing)`
+      : account.allow_no_credential || account.allowNoCredential
+        ? "no credential"
+        : "missing credential_env";
+    return {
+      provider,
+      name,
+      configured: configured.has(`${provider.toLowerCase()}\0${name.toLowerCase()}`),
+      credential,
+    };
+  });
+
+  const report = {
+    config: loaded.path,
+    gateway: up ? "up" : "down",
+    accounts: rows,
+    catalog: Object.fromEntries([...catalogCategories.entries()].sort()),
+    oauth: loaded.oauth,
+    connectionError: connectionError || undefined,
+  };
+
+  if (flags.json) {
+    log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  log(`Accounts config: ${loaded.path}`);
+  log(`Gateway: ${up ? `up (${ORIGIN})` : "down"}`);
+  if (connectionError) log(`Connection read failed: ${connectionError}`);
+  for (const row of rows) {
+    log(
+      `  ${row.configured ? "configured" : "missing   "}  ${row.provider}/${row.name}  [${row.credential}]`,
+    );
+  }
+  if (rows.length === 0) log("  no accounts configured in the file");
+  const catalogText = [...catalogCategories.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([category, count]) => `${category}=${count}`)
+    .join(" ");
+  log(`Catalog: ${catalogText}`);
+  if (loaded.oauth.length > 0) log(`OAuth requested: ${loaded.oauth.join(", ")}`);
+}
+
+async function cmdAccountsOauth(flags) {
+  const sub = flags._[1] || "list";
+  const id = flags._[2];
+
+  if (sub === "list" || sub === "help") {
+    run(BIN, ["--base-url", ORIGIN, "oauth", "providers"], { inherit: true, timeout: 60_000 });
+    return;
+  }
+
+  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}`);
+  if (sub === "status") {
+    if (!(await serverUp())) fail(`gateway is down at ${ORIGIN}; run: vitriol omniroute up`);
+    run(BIN, ["--base-url", ORIGIN, "oauth", "status"], { inherit: true, timeout: 60_000 });
+    return;
+  }
+
+  if (sub !== "login") fail(`unknown accounts oauth command: ${sub}`);
+
+  const flow = OAUTH_FLOWS.get(String(id ?? ""));
+  if (!flow) {
+    fail(`unsupported OAuth provider: ${id ?? "(missing)"}; try: vitriol omniroute accounts oauth list`);
+  }
+  if (flow.flow === "social" && !flags.social) {
+    fail("kiro requires --social google|github");
+  }
+
+  await startServer();
+  const args = ["--base-url", ORIGIN, "providers", "auth", id];
+  if (flow.flow === "import" && !flags["no-import-system"]) args.push("--import-from-system");
+  if (flags["import-from-system"] && flow.flow !== "import") args.push("--import-from-system");
+  if (flags["no-browser"]) args.push("--no-browser");
+  if (flags.social) args.push("--social", String(flags.social));
+  if (flags.timeout) args.push("--timeout", String(flags.timeout));
+  run(BIN, args, { inherit: true, timeout: 600_000 });
+}
+
+async function cmdAccounts(flags) {
+  const sub = flags._[0] || "status";
+  if (sub === "init") return cmdAccountsInit(flags);
+  if (sub === "sync") return cmdAccountsSync(flags);
+  if (sub === "status") return cmdAccountsStatus(flags);
+  if (sub === "free") return cmdAccountsFree(flags);
+  if (sub === "discover") return cmdAccountsDiscover(flags);
+  if (sub === "oauth") return cmdAccountsOauth(flags);
+  if (sub === "help") {
+    printAccountsHelp();
+    return;
+  }
+  printAccountsHelp();
+  fail(`unknown accounts command: ${sub}`, 2);
+}
+
+function printAccountsHelp() {
+  log(`vitriol omniroute accounts — bulk API-key import + assisted OAuth
+
+Usage:
+  vitriol omniroute accounts init [--file PATH] [--force]
+  vitriol omniroute accounts sync [--file PATH] [--dry-run] [--json]
+                                  [--only ID] [--strict]
+  vitriol omniroute accounts status [--file PATH] [--json]
+  vitriol omniroute accounts free [--apply] [--json] [--strict]
+                                  [--no-optional] [--no-existing-auth]
+                                  [--no-browser] [--plans]
+  vitriol omniroute accounts discover [--apply] [--json] [--strict]
+  vitriol omniroute accounts oauth list
+  vitriol omniroute accounts oauth login <id> [--no-browser]
+                                  [--import-from-system] [--no-import-system]
+                                  [--social google|github] [--timeout MS]
+  vitriol omniroute accounts oauth status
+
+Config: ${ACCOUNTS_FILE}
+Credentials are referenced by env-var name (credential_env), never stored in
+the config. Supported OAuth CLI flows: ${[...OAUTH_FLOWS.keys()].join(", ")}.`);
+}
+
+function printHelp() {
+  log(`vitriol omniroute — local OmniRoute gateway for Officina
+
+Usage:
+  vitriol omniroute setup [--opencode-key-stdin] [--no-install] [--force]
+  vitriol omniroute up
+  vitriol omniroute down
+  vitriol omniroute status
+  vitriol omniroute sync
+  vitriol omniroute accounts init|sync|status
+  vitriol omniroute accounts oauth list|login|status
+  vitriol omniroute cache status|enable|disable [--providers a,b] [--json]
+  vitriol omniroute egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
+
+Setup installs omniroute@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
+creates a local inference key, disables compression/semantic-cache/memory, and
+writes ${ENV_FILE}. Accounts sync bulk-imports API-key providers from
+${ACCOUNTS_FILE}; accounts free adds zero-key free providers and reuses existing
+OpenCode credentials. Cache overrides enable provider-native prompt caching on
+opencode-go/glm/zai. Egress is fixed-only by policy (no quota-based rotation).`);
+}
+
+async function main() {
+  const argv = process.argv.slice(2);
+  const command = argv[0] || "status";
+  const flags = parseFlags(argv.slice(1));
+
+  if (command === "help" || command === "--help" || command === "-h" || flags.help) {
+    printHelp();
+    return;
+  }
+  if (command === "accounts") return cmdAccounts(parseFlags(argv.slice(1)));
+  if (command === "cache") return cmdCache(parseFlags(argv.slice(1)));
+  if (command === "egress") return cmdEgress(parseFlags(argv.slice(1)));
+  if (command === "setup") return setup(flags);
+  if (command === "up") return cmdUp();
+  if (command === "down") return cmdDown();
+  if (command === "status") return cmdStatus();
+  if (command === "sync") return cmdSync();
+  printHelp();
+  fail(`unknown command: ${command}`, 2);
+}
+
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`[omniroute] ${message}\n`);
+  process.exit(Number(error?.exitCode) || 1);
+});

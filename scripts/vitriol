@@ -1715,11 +1715,24 @@ usage() {
   vitriol pymander search <domain> <query>  retrieve nodes for a query
   vitriol pymander select <project_id> <domain...>  set active domains for a project
   vitriol pymander active <project_id>  show a project's active domains
-  vitriol officina [args]    the VITRIOL coding workshop: full-screen agent
-                             harness in the current directory (local-inference
-                             tuned; engine telemetry in the editor). Args pass
-                             through to the scaffold CLI (e.g. -p "one-shot").
-  vitriol validate           harness config gate (ex-tris)
+   vitriol officina [args]    the VITRIOL coding workshop: full-screen agent
+                              harness in the current directory (local-inference
+                              tuned; engine telemetry in the editor). Args pass
+                              through to the scaffold CLI (e.g. -p "one-shot").
+   vitriol omniroute setup    install/configure the local OmniRoute gateway
+                              (OpenCode Go subscription, strict passthrough)
+   vitriol omniroute status|up|down|sync
+                              gateway health, start/stop, catalog refresh
+   vitriol omniroute accounts init|sync|status
+                              bulk API-key accounts (env refs) + OAuth assist
+   vitriol omniroute accounts free|discover
+                              zero-key free providers / reuse OpenCode auth
+   vitriol omniroute cache status|enable|disable
+                              provider-native prompt-cache overrides
+   vitriol omniroute egress status|set|clear|test
+                              fixed proxy/VPN egress (no quota rotation)
+   vitriol cache-report       prompt-cache hit/miss report for a session JSONL
+   vitriol validate           harness config gate (ex-tris)
   vitriol lanes              GPU lane report (ex-tris)
   vitriol budget             allocation vs measured ledger (ex-tris)
   vitriol ledger-ingest <f>  append a consumer usage report (ex-tris)
@@ -3188,6 +3201,44 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
             (cd "${PROJECT_DIR}/vitriol-tui" && cargo build --release) || exit 1
         fi
         exec env VITRIOL_REPO="$PROJECT_DIR" "$TUI_BIN"
+        ;;
+
+    cache-report)
+        # Prompt-cache accounting for an Officina/pi session JSONL.
+        shift
+        CACHE_REPORT="${PROJECT_DIR}/officina/scripts/cache-report.mjs"
+        if ! command -v node >/dev/null 2>&1; then
+            NODE_BIN="$(find "${HOME}/.local/share/fnm/node-versions" -path '*/installation/bin/node' 2>/dev/null | sort -V | tail -1)"
+            [[ -z "$NODE_BIN" && -x /usr/bin/node ]] && NODE_BIN=/usr/bin/node
+            if [[ -z "$NODE_BIN" ]]; then
+                echo "[vitriol] cache-report needs node (fnm or system) — not found." >&2
+                exit 1
+            fi
+            PATH="$(dirname "$NODE_BIN"):$PATH"
+        fi
+        exec node "$CACHE_REPORT" "$@"
+        ;;
+
+    omniroute)
+        # OmniRoute gateway bootstrap (2026-11-09): installation, provider
+        # credentials, strict-passthrough settings, and Officina env wiring.
+        shift
+        OFFICINA_DIR="${OFFICINA_DIR:-${PROJECT_DIR}/officina}"
+        OMNIROUTE_ENTRY="${OFFICINA_DIR}/scripts/omniroute.mjs"
+        if [[ ! -f "$OMNIROUTE_ENTRY" ]]; then
+            echo "[vitriol] omniroute helper not found at ${OMNIROUTE_ENTRY}" >&2
+            exit 1
+        fi
+        if ! command -v node >/dev/null 2>&1; then
+            NODE_BIN="$(find "${HOME}/.local/share/fnm/node-versions" -path '*/installation/bin/node' 2>/dev/null | sort -V | tail -1)"
+            [[ -z "$NODE_BIN" && -x /usr/bin/node ]] && NODE_BIN=/usr/bin/node
+            if [[ -z "$NODE_BIN" ]]; then
+                echo "[vitriol] omniroute needs node (fnm or system) — not found." >&2
+                exit 1
+            fi
+            PATH="$(dirname "$NODE_BIN"):$PATH"
+        fi
+        exec node "$OMNIROUTE_ENTRY" "$@"
         ;;
 
     officina)

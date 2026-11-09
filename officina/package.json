@@ -14,7 +14,7 @@
     "@sinclair/typebox": "^0.34.52"
   },
   "scripts": {
-    "test": "vitest --run extensions",
+    "test": "vitest --run extensions scripts",
     "typecheck": "tsc --noEmit",
     "native:build": "cargo build --release --manifest-path native/Cargo.toml && cp native/target/release/libofficina_native.so native/index.node",
     "native:test": "cargo test --release --manifest-path native/Cargo.toml"

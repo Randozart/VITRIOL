@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import { isActive, tickTurn, registerTaskFiles } from "../_shared/active-files.ts";
+import { shouldDeferToolClear } from "../_shared/cache-mode.ts";
 
 /** A content block in a tool result message (text or image). */
 export type ContentBlock =
@@ -254,6 +255,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("context", async (event, ctx) => {
     tickTurn();
     registerTaskFiles(taskFilePath);
+
+    let contextPercent: number | null = null;
+    try {
+      contextPercent = ctx.getContextUsage?.()?.percent ?? null;
+    } catch {
+      contextPercent = null;
+    }
+    if (shouldDeferToolClear(contextPercent)) return undefined;
 
     const resolveFile = (m: unknown): string => {
       if (!isToolResult(m)) return "";

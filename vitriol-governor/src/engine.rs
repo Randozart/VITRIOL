@@ -48,10 +48,15 @@ fn pids_from_unit(unit: &str) -> HashSet<u32> {
     out
 }
 
-pub fn health_ok(port: u16) -> bool {
-    ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(3))
+fn agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
         .build()
+        .into()
+}
+
+pub fn health_ok(port: u16) -> bool {
+    agent(Duration::from_secs(3))
         .get(&format!("http://127.0.0.1:{port}/health"))
         .call()
         .map(|r| r.status() == 200)
@@ -59,14 +64,11 @@ pub fn health_ok(port: u16) -> bool {
 }
 
 pub fn props(port: u16) -> Option<serde_json::Value> {
-    let body = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(5))
-        .build()
+    let mut resp = agent(Duration::from_secs(5))
         .get(&format!("http://127.0.0.1:{port}/props"))
         .call()
-        .ok()?
-        .into_string()
         .ok()?;
+    let body = resp.body_mut().read_to_string().ok()?;
     serde_json::from_str(&body).ok()
 }
 
@@ -123,14 +125,13 @@ pub fn apply_yield_oom(cfg: &crate::config::Config) {
 }
 
 fn post_json(port: u16, path: &str, body: &str) -> Result<serde_json::Value, String> {
-    let resp = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(60))
-        .build()
+    let mut resp = agent(Duration::from_secs(60))
         .post(&format!("http://127.0.0.1:{port}{path}"))
-        .send_string(body)
+        .send(body)
         .map_err(|e| format!("POST {path}: {e}"))?;
     let text = resp
-        .into_string()
+        .body_mut()
+        .read_to_string()
         .map_err(|e| format!("read {path}: {e}"))?;
     serde_json::from_str(&text).map_err(|e| format!("parse {path}: {e}"))
 }

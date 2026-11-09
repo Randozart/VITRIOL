@@ -5,7 +5,8 @@
 // PROVENANCE: integration glue only; OmniRoute itself is MIT and installed as a
 // pinned vendor package. No OmniRoute source is copied into this repo.
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
 import {
   chmodSync,
   existsSync,
@@ -21,6 +22,11 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseEnvFile, systemdUnit, upsertEnvFile } from "./omniroute-lib.mjs";
+import {
+  findOAuthProvider,
+  OAUTH_PROVIDERS,
+  parseOAuthCallback,
+} from "./omniroute-oauth-lib.mjs";
 import {
   buildFreeAccountTemplate,
   buildImportPayload,
@@ -55,18 +61,12 @@ const DATA_DIR = process.env.DATA_DIR || join(HOME, ".omniroute");
 const DB_FILE = join(DATA_DIR, "storage.sqlite");
 const PROVIDER_ID = "opencode-go";
 const CACHE_TARGETS = ["opencode-go", "glm", "zai"];
+const CONFIG_KEYS = {
+  cache: { env: "OFFICINA_CACHE_MODE", values: ["auto", "local", "cloud", "off"] },
+  praetor: { env: "OFFICINA_PRAETOR", values: ["on", "off"], map: { on: "1", off: "0" } },
+};
 // Free-onboarding entries that are currently unusable upstream.
 const FREE_ONBOARDING_EXCLUDE = new Set(["uncloseai"]);
-const OAUTH_FLOWS = new Map([
-  ["gemini", { name: "Google Gemini", flow: "browser" }],
-  ["antigravity", { name: "Antigravity", flow: "browser" }],
-  ["cursor", { name: "Cursor", flow: "import" }],
-  ["zed", { name: "Zed", flow: "import" }],
-  ["kiro", { name: "Amazon Kiro", flow: "social" }],
-  ["claude-code", { name: "Claude Code (OAuth)", flow: "browser" }],
-  ["codex", { name: "OpenAI Codex (OAuth)", flow: "callback" }],
-  ["copilot", { name: "GitHub Copilot", flow: "device" }],
-]);
 
 for (const stream of [process.stdout, process.stderr]) {
   stream.on("error", (error) => {
@@ -991,6 +991,52 @@ async function cmdUse(flags) {
   }
 }
 
+
+function configValue(key) {
+  const env = readEnv();
+  const fromFile = env.get(CONFIG_KEYS[key].env);
+  const fromProcess = process.env[CONFIG_KEYS[key].env];
+  return fromProcess ?? fromFile ?? "";
+}
+
+function cmdConfig(flags) {
+  const sub = flags._[0] || "get";
+  if (sub === "get") {
+    const report = {
+      cache: configValue("cache") || "auto",
+      praetor: configValue("praetor") === "1" || configValue("praetor") === "on" ? "on" : "off",
+      egress: readEgress().mode,
+      omniroute: readEnv().get("OFFICINA_OMNIROUTE") ?? "unset",
+      envFile: ENV_FILE,
+    };
+    if (flags.json) {
+      log(JSON.stringify(report, null, 2));
+    } else {
+      log(`cache:     ${report.cache}`);
+      log(`praetor:   ${report.praetor}`);
+      log(`egress:    ${report.egress}`);
+      log(`omniroute: ${report.omniroute}`);
+      log(`env file:  ${report.envFile}`);
+    }
+    return;
+  }
+
+  if (sub !== "set") fail(`unknown config command: ${sub}`);
+  const key = flags._[1];
+  const raw = flags._[2];
+  if (!key || !raw) fail("usage: vitriol omniroute config set <cache|praetor> <value>");
+  const spec = CONFIG_KEYS[key];
+  if (!spec) fail(`unknown config key: ${key}`);
+
+  const value = String(raw).toLowerCase();
+  if (!spec.values.includes(value)) {
+    fail(`${key} must be one of: ${spec.values.join(", ")}`);
+  }
+  const stored = spec.map ? spec.map[value] : value;
+  writeEnv({ [spec.env]: stored });
+  log(`${key} = ${value} (${ENV_FILE})`);
+}
+
 async function cmdCache(flags) {
   if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
   const sub = flags._[0] || "status";
@@ -1678,12 +1724,160 @@ async function cmdAccountsStatus(flags) {
   if (loaded.oauth.length > 0) log(`OAuth requested: ${loaded.oauth.join(", ")}`);
 }
 
+function openOAuthBrowser(url) {
+  if (process.env.OFFICINA_NO_BROWSER === "1") return;
+  try {
+    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    child.unref();
+  } catch {
+    // URL is still printed; opening is best-effort.
+  }
+}
+
+async function promptLine(label) {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return String(await rl.question(label)).trim();
+  } finally {
+    rl.close();
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function oauthFailure(res, label) {
+  const detail = await res.text().catch(() => "");
+  fail(`${label} (HTTP ${res.status})${detail ? `: ${detail}` : ""}`);
+}
+
+async function oauthBrowserLogin(provider, flags) {
+  const redirect = typeof flags["redirect-uri"] === "string" ? flags["redirect-uri"] : "";
+  const query = redirect ? `?redirect_uri=${encodeURIComponent(redirect)}` : "";
+  const res = await gatewayApi(`/api/oauth/${provider.backend}/authorize${query}`);
+  if (!res.ok) await oauthFailure(res, `OAuth authorize failed for ${provider.id}`);
+
+  const start = await res.json();
+  const url = start.authUrl ?? start.authorizeUrl ?? start.url;
+  if (!url) fail(`OAuth unavailable for ${provider.id}: ${start.error ?? "no authUrl returned"}`);
+
+  if (provider.requiresEnv?.some((key) => !process.env[key])) {
+    warn(`${provider.id} may need server env: ${provider.requiresEnv.join(", ")}`);
+  }
+
+  log(`\nOpen this URL to authorize:\n  ${url}\n`);
+  if (!flags["no-browser"]) openOAuthBrowser(url);
+
+  const input = await promptLine("Callback URL or code: ");
+  let callback;
+  try {
+    callback = parseOAuthCallback(input, start.state);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
+
+  const body = {
+    code: callback.code,
+    redirectUri: start.redirectUri ?? redirect,
+    state: callback.state || start.state,
+  };
+  if (start.codeVerifier) body.codeVerifier = start.codeVerifier;
+
+  const exchange = await gatewayApi(`/api/oauth/${provider.backend}/exchange`, {
+    method: "POST",
+    body,
+  });
+  if (!exchange.ok) await oauthFailure(exchange, `OAuth exchange failed for ${provider.id}`);
+
+  const result = await exchange.json().catch(() => ({}));
+  const connection = result.connection ?? {};
+  log(`Authorized: ${connection.email ?? connection.displayName ?? connection.id ?? provider.id}`);
+}
+
+async function oauthDeviceLogin(provider, flags) {
+  const res = await gatewayApi(`/api/oauth/${provider.backend}/device-code`);
+  if (!res.ok) await oauthFailure(res, `device-code failed for ${provider.id}`);
+
+  const start = await res.json();
+  const deviceCode = start.deviceCode ?? start.device_code ?? "";
+  if (!deviceCode) fail(`server did not return a device code for ${provider.id}`);
+
+  const userCode = start.userCode ?? start.user_code ?? "";
+  const uri =
+    start.verificationUriComplete ??
+    start.verification_uri_complete ??
+    start.verificationUri ??
+    start.verification_uri ??
+    start.authUrl ??
+    start.url ??
+    "";
+  if (userCode) log(`\nDevice code: ${userCode}`);
+  if (uri) log(`Visit: ${uri}\n`);
+  if (!flags["no-browser"] && uri) openOAuthBrowser(uri);
+
+  const timeout = Number(flags.timeout) || 300_000;
+  const deadline = Date.now() + timeout;
+  let interval = Math.max(1, Number(start.intervalMs ?? start.interval ?? 5)) * 1000;
+
+  while (Date.now() < deadline) {
+    await sleep(interval);
+    const pollRes = await gatewayApi(`/api/oauth/${provider.backend}/poll`, {
+      method: "POST",
+      body: {
+        deviceCode,
+        ...(start.codeVerifier ? { codeVerifier: start.codeVerifier } : {}),
+      },
+    });
+    if (!pollRes.ok) {
+      const body = await pollRes.json().catch(() => null);
+      if (body && body.pending !== false) continue;
+      await oauthFailure(pollRes, `device authorization failed for ${provider.id}`);
+    }
+    const poll = await pollRes.json().catch(() => null);
+    if (!poll) continue;
+    if (poll.success) {
+      const connection = poll.connection ?? {};
+      log(`Authorized: ${connection.email ?? connection.displayName ?? connection.id ?? provider.id}`);
+      return;
+    }
+    if (poll.error === "slow_down") {
+      interval += 5_000;
+      continue;
+    }
+    if (poll.error && !poll.pending) {
+      fail(`device auth failed: ${poll.errorDescription ?? poll.error}`);
+    }
+  }
+  fail(`device authorization timed out after ${Math.round(timeout / 1000)}s`);
+}
+
+async function oauthNativeLogin(provider, flags) {
+  const nativeId = provider.id === "amazon-q" ? "kiro" : provider.id;
+  if (provider.flow === "social" && !flags.social) {
+    fail(`${provider.id} requires --social google|github`);
+  }
+  await startServer();
+  const args = ["--base-url", ORIGIN, "providers", "auth", nativeId];
+  if (provider.flow === "import" && !flags["no-import-system"]) args.push("--import-from-system");
+  if (flags["import-from-system"] && provider.flow !== "import") args.push("--import-from-system");
+  if (flags["no-browser"]) args.push("--no-browser");
+  if (flags.social) args.push("--social", String(flags.social));
+  if (flags.timeout) args.push("--timeout", String(flags.timeout));
+  run(BIN, args, { inherit: true, timeout: 600_000 });
+}
+
 async function cmdAccountsOauth(flags) {
   const sub = flags._[1] || "list";
   const id = flags._[2];
 
   if (sub === "list" || sub === "help") {
-    run(BIN, ["--base-url", ORIGIN, "oauth", "providers"], { inherit: true, timeout: 60_000 });
+    log("OAuth providers:");
+    for (const provider of OAUTH_PROVIDERS) {
+      const kind = provider.native ? "native" : "free  ";
+      const note = provider.note ? `  (${provider.note})` : "";
+      log(`  ${provider.id.padEnd(14)} ${provider.flow.padEnd(9)} ${kind}${note}`);
+    }
     return;
   }
 
@@ -1695,23 +1889,26 @@ async function cmdAccountsOauth(flags) {
   }
 
   if (sub !== "login") fail(`unknown accounts oauth command: ${sub}`);
-
-  const flow = OAUTH_FLOWS.get(String(id ?? ""));
-  if (!flow) {
+  const provider = findOAuthProvider(String(id ?? ""));
+  if (!provider) {
     fail(`unsupported OAuth provider: ${id ?? "(missing)"}; try: vitriol omniroute accounts oauth list`);
   }
-  if (flow.flow === "social" && !flags.social) {
-    fail("kiro requires --social google|github");
+
+  if (provider.native) {
+    await oauthNativeLogin(provider, flags);
+    return;
   }
 
   await startServer();
-  const args = ["--base-url", ORIGIN, "providers", "auth", id];
-  if (flow.flow === "import" && !flags["no-import-system"]) args.push("--import-from-system");
-  if (flags["import-from-system"] && flow.flow !== "import") args.push("--import-from-system");
-  if (flags["no-browser"]) args.push("--no-browser");
-  if (flags.social) args.push("--social", String(flags.social));
-  if (flags.timeout) args.push("--timeout", String(flags.timeout));
-  run(BIN, args, { inherit: true, timeout: 600_000 });
+  if (provider.flow === "browser") {
+    await oauthBrowserLogin(provider, flags);
+    return;
+  }
+  if (provider.flow === "device") {
+    await oauthDeviceLogin(provider, flags);
+    return;
+  }
+  fail(`unsupported flow ${provider.flow} for ${provider.id}`);
 }
 
 async function cmdAccounts(flags) {
@@ -1751,7 +1948,7 @@ Usage:
 
 Config: ${ACCOUNTS_FILE}
 Credentials are referenced by env-var name (credential_env), never stored in
-the config. Supported OAuth CLI flows: ${[...OAUTH_FLOWS.keys()].join(", ")}.`);
+the config. Supported OAuth flows: ${OAUTH_PROVIDERS.map((p) => p.id).join(", ")}.`);
 }
 
 function printHelp() {
@@ -1771,6 +1968,9 @@ Usage:
   vitriol omniroute service install|status|remove
   vitriol omniroute doctor [--json]
   vitriol omniroute use <model-id> [--local] [--json]
+  vitriol omniroute config get [--json]
+  vitriol omniroute config set cache auto|local|cloud|off
+  vitriol omniroute config set praetor on|off
 
 Setup installs omniroute@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
 creates a local inference key, disables compression/semantic-cache/memory, and
@@ -1795,6 +1995,7 @@ async function main() {
   if (command === "service") return cmdService(parseFlags(argv.slice(1)));
   if (command === "doctor") return cmdDoctor(parseFlags(argv.slice(1)));
   if (command === "use") return cmdUse(parseFlags(argv.slice(1)));
+  if (command === "config") return cmdConfig(parseFlags(argv.slice(1)));
   if (command === "setup") return setup(flags);
   if (command === "up") return cmdUp();
   if (command === "down") return cmdDown();

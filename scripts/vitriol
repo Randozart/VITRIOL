@@ -1734,6 +1734,8 @@ usage() {
    vitriol omniroute doctor   one-shot health report
    vitriol omniroute use <model> [--local]
                               persist default pi provider/model
+   vitriol omniroute config get|set
+                              cache/praetor env toggles
    vitriol omniroute service install|status|remove
                               systemd user unit (boot persistence)
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL

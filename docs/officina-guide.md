@@ -44,10 +44,18 @@ Bulk accounts:
     vitriol omniroute accounts sync       # API keys via credential_env refs
     vitriol omniroute accounts status
     vitriol omniroute accounts oauth list
+    vitriol omniroute accounts oauth login openference
+    vitriol omniroute accounts oauth login agy
+    vitriol omniroute accounts oauth login freebuff
 
 API-key providers import in bulk. OAuth is assisted, not unattended: browser
 or device consent is still required except `cursor`/`zed` system imports.
 Web-cookie and local providers stay manual.
+
+Config toggles:
+
+    vitriol omniroute config set cache auto
+    vitriol omniroute config set praetor on
 
 ## Cloud cache, Praetor, egress
 

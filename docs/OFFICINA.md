@@ -158,11 +158,24 @@ OAuth assist:
     vitriol omniroute accounts oauth login codex
     vitriol omniroute accounts oauth status
 
-Supported CLI flows: `gemini`, `antigravity`, `cursor`, `zed`, `kiro`,
+Native flows: `gemini`, `antigravity`, `cursor`, `zed`, `kiro`,
 `claude-code`, `codex`, `copilot`. `cursor`/`zed` default to
 `--import-from-system`; the rest require browser/device consent. `kiro`
-also needs `--social google|github`. OAuth providers outside that list are
-dashboard-only.
+also needs `--social google|github`.
+
+Free OAuth added by the Officina wrapper:
+
+    vitriol omniroute accounts oauth login openference
+    vitriol omniroute accounts oauth login agy
+    vitriol omniroute accounts oauth login qoder
+    vitriol omniroute accounts oauth login freebuff
+    vitriol omniroute accounts oauth login amazon-q   # alias of kiro
+
+`openference` and `agy` are browser PKCE flows (paste the callback URL/code).
+`freebuff` is a device-code flow. `qoder` is browser auth-code but stays
+disabled unless the OmniRoute server has `QODER_OAUTH_*` configured.
+`amazon-q` delegates to Kiro's social flow. Web-cookie providers remain
+dashboard/manual.
 
 Provider-specific fields (Azure resource/version, Bedrock region/keys, Vertex
 project, etc.) go verbatim in `provider_specific_data`; OmniRoute validates
@@ -207,11 +220,20 @@ Env:
 - `OFFICINA_CACHE_CLEAR_PCT=92`
 - `OFFICINA_CACHE_FORCE_CLEAR=1`
 
+Convenience toggles (written to `~/.vitriol/officina/env`):
+
+    vitriol omniroute config get
+    vitriol omniroute config set cache auto|local|cloud|off
+    vitriol omniroute config set praetor on|off
+
 ## Native Praetor (advisory)
 
 Praetor is a first-class advisory utility, off by default:
 
-    OFFICINA_PRAETOR=1 vitriol officina
+    vitriol omniroute config set praetor on
+    vitriol officina
+
+Equivalent: `OFFICINA_PRAETOR=1 vitriol officina`.
 
 - injects `praetor instruct` once (stable block);
 - after edit/write, copies the changed source file to a temp directory and runs

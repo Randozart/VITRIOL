@@ -10,3 +10,10 @@ docs/ENGINE_PROVENANCE.md for the import record.
 
 VITRIOL's own code is dual-licensed under Apache-2.0 OR MIT (SPDX:
 Apache-2.0 OR MIT; see LICENSE and LICENSE-MIT).
+
+This product includes the OmniRoute local AI gateway
+(https://github.com/diegosouzapw/OmniRoute), Copyright (c) 2026
+diegosouzapw, licensed under the MIT License. Officina's "Caduceus"
+integration installs OmniRoute as a separate vendor package under
+~/.vitriol/vendor/omniroute; the upstream license text is retained there and
+summarized in officina/THIRD_PARTY_NOTICES.md.

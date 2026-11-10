@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseEnvFile, systemdUnit, upsertEnvFile } from "./omniroute-lib.mjs";
+import { parseEnvFile, systemdUnit, upsertEnvFile } from "./caduceus-lib.mjs";
 
 describe("parseEnvFile", () => {
   it("parses simple values and ignores comments", () => {

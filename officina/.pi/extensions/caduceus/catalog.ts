@@ -1,4 +1,4 @@
-// Pure OmniRoute catalog -> pi model mapping. Kept separate from the extension
+// Pure Caduceus catalog -> pi model mapping. Kept separate from the extension
 // wiring so the field heuristics stay unit-testable without a pi runtime.
 
 export interface PiModelEntry {
@@ -155,4 +155,133 @@ export function filterCatalogByProviders(
     const normalized = owner.toLowerCase();
     return activeProviders.has(normalized) || ALWAYS_KEEP_PROVIDERS.has(normalized);
   });
+}
+
+// ── Free/tool-capable discovery (2026-11-10) ──────────────────────────────
+//
+// Caduceus aggregates several free/zero-cost providers. The overflow router
+// needs candidates that can actually drive an agent loop: chat + tool calling.
+// Owner priority reflects observed viability:
+//   opencode-go       — subscription lane, tool calls work, no per-token bill
+//   dahl              — free token allowance, tool-capable
+//   agentrouter/agnes/api-airforce/aion/cohere/bytez — explicit zero-priced lanes
+//   glm/zai           — free FLASH tier when quota is available
+//   cloudflare-playground — free, but requires a Playwright runtime
+// duckduckgo-web / aihorde have zero-cost models but advertise no tool
+// calling, so they are excluded from agent routing.
+
+export const FREE_OWNER_RANK: Record<string, number> = {
+  "opencode-go": 0,
+  dahl: 1,
+  agentrouter: 2,
+  agnes: 3,
+  "api-airforce": 4,
+  aion: 5,
+  cohere: 6,
+  bytez: 7,
+  friendliai: 8,
+  glm: 9,
+  zai: 10,
+  "cloudflare-playground": 11,
+  freetheai: 12,
+  "freemodel-dev": 13,
+};
+
+export interface FreeCandidate {
+  id: string;
+  owner: string;
+  contextWindow: number;
+  maxTokens: number;
+  /** Explicit zero pricing, or a known-costless subscription/playground lane. */
+  free: boolean;
+}
+
+function toolCallingFlag(record: JsonRecord): boolean {
+  const capabilities = asRecord(record.capabilities);
+  if (capabilities.tool_calling === true || capabilities.toolCalling === true) return true;
+  const tools = asRecord(capabilities.tools);
+  return tools.enabled === true;
+}
+
+function ownerOf(record: JsonRecord, id: string): string {
+  return (asString(record.owned_by) ?? id.split("/")[0] ?? "").toLowerCase();
+}
+
+function pricingKnown(record: JsonRecord): boolean {
+  const raw = record.pricing ?? record.cost;
+  return !!raw && typeof raw === "object" && Object.keys(asRecord(raw)).length > 0;
+}
+
+/** All tool-capable free-ish chat models, in preferred routing order. */
+export function freeToolCandidates(rawModels: unknown[]): FreeCandidate[] {
+  const out: FreeCandidate[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawModels) {
+    const record = asRecord(raw);
+    const id = asString(record.id);
+    if (!id || seen.has(id) || !isChatModel(record)) continue;
+    if (!toolCallingFlag(record)) continue;
+
+    const owner = ownerOf(record, id);
+    const rank = FREE_OWNER_RANK[owner];
+    if (rank === undefined) continue;
+
+    const pricing = pricingKnown(record);
+    const cost = costOf(record);
+    const free = pricing
+      ? cost.input === 0 && cost.output === 0
+      : owner === "opencode-go" || owner === "dahl" || owner === "cloudflare-playground";
+    if (!free) continue;
+
+    const contextWindow = Math.max(
+      MIN_CONTEXT,
+      asNumber(record.context_length) ??
+        asNumber(record.max_context_window_tokens) ??
+        asNumber(record.contextWindow) ??
+        DEFAULT_CONTEXT,
+    );
+    const maxTokens = Math.min(
+      contextWindow,
+      asNumber(record.max_output_tokens) ??
+        asNumber(record.maxOutputTokens) ??
+        asNumber(record.maxTokens) ??
+        DEFAULT_MAX_TOKENS,
+    );
+
+    seen.add(id);
+    out.push({ id, owner, contextWindow, maxTokens, free });
+  }
+
+  // Drop effort-tier duplicates (`foo-high`, `foo-low`, …) when the base
+  // `foo` is also present; the agent only needs one lane per family.
+  const ids = new Set(out.map((c) => c.id));
+  const effort = /-(high|low|max|medium|minimal|none|xhigh)$/i;
+  const deduped = out.filter((c) => {
+    const m = effort.exec(c.id);
+    if (!m) return true;
+    return !ids.has(c.id.slice(0, -m[0].length));
+  });
+
+  // Model-family preference: DeepSeek V4.1 Flash first, then other native
+  // DeepSeek Flash lanes, then MiMo Flash, then GLM Flash, then everything.
+  // Owner health/priority sorts first so a broken free owner does not outrank
+  // a working one.
+  const familyRank = (id: string): number => {
+    const s = id.toLowerCase();
+    if (/deepseek.*v4\.1.*flash/.test(s)) return 0;
+    if (/deepseek.*flash/.test(s)) return 1;
+    if (/mimo.*flash/.test(s)) return 2;
+    if (/glm.*flash/.test(s)) return 3;
+    if (/flash/.test(s)) return 4;
+    return 5;
+  };
+  deduped.sort((a, b) => {
+    const owner = (FREE_OWNER_RANK[a.owner] ?? 99) - (FREE_OWNER_RANK[b.owner] ?? 99);
+    if (owner !== 0) return owner;
+    const family = familyRank(a.id) - familyRank(b.id);
+    if (family !== 0) return family;
+    if (a.contextWindow !== b.contextWindow) return b.contextWindow - a.contextWindow;
+    return a.id.localeCompare(b.id);
+  });
+  return deduped;
 }

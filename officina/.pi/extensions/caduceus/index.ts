@@ -1,5 +1,5 @@
-// OmniRoute provider for Officina. Registers a dynamic OpenAI-compatible
-// provider from OmniRoute's canonical model catalog. Strict passthrough is
+// Caduceus provider for Officina. Registers a dynamic OpenAI-compatible
+// provider from the gateway's model catalog (OmniRoute vendor, MIT). Strict passthrough is
 // enforced per request with headers, so a global cache/compression toggle
 // drifting on the gateway cannot silently rewrite prompts.
 
@@ -15,10 +15,10 @@ import {
   type PiModelEntry,
 } from "./catalog.ts";
 
-const PROVIDER_ID = "omniroute";
-const PROVIDER_NAME = "OmniRoute";
+const PROVIDER_ID = "caduceus";
+const PROVIDER_NAME = "Caduceus";
 const DEFAULT_BASE_URL = "http://127.0.0.1:20128/v1";
-const CACHE_FILE = join(homedir(), ".vitriol", "officina", "omniroute-models.json");
+const CACHE_FILE = join(homedir(), ".vitriol", "officina", "caduceus-models.json");
 const VENDOR_API_MODULE = join(
   homedir(),
   ".vitriol",
@@ -39,11 +39,11 @@ const PASSTHROUGH_HEADERS = Object.freeze({
 type RawCatalog = { fetchedAt: string; baseUrl: string; data: unknown[] };
 
 function envKillSwitch(): boolean {
-  return /^(0|false|off|no)$/i.test(String(process.env.OFFICINA_OMNIROUTE ?? "").trim());
+  return /^(0|false|off|no)$/i.test(String(process.env.OFFICINA_CADUCEUS ?? "").trim());
 }
 
 function resolveBaseUrl(): string {
-  return (process.env.OFFICINA_OMNIROUTE_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  return (process.env.OFFICINA_CADUCEUS_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
 
 function readCache(baseUrl: string): RawCatalog | undefined {
@@ -136,10 +136,10 @@ export default async function (pi: ExtensionAPI) {
   if (envKillSwitch()) return;
 
   const baseUrl = resolveBaseUrl();
-  const apiKey = String(process.env.OFFICINA_OMNIROUTE_API_KEY ?? "").trim();
+  const apiKey = String(process.env.OFFICINA_CADUCEUS_API_KEY ?? "").trim();
   if (!apiKey) {
     console.warn(
-      "[omniroute] OFFICINA_OMNIROUTE_API_KEY missing; provider not registered. Run: vitriol omniroute setup",
+      "[caduceus] OFFICINA_CADUCEUS_API_KEY missing; provider not registered. Run: vitriol caduceus setup",
     );
     return;
   }
@@ -158,13 +158,13 @@ export default async function (pi: ExtensionAPI) {
       models = mapCatalogModels(fresh.data);
     } catch (error) {
       console.warn(
-        `[omniroute] catalog unavailable at ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
+        `[caduceus] catalog unavailable at ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
 
   if (models.length === 0) {
-    console.warn("[omniroute] no models available; local engine remains the default");
+    console.warn("[caduceus] no models available; local engine remains the default");
     return;
   }
 
@@ -193,4 +193,74 @@ export default async function (pi: ExtensionAPI) {
         // Keep the cached catalog.
       });
   }
+  const officinaDir = join(homedir(), ".vitriol", "officina");
+  const mask = (value: string): string =>
+    value.length <= 4 ? "***" : `...${value.slice(-4)}`;
+  const readKeyRows = () => {
+    const env = new Map<string, string>();
+    try {
+      const path = join(officinaDir, "env");
+      if (existsSync(path)) {
+        for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+          const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
+          if (m) env.set(m[1], m[2]);
+        }
+      }
+    } catch {
+      // cosmetic
+    }
+    const rows: Array<{ provider: string; env: string; value: string; source: string }> = [];
+    try {
+      const accounts = JSON.parse(readFileSync(join(officinaDir, "accounts.json"), "utf8"));
+      for (const account of Array.isArray(accounts?.accounts) ? accounts.accounts : []) {
+        const key = String(account?.credential_env ?? "").trim();
+        const fileValue = key ? env.get(key) ?? "" : "";
+        const shellValue = key ? process.env[key] ?? "" : "";
+        const value = shellValue || fileValue;
+        if (!value) continue;
+        rows.push({
+          provider: String(account.provider ?? "?"),
+          env: key,
+          value: mask(value),
+          source: shellValue ? "shell" : "env-file",
+        });
+      }
+    } catch {
+      // no accounts file
+    }
+    return rows;
+  };
+
+  pi.registerCommand("keys", {
+    description: "Show configured provider keys (masked)",
+    handler: async (_args: string, ctx: { ui: any }) => {
+      const rows = readKeyRows();
+      const inference = String(process.env.OFFICINA_CADUCEUS_API_KEY ?? "").trim();
+      const lines = [
+        `Caduceus inference: ${inference ? `set (${mask(inference)})` : "missing"}`,
+        ...rows.map((r) => `${r.provider} · ${r.env} · ${r.value} · ${r.source}`),
+      ];
+      await ctx.ui.notify?.(`keys (${rows.length}):\n${lines.join("\n")}`, "info");
+    },
+  });
+
+  pi.registerCommand("providers", {
+    description: "Show provider health and cooling lanes",
+    handler: async (_args: string, ctx: { ui: any }) => {
+      const rows = readKeyRows();
+      let cooling = 0;
+      try {
+        const health = JSON.parse(readFileSync(join(officinaDir, "provider-health.json"), "utf8"));
+        const now = Date.now();
+        cooling = Object.values(health?.models ?? {}).filter((r: any) => Number(r?.cooldownUntil) > now).length;
+      } catch {
+        // none
+      }
+      await ctx.ui.notify?.(
+        `providers: ${rows.length} keyed · ${cooling} cooling — ${rows.map((r) => r.provider).join(", ")}`,
+        "info",
+      );
+    },
+  });
+
 }

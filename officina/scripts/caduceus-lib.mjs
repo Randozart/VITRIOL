@@ -1,4 +1,4 @@
-// Pure env-file helpers for the OmniRoute bootstrap. Separated so tests do not
+// Pure env-file helpers for the Caduceus bootstrap (OmniRoute vendor, MIT). Separated so tests do not
 // import the CLI entrypoint (which runs main()).
 
 export function parseEnvFile(content) {
@@ -48,7 +48,7 @@ export function upsertEnvFile(content, updates) {
 
 export function systemdUnit({ bin, envFile, port = 20128 }) {
   return `[Unit]
-Description=OmniRoute local gateway for Officina
+Description=Caduceus local gateway for Officina (OmniRoute vendor)
 After=network-online.target
 Wants=network-online.target
 

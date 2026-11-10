@@ -125,7 +125,17 @@ pub fn effective_mode(
 }
 
 /// Known pi tool names for the modal picker.
-pub const KNOWN_TOOLS: &[&str] = &["bash", "read", "write", "edit", "find", "grep", "ls"];
+pub const KNOWN_TOOLS: &[&str] = &[
+    "bash",
+    "read",
+    "write",
+    "edit",
+    "find",
+    "grep",
+    "ls",
+    "scratchpad_write",
+    "update_tasks",
+];
 
 // ── /help modal (owner request 2026-09-03) ───────────────────────────
 
@@ -146,18 +156,27 @@ pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
         "eng",
         "live engine rate (tok/s / idle); 'N decoded this boot' = engine decode total",
     ),
-    ("[>] n / [ ] n", "plan checklist: tasks in progress / open"),
-    ("n done", "plan checklist: completed tasks"),
     (
-        "note",
-        "scratchpad: N facts · N leads · N dead ends, lines used/cap",
+        "[>] / [ ] / ✓ / ✗",
+        "Todo: in-progress / pending / done / cancelled counts",
     ),
     (
-        "files: +n −n",
+        "[>] <item>",
+        "Todo: one row per task (open first, then history)",
+    ),
+    (
+        "facts / context / leads / dead / lines",
+        "Notebook: one count per row + every open line",
+    ),
+    (
+        "file +n −n",
         "recently touched files: lines added / deleted",
     ),
-    ("↑ ↓", "session tokens: prompt tokens in / generated out"),
-    ("turns", "your prompts this session"),
+    (
+        "in / out / turns",
+        "session tokens in, generated out, prompts",
+    ),
+    ("cache read / write / hit", "prompt-cache activity"),
     ("tools", "recently used tools"),
     (
         "ref · n injected",
@@ -177,8 +196,14 @@ pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
 
 /// /help key reference.
 pub const HELP_KEYS: &[(&str, &str)] = &[
-    ("enter", "send the message"),
-    ("tab", "autocomplete / cycle agent mode"),
+    (
+        "enter",
+        "send the message (steers while the agent is running)",
+    ),
+    ("alt+enter", "queue a follow-up instead of steering"),
+    ("ctrl+q", "toggle the plan agent (also /plan)"),
+    ("F2", "toggle deep research (also /deep-research)"),
+    ("tab", "autocomplete / cycle agent"),
     ("esc", "abort streaming · close overlays — NEVER quits"),
     (
         "drag",
@@ -187,6 +212,10 @@ pub const HELP_KEYS: &[(&str, &str)] = &[
     ("^c", "copy — the selection, or the last reply"),
     ("^esc", "quit (the only quit chord — /quit also works)"),
     ("pgup/pgdn", "scroll back through history (wheel = 3 rows)"),
+    (
+        "^↑ / ^↓",
+        "scroll the sidebar independently (wheel over the panel)",
+    ),
     (
         "home/end",
         "oldest line / live tail (when the input is empty)",
@@ -284,6 +313,125 @@ pub enum ChatEntry {
 pub struct WidgetBlock {
     pub key: String,
     pub lines: Vec<String>, // raw ANSI — parsed at render time
+    /// pi `widgetPlacement`: "aboveEditor" (sidebar content) or
+    /// "belowEditor" (composer-adjacent status strip).
+    pub placement: Option<String>,
+}
+
+/// Pending interactive dialog requested by an extension (RPC
+/// `extension_ui_request`). The Rust TUI used to auto-cancel these; now they
+/// render as modals and reply with the documented response payloads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogKind {
+    Confirm,
+    Select,
+    Input,
+    Editor,
+}
+
+#[derive(Debug, Clone)]
+pub struct Dialog {
+    pub id: String,
+    pub kind: DialogKind,
+    pub title: String,
+    pub message: Option<String>,
+    pub options: Vec<String>,
+    pub selected: usize,
+    pub input: String,
+    pub cursor: usize,
+}
+
+impl Dialog {
+    pub fn confirm(id: String, title: String, message: Option<String>) -> Self {
+        Self {
+            id,
+            kind: DialogKind::Confirm,
+            title,
+            message,
+            options: vec!["Yes".to_string(), "No".to_string()],
+            selected: 0,
+            input: String::new(),
+            cursor: 0,
+        }
+    }
+
+    pub fn select(id: String, title: String, options: Vec<String>) -> Self {
+        Self {
+            id,
+            kind: DialogKind::Select,
+            title,
+            message: None,
+            options,
+            selected: 0,
+            input: String::new(),
+            cursor: 0,
+        }
+    }
+
+    pub fn input(id: String, kind: DialogKind, title: String, prefill: String) -> Self {
+        let cursor = prefill.chars().count();
+        Self {
+            id,
+            kind,
+            title,
+            message: None,
+            options: Vec::new(),
+            selected: 0,
+            input: prefill,
+            cursor,
+        }
+    }
+
+    pub fn cursor_byte(&self) -> usize {
+        self.input
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len())
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        let at = self.cursor_byte();
+        self.input.insert(at, c);
+        self.cursor += 1;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let end = self.cursor_byte();
+        let start = self
+            .input
+            .char_indices()
+            .nth(self.cursor - 1)
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.input.replace_range(start..end, "");
+        self.cursor -= 1;
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor >= self.input.chars().count() {
+            return;
+        }
+        let start = self.cursor_byte();
+        let end = self
+            .input
+            .char_indices()
+            .nth(self.cursor + 1)
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len());
+        self.input.replace_range(start..end, "");
+    }
+
+    pub fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    pub fn move_right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.input.chars().count());
+    }
 }
 
 #[allow(dead_code)]
@@ -314,6 +462,29 @@ pub struct AppState {
     pub resume_open: bool,
     pub resume_entries: Vec<crate::rpc::sessions::SessionEntry>,
     pub resume_sel: usize,
+
+    // /model picker modal (owner request 2026-11-10 — parity with the JS
+    // TUI's selector instead of blind cycle).
+    pub models_open: bool,
+    pub models: Vec<Model>,
+    pub models_sel: usize,
+    pub models_filter: String,
+
+    // /cache manager modal (owner request 2026-11-10): list the engine KV
+    // disk cache with ages/sizes, delete one entry, or prune older than X.
+    /// Extension dialogs awaiting a response, oldest first.
+    pub dialogs: std::collections::VecDeque<Dialog>,
+
+    /// /permissions modal + active mode (`ask|auto|yolo`).
+    pub perm_modal_open: bool,
+    pub perm_modal_sel: usize,
+    pub perm_mode: String,
+
+    pub cache_open: bool,
+    pub cache_entries: Vec<crate::tui::cache::CacheEntry>,
+    pub cache_sel: usize,
+    pub cache_dir: String,
+    pub cache_total: u64,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -375,6 +546,26 @@ pub struct AppState {
     /// on compaction_start, consumed by ONE threshold compaction_end.
     pub compaction_auto_armed: bool,
 
+    /// Tool-call watchdog (2026-11-10): a tool that never emits
+    /// `tool_execution_end` used to leave the TUI "streaming" forever, so
+    /// later prompts became RPC `Steer` messages queued behind the stuck
+    /// turn and were never persisted. 0 disables the watchdog.
+    pub tool_watchdog_secs: u64,
+    /// Tool call ids already watched/aborted once this turn.
+    pub watchdog_fired: std::collections::HashSet<String>,
+    /// Set after a watchdog abort; if the agent has not settled by this
+    /// instant the TUI surfaces a restart hint instead of looking hung.
+    pub abort_deadline: Option<std::time::Instant>,
+    /// Prompts typed while a tool is still running. They are delivered after
+    /// the turn settles instead of being sent as RPC `Steer` behind a tool
+    /// that may never finish (and would then never be persisted).
+    pub queued_prompts: Vec<String>,
+    /// Tool calls announced by the assistant turn but not yet observed via
+    /// `tool_execution_start`. Covers the failure where pi persists the
+    /// assistant tool call and then never starts the tool (the TUI otherwise
+    /// has nothing to watch).
+    pub expected_tool_calls: std::collections::HashMap<String, std::time::Instant>,
+
     // Text selection (owner request 2026-09-03): drag with the left
     // button across the transcript; ^c copies the selected rows. Screen
     // coords; clamped against last_chat_area at render/extract time.
@@ -383,6 +574,15 @@ pub struct AppState {
     /// Chat viewport of the last rendered frame — lets handle_key map
     /// selection rows to transcript lines without a Frame.
     pub last_chat_area: Option<ratatui::layout::Rect>,
+    /// Sidebar viewport of the last rendered frame — wheel events over this
+    /// rect scroll the sidebar independently of the chat (2026-11-10).
+    pub last_sidebar_area: Option<ratatui::layout::Rect>,
+    /// Sidebar scroll offset in rows, and the clamp for the last render.
+    pub sidebar_scroll: u16,
+    pub sidebar_scroll_max: u16,
+    /// Sidebar visibility override: None = auto (hide on narrow terminals),
+    /// Some(true) = force show, Some(false) = force hide.
+    pub sidebar_force: Option<bool>,
     /// Session clock — drives the glimmer phase (elapsed ms).
     pub started: std::time::Instant,
 
@@ -415,6 +615,19 @@ impl Default for AppState {
             resume_open: false,
             resume_entries: Vec::new(),
             resume_sel: 0,
+            models_open: false,
+            models: Vec::new(),
+            models_sel: 0,
+            models_filter: String::new(),
+            dialogs: std::collections::VecDeque::new(),
+            perm_modal_open: false,
+            perm_modal_sel: 0,
+            perm_mode: "ask".to_string(),
+            cache_open: false,
+            cache_entries: Vec::new(),
+            cache_sel: 0,
+            cache_dir: String::new(),
+            cache_total: 0,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -440,9 +653,18 @@ impl Default for AppState {
             help_open: false,
             help_sel: 0,
             compaction_auto_armed: false,
+            tool_watchdog_secs: 300,
+            watchdog_fired: std::collections::HashSet::new(),
+            abort_deadline: None,
+            queued_prompts: Vec::new(),
+            expected_tool_calls: std::collections::HashMap::new(),
             sel_anchor: None,
             sel_head: None,
             last_chat_area: None,
+            last_sidebar_area: None,
+            sidebar_scroll: 0,
+            sidebar_scroll_max: 0,
+            sidebar_force: None,
             started: std::time::Instant::now(),
             scroll: 0,
             scroll_max: 0,
@@ -452,6 +674,175 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Models matching the picker filter (case-insensitive, AND of words
+    /// across provider/id/name). Empty filter = all models.
+    pub fn filtered_models(&self) -> Vec<&Model> {
+        let needle = self.models_filter.trim().to_lowercase();
+        self.models
+            .iter()
+            .filter(|m| {
+                if needle.is_empty() {
+                    return true;
+                }
+                let name = m.name.as_deref().unwrap_or("");
+                let hay = format!("{} {} {}", m.provider, m.id, name).to_lowercase();
+                needle.split_whitespace().all(|w| hay.contains(w))
+            })
+            .collect()
+    }
+
+    /// Keep the selection inside the filtered list after a filter edit.
+    pub fn models_clamp_selection(&mut self) {
+        let len = self.filtered_models().len();
+        if len == 0 {
+            self.models_sel = 0;
+        } else if self.models_sel >= len {
+            self.models_sel = len - 1;
+        }
+    }
+
+    // ── /permissions ─────────────────────────────────────────────────────
+
+    pub const PERM_MODES: &'static [(&'static str, &'static str)] = &[
+        (
+            "ask",
+            "prompt for risky shell + outside-project writes (recommended)",
+        ),
+        ("auto", "allow risky shell; sensitive paths still prompt"),
+        ("yolo", "allow everything EXCEPT sensitive roots/secrets"),
+    ];
+
+    pub fn permissions_mode_index(&self) -> usize {
+        Self::PERM_MODES
+            .iter()
+            .position(|(mode, _)| *mode == self.perm_mode)
+            .unwrap_or(0)
+    }
+
+    pub fn open_permissions_modal(&mut self) {
+        self.perm_mode = crate::envfile::read_permissions_mode();
+        self.perm_modal_sel = self.permissions_mode_index();
+        self.perm_modal_open = true;
+    }
+
+    pub fn set_permissions_mode(&mut self, mode: &str) {
+        match crate::envfile::write_permissions_mode(mode) {
+            Ok(()) => {
+                self.perm_mode = mode.to_string();
+                self.notice = Some((format!("permissions: {mode}"), "info".to_string()));
+            }
+            Err(e) => self.entries.push(ChatEntry::Diag(format!(
+                "permissions: could not persist mode: {e}"
+            ))),
+        }
+    }
+
+    pub fn toggle_yolo(&mut self) {
+        let next = if self.perm_mode == "yolo" {
+            "ask"
+        } else {
+            "yolo"
+        };
+        self.set_permissions_mode(next);
+    }
+
+    // ── /cache manager ───────────────────────────────────────────────────
+
+    pub fn cache_refresh(&mut self) {
+        let dir = crate::tui::cache::cache_dir();
+        self.cache_dir = dir.to_string_lossy().to_string();
+        self.cache_entries = crate::tui::cache::scan(&dir);
+        self.cache_total = crate::tui::cache::total_size(&self.cache_entries);
+        if self.cache_sel >= self.cache_entries.len() {
+            self.cache_sel = self.cache_entries.len().saturating_sub(1);
+        }
+    }
+
+    pub fn cache_open_modal(&mut self) {
+        self.cache_refresh();
+        self.cache_sel = 0;
+        self.cache_open = true;
+    }
+
+    pub fn cache_delete_selected(&mut self) {
+        let Some(entry) = self.cache_entries.get(self.cache_sel).cloned() else {
+            return;
+        };
+        if crate::tui::cache::is_protected(&entry.name) {
+            self.entries.push(ChatEntry::Diag(
+                "cache: slot0.bin is the warm-boot checkpoint — protected".to_string(),
+            ));
+            return;
+        }
+        let size = crate::tui::cache::fmt_bytes(entry.size);
+        if crate::tui::cache::delete(&entry) {
+            self.entries.push(ChatEntry::Diag(format!(
+                "cache: removed {} ({})",
+                entry.name, size
+            )));
+            self.cache_refresh();
+        } else {
+            self.entries.push(ChatEntry::Diag(format!(
+                "cache: could not remove {}",
+                entry.name
+            )));
+        }
+    }
+
+    /// `wipe [age]` — no age wipes every non-protected entry. Never deletes
+    /// slot0.bin (the warm-boot restore checkpoint).
+    pub fn cache_wipe(&mut self, age_text: Option<&str>) {
+        let age = match age_text {
+            Some(text) => match crate::tui::cache::parse_age(text) {
+                Some(age) => Some(age),
+                None => {
+                    self.entries.push(ChatEntry::Diag(
+                        "cache: age must look like 30m, 12h, 7d, or 4w".to_string(),
+                    ));
+                    return;
+                }
+            },
+            None => None,
+        };
+        let dir = crate::tui::cache::cache_dir();
+        let (count, bytes) = crate::tui::cache::wipe(&dir, age, false);
+        let scope = age_text
+            .map(|t| format!(" older than {t}"))
+            .unwrap_or_default();
+        self.entries.push(ChatEntry::Diag(format!(
+            "cache: removed {}{} ({}) — slot0.bin protected",
+            count,
+            scope,
+            crate::tui::cache::fmt_bytes(bytes)
+        )));
+        self.cache_refresh();
+    }
+
+    /// `/cache` command surface. Bare opens the manager modal.
+    pub fn cache_command(&mut self, args: &str) {
+        let args = args.trim();
+        if args.is_empty() {
+            self.cache_open_modal();
+            return;
+        }
+        let mut parts = args.split_whitespace();
+        match parts.next().unwrap_or("") {
+            "wipe" | "prune" | "clear" => self.cache_wipe(parts.next()),
+            "list" => {
+                self.cache_refresh();
+                self.entries.push(ChatEntry::Diag(format!(
+                    "cache: {} entries · {} · {}",
+                    self.cache_entries.len(),
+                    crate::tui::cache::fmt_bytes(self.cache_total),
+                    self.cache_dir
+                )));
+            }
+            other => self.entries.push(ChatEntry::Diag(format!(
+                "cache: unknown action '{other}' — use /cache or /cache wipe [age]"
+            ))),
+        }
+    }
+
     pub fn apply_state(
         &mut self,
         model: Option<Model>,
@@ -495,7 +886,7 @@ impl AppState {
 
     /// Tool execution started — add a running tool entry with full args.
     pub fn tool_start(&mut self, tool_call_id: Option<&str>, name: &str, args: &serde_json::Value) {
-        let summary = summarize_args(args);
+        let summary = summarize_args(name, args);
         let timeout_s = args.get("timeout").and_then(|v| v.as_u64()).or_else(|| {
             args.get("timeout")
                 .and_then(|v| v.as_i64())
@@ -591,8 +982,113 @@ impl AppState {
         }
     }
 
+    /// Oldest still-running tool: stable key, display name, age, declared
+    /// timeout. Used by the stall watchdog.
+    pub fn oldest_running_tool(
+        &self,
+    ) -> Option<(String, String, std::time::Duration, Option<u64>)> {
+        let now = std::time::Instant::now();
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                ChatEntry::Tool {
+                    tool_call_id,
+                    name,
+                    running: true,
+                    started_at,
+                    timeout_s,
+                    ..
+                } => {
+                    let started = started_at.unwrap_or(now);
+                    let key = tool_call_id
+                        .clone()
+                        .unwrap_or_else(|| format!("name:{name}"));
+                    Some((key, name.clone(), now.duration_since(started), *timeout_s))
+                }
+                _ => None,
+            })
+            .max_by_key(|(_, _, age, _)| *age)
+    }
+
+    /// True while any tool call is still awaiting `tool_execution_end`.
+    pub fn has_running_tool(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| matches!(e, ChatEntry::Tool { running: true, .. }))
+    }
+
+    /// Record tool calls announced by an assistant `message_end`. They move
+    /// out of this map when their `tool_execution_start` arrives.
+    pub fn note_expected_tool_calls(&mut self, content: &serde_json::Value) {
+        let Some(parts) = content.as_array() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        for part in parts {
+            if part.get("type").and_then(serde_json::Value::as_str) != Some("toolCall") {
+                continue;
+            }
+            if let Some(id) = part.get("id").and_then(serde_json::Value::as_str) {
+                self.expected_tool_calls
+                    .entry(id.to_string())
+                    .or_insert(now);
+            }
+        }
+    }
+
+    pub fn note_tool_started(&mut self, tool_call_id: Option<&str>) {
+        if let Some(id) = tool_call_id {
+            self.expected_tool_calls.remove(id);
+        }
+    }
+
+    pub fn note_tool_finished(&mut self, tool_call_id: Option<&str>) {
+        if let Some(id) = tool_call_id {
+            self.expected_tool_calls.remove(id);
+        }
+    }
+
+    /// Oldest announced-but-never-started tool call.
+    pub fn oldest_expected_tool_call(&self) -> Option<(String, std::time::Duration)> {
+        let now = std::time::Instant::now();
+        self.expected_tool_calls
+            .iter()
+            .map(|(id, at)| (id.clone(), now.duration_since(*at)))
+            .max_by_key(|(_, age)| *age)
+    }
+
+    /// Mark every still-running tool as failed. Called when the agent turn
+    /// ends without a `tool_execution_end` — a dangling tool call must not
+    /// leave a permanent spinner or a streaming flag.
+    pub fn abandon_running_tools(&mut self, reason: &str) -> usize {
+        let mut n = 0;
+        for e in self.entries.iter_mut() {
+            if let ChatEntry::Tool {
+                output,
+                running,
+                error,
+                ..
+            } = e
+            {
+                if *running {
+                    *running = false;
+                    *error = true;
+                    if output.last().map(String::as_str) != Some(reason) {
+                        output.push(reason.to_string());
+                    }
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     /// Insert or update a widget block by key.
     pub fn set_widget(&mut self, key: &str, lines: Vec<String>) {
+        self.set_widget_placed(key, lines, None);
+    }
+
+    pub fn set_widget_placed(&mut self, key: &str, lines: Vec<String>, placement: Option<String>) {
         if key == "agent-mode" {
             self.parse_agent_mode(&lines);
         }
@@ -611,17 +1107,21 @@ impl AppState {
         }
         if let Some(w) = self.widgets.iter_mut().find(|w| w.key == key) {
             w.lines = lines;
+            if placement.is_some() {
+                w.placement = placement;
+            }
         } else {
             self.widgets.push(WidgetBlock {
                 key: key.to_string(),
                 lines,
+                placement,
             });
         }
     }
 
     /// Parse the agent-mode widget. The line format (agent-mode.ts) is
-    /// "▪ BUILD · hint · TAB / /mode <next>" (loud directive modes:
-    /// "► PLAN MODE — hint · TAB / /mode <next>") — the trailing hint names
+    /// "▪ BUILD · hint · TAB / /agent <next>" (loud directive agents:
+    /// "► PLAN AGENT — hint · TAB / /agent <next>") — the trailing hint names
     /// the NEXT mode directly, which is exactly what Tab needs, and the
     /// second whitespace token is the CURRENT mode label (owner request
     /// 2026-09-02: header mode chip). (There is no "agent mode: X" text in
@@ -632,7 +1132,10 @@ impl AppState {
             // Current mode: first token is the badge glyph, second the label.
             let mut tokens = plain.split_whitespace();
             if let (Some(glyph), Some(label)) = (tokens.next(), tokens.next()) {
-                let label = label.trim_end_matches("MODE").trim();
+                let label = label
+                    .trim_end_matches("MODE")
+                    .trim_end_matches("AGENT")
+                    .trim();
                 if !label.is_empty()
                     && label
                         .chars()
@@ -642,9 +1145,17 @@ impl AppState {
                     self.agent_mode_glyph = Some(glyph.to_string());
                 }
             }
-            // Next mode: the trailing bare word after "/mode ".
-            if let Some(idx) = plain.rfind("/mode ") {
-                let next = plain[idx + "/mode ".len()..].trim().to_string();
+            // Next agent: the trailing bare word after "/agent " (legacy
+            // "/mode " accepted for older agent-mode widget lines).
+            let next = plain
+                .rfind("/agent ")
+                .map(|idx| plain[idx + "/agent ".len()..].trim().to_string())
+                .or_else(|| {
+                    plain
+                        .rfind("/mode ")
+                        .map(|idx| plain[idx + "/mode ".len()..].trim().to_string())
+                });
+            if let Some(next) = next {
                 // Token must be a bare mode name (letters/dashes).
                 if !next.is_empty()
                     && next
@@ -815,6 +1326,35 @@ impl AppState {
         self.scroll = 0;
     }
 
+    /// Sidebar has its own scrollback (owner request 2026-11-10): the panel
+    /// can hold more rows than the screen, so wheel/^↑↓ move it separately
+    /// from the transcript.
+    pub fn sidebar_scroll_up(&mut self, rows: u16) {
+        self.sidebar_scroll = self
+            .sidebar_scroll
+            .saturating_add(rows)
+            .min(self.sidebar_scroll_max);
+    }
+
+    pub fn sidebar_scroll_down(&mut self, rows: u16) {
+        self.sidebar_scroll = self.sidebar_scroll.saturating_sub(rows);
+    }
+
+    /// /sidebar — cycle auto (terminal width) → forced show → forced hide.
+    pub fn cycle_sidebar_mode(&mut self) {
+        self.sidebar_force = match self.sidebar_force {
+            None => Some(true),
+            Some(true) => Some(false),
+            Some(false) => None,
+        };
+        let label = match self.sidebar_force {
+            None => "auto (hide when narrow)",
+            Some(true) => "shown",
+            Some(false) => "hidden",
+        };
+        self.notice = Some((format!("sidebar: {label}"), "info".to_string()));
+    }
+
     /// Drop the markdown render cache (on transcript clear/rehydrate).
     pub fn md_cache_clear(&mut self) {
         self.md_cache.clear();
@@ -829,7 +1369,9 @@ impl AppState {
             self.md_cache.clear();
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let total = self.entries.len();
         for (idx, entry) in self.entries.iter_mut().enumerate() {
+            let before = lines.len();
             match entry {
                 ChatEntry::User(text) => {
                     for (i, seg) in wrap_text(text, width.saturating_sub(2))
@@ -848,7 +1390,6 @@ impl AppState {
                             lines.push(Line::from(vec![Span::raw("  "), Span::raw(seg)]));
                         }
                     }
-                    lines.push(Line::from(""));
                 }
                 ChatEntry::Assistant(text) => {
                     if text.is_empty() {
@@ -877,7 +1418,6 @@ impl AppState {
                         spans.extend(ml.spans);
                         lines.push(Line::from(spans));
                     }
-                    lines.push(Line::from(""));
                 }
                 ChatEntry::Thinking(text) => {
                     for seg in wrap_text(text, width.saturating_sub(8)) {
@@ -916,25 +1456,58 @@ impl AppState {
                         } else {
                             ("✓", Style::default().fg(theme::GREEN).bg(theme::BG))
                         };
-                        let body = if summary.is_empty() {
-                            name.clone()
+                        if let Some((title, cmd)) = bash_title_and_cmd(name, args.as_ref()) {
+                            // The model's purpose is the primary scan target;
+                            // command is secondary (owner request 2026-11-10:
+                            // title and command must be different colors).
+                            let budget = width.saturating_sub(8);
+                            let title_s = trunc_str(title, 40);
+                            let used = name.chars().count() + 3 + title_s.chars().count() + 3;
+                            let cmd_s = trunc_str(&cmd, budget.saturating_sub(used));
+                            let mut spans = vec![
+                                Span::styled(format!("  {} ", icon), st),
+                                Span::styled(name.clone(), st),
+                                Span::styled(
+                                    " ▸ ",
+                                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                                ),
+                                Span::styled(
+                                    title_s,
+                                    Style::default()
+                                        .fg(theme::GOLD)
+                                        .bg(theme::BG)
+                                        .add_modifier(ratatui::style::Modifier::BOLD),
+                                ),
+                            ];
+                            if !cmd_s.is_empty() {
+                                spans.push(Span::styled(
+                                    " · ",
+                                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                                ));
+                                spans.push(Span::styled(cmd_s, st));
+                            }
+                            lines.push(Line::from(spans));
                         } else {
-                            format!("{} {}", name, summary)
-                        };
-                        for (i, seg) in wrap_text(&body, width.saturating_sub(8))
-                            .into_iter()
-                            .enumerate()
-                        {
-                            if i == 0 {
-                                lines.push(Line::from(vec![
-                                    Span::styled(format!("  {} ", icon), st),
-                                    Span::styled(seg, st),
-                                ]));
+                            let body = if summary.is_empty() {
+                                name.clone()
                             } else {
-                                lines.push(Line::from(vec![
-                                    Span::raw("        "),
-                                    Span::styled(seg, st),
-                                ]));
+                                format!("{} {}", name, summary)
+                            };
+                            for (i, seg) in wrap_text(&body, width.saturating_sub(8))
+                                .into_iter()
+                                .enumerate()
+                            {
+                                if i == 0 {
+                                    lines.push(Line::from(vec![
+                                        Span::styled(format!("  {} ", icon), st),
+                                        Span::styled(seg, st),
+                                    ]));
+                                } else {
+                                    lines.push(Line::from(vec![
+                                        Span::raw("        "),
+                                        Span::styled(seg, st),
+                                    ]));
+                                }
                             }
                         }
                     } else {
@@ -1004,6 +1577,18 @@ impl AppState {
                     }
                 }
             }
+            // Breathing room between transcript entries (owner request
+            // 2026-11-10: everything was bunched). Exactly one blank row,
+            // never doubled when a renderer already ends blank.
+            if lines.len() > before && idx + 1 < total {
+                let already_blank = lines
+                    .last()
+                    .map(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+                    .unwrap_or(true);
+                if !already_blank {
+                    lines.push(Line::from(""));
+                }
+            }
         }
         lines
     }
@@ -1013,13 +1598,21 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),
         ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
         ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),
         ("diag", "toggle diagnostics", "/diag or F9 — stderr overlay from the agent process"),
         ("fire", "composer flames", "/fire [on|off|style|tint|<voice>] — voices: prismatic, emerald, alchemy; tint toggles whether flames discolor standing text"),
         ("glimmer", "watermark glimmer", "/glimmer [shimmer|breathe|twinkle|off] — bare cycles"),
         ("help", "glossary + keys + commands", "/help or F1 — the reference modal"),
-        ("model", "cycle the model", "/model — cycles pi's model selection"),
+        ("clone", "duplicate the session", "/clone — duplicate the active branch into a fresh session"),
+        ("export", "export session to HTML", "/export [path] — write a self-contained HTML transcript"),
+        ("rename", "rename the session", "/rename <name> — set the session display name"),
+        ("sidebar", "cycle sidebar visibility", "/sidebar — auto (hide when narrow) → show → hide"),
+        ("permissions", "permission mode", "/permissions — ask | auto | yolo (sensitive roots always guarded)"),
+        ("yolo", "toggle YOLO mode", "/yolo — toggle ask <-> yolo (sensitive roots still prompt)"),
+        ("opencode", "import an OpenCode session", "/opencode [latest|<id>|list] [full] — convert an OpenCode session for this project and switch to it"),
+        ("model", "select a model", "/model [provider/id] — picker from available models; provider/id switches directly"),
         ("new", "new session", "/new — fresh session (old one stays resumable)"),
         ("quit", "quit the TUI", "/quit — deliberate quit; the only other path is ^esc"),
         ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
@@ -1086,7 +1679,32 @@ impl AppState {
                     Some(args.to_string())
                 },
             }),
-            "model" => Some(RpcCommand::CycleModel { id: None }),
+            "model" => {
+                if args.is_empty() {
+                    // Bare /model opens the picker: the request response fills
+                    // the modal (parity with the JS TUI's selector).
+                    Some(RpcCommand::GetAvailableModels { id: None })
+                } else if let Some((provider, model_id)) = args.split_once('/') {
+                    let (provider, model_id) = (provider.trim(), model_id.trim());
+                    if provider.is_empty() || model_id.is_empty() {
+                        self.entries.push(ChatEntry::Diag(
+                            "model: use /model or /model <provider>/<model-id>".to_string(),
+                        ));
+                        None
+                    } else {
+                        Some(RpcCommand::SetModel {
+                            id: None,
+                            provider: provider.to_string(),
+                            model_id: model_id.to_string(),
+                        })
+                    }
+                } else {
+                    self.entries.push(ChatEntry::Diag(
+                        "model: use /model or /model <provider>/<model-id>".to_string(),
+                    ));
+                    None
+                }
+            }
             "thinking" => {
                 if args.is_empty() {
                     Some(RpcCommand::CycleThinkingLevel { id: None })
@@ -1209,29 +1827,296 @@ fn strip_ansi(s: &str) -> String {
     out
 }
 
-/// Short args summary for tool entries — first meaningful value.
-fn summarize_args(args: &serde_json::Value) -> String {
-    if let Some(obj) = args.as_object() {
-        for key in [
-            "file_path",
-            "path",
-            "command",
-            "pattern",
-            "query",
-            "url",
-            "name",
-            "skill",
-        ] {
-            if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
-                let mut s: String = v.chars().take(48).collect();
-                if v.chars().count() > 48 {
-                    s.push('…');
-                }
-                return s;
-            }
+/// For shell tools: the model-supplied purpose + first command line.
+fn bash_title_and_cmd<'a>(
+    name: &str,
+    args: Option<&'a serde_json::Value>,
+) -> Option<(&'a str, String)> {
+    if name != "bash" && name != "powershell" {
+        return None;
+    }
+    let obj = args?.as_object()?;
+    let title = obj.get("title")?.as_str()?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let cmd = obj
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    Some((title, cmd))
+}
+
+/// Short args summary for tool entries — first meaningful value, plus
+/// purpose-built summaries for the two extension tools whose args otherwise
+/// render as a wall of JSON (owner request 2026-11-10).
+fn summarize_args(name: &str, args: &serde_json::Value) -> String {
+    let Some(obj) = args.as_object() else {
+        return String::new();
+    };
+
+    if name == "bash" || name == "powershell" {
+        let command = obj.get("command").and_then(|v| v.as_str()).unwrap_or("");
+        let first = command.lines().next().unwrap_or("").trim();
+        let title = obj
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        return match title {
+            Some(t) => trunc_str(&format!("{t} · {first}"), 72),
+            None => trunc_str(first, 48),
+        };
+    }
+
+    if name == "scratchpad_write" {
+        if obj.get("reset").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return "reset all sections".to_string();
+        }
+        let counts: Vec<String> = ["facts", "context", "leads", "dead"]
+            .iter()
+            .filter_map(|key| {
+                obj.get(*key)
+                    .and_then(|v| v.as_array())
+                    .map(|a| format!("{key} {}", a.len()))
+            })
+            .collect();
+        if !counts.is_empty() {
+            return counts.join(" · ");
+        }
+        return "no sections".to_string();
+    }
+
+    if name == "update_tasks" {
+        if let Some(tasks) = obj.get("tasks").and_then(|v| v.as_array()) {
+            let done = tasks
+                .iter()
+                .filter(|t| t.get("status").and_then(|s| s.as_str()) == Some("completed"))
+                .count();
+            return format!("{done}/{} done", tasks.len());
+        }
+    }
+
+    for key in [
+        "file_path",
+        "path",
+        "command",
+        "pattern",
+        "query",
+        "url",
+        "name",
+        "skill",
+    ] {
+        if let Some(v) = obj.get(key).and_then(|v| v.as_str()) {
+            return trunc_str(v, 48);
         }
     }
     String::new()
+}
+
+/// Purpose-built args rendering for tools whose JSON is noise in the chat
+/// (scratchpad_write, update_tasks) and for shell calls, whose command should
+/// read as `$ <cmd>` under the model's title. `None` = use the generic JSON
+/// args section.
+fn special_tool_args(
+    name: &str,
+    args: &serde_json::Value,
+    full: bool,
+    width: usize,
+    surf: ratatui::style::Color,
+) -> Option<Vec<Line<'static>>> {
+    match name {
+        "scratchpad_write" => Some(scratchpad_args_lines(args, full, width, surf)),
+        "update_tasks" => Some(task_args_lines(args, full, width, surf)),
+        "bash" | "powershell" => Some(shell_args_lines(args, full, width, surf)),
+        _ => None,
+    }
+}
+
+fn scratchpad_args_lines(
+    args: &serde_json::Value,
+    full: bool,
+    width: usize,
+    surf: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
+    let muted = Style::default().fg(theme::MUTED).bg(surf);
+    let text = Style::default().fg(theme::TEXT).bg(surf);
+    let mut out = vec![Line::from(vec![
+        Span::styled("│ ", border),
+        Span::styled("notebook", muted),
+    ])];
+    let mut any = false;
+    for section in ["facts", "context", "leads", "dead"] {
+        let Some(items) = args.get(section).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        any = true;
+        out.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled(
+                format!("{section} ({})", items.len()),
+                Style::default().fg(theme::GOLD).bg(surf),
+            ),
+        ]));
+        let budget = if full { items.len() } else { 4 };
+        for item in items.iter().take(budget) {
+            let raw = item.as_str().unwrap_or("");
+            for (i, seg) in wrap_text(raw, width.saturating_sub(8))
+                .into_iter()
+                .enumerate()
+            {
+                let prefix = if i == 0 { "│   · " } else { "│     " };
+                out.push(Line::from(vec![
+                    Span::styled(prefix, border),
+                    Span::styled(seg, text),
+                ]));
+            }
+        }
+        if items.len() > budget {
+            out.push(Line::from(vec![
+                Span::styled("│   ", border),
+                Span::styled(format!("… {} more", items.len() - budget), muted),
+            ]));
+        }
+    }
+    if args.get("reset").and_then(|v| v.as_bool()).unwrap_or(false) {
+        any = true;
+        out.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled(
+                "reset all sections",
+                Style::default().fg(theme::ORANGE).bg(surf),
+            ),
+        ]));
+    }
+    if !any {
+        out.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled("(no sections named)", muted),
+        ]));
+    }
+    out
+}
+
+fn task_args_lines(
+    args: &serde_json::Value,
+    full: bool,
+    width: usize,
+    surf: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
+    let muted = Style::default().fg(theme::MUTED).bg(surf);
+    let text = Style::default().fg(theme::TEXT).bg(surf);
+    let mut out = vec![Line::from(vec![
+        Span::styled("│ ", border),
+        Span::styled("checklist", muted),
+    ])];
+    let Some(tasks) = args.get("tasks").and_then(|v| v.as_array()) else {
+        out.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled("(no tasks)", muted),
+        ]));
+        return out;
+    };
+    if tasks.is_empty() {
+        out.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled("(empty list)", muted),
+        ]));
+    }
+    let budget = if full { tasks.len() } else { 8 };
+    for task in tasks.iter().take(budget) {
+        let status = task
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending");
+        let (glyph, color) = match status {
+            "in_progress" => ("▶", theme::GOLD),
+            "completed" => ("✓", theme::GREEN),
+            "cancelled" => ("✗", theme::MUTED),
+            _ => ("·", theme::MUTED),
+        };
+        let desc = task
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let id = task
+            .get("id")
+            .and_then(|v| v.as_i64())
+            .map(|n| format!("{n}. "))
+            .unwrap_or_default();
+        let body = format!("{id}{desc}");
+        for (i, seg) in wrap_text(&body, width.saturating_sub(8))
+            .into_iter()
+            .enumerate()
+        {
+            let mut spans = vec![Span::styled(if i == 0 { "│   " } else { "│     " }, border)];
+            spans.push(Span::styled(
+                if i == 0 {
+                    format!("{glyph} ")
+                } else {
+                    "  ".to_string()
+                },
+                Style::default().fg(color).bg(surf),
+            ));
+            spans.push(Span::styled(seg, text));
+            out.push(Line::from(spans));
+        }
+    }
+    if tasks.len() > budget {
+        out.push(Line::from(vec![
+            Span::styled("│   ", border),
+            Span::styled(format!("… {} more", tasks.len() - budget), muted),
+        ]));
+    }
+    out
+}
+
+fn shell_args_lines(
+    args: &serde_json::Value,
+    full: bool,
+    width: usize,
+    surf: ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
+    let muted = Style::default().fg(theme::MUTED).bg(surf);
+    let text = Style::default().fg(theme::TEXT).bg(surf);
+    let mut out = vec![Line::from(vec![
+        Span::styled("│ ", border),
+        Span::styled("command", muted),
+    ])];
+    let command = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
+    let total_lines = command.lines().count().max(1);
+    let budget = if full { total_lines } else { 8 };
+    for (i, logical) in command.lines().take(budget).enumerate() {
+        for (j, seg) in wrap_text(logical, width.saturating_sub(8))
+            .into_iter()
+            .enumerate()
+        {
+            let prefix = if i == 0 && j == 0 {
+                "│   $ "
+            } else {
+                "│     "
+            };
+            out.push(Line::from(vec![
+                Span::styled(prefix, border),
+                Span::styled(seg, text),
+            ]));
+        }
+    }
+    if total_lines > budget {
+        out.push(Line::from(vec![
+            Span::styled("│   ", border),
+            Span::styled(format!("… {} more lines", total_lines - budget), muted),
+        ]));
+    }
+    out
 }
 
 /// Render a Tool entry in Block or Full verbosity (owner request
@@ -1292,7 +2177,25 @@ fn render_tool_block(
             ),
         ];
         let head_w = width.saturating_sub(6 + name.chars().count());
-        if !summary.is_empty() && head_w > 4 {
+        if let Some((title, cmd)) = bash_title_and_cmd(name, args) {
+            if head_w > 4 {
+                let budget = head_w.saturating_sub(3);
+                let title_s = trunc_str(title, budget.min(40));
+                let remain = budget.saturating_sub(title_s.chars().count() + 3);
+                spans.push(Span::styled(" ▸ ", muted_st));
+                spans.push(Span::styled(
+                    title_s,
+                    Style::default()
+                        .fg(theme::GOLD)
+                        .bg(surf)
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ));
+                if remain > 0 && !cmd.is_empty() {
+                    spans.push(Span::styled(" · ", muted_st));
+                    spans.push(Span::styled(trunc_str(&cmd, remain), muted_st));
+                }
+            }
+        } else if !summary.is_empty() && head_w > 4 {
             spans.push(Span::styled(
                 format!(" ▸ {}", trunc_str(summary, head_w - 3)),
                 muted_st,
@@ -1301,9 +2204,12 @@ fn render_tool_block(
         lines.push(Line::from(spans));
     }
 
-    // Args section.
-    match (full, args) {
-        (true, Some(a)) if !a.is_null() => {
+    // Args section — purpose-built for the extension/shell tools, generic
+    // JSON only for everything else.
+    if let Some(a) = args.filter(|a| !a.is_null()) {
+        if let Some(special) = special_tool_args(name, a, full, width, surf) {
+            lines.extend(special);
+        } else if full {
             lines.push(Line::from(vec![
                 Span::styled("│ ", border),
                 Span::styled("args", muted_st),
@@ -1315,8 +2221,7 @@ fn render_tool_block(
                     lines.push(Line::from(spans));
                 }
             }
-        }
-        (false, Some(a)) if !a.is_null() => {
+        } else {
             let one = serde_json::to_string(a).unwrap_or_default();
             let compact = if summary.is_empty() {
                 one
@@ -1329,7 +2234,6 @@ fn render_tool_block(
                 Span::styled(trunc_str(compact.trim(), width.saturating_sub(9)), text_st),
             ]));
         }
-        _ => {}
     }
 
     // Output section.
@@ -1552,7 +2456,7 @@ mod tests {
     fn parse_agent_mode_captures_current_and_next() {
         let mut s = AppState::default();
         s.parse_agent_mode(&[
-            "\x1b[1m\x1b[38;2;46;161m▪ BUILD\x1b[0m · writes unlocked · TAB / /mode plan\x1b[0m"
+            "\x1b[1m\x1b[38;2;46;161m▪ BUILD\x1b[0m · writes unlocked · TAB / /agent plan\x1b[0m"
                 .to_string(),
         ]);
         assert_eq!(s.agent_mode_label.as_deref(), Some("BUILD"));
@@ -1563,10 +2467,18 @@ mod tests {
     #[test]
     fn parse_agent_mode_handles_loud_directive_format() {
         let mut s = AppState::default();
-        s.parse_agent_mode(&["► PLAN MODE — research only · TAB / /mode build".to_string()]);
+        s.parse_agent_mode(&["► PLAN AGENT — research only · TAB / /agent build".to_string()]);
         assert_eq!(s.agent_mode_label.as_deref(), Some("PLAN"));
         assert_eq!(s.agent_mode_glyph.as_deref(), Some("►"));
         assert_eq!(s.agent_mode.as_deref(), Some("build"));
+    }
+
+    #[test]
+    fn parse_agent_mode_accepts_legacy_mode_widget() {
+        let mut s = AppState::default();
+        s.parse_agent_mode(&["▪ BUILD · writes unlocked · TAB / /mode plan".to_string()]);
+        assert_eq!(s.agent_mode_label.as_deref(), Some("BUILD"));
+        assert_eq!(s.agent_mode.as_deref(), Some("plan"));
     }
 
     #[test]
@@ -1714,6 +2626,43 @@ mod tests {
     }
 
     #[test]
+    fn oldest_running_tool_and_abandon() {
+        let mut s = AppState::default();
+        s.tool_start(
+            Some("call-1"),
+            "bash",
+            &serde_json::json!({"command": "sleep 999"}),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        s.tool_start(
+            Some("call-2"),
+            "bash",
+            &serde_json::json!({"command": "ls"}),
+        );
+        let (key, name, _, _) = s.oldest_running_tool().expect("running tool");
+        assert_eq!(key, "call-1");
+        assert_eq!(name, "bash");
+
+        s.tool_end(Some("call-1"), "bash", "done", false);
+        let (key, _, _, _) = s.oldest_running_tool().expect("still running");
+        assert_eq!(key, "call-2");
+
+        assert_eq!(s.abandon_running_tools("no result"), 1);
+        assert!(s.oldest_running_tool().is_none());
+        let failed = s.entries.iter().any(|e| {
+            matches!(
+                e,
+                ChatEntry::Tool {
+                    running: false,
+                    error: true,
+                    ..
+                }
+            )
+        });
+        assert!(failed);
+    }
+
+    #[test]
     fn tool_start_update_end_by_id() {
         let mut s = AppState::default();
         s.tool_start(
@@ -1811,6 +2760,62 @@ mod tests {
     }
 
     #[test]
+    fn slash_completion_uses_hovered_candidate() {
+        let mut s = AppState::default();
+        s.commands = vec![crate::rpc::protocol::SlashCommand {
+            name: "helper".to_string(),
+            description: None,
+            source: None,
+        }];
+        s.input = "/hel".to_string();
+        // Candidates: /help (local) and /helper (pi), sorted.
+        s.cand_sel = 1;
+        s.complete_command();
+        assert_eq!(s.input, "/helper");
+    }
+
+    #[test]
+    fn sidebar_visibility_cycles_auto_show_hide() {
+        let mut s = AppState::default();
+        assert_eq!(s.sidebar_force, None);
+        s.cycle_sidebar_mode();
+        assert_eq!(s.sidebar_force, Some(true));
+        s.cycle_sidebar_mode();
+        assert_eq!(s.sidebar_force, Some(false));
+        s.cycle_sidebar_mode();
+        assert_eq!(s.sidebar_force, None);
+    }
+
+    #[test]
+    fn sidebar_scroll_clamps_to_content() {
+        let mut s = AppState::default();
+        s.sidebar_scroll_max = 10;
+        s.sidebar_scroll_up(100);
+        assert_eq!(s.sidebar_scroll, 10);
+        s.sidebar_scroll_down(4);
+        assert_eq!(s.sidebar_scroll, 6);
+        s.sidebar_scroll_down(100);
+        assert_eq!(s.sidebar_scroll, 0);
+    }
+
+    #[test]
+    fn chat_entries_have_exactly_one_blank_separator() {
+        let mut s = AppState::default();
+        s.push_user("one".into());
+        s.entries.push(ChatEntry::Assistant("two".into()));
+        s.tool_start(Some("c"), "bash", &serde_json::json!({"command": "true"}));
+        s.tool_end(Some("c"), "bash", "", false);
+        let lines = s.chat_lines(80);
+        let blank = |l: &ratatui::text::Line| l.spans.iter().all(|sp| sp.content.trim().is_empty());
+        let blanks = lines.iter().filter(|l| blank(l)).count();
+        assert!(blanks >= 2, "one gap between each of 3 entries");
+        assert!(
+            !lines.windows(2).any(|w| blank(&w[0]) && blank(&w[1])),
+            "no double blank lines"
+        );
+    }
+
+    #[test]
     fn at_least_override_promotes_to_block() {
         let mut s = AppState::default();
         s.tool_overrides.insert(
@@ -1884,6 +2889,124 @@ mod tests {
             .join("\n");
         assert!(text.contains("one"), "streamed lines visible: {}", text);
         assert!(text.contains("two"), "streamed lines visible: {}", text);
+    }
+
+    #[test]
+    fn scratchpad_summary_is_counts_not_json() {
+        let s = summarize_args(
+            "scratchpad_write",
+            &serde_json::json!({"facts": ["a", "b"], "leads": ["x"]}),
+        );
+        assert_eq!(s, "facts 2 · leads 1");
+    }
+
+    #[test]
+    fn task_summary_is_done_count() {
+        let s = summarize_args(
+            "update_tasks",
+            &serde_json::json!({"tasks": [
+                {"id": 1, "description": "a", "status": "completed"},
+                {"id": 2, "description": "b", "status": "in_progress"}
+            ]}),
+        );
+        assert_eq!(s, "1/2 done");
+    }
+
+    #[test]
+    fn bash_line_title_and_command_use_different_colors() {
+        let mut s = AppState::default();
+        s.tool_start(
+            Some("c"),
+            "bash",
+            &serde_json::json!({"command": "cargo test --lib", "title": "Run tests"}),
+        );
+        s.tool_end(Some("c"), "bash", "", false);
+        let line = s
+            .chat_lines(100)
+            .into_iter()
+            .find(|l| l.to_string().contains("Run tests"))
+            .expect("bash line");
+        assert!(
+            line.spans
+                .iter()
+                .any(|sp| sp.content.contains("Run tests")
+                    && sp.style.fg == Some(crate::theme::GOLD)),
+            "title gold: {:?}",
+            line.spans
+        );
+        assert!(
+            line.spans
+                .iter()
+                .any(|sp| sp.content.contains("cargo test")
+                    && sp.style.fg != Some(crate::theme::GOLD)),
+            "command not gold: {:?}",
+            line.spans
+        );
+    }
+
+    #[test]
+    fn bash_title_and_cmd_extracts_purpose() {
+        let args = serde_json::json!({"command": "cargo test --lib\nmore", "title": "Run tests"});
+        let (title, cmd) = bash_title_and_cmd("bash", Some(&args)).unwrap();
+        assert_eq!(title, "Run tests");
+        assert_eq!(cmd, "cargo test --lib");
+        assert!(bash_title_and_cmd("read", Some(&args)).is_none());
+        assert!(bash_title_and_cmd("bash", Some(&serde_json::json!({"command": "ls"}))).is_none());
+    }
+
+    #[test]
+    fn bash_summary_prepends_title_to_first_command_line() {
+        let s = summarize_args(
+            "bash",
+            &serde_json::json!({"command": "cargo test --lib\ncargo build", "title": "Run tests"}),
+        );
+        assert_eq!(s, "Run tests · cargo test --lib");
+    }
+
+    #[test]
+    fn scratchpad_block_renders_sections_not_raw_json() {
+        let mut s = AppState::default();
+        s.tool_default = ToolVerbosity::Block;
+        s.tool_start(
+            Some("c"),
+            "scratchpad_write",
+            &serde_json::json!({"facts": ["evidence one", "evidence two"]}),
+        );
+        s.tool_end(Some("c"), "scratchpad_write", "", false);
+        let text = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("facts (2)"), "section header: {}", text);
+        assert!(text.contains("evidence one"), "fact line: {}", text);
+        assert!(!text.contains("\"facts\""), "no raw json: {}", text);
+    }
+
+    #[test]
+    fn task_block_renders_checklist_not_raw_json() {
+        let mut s = AppState::default();
+        s.tool_default = ToolVerbosity::Block;
+        s.tool_start(
+            Some("c"),
+            "update_tasks",
+            &serde_json::json!({"tasks": [
+                {"id": 1, "description": "first item", "status": "completed"},
+                {"id": 2, "description": "second item", "status": "in_progress"}
+            ]}),
+        );
+        s.tool_end(Some("c"), "update_tasks", "", false);
+        let text = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("checklist"), "checklist header: {}", text);
+        assert!(text.contains("✓ 1. first item"), "done glyph: {}", text);
+        assert!(text.contains("▶ 2. second item"), "active glyph: {}", text);
+        assert!(!text.contains("\"tasks\""), "no raw json: {}", text);
     }
 }
 

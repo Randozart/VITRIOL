@@ -11,14 +11,17 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::ansi;
-use super::state::AppState;
+use super::state::{AppState, DialogKind};
 use crate::theme;
 
 const SIDEBAR_W: u16 = 42;
+/// Below this terminal width the sidebar is hidden automatically so the
+/// chat column stays usable (phone/SSH sessions, owner request 2026-11-10).
+const SIDEBAR_MIN_WIDTH: u16 = 100;
 
 pub fn render(frame: &mut Frame, state: &mut AppState) {
     let area = frame.area();
@@ -62,7 +65,7 @@ fn mode_spans(
             Style::new().fg(color).bg(bg).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " · tab to switch mode",
+            " · tab to switch agent",
             Style::new().fg(theme::MUTED).bg(bg),
         ),
     ]
@@ -222,6 +225,18 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
 // ── Body ──────────────────────────────────────────────────────────────────
 
 fn render_body(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let show_sidebar = match state.sidebar_force {
+        Some(v) => v,
+        None => area.width >= SIDEBAR_MIN_WIDTH,
+    };
+    if !show_sidebar {
+        // Clear the stale hit-box so wheel events over the (now full-width)
+        // chat scroll the transcript, not a hidden sidebar.
+        state.last_sidebar_area = None;
+        render_main(frame, state, area);
+        return;
+    }
+
     // Two columns, no gap divider — the sidebar panel's own rounded border
     // separates it from the chat column.
     let cols = Layout::default()
@@ -234,6 +249,18 @@ fn render_body(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    // Extension dialogs are top priority: a pending trust/permission/plan
+    // question must not be hidden behind another overlay (2026-11-10).
+    if !state.dialogs.is_empty() {
+        render_chat_and_editor(frame, state, area);
+        render_dialog_modal(frame, state, area);
+        return;
+    }
+    if state.perm_modal_open {
+        render_chat_and_editor(frame, state, area);
+        render_permissions_modal(frame, state, area);
+        return;
+    }
     if state.show_diag {
         render_diag_overlay(frame, state, area);
         return;
@@ -241,6 +268,16 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if state.resume_open {
         render_chat_and_editor(frame, state, area);
         render_resume_modal(frame, state, area);
+        return;
+    }
+    if state.models_open {
+        render_chat_and_editor(frame, state, area);
+        render_models_modal(frame, state, area);
+        return;
+    }
+    if state.cache_open {
+        render_chat_and_editor(frame, state, area);
+        render_cache_modal(frame, state, area);
         return;
     }
     if state.tools_modal_open {
@@ -272,6 +309,37 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         // still render the editor below the watermark area
     }
 
+    // belowEditor indicators (plan/deep-research/phase-model/vitriol-decode)
+    // get a compact strip between the transcript and the prompt. agent-mode
+    // already owns the composer title; engine-fire is the flame data feed.
+    let mut indicator_blocks: Vec<&crate::tui::state::WidgetBlock> = state
+        .widgets
+        .iter()
+        .filter(|w| w.placement.as_deref() == Some("belowEditor"))
+        .filter(|w| w.key != "agent-mode" && w.key != "engine-fire")
+        .collect();
+    // Route state is the most important strip (full harness can have more
+    // belowEditor widgets than rows). Then plan/research/phase, decode last.
+    indicator_blocks.sort_by_key(|w| match w.key.as_str() {
+        // Route + live decode/progress are the operator's primary scan
+        // targets; phase/plan/research indicators are secondary. Keeping
+        // decode in the first three rows guarantees tk/s and log progress are
+        // never pushed out by a transient indicator.
+        "overflow-route" => 0,
+        "vitriol-decode" => 1,
+        "plan-mode" => 2,
+        "deep-research-mode" => 3,
+        "phase-model" => 4,
+        _ => 9,
+    });
+    let indicators: Vec<String> = indicator_blocks
+        .iter()
+        .flat_map(|w| w.lines.iter().cloned())
+        .filter(|l| !l.trim().is_empty())
+        .take(3)
+        .collect();
+    let indicator_h = indicators.len() as u16;
+
     let input_h = if state.input.chars().count() + 8 > area.width as usize {
         5
     } else {
@@ -280,11 +348,16 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // One breathing row between the transcript and the prompt box (owner
     // request 2026-09-03 — text flowed straight into the editor).
     let chat_area = Rect {
-        height: area.height.saturating_sub(input_h as u16 + 1),
+        height: area.height.saturating_sub(input_h as u16 + 1 + indicator_h),
+        ..area
+    };
+    let indicator_area = Rect {
+        y: area.y + chat_area.height + 1,
+        height: indicator_h,
         ..area
     };
     let input_area = Rect {
-        y: area.y + chat_area.height + 1,
+        y: indicator_area.y + indicator_h,
         height: input_h as u16,
         ..area
     };
@@ -340,11 +413,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         0
     };
-    let fire_map = if fire_rows > 0 && fire_rows as u16 <= chat_area.height {
+    // Flames start at the TOP of the status band so they rise into the
+    // transcript above it; the band's own background occludes the base.
+    let fire_base_y = indicator_area.y;
+    let fire_map = if fire_rows > 0 && fire_rows as u16 <= fire_base_y {
         crate::fire::render(
             frame,
             Rect {
-                y: input_area.y.saturating_sub(fire_rows as u16),
+                y: fire_base_y.saturating_sub(fire_rows as u16),
                 height: fire_rows as u16,
                 ..input_area
             },
@@ -371,6 +447,17 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Vec::<Span>::new())).style(Style::new().bg(theme::BG)),
             gap,
+        );
+    }
+
+    if indicator_h > 0 {
+        let lines: Vec<Line> = indicators.iter().map(|l| ansi::parse_line(l)).collect();
+        // Dedicated status-band surface (owner request 2026-11-10): the
+        // three below-editor lines sit on the panel tone, and the flames
+        // start at this band's top edge instead of under it.
+        frame.render_widget(
+            Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+            indicator_area,
         );
     }
 
@@ -594,17 +681,286 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     );
 }
 
-fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    // Rounded neutral panel, dim border — no title (owner request
-    // 2026-09-02: brand lives in the header, mode in the composer title).
+/// Extension dialog modal (`confirm` / `select` / `input` / `editor`).
+
+/// /permissions modal: ask / auto / yolo with the protected-roots note.
+fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let h = (AppState::PERM_MODES.len() as u16 + 5).min(area.height.saturating_sub(2));
+    let w = area.width.min(78).max(30);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::BORDER_DIM))
-        .style(Style::new().bg(theme::PANEL));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            " permissions ",
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " ↑↓ move · enter set · esc ",
+            Style::new().fg(theme::MUTED),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 3 {
+        return;
+    }
+    let width = inner.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    for (idx, (mode, desc)) in AppState::PERM_MODES.iter().enumerate() {
+        let selected = idx == state.perm_modal_sel;
+        let current = *mode == state.perm_mode;
+        let base = if selected {
+            Style::new()
+                .fg(theme::BG)
+                .bg(theme::GOLD)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        let muted = if selected {
+            base
+        } else {
+            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+        };
+        let marker = if selected { "▸ " } else { "  " };
+        let check = if current { "● " } else { "  " };
+        let name = format!("{:<6}", mode);
+        let text = trunc(
+            &format!("{marker}{check}{name} {desc}"),
+            width.saturating_sub(1),
+        );
+        let mut spans = vec![Span::styled(text, base)];
+        let used = spans[0].content.chars().count();
+        if used < width {
+            spans.push(Span::styled(" ".repeat(width - used), base));
+        }
+        let _ = muted;
+        lines.push(Line::from(spans));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Rect {
+            height: inner.height.saturating_sub(2),
+            ..inner
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            trunc("sensitive roots/secrets always prompt, even in YOLO", width),
+            Style::new()
+                .fg(theme::MUTED)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::ITALIC),
+        ))),
+        Rect {
+            y: inner.y + inner.height - 1,
+            height: 1,
+            ..inner
+        },
+    );
+}
 
+fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let Some(dialog) = state.dialogs.front() else {
+        return;
+    };
+    let kind = dialog.kind;
+    let option_rows = if kind == DialogKind::Select {
+        dialog.options.len().min(12) as u16
+    } else {
+        0
+    };
+    let wanted = match kind {
+        DialogKind::Confirm => 7,
+        DialogKind::Select => (option_rows + 5).max(7),
+        DialogKind::Input => 7,
+        DialogKind::Editor => 12,
+    };
+    let h = wanted.min(area.height.saturating_sub(2)).max(5);
+    let w = area.width.min(82).max(30);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" {} ", trunc(&dialog.title, w.saturating_sub(6) as usize)),
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 3 {
+        return;
+    }
+
+    let hint = Rect {
+        y: inner.y + inner.height - 1,
+        height: 1,
+        ..inner
+    };
+    let body = Rect {
+        height: inner.height - 1,
+        ..inner
+    };
+    let width = body.width as usize;
+
+    let hint_text = match kind {
+        DialogKind::Confirm => " y/n or ←→ then enter · esc cancel ",
+        DialogKind::Select => " ↑↓ move · enter choose · esc cancel ",
+        DialogKind::Input => " enter submit · esc cancel ",
+        DialogKind::Editor => " alt+enter submit · enter newline · esc cancel ",
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            hint_text,
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        ))),
+        hint,
+    );
+
+    let base = Style::new().fg(theme::TEXT).bg(theme::PANEL);
+    let muted = Style::new().fg(theme::MUTED).bg(theme::PANEL);
+    let accent = Style::new()
+        .fg(theme::GOLD)
+        .bg(theme::PANEL)
+        .add_modifier(Modifier::BOLD);
+    let selected = Style::new()
+        .fg(theme::BG)
+        .bg(theme::GOLD)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines: Vec<Line> = Vec::new();
+    match kind {
+        DialogKind::Select => {
+            let visible = body.height as usize;
+            let sel = dialog.selected;
+            let skip = if sel + 1 > visible {
+                sel + 1 - visible
+            } else {
+                0
+            };
+            for (i, option) in dialog.options.iter().enumerate().skip(skip) {
+                if lines.len() >= visible {
+                    break;
+                }
+                let is_sel = i == sel;
+                let marker = if is_sel { "▸ " } else { "  " };
+                let text = format!("{marker}{}", trunc(option, width.saturating_sub(3)));
+                let style = if is_sel { selected } else { base };
+                let mut spans = vec![Span::styled(text, style)];
+                let used = spans[0].content.chars().count() + 1;
+                if used < width {
+                    spans.push(Span::styled(" ".repeat(width - used + 1), style));
+                }
+                lines.push(Line::from(spans));
+            }
+            if skip > 0 || skip + visible < dialog.options.len() {
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        format!(" {} of {} ", sel + 1, dialog.options.len()),
+                        muted,
+                    ))),
+                    hint,
+                );
+            }
+        }
+        DialogKind::Confirm => {
+            if let Some(message) = &dialog.message {
+                let mut msg: Vec<Line> = message
+                    .lines()
+                    .map(|l| Line::from(Span::styled(trunc(l, width), base)))
+                    .collect();
+                msg.truncate(body.height.saturating_sub(2) as usize);
+                frame.render_widget(
+                    Paragraph::new(msg).wrap(Wrap { trim: false }),
+                    Rect {
+                        height: body.height.saturating_sub(2),
+                        ..body
+                    },
+                );
+            }
+            let yes = dialog.selected == 0;
+            let mut spans = vec![
+                Span::styled(
+                    if yes { " ▸ Yes " } else { "   Yes " },
+                    if yes { selected } else { base },
+                ),
+                Span::styled("   ", base),
+                Span::styled(
+                    if yes { "   No " } else { " ▸ No " },
+                    if yes { base } else { selected },
+                ),
+            ];
+            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            if used < width {
+                spans.push(Span::styled(" ".repeat(width - used), base));
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::PANEL)),
+                Rect {
+                    y: body.y + body.height.saturating_sub(1),
+                    height: 1,
+                    ..body
+                },
+            );
+            return;
+        }
+        DialogKind::Input | DialogKind::Editor => {
+            let cursor = dialog.cursor;
+            let before: String = dialog.input.chars().take(cursor).collect();
+            let after: String = dialog.input.chars().skip(cursor).collect();
+            if kind == DialogKind::Input {
+                let text = format!("{before}▏{after}");
+                lines.push(Line::from(vec![Span::styled(trunc(&text, width), base)]));
+            } else {
+                let cur_line = before.split('\n').count();
+                let mut rendered = 0usize;
+                for (idx, raw) in dialog.input.split('\n').enumerate() {
+                    if rendered >= body.height as usize {
+                        break;
+                    }
+                    let text = if idx + 1 == cur_line {
+                        let last = before.rsplit('\n').next().unwrap_or("");
+                        let after_line = after.split('\n').next().unwrap_or("");
+                        format!("{last}▏{after_line}")
+                    } else {
+                        raw.to_string()
+                    };
+                    lines.push(Line::from(Span::styled(trunc(&text, width), base)));
+                    rendered += 1;
+                }
+                if rendered == 0 {
+                    lines.push(Line::from(Span::styled("▏", base)));
+                }
+                let _ = cur_line;
+            }
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::new().bg(theme::PANEL))
+            .wrap(Wrap { trim: false }),
+        body,
+    );
+    let _ = accent;
+}
+
+fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for widget in &state.widgets {
         if widget.lines.is_empty() {
@@ -614,6 +970,11 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
         // flames' raw data feed — neither is sidebar content (owner request
         // 2026-09-02). Both widgets are still received and parsed.
         if widget.key == "agent-mode" || widget.key == "engine-fire" {
+            continue;
+        }
+        // belowEditor widgets are composer-adjacent indicators, not sidebar
+        // content (full extension load makes this distinction critical).
+        if widget.placement.as_deref() == Some("belowEditor") {
             continue;
         }
         if !lines.is_empty() {
@@ -631,7 +992,46 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
         )));
     }
 
-    let view: Vec<Line> = lines.into_iter().take(inner.height as usize).collect();
+    let visible = area.height.saturating_sub(2) as usize;
+    let max = lines.len().saturating_sub(visible);
+    state.sidebar_scroll_max = max.min(u16::MAX as usize) as u16;
+    if state.sidebar_scroll as usize > max {
+        state.sidebar_scroll = max.min(u16::MAX as usize) as u16;
+    }
+    let off = state.sidebar_scroll as usize;
+    let more_below = off < max;
+
+    // Rounded neutral panel, dim border. A small scroll position marker
+    // appears only while the sidebar is scrolled (owner request 2026-11-10:
+    // the panel can be taller than the screen).
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::BORDER_DIM))
+        .style(Style::new().bg(theme::PANEL));
+    if off > 0 || more_below {
+        let marker = format!(
+            " {} ",
+            if off > 0 {
+                format!("↑{off}")
+            } else {
+                format!("↓{}", max - off)
+            }
+        );
+        block = block.title_bottom(
+            Line::from(Span::styled(marker, Style::new().fg(theme::MUTED)))
+                .alignment(Alignment::Right),
+        );
+    }
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    state.last_sidebar_area = Some(area);
+
+    let view: Vec<Line> = lines
+        .into_iter()
+        .skip(off)
+        .take(inner.height as usize)
+        .collect();
     frame.render_widget(Paragraph::new(view).wrap(Wrap { trim: false }), inner);
 }
 
@@ -643,6 +1043,10 @@ fn render_command_popup(
     sel: usize,
     area: Rect,
 ) {
+    // The menu floats over the transcript. Clear first, then paint every row
+    // on the panel tone — otherwise chat text shows through the gaps where a
+    // row has no span (owner report 2026-11-10).
+    frame.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -717,8 +1121,8 @@ fn render_command_popup(
             )
         } else {
             (
-                Style::new().fg(theme::GOLD),
-                Style::new().fg(theme::MUTED),
+                Style::new().fg(theme::GOLD).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
                 "  ",
             )
         };
@@ -730,7 +1134,10 @@ fn render_command_popup(
             ),
         ]));
     }
-    frame.render_widget(Paragraph::new(lines), rows_rect);
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        rows_rect,
+    );
 }
 
 fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -871,6 +1278,322 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// /model picker — parity with the JS TUI's selector (owner request
+/// 2026-11-10). Lists `get_available_models`, marks the active model, and
+/// switches on Enter via `set_model`.
+fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let filtered: Vec<crate::rpc::protocol::Model> =
+        state.filtered_models().into_iter().cloned().collect();
+    // + borders(2) + search(1) + bottom gap(1)
+    let h = area.height.min((filtered.len() as u16 + 4).max(9));
+    let w = area.width.min(86);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            format!(
+                " {} select model · {} of {} ",
+                theme::GLYPH_CRUCIBLE,
+                filtered.len(),
+                state.models.len()
+            ),
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " type to filter · ↑↓ move · enter switch · esc ",
+            Style::new().fg(theme::MUTED),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 2 {
+        return;
+    }
+
+    // Filter line — always visible, doubles as the typed query echo.
+    let search = Rect { height: 1, ..inner };
+    let filter_spans = if state.models_filter.is_empty() {
+        vec![
+            Span::styled("⌕ ", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+            Span::styled(
+                "type to filter…",
+                Style::new()
+                    .fg(theme::MUTED)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+            Span::styled("▏", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+        ]
+    } else {
+        vec![
+            Span::styled("⌕ ", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+            Span::styled(
+                state.models_filter.clone(),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+            Span::styled("▏", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+        ]
+    };
+    frame.render_widget(Paragraph::new(Line::from(filter_spans)), search);
+
+    let list = Rect {
+        y: inner.y + 1,
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    let width = list.width as usize;
+    let sel = state.models_sel;
+    let visible = list.height as usize;
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
+
+    let name_w = (width * 34 / 100).clamp(12, 32);
+    let prov_w = (width * 16 / 100).clamp(8, 16);
+    let ctx_w = 7usize;
+    let fixed = 4 /*markers*/ + name_w + 1 + prov_w + 1 + ctx_w;
+    let id_w = width.saturating_sub(fixed + 1);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, m) in filtered.iter().enumerate().skip(skip) {
+        let selected = i == sel;
+        let current = state
+            .model
+            .as_ref()
+            .is_some_and(|c| c.provider == m.provider && c.id == m.id);
+        let name = m.name.clone().unwrap_or_else(|| m.id.clone());
+        let ctx = m
+            .context_window
+            .map(|n| format!("{}k", n / 1024))
+            .unwrap_or_else(|| "-".to_string());
+        let reasoning = if m.reasoning.unwrap_or(false) {
+            "✦"
+        } else {
+            " "
+        };
+
+        let base = if selected {
+            Style::new()
+                .fg(theme::BG)
+                .bg(theme::GOLD)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        let muted = if selected {
+            base
+        } else {
+            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+        };
+        let accent = if selected {
+            base
+        } else {
+            Style::new().fg(theme::GOLD).bg(theme::PANEL)
+        };
+        let live = if selected {
+            base
+        } else {
+            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+        };
+
+        let sel_marker = format!("{} ", if selected { "▸" } else { " " });
+        let cur_marker = format!("{} ", if current { "●" } else { " " });
+        let name_cell = format!("{:<width$}", trunc(&name, name_w), width = name_w);
+        let prov_cell = format!("{:<width$}", trunc(&m.provider, prov_w), width = prov_w);
+        let ctx_cell = format!("{:>width$}", ctx, width = ctx_w);
+        let id_cell = if id_w > 2 {
+            format!(" {}", trunc(&m.id, id_w.saturating_sub(1)))
+        } else {
+            String::new()
+        };
+        let used = sel_marker.chars().count()
+            + cur_marker.chars().count()
+            + name_cell.chars().count()
+            + 1
+            + prov_cell.chars().count()
+            + 1
+            + ctx_cell.chars().count()
+            + reasoning.chars().count()
+            + id_cell.chars().count();
+
+        let mut spans = vec![
+            Span::styled(sel_marker, accent),
+            Span::styled(cur_marker, live),
+            Span::styled(name_cell, base),
+            Span::styled(" ", base),
+            Span::styled(prov_cell, muted),
+            Span::styled(format!(" {}", ctx_cell), accent),
+            Span::styled(reasoning, accent),
+            Span::styled(id_cell, muted),
+        ];
+        // Fill to the full inner width so the selected row is a solid bar.
+        if used < width {
+            spans.push(Span::styled(" ".repeat(width - used), base));
+        }
+        lines.push(Line::from(spans));
+    }
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no matching models",
+            Style::new()
+                .fg(theme::MUTED)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        list,
+    );
+}
+
+/// /cache manager — engine KV disk cache entries, newest first, with age and
+/// size. `d` deletes the highlighted entry, `w` wipes every non-protected
+/// entry, `r` re-scans. slot0.bin (warm-boot restore) is protected.
+fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    use crate::tui::cache as c;
+    let h = area
+        .height
+        .min((state.cache_entries.len() as u16 + 5).max(10));
+    let w = area.width.min(92);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            format!(
+                " {} kv cache · {} entries · {} ",
+                theme::GLYPH_CRUCIBLE,
+                state.cache_entries.len(),
+                c::fmt_bytes(state.cache_total)
+            ),
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " d delete · p prune 7d · W wipe all · r rescan · esc ",
+            Style::new().fg(theme::MUTED),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 3 {
+        return;
+    }
+
+    let dir = Rect { height: 1, ..inner };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            trunc(&state.cache_dir, inner.width as usize),
+            Style::new()
+                .fg(theme::MUTED)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::ITALIC),
+        ))),
+        dir,
+    );
+
+    let list = Rect {
+        y: inner.y + 2,
+        height: inner.height.saturating_sub(3),
+        ..inner
+    };
+    let width = list.width as usize;
+    let visible = list.height as usize;
+    let sel = state.cache_sel;
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
+    let age_w = 5usize;
+    let size_w = 10usize;
+    let name_w = width.saturating_sub(2 + age_w + 1 + size_w);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, e) in state.cache_entries.iter().enumerate().skip(skip) {
+        let selected = i == sel;
+        let protected = c::is_protected(&e.name);
+        let base = if selected {
+            Style::new()
+                .fg(theme::BG)
+                .bg(theme::GOLD)
+                .add_modifier(Modifier::BOLD)
+        } else if protected {
+            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        let muted = if selected {
+            base
+        } else {
+            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+        };
+        let accent = if selected {
+            base
+        } else {
+            Style::new().fg(theme::GOLD).bg(theme::PANEL)
+        };
+
+        let marker = format!("{} ", if selected { "▸" } else { " " });
+        let label = if protected {
+            format!("{} (protected)", e.name)
+        } else {
+            e.name.clone()
+        };
+        let name_cell = format!("{:<width$}", trunc(&label, name_w), width = name_w);
+        let age_cell = format!("{:>width$}", c::fmt_age(e.age()), width = age_w);
+        let size_cell = format!("{:>width$}", c::fmt_bytes(e.size), width = size_w);
+        let used = marker.chars().count()
+            + name_cell.chars().count()
+            + 1
+            + age_cell.chars().count()
+            + 1
+            + size_cell.chars().count();
+        let mut spans = vec![
+            Span::styled(marker, accent),
+            Span::styled(name_cell, base),
+            Span::styled(" ", base),
+            Span::styled(age_cell, muted),
+            Span::styled(" ", base),
+            Span::styled(size_cell, accent),
+        ];
+        if used < width {
+            spans.push(Span::styled(" ".repeat(width - used), base));
+        }
+        lines.push(Line::from(spans));
+    }
+    if state.cache_entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  cache is empty",
+            Style::new()
+                .fg(theme::MUTED)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        list,
+    );
 }
 
 /// /tools modal — tool verbosity config, resume-picker styling (owner

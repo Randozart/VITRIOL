@@ -6,6 +6,7 @@
 // stderr drains into a DiagLog ring buffer (must drain — an unread pipe
 // fills at ~64KiB and blocks the subprocess).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -37,20 +38,13 @@ pub struct DiagLog {
 /// Extension directories carried into foreign projects (see spawn doc).
 /// Root is derived from the pi binary location —
 /// `<officina>/node_modules/.bin/pi` → `<officina>/.pi/extensions` — so a
-/// relocated checkout keeps working. Empty when the session dir does its
-/// own extension discovery (the officina project itself, or any project
-/// with a `.pi/extensions` of its own: no double-loading).
+/// relocated checkout keeps working. Every officina extension with an index.ts
+/// is carried unless the project shadows it by name; `_shared` is a support
+/// module, not an extension.
 fn officina_extensions_to_carry(cli_path: &Path, cwd: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
-    // Vendor (.pi) or branded (.officina) extension discovery present →
-    // the project curates its own experience; carry nothing (no double
-    // load). Branding shim: 2026-09-02.
-    if cwd.join(".pi").join("extensions").is_dir()
-        || cwd.join(".officina").join("extensions").is_dir()
-    {
-        return out;
-    }
-    // .bin/pi → node_modules → <officina>
+
+    // `.bin/pi` → node_modules → <officina>
     let officina = match cli_path
         .parent()
         .and_then(|p| p.parent())
@@ -63,23 +57,42 @@ fn officina_extensions_to_carry(cli_path: &Path, cwd: &Path) -> Vec<PathBuf> {
     if !exts.is_dir() {
         return out;
     }
-    // Preservation extensions ride too (2026-09-03): task-state +
-    // scratchpad are the context-lifecycle preservation layer — without
-    // them abroad, the agent has no update_tasks/scratchpad_write tools
-    // and the eviction contract never reaches it.
-    for name in [
-        "llama-cpp-provider",
-        "agent-mode",
-        "vitriol-decode",
-        "session-panel",
-        "task-state",
-        "scratchpad",
+
+    // Full harness surface (operator decision 2026-11-10): load every
+    // extension directory with an index.ts. The old hardcoded 7-item subset
+    // left permissions-guard, snapshot, rewind, subagent, memory, repo-map,
+    // plan-mode and the quality gates out of the canonical frontend.
+    //
+    // Project-owned extensions win by name so a repo can shadow a portable
+    // extension without double-registering tools/commands.
+    let mut shadowed: HashSet<String> = HashSet::new();
+    for root in [
+        cwd.join(".pi").join("extensions"),
+        cwd.join(".officina").join("extensions"),
     ] {
-        let dir = exts.join(name);
-        if dir.is_dir() {
-            out.push(dir);
+        if let Ok(rd) = std::fs::read_dir(&root) {
+            for ent in rd.flatten() {
+                if ent.path().is_dir() {
+                    shadowed.insert(ent.file_name().to_string_lossy().to_string());
+                }
+            }
         }
     }
+
+    let Ok(rd) = std::fs::read_dir(&exts) else {
+        return out;
+    };
+    let mut dirs: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir() && p.join("index.ts").is_file())
+        .filter(|p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_string());
+            name.as_deref() != Some("_shared") && name.map_or(true, |n| !shadowed.contains(&n))
+        })
+        .collect();
+    dirs.sort();
+    out.extend(dirs);
     out
 }
 
@@ -109,16 +122,16 @@ pub struct RpcBridge {
     child: Child,
     stdin_tx: mpsc::UnboundedSender<String>,
     next_id: AtomicU32,
+    pi_path: PathBuf,
     pub diag: DiagLog,
 }
 
 impl RpcBridge {
     /// Spawn `node <cli_path> --mode rpc -a` and return a connected bridge.
     ///
-    /// `-a` (--approve) overrides project trust: RPC mode has no UI for the
-    /// trust dialog, and untrusted means pi silently skips project extensions
-    /// AND project settings (verified 2026-09-02: without -a → 0 setWidgets,
-    /// model "unknown"; with -a → 23 setWidgets, 15 extension commands).
+    /// Project trust is no longer blanket-approved: the dialog subsystem in
+    /// the TUI answers pi's trust `select`. OFFICINA_TRUST_PROJECT=1 restores
+    /// the old `-a` behaviour for headless automation.
     ///
     /// Officina extensions travel with the TUI (owner request 2026-09-02:
     /// "shouldn't officina be reachable from any project folder, so long as
@@ -137,9 +150,25 @@ impl RpcBridge {
     /// phase-model et al. — they inject or display VITRIOL-workflow
     /// context and would poison a foreign project (session-panel only
     /// imports their pure data getters, which stay empty without them).
-    pub async fn spawn(cli_path: &Path, cwd: &Path) -> Result<Self> {
+    pub async fn spawn(cli_path: &Path, cwd: &Path, extra_args: &[String]) -> Result<Self> {
         let mut command = Command::new("node");
-        command.arg(cli_path).arg("--mode").arg("rpc").arg("-a");
+        command
+            .arg(cli_path)
+            .arg("--mode")
+            .arg("rpc")
+            // Structured navigation tools (2026-11-10): read/bash/edit/write
+            // alone makes the model burn tokens on find/grep/ls via bash.
+            .arg("--tools")
+            .arg("+grep,+find,+ls");
+        // Trust: the Rust TUI now implements pi's project-trust `select`
+        // dialog, so do not blanket-approve. Opt back into the old behaviour
+        // with OFFICINA_TRUST_PROJECT=1 (automation headless runs).
+        if std::env::var("OFFICINA_TRUST_PROJECT").as_deref() == Ok("1") {
+            command.arg("-a");
+        }
+        for arg in extra_args {
+            command.arg(arg);
+        }
         for ext in officina_extensions_to_carry(cli_path, cwd) {
             command.arg("-e").arg(ext);
         }
@@ -186,8 +215,22 @@ impl RpcBridge {
             child,
             stdin_tx,
             next_id: AtomicU32::new(1),
+            pi_path: cli_path.to_path_buf(),
             diag,
         })
+    }
+
+    /// `<officina>/scripts/<name>` derived from the pi CLI path
+    /// (`<officina>/node_modules/.bin/pi`). None when the franken-layout
+    /// doesn't match.
+    pub fn officina_script(&self, name: &str) -> Option<PathBuf> {
+        let officina = self
+            .pi_path
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())?;
+        let script = officina.join("scripts").join(name);
+        script.is_file().then_some(script)
     }
 
     /// Start the stdout reader task. Returns a channel that yields parsed wire messages.
@@ -258,7 +301,10 @@ impl RpcBridge {
             | RpcCommand::SetThinkingLevel { id: ref mut i, .. }
             | RpcCommand::CycleThinkingLevel { id: ref mut i }
             | RpcCommand::Compact { id: ref mut i, .. }
-            | RpcCommand::Bash { id: ref mut i, .. } => {
+            | RpcCommand::Bash { id: ref mut i, .. }
+            | RpcCommand::SetSessionName { id: ref mut i, .. }
+            | RpcCommand::ExportHtml { id: ref mut i, .. }
+            | RpcCommand::Clone { id: ref mut i } => {
                 *i = Some(id.clone());
             }
             RpcCommand::ExtensionUiResponse { .. } => {} // ID already set
@@ -304,7 +350,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn carries_officina_extensions_into_bare_projects() {
+    fn carries_every_officina_extension_into_bare_projects() {
         // Fake officina checkout: <root>/node_modules/.bin/pi + .pi/extensions.
         let root = std::env::temp_dir().join(format!("officina-carry-{}", std::process::id()));
         let bin = root.join("node_modules").join(".bin");
@@ -312,28 +358,32 @@ mod tests {
         for name in [
             "llama-cpp-provider",
             "agent-mode",
-            "vitriol-decode",
             "session-panel",
-            "task-state",
-            "scratchpad",
+            "_shared",
         ] {
-            std::fs::create_dir_all(exts.join(name)).unwrap();
+            let dir = exts.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("index.ts"), "// ext\n").unwrap();
         }
         std::fs::create_dir_all(&bin).unwrap();
         let pi = bin.join("pi");
         std::fs::write(&pi, "#!/bin/sh\n").unwrap();
 
-        // Bare project → all carried.
+        // Bare project → all real extensions carried, support dir skipped.
         let bare = std::env::temp_dir().join(format!("officina-bare-{}", std::process::id()));
         std::fs::create_dir_all(&bare).unwrap();
         let carried = officina_extensions_to_carry(&pi, &bare);
-        assert_eq!(carried.len(), 6);
-        assert!(carried.iter().all(|p| p.starts_with(&exts)));
+        assert_eq!(carried.len(), 3);
+        assert!(!carried.iter().any(|p| p.ends_with("_shared")));
 
-        // Project with its own .pi/extensions → nothing carried (no double load).
+        // Project shadowing one name → the shadowed extension is not carried.
         let own = std::env::temp_dir().join(format!("officina-own-{}", std::process::id()));
-        std::fs::create_dir_all(own.join(".pi").join("extensions")).unwrap();
-        assert!(officina_extensions_to_carry(&pi, &own).is_empty());
+        let own_ext = own.join(".pi").join("extensions").join("agent-mode");
+        std::fs::create_dir_all(&own_ext).unwrap();
+        std::fs::write(own_ext.join("index.ts"), "// project ext\n").unwrap();
+        let carried = officina_extensions_to_carry(&pi, &own);
+        assert_eq!(carried.len(), 2);
+        assert!(!carried.iter().any(|p| p.ends_with("agent-mode")));
 
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&bare);

@@ -7,8 +7,13 @@
 //! hard-wrapped to `width` so scroll offsets stay in logical-line units.
 //! Styles come from the Vitriolum theme; the module owns no layout state.
 
-use ratatui::style::{Modifier, Style};
+use std::sync::OnceLock;
+
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{FontStyle, Theme, ThemeSet};
+use syntect::parsing::SyntaxSet;
 
 use crate::theme;
 
@@ -20,6 +25,39 @@ fn code_style() -> Style {
 /// The code-block body color (foreground text on panel).
 fn code_block_style() -> Style {
     Style::new().fg(theme::TEXT).bg(theme::PANEL)
+}
+
+/// Lazily-loaded syntect syntaxes/themes (one process-wide copy).
+fn syntaxes() -> &'static SyntaxSet {
+    static SS: OnceLock<SyntaxSet> = OnceLock::new();
+    SS.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn highlight_theme() -> &'static Theme {
+    static THEME: OnceLock<Theme> = OnceLock::new();
+    THEME.get_or_init(|| {
+        let mut set = ThemeSet::load_defaults();
+        set.themes
+            .remove("base16-ocean.dark")
+            .or_else(|| set.themes.values().next().cloned())
+            .expect("syntect ships at least one theme")
+    })
+}
+
+/// Map a syntect style onto the Vitriol panel surface.
+fn syn_style(src: syntect::highlighting::Style) -> Style {
+    let fg = Color::Rgb(src.foreground.r, src.foreground.g, src.foreground.b);
+    let mut style = Style::new().fg(fg).bg(theme::PANEL);
+    if src.font_style.contains(FontStyle::BOLD) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if src.font_style.contains(FontStyle::ITALIC) {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if src.font_style.contains(FontStyle::UNDERLINE) {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    style
 }
 
 /// The heading style: H1 = gold banner, deeper levels = green title.
@@ -61,14 +99,22 @@ struct Renderer {
     quote: usize,
     /// Inside a fenced/indented code block.
     in_code: bool,
+    /// Active syntect highlighter for the current fenced block.
+    code_hl: Option<HighlightLines<'static>>,
     /// Active heading style, when inside a heading.
     heading: Option<Style>,
     /// Inline modifier stack (strong / emphasis / link).
     inline: Vec<Modifier>,
     /// Table cells accumulated for the current row.
     row_cells: Vec<String>,
-    /// Whether the current table row is the header.
-    row_head: bool,
+    /// Fully collected table rows (rendered when End(Table) arrives).
+    table_rows: Vec<Vec<String>>,
+    /// Number of leading header rows (normally 1).
+    table_header_rows: usize,
+    /// Inside a table block.
+    in_table: bool,
+    /// Per-column alignment from the table delimiter row.
+    table_align: Vec<pulldown_cmark::Alignment>,
 }
 
 impl Renderer {
@@ -83,10 +129,14 @@ impl Renderer {
             prefix_widths: Vec::new(),
             quote: 0,
             in_code: false,
+            code_hl: None,
             heading: None,
             inline: Vec::new(),
             row_cells: Vec::new(),
-            row_head: false,
+            table_rows: Vec::new(),
+            table_header_rows: 0,
+            in_table: false,
+            table_align: Vec::new(),
         }
     }
 
@@ -177,29 +227,58 @@ impl Renderer {
                     self.gap();
                 }
             }
-            E::Start(T::CodeBlock(_)) => {
+            E::Start(T::CodeBlock(kind)) => {
                 self.flush();
                 self.gap();
+                let lang = match kind {
+                    pulldown_cmark::CodeBlockKind::Fenced(info) => info
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .next()
+                        .unwrap_or(""),
+                    pulldown_cmark::CodeBlockKind::Indented => "",
+                };
+                let ss = syntaxes();
+                let syntax = if lang.is_empty() {
+                    ss.find_syntax_plain_text()
+                } else {
+                    ss.find_syntax_by_token(lang)
+                        .or_else(|| ss.find_syntax_by_extension(lang))
+                        .unwrap_or_else(|| ss.find_syntax_plain_text())
+                };
+                self.code_hl = Some(HighlightLines::new(syntax, highlight_theme()));
                 self.in_code = true;
             }
             E::End(TE::CodeBlock) => {
                 self.in_code = false;
+                self.code_hl = None;
                 self.flush();
+                self.gap();
+            }
+            E::Start(T::Table(aligns)) => {
+                self.flush();
+                self.gap();
+                self.table_rows.clear();
+                self.table_header_rows = 0;
+                self.table_align = aligns.clone();
+                self.in_table = true;
+            }
+            E::End(TE::Table) => {
+                self.in_table = false;
+                self.render_table();
                 self.gap();
             }
             E::Start(T::TableHead) => {
                 self.flush();
-                self.row_head = true;
             }
             E::End(TE::TableHead) => {
-                self.flush_table_row();
-                self.row_head = false;
+                self.collect_table_row();
+                self.table_header_rows = self.table_rows.len();
             }
             E::Start(T::TableRow) => {
                 self.flush();
                 self.row_cells.clear();
             }
-            E::End(TE::TableRow) => self.flush_table_row(),
+            E::End(TE::TableRow) => self.collect_table_row(),
             E::Start(T::TableCell) => {
                 self.flush();
             }
@@ -207,33 +286,54 @@ impl Renderer {
                 let cell = self.take_line_text();
                 self.row_cells.push(cell);
             }
-            E::Start(T::Table(_)) | E::End(TE::Table) => {}
             _ => {}
         }
     }
 
-    /// Handle events while inside a code block (raw text lines).
+    /// Handle events while inside a code block (raw text lines), with
+    /// syntect syntax highlighting. Code is not wrapped: one visual row per
+    /// source line, truncated with `…` at the right edge.
     fn code_event(&mut self, e: &pulldown_cmark::Event) {
         match e {
             pulldown_cmark::Event::Text(s) => {
+                let ss = syntaxes();
+                let width = self.width;
                 for line in s.lines() {
-                    // Truncate to width — unwrapped code lines used to
-                    // re-wrap in the paragraph and push transcript rows off
-                    // the bottom (owner bug 2026-09-03). One visual row per
-                    // source line, `…` marks the loss.
                     let n = line.chars().count();
-                    let shown = if n > self.width {
-                        let cut: String = line.chars().take(self.width.saturating_sub(1)).collect();
-                        format!("{cut}…")
+                    let truncated = n > width;
+                    let shown: String = if truncated {
+                        line.chars().take(width.saturating_sub(1)).collect()
                     } else {
                         line.to_string()
                     };
-                    self.out
-                        .push(Line::from(Span::styled(shown, code_block_style())));
+                    let mut spans: Vec<Span<'static>> = Vec::new();
+                    if let Some(hl) = self.code_hl.as_mut() {
+                        match hl.highlight_line(&shown, ss) {
+                            Ok(ranges) => {
+                                for (style, text) in ranges {
+                                    if !text.is_empty() {
+                                        spans
+                                            .push(Span::styled(text.to_string(), syn_style(style)));
+                                    }
+                                }
+                            }
+                            Err(_) => spans.push(Span::styled(shown.clone(), code_block_style())),
+                        }
+                    } else {
+                        spans.push(Span::styled(shown.clone(), code_block_style()));
+                    }
+                    if truncated {
+                        spans.push(Span::styled("…", theme::muted()));
+                    }
+                    if spans.is_empty() {
+                        spans.push(Span::styled(String::new(), code_block_style()));
+                    }
+                    self.out.push(Line::from(spans));
                 }
             }
             pulldown_cmark::Event::End(pulldown_cmark::TagEnd::CodeBlock) => {
                 self.in_code = false;
+                self.code_hl = None;
             }
             _ => {}
         }
@@ -274,23 +374,241 @@ impl Renderer {
         self.cur.push(Span::styled(s.to_string(), style));
     }
 
-    /// Join the current table row cells into one line and flush it.
-    fn flush_table_row(&mut self) {
+    /// Stash the current row for aligned rendering at End(Table).
+    fn collect_table_row(&mut self) {
         if self.row_cells.is_empty() {
             return;
         }
-        let sep = if self.row_head { "┃" } else { "│" };
-        let joined = self.row_cells.join(&format!(" {sep} "));
-        // Fit to width — wide tables used to re-wrap in the paragraph and
-        // clip the transcript's bottom rows (owner bug 2026-09-03).
-        let shown = if joined.chars().count() > self.width {
-            let cut: String = joined.chars().take(self.width.saturating_sub(1)).collect();
-            format!("{cut}…")
-        } else {
-            joined
-        };
-        self.cur.push(Span::styled(shown, theme::text()));
-        self.flush();
+        self.table_rows.push(std::mem::take(&mut self.row_cells));
+    }
+
+    /// Render the collected table with aligned columns. Natural widths win
+    /// when they fit; otherwise columns shrink to a readable floor and cell
+    /// CONTENT WRAPS across lines (automatic overflow). If even that cannot
+    /// fit (too many columns), rows fall back to a stacked record layout so
+    /// every field stays readable on narrow/phone terminals.
+    fn render_table(&mut self) {
+        let rows = std::mem::take(&mut self.table_rows);
+        let aligns = std::mem::take(&mut self.table_align);
+        let header = self
+            .table_header_rows
+            .max(if rows.is_empty() { 0 } else { 1 })
+            .min(rows.len());
+        self.table_header_rows = 0;
+        if rows.is_empty() {
+            return;
+        }
+        let ncols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        if ncols == 0 || self.width == 0 {
+            return;
+        }
+
+        const GAP: usize = 3; // " │ "
+        const MIN_COL: usize = 5;
+
+        let mut widths = vec![0usize; ncols];
+        for row in &rows {
+            for (i, cell) in row.iter().enumerate() {
+                widths[i] = widths[i].max(cell.chars().count());
+            }
+        }
+        let natural_total: usize = widths.iter().sum::<usize>() + GAP * (ncols - 1);
+        let min_total = ncols * MIN_COL + GAP * (ncols - 1);
+
+        if natural_total > self.width {
+            if self.width < min_total {
+                self.render_stacked_rows(&rows, header, ncols);
+                return;
+            }
+            // Shrink the widest columns to fit, but never below MIN_COL.
+            let mut total = natural_total;
+            while total > self.width {
+                let Some(i) = (0..ncols)
+                    .filter(|&i| widths[i] > MIN_COL)
+                    .max_by_key(|&i| widths[i])
+                else {
+                    break;
+                };
+                widths[i] -= 1;
+                total -= 1;
+            }
+        }
+
+        let head_style = Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD);
+        let body_style = theme::text();
+        let sep_style = theme::muted();
+
+        for (ri, row) in rows.iter().enumerate() {
+            let style = if ri < header { head_style } else { body_style };
+            let cells: Vec<Vec<String>> = (0..ncols)
+                .map(|ci| {
+                    let raw = row.get(ci).map(String::as_str).unwrap_or("");
+                    wrap_cell(raw, widths[ci])
+                })
+                .collect();
+            let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+            for li in 0..height {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                for ci in 0..ncols {
+                    if ci > 0 {
+                        spans.push(Span::styled(" │ ", sep_style));
+                    }
+                    let chunk = cells[ci].get(li).map(String::as_str).unwrap_or("");
+                    let pad = widths[ci].saturating_sub(chunk.chars().count());
+                    let align = aligns
+                        .get(ci)
+                        .copied()
+                        .unwrap_or(pulldown_cmark::Alignment::None);
+                    let (left_pad, right_pad) = match align {
+                        pulldown_cmark::Alignment::Right => (pad, 0),
+                        pulldown_cmark::Alignment::Center => (pad / 2, pad - pad / 2),
+                        _ => (0, pad),
+                    };
+                    if left_pad > 0 {
+                        spans.push(Span::styled(" ".repeat(left_pad), style));
+                    }
+                    spans.push(Span::styled(chunk.to_string(), style));
+                    if right_pad > 0 {
+                        spans.push(Span::styled(" ".repeat(right_pad), style));
+                    }
+                }
+                self.out.push(Line::from(spans));
+            }
+            if ri + 1 == header {
+                let mut sep: Vec<Span<'static>> = Vec::new();
+                for ci in 0..ncols {
+                    if ci > 0 {
+                        sep.push(Span::styled("─┼─", sep_style));
+                    }
+                    sep.push(Span::styled("─".repeat(widths[ci]), sep_style));
+                }
+                self.out.push(Line::from(sep));
+            }
+        }
+    }
+
+    /// Vertical/record fallback for narrow terminals and high column counts.
+    /// Every value is preserved; each record reads as `Header: value` rows.
+    fn render_stacked_rows(&mut self, rows: &[Vec<String>], header: usize, ncols: usize) {
+        let labels: Vec<String> = (0..ncols)
+            .map(|ci| {
+                let from_head = rows
+                    .get(0)
+                    .and_then(|r| r.get(ci))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_default();
+                if header > 0 && !from_head.is_empty() {
+                    from_head
+                } else {
+                    format!("field {}", ci + 1)
+                }
+            })
+            .collect();
+        let label_w = labels
+            .iter()
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(4)
+            .min(self.width.saturating_sub(10).max(4))
+            .max(4);
+
+        let body_start = header.min(rows.len());
+        let body: Vec<&Vec<String>> = rows.iter().skip(body_start).collect();
+        let head_style = Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD);
+        let body_style = theme::text();
+        let muted = theme::muted();
+
+        if body.is_empty() {
+            // Header-only table: render one record so nothing vanishes.
+            for (ci, label) in labels.iter().enumerate() {
+                let value = rows
+                    .get(0)
+                    .and_then(|r| r.get(ci))
+                    .cloned()
+                    .unwrap_or_default();
+                if value.trim().is_empty() || value.trim() == label.trim() {
+                    continue;
+                }
+                self.render_stacked_field(label, &value, label_w, head_style, body_style);
+            }
+            return;
+        }
+
+        for (ri, row) in body.iter().enumerate() {
+            if ri > 0 {
+                self.out.push(Line::from(""));
+            }
+            // Lead with the first meaningful column as a record marker.
+            let mut first_written = false;
+            for (ci, label) in labels.iter().enumerate() {
+                let value = row.get(ci).map(String::as_str).unwrap_or("").trim();
+                if value.is_empty() {
+                    continue;
+                }
+                let style = if first_written {
+                    body_style
+                } else {
+                    body_style
+                };
+                let prefix = if first_written { "  " } else { "▸ " };
+                self.render_stacked_field_with_prefix(
+                    prefix, label, value, label_w, head_style, style, muted,
+                );
+                first_written = true;
+            }
+        }
+    }
+
+    fn render_stacked_field(
+        &mut self,
+        label: &str,
+        value: &str,
+        label_w: usize,
+        label_style: Style,
+        value_style: Style,
+    ) {
+        self.render_stacked_field_with_prefix(
+            "▸ ",
+            label,
+            value,
+            label_w,
+            label_style,
+            value_style,
+            theme::muted(),
+        );
+    }
+
+    fn render_stacked_field_with_prefix(
+        &mut self,
+        prefix: &str,
+        label: &str,
+        value: &str,
+        label_w: usize,
+        label_style: Style,
+        value_style: Style,
+        muted: Style,
+    ) {
+        let prefix_w = prefix.chars().count();
+        let head_w = prefix_w + label_w + 2; // ": "
+        let value_w = self.width.saturating_sub(head_w).max(1);
+        let chunks = wrap_cell(value, value_w);
+        let label_cell = format!("{:<width$}", label, width = label_w);
+        for (i, chunk) in chunks.iter().enumerate() {
+            if i == 0 {
+                self.out.push(Line::from(vec![
+                    Span::styled(prefix.to_string(), muted),
+                    Span::styled(label_cell.clone(), label_style),
+                    Span::styled(": ", muted),
+                    Span::styled(chunk.clone(), value_style),
+                ]));
+            } else {
+                let indent = " ".repeat(prefix_w + label_w + 2);
+                self.out.push(Line::from(vec![
+                    Span::styled(indent, muted),
+                    Span::styled(chunk.clone(), value_style),
+                ]));
+            }
+        }
     }
 
     /// The current line as plain text (for table cells), then clear it.
@@ -352,6 +670,50 @@ impl Renderer {
         self.flush();
         self.out
     }
+}
+
+/// Wrap a table cell to `w` columns. Words wrap; overlong unbreakable tokens
+/// are hard-broken. Empty lines are preserved so multi-line cells stay stable.
+fn wrap_cell(text: &str, w: usize) -> Vec<String> {
+    let width = w.max(1);
+    let mut out: Vec<String> = Vec::new();
+    for raw in text.split('\n') {
+        let mut line = String::new();
+        for word in raw.split_whitespace() {
+            let mut rest: Vec<char> = word.chars().collect();
+            while !rest.is_empty() {
+                let room = if line.is_empty() {
+                    width
+                } else {
+                    width.saturating_sub(line.chars().count() + 1)
+                };
+                if room == 0 {
+                    out.push(std::mem::take(&mut line));
+                    continue;
+                }
+                if rest.len() <= room {
+                    if !line.is_empty() {
+                        line.push(' ');
+                    }
+                    line.extend(rest.drain(..));
+                } else if line.is_empty() {
+                    let chunk: String = rest.drain(..room).collect();
+                    out.push(chunk);
+                } else {
+                    out.push(std::mem::take(&mut line));
+                }
+            }
+        }
+        if !line.is_empty() {
+            out.push(line);
+        } else if raw.trim().is_empty() {
+            out.push(String::new());
+        }
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
 }
 
 /// Word-wrap a single `Line` into `width`-limited lines, preserving span styles
@@ -568,6 +930,45 @@ mod tests {
     }
 
     #[test]
+    fn pipe_table_columns_align() {
+        let md = "| Name | Qty |\n| --- | --- |\n| alpha | 1 |\n| beta | 22 |\n";
+        let lines = render(md, 40);
+        let strs = text_lines(&lines);
+        let rows: Vec<&String> = strs.iter().filter(|s| s.contains('│')).collect();
+        assert_eq!(rows.len(), 3, "header + 2 body rows: {:?}", strs);
+        assert!(
+            strs.iter().any(|s| s.contains('┼')),
+            "header rule: {:?}",
+            strs
+        );
+        let pos: Vec<usize> = rows
+            .iter()
+            .map(|s| s.chars().position(|c| c == '│').unwrap_or(usize::MAX))
+            .collect();
+        assert!(
+            pos.windows(2).all(|w| w[0] == w[1]),
+            "columns aligned: {:?}",
+            rows
+        );
+        assert!(rows[0].contains("Name") && rows[0].contains("Qty"));
+        assert!(rows[1].contains("alpha") && rows[2].contains("beta"));
+    }
+
+    #[test]
+    fn pipe_table_fits_narrow_width() {
+        let md = format!(
+            "| {} | {} |\n| --- | --- |\n| {} | {} |\n",
+            "a".repeat(20),
+            "b".repeat(20),
+            "c",
+            "d"
+        );
+        for line in render(&md, 30) {
+            assert!(line.width() <= 30, "table line width {}", line.width());
+        }
+    }
+
+    #[test]
     fn gap_after_list_before_paragraph() {
         let lines = render("- item\n\nnext paragraph\n", 40);
         let strs = text_lines(&lines);
@@ -607,10 +1008,81 @@ mod overflow_tests {
     }
 
     #[test]
+    fn fenced_code_is_syntax_highlighted() {
+        let md = "```rust\nfn main() { let x = \"hi\"; }\n```\n";
+        let lines = render(md, 80);
+        let line = lines
+            .iter()
+            .find(|l| l.to_string().contains("fn main"))
+            .expect("code line rendered");
+        assert!(
+            line.spans.len() > 1,
+            "multiple styled tokens: {:?}",
+            line.spans
+        );
+        let colors: std::collections::HashSet<_> = line.spans.iter().map(|s| s.style.fg).collect();
+        assert!(colors.len() > 1, "keywords/strings differ: {:?}", colors);
+        assert_eq!(line.to_string().trim(), "fn main() { let x = \"hi\"; }");
+    }
+
+    #[test]
+    fn unknown_code_language_still_renders() {
+        let md = "```not-a-language\nplain text line\n```\n";
+        let lines = render(md, 40);
+        assert!(lines
+            .iter()
+            .any(|l| l.to_string().contains("plain text line")));
+    }
+
+    #[test]
+    fn table_wraps_cells_instead_of_truncating() {
+        let md = "| Name | Description |\n| --- | --- |\n| alpha | This is a fairly long description that should wrap neatly into several lines |\n";
+        let lines = render(md, 40);
+        let strs: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        assert!(lines.iter().all(|l| l.width() <= 40));
+        let joined = strs.join(" ");
+        assert!(
+            joined.contains("description"),
+            "content preserved: {joined}"
+        );
+        assert!(joined.contains("neatly"), "tail preserved: {joined}");
+        assert!(!joined.contains('…'), "no ellipsis truncation: {joined}");
+        let rows: Vec<&String> = strs.iter().filter(|s| s.contains('│')).collect();
+        assert!(rows.len() > 2, "wrapped row: {strs:?}");
+        let pos: Vec<usize> = rows
+            .iter()
+            .map(|s| s.chars().position(|c| c == '│').unwrap_or(usize::MAX))
+            .collect();
+        assert!(
+            pos.windows(2).all(|w| w[0] == w[1]),
+            "columns stay aligned: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn table_stacks_into_records_when_too_many_columns() {
+        let md = "| H1 | H2 | H3 | H4 | H5 | H6 | H7 | H8 |\n|---|---|---|---|---|---|---|---|\n| v1 | v2 | v3 | v4 | v5 | v6 | v7 | v8 |\n";
+        let lines = render(md, 30);
+        assert!(lines.iter().all(|l| l.width() <= 30), "fits narrow width");
+        let strs: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let joined = strs.join("\n");
+        assert!(joined.contains('▸'), "record marker: {joined}");
+        assert!(joined.contains("H8"), "last header kept: {joined}");
+        assert!(joined.contains("v8"), "last value kept: {joined}");
+    }
+
+    #[test]
     fn wide_table_rows_fit_width() {
         let cells = vec!["a".repeat(15), "b".repeat(15), "c".repeat(15)];
-        let md = format!("| {} | {} | {} |\n", cells[0], cells[1], cells[2]);
+        let md = format!(
+            "| {} | {} | {} |\n| --- | --- | --- |\n| x | y | z |\n",
+            cells[0], cells[1], cells[2]
+        );
         let lines = render(&md, 30);
+        assert!(
+            lines.iter().any(|l| l.to_string().contains('│')),
+            "parsed as a table"
+        );
         for l in &lines {
             assert!(l.width() <= 30, "table line width {}", l.width());
         }

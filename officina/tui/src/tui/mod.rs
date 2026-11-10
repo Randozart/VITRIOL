@@ -1,4 +1,5 @@
 pub mod ansi;
+pub mod cache;
 pub mod layout;
 pub mod state;
 
@@ -6,7 +7,7 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -36,6 +37,8 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = AppState::default();
+    state.perm_mode = crate::envfile::read_permissions_mode();
+    state.tool_watchdog_secs = env_secs("OFFICINA_TOOL_WATCHDOG_SECS", state.tool_watchdog_secs);
     state.cwd = cwd;
     load_glimmer(&mut state);
     load_fire(&mut state);
@@ -348,7 +351,7 @@ async fn run_loop(
                     }
                     Some(WireMessage::Event(event)) => {
                         let auto_continue = handle_event(state, &event.event_type, &event.fields);
-                        if auto_continue {
+                        if auto_continue && state.queued_prompts.is_empty() {
                             // Guarded auto-continue (owner choice B, plan
                             // officina-compaction-continue-2026-09-03): a
                             // threshold compaction ends the run by design
@@ -364,6 +367,29 @@ async fn run_loop(
                                 .await;
                             state.notice = Some((
                                 "auto-continued after compaction".to_string(),
+                                "info".to_string(),
+                            ));
+                        }
+                        // Deliver a prompt that was typed while a tool was
+                        // still running. It was echoed already, so send it
+                        // directly rather than re-pushing the user transcript.
+                        // Only on agent_end: agent_settled for the previous
+                        // run can race a Prompt we just sent.
+                        if event.event_type == "agent_end"
+                            && !state.is_streaming
+                            && !state.queued_prompts.is_empty()
+                        {
+                            let message = state.queued_prompts.remove(0);
+                            let _ = bridge
+                                .request(RpcCommand::Prompt {
+                                    id: None,
+                                    message,
+                                    images: None,
+                                    streaming_behavior: None,
+                                })
+                                .await;
+                            state.notice = Some((
+                                "delivered queued message".to_string(),
                                 "info".to_string(),
                             ));
                         }
@@ -384,6 +410,7 @@ async fn run_loop(
             _ = tokio::time::sleep(delay) => {
                 // heartbeat redraw — keeps streaming indicator/gauges alive
                 // (90 ms on fresh screens so the watermark glimmer animates)
+                maybe_tool_watchdog(state, bridge).await;
             }
         }
     }
@@ -392,10 +419,23 @@ async fn run_loop(
 }
 
 async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
+    // Enhanced keyboard protocols report Press AND Release. Only Press/Repeat
+    // are actions; a stray Esc key-release used to look like a second abort
+    // (or dismiss a freshly opened dialog).
+    if key.kind == KeyEventKind::Release {
+        return;
+    }
     // 2026-09-03 keymap (owner: "just so you don't accidentally quit"):
-    // ^q and ^d REMOVED — the only quit paths are ^esc and /quit, both
-    // deliberate. ^c copies (selection, else last reply) — never quits.
-    // Esc aborts streaming but NEVER quits when idle.
+    // ^d REMOVED — the only quit paths are ^esc and /quit, both deliberate.
+    // ^c copies (selection, else last reply) — never quits. ^q now toggles
+    // the plan agent (2026-11-10). Esc aborts streaming but NEVER quits.
+
+    // Pending extension dialog owns every key (trust, permissions, plan
+    // questions, ask, rewind). It must be first or it can be shadowed.
+    if !state.dialogs.is_empty() {
+        handle_dialog_key(key, state, bridge).await;
+        return;
+    }
 
     // /help modal (F1) — read-only reference; any of esc/enter/q closes.
     if state.help_open {
@@ -487,6 +527,122 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /permissions modal captures arrows/enter.
+    if state.perm_modal_open {
+        let n = AppState::PERM_MODES.len();
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => state.perm_modal_open = false,
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.perm_modal_sel = state.perm_modal_sel.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if state.perm_modal_sel + 1 < n {
+                    state.perm_modal_sel += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let mode = AppState::PERM_MODES[state.perm_modal_sel].0;
+                state.set_permissions_mode(mode);
+                state.perm_modal_open = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // /cache manager captures keys while open: d deletes the highlighted
+    // entry, w wipes every non-protected entry, r re-scans.
+    if state.cache_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => state.cache_open = false,
+            KeyCode::Up => state.cache_sel = state.cache_sel.saturating_sub(1),
+            KeyCode::Down => {
+                if state.cache_sel + 1 < state.cache_entries.len() {
+                    state.cache_sel += 1;
+                }
+            }
+            KeyCode::Home => state.cache_sel = 0,
+            KeyCode::End => {
+                state.cache_sel = state.cache_entries.len().saturating_sub(1);
+            }
+            KeyCode::Char('d') | KeyCode::Delete => state.cache_delete_selected(),
+            // Destructive wipe needs Shift (accidental lowercase w would
+            // delete every regenerable multi-GB mirror).
+            KeyCode::Char('p') => state.cache_wipe(Some("7d")),
+            KeyCode::Char('W') => state.cache_wipe(None),
+            KeyCode::Char('r') => state.cache_refresh(),
+            _ => {}
+        }
+        return;
+    }
+
+    // /model picker captures typing while open: characters filter the list,
+    // arrows move, enter switches, esc clears the filter then closes.
+    if state.models_open {
+        match key.code {
+            KeyCode::Esc => {
+                if state.models_filter.is_empty() {
+                    state.models_open = false;
+                } else {
+                    state.models_filter.clear();
+                    state.models_sel = 0;
+                }
+            }
+            KeyCode::Up => state.models_sel = state.models_sel.saturating_sub(1),
+            KeyCode::Down => {
+                if state.models_sel + 1 < state.filtered_models().len() {
+                    state.models_sel += 1;
+                }
+            }
+            KeyCode::PageUp => state.models_sel = state.models_sel.saturating_sub(8),
+            KeyCode::PageDown => {
+                let len = state.filtered_models().len();
+                if len > 0 {
+                    state.models_sel = (state.models_sel + 8).min(len - 1);
+                }
+            }
+            KeyCode::Home => state.models_sel = 0,
+            KeyCode::End => {
+                let len = state.filtered_models().len();
+                if len > 0 {
+                    state.models_sel = len - 1;
+                }
+            }
+            KeyCode::Backspace => {
+                state.models_filter.pop();
+                state.models_sel = 0;
+            }
+            KeyCode::Enter => {
+                let picked = state
+                    .filtered_models()
+                    .get(state.models_sel)
+                    .map(|m| (*m).clone());
+                if let Some(model) = picked {
+                    let label = model.name.clone().unwrap_or_else(|| model.id.clone());
+                    state.models_open = false;
+                    let _ = bridge
+                        .request(RpcCommand::SetModel {
+                            id: None,
+                            provider: model.provider,
+                            model_id: model.id,
+                        })
+                        .await;
+                    state.notice = Some((format!("model → {label}"), "info".to_string()));
+                }
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                state.models_filter.push(c);
+                state.models_sel = 0;
+            }
+            _ => {}
+        }
+        state.models_clamp_selection();
+        return;
+    }
+
     // /resume modal captures navigation while open.
     if state.resume_open {
         match key.code {
@@ -528,7 +684,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         // desktops reserve it, /quit always works). MUST precede the plain
         // Esc arm or the guard never fires.
         KeyCode::Esc if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            state.should_quit = true;
+            graceful_quit(state, bridge).await;
         }
         KeyCode::Esc => {
             if state.is_streaming {
@@ -570,6 +726,48 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             state.tools_modal_open = !state.tools_modal_open;
             state.tools_modal_sel = 0;
         }
+        // Sidebar scrollback (owner request 2026-11-10): ^↑/^↓ or the wheel
+        // while the pointer is over the panel. Independent of chat scroll.
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.sidebar_scroll_up(3);
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.sidebar_scroll_down(3);
+        }
+        // Extension shortcuts in RPC mode are commands, not key events:
+        // ctrl+q -> /plan, F2 -> /deep-research (2026-11-10).
+        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if state.commands.iter().any(|c| c.name == "plan") {
+                let _ = bridge
+                    .request(RpcCommand::Prompt {
+                        id: None,
+                        message: "/plan".to_string(),
+                        images: None,
+                        streaming_behavior: None,
+                    })
+                    .await;
+            } else {
+                state.entries.push(state::ChatEntry::Diag(
+                    "plan-mode extension is not loaded".to_string(),
+                ));
+            }
+        }
+        KeyCode::F(2) => {
+            if state.commands.iter().any(|c| c.name == "deep-research") {
+                let _ = bridge
+                    .request(RpcCommand::Prompt {
+                        id: None,
+                        message: "/deep-research".to_string(),
+                        images: None,
+                        streaming_behavior: None,
+                    })
+                    .await;
+            } else {
+                state.entries.push(state::ChatEntry::Diag(
+                    "deep-research extension is not loaded".to_string(),
+                ));
+            }
+        }
         KeyCode::F(9) => {
             state.show_diag = !state.show_diag;
         }
@@ -584,7 +782,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if state.cand_sel_logic_open() {
                 state.complete_command();
             } else if let Some(next) = state.next_agent_mode() {
-                let m = format!("/mode {}", next);
+                let m = format!("/agent {}", next);
                 let _ = bridge
                     .request(RpcCommand::Prompt {
                         id: None,
@@ -609,8 +807,42 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         KeyCode::PageDown => {
             state.scroll_down(20);
         }
+        // Alt+Enter — queue a follow-up (pi follow_up) rather than steering
+        // the in-flight turn; idle it behaves like a normal send.
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::ALT) => {
+            let msg = std::mem::take(&mut state.input);
+            state.cursor = 0;
+            state.cand_sel = 0;
+            if msg.trim().is_empty() {
+                return;
+            }
+            if !msg.starts_with('/') {
+                state.push_user(msg.clone());
+            }
+            if state.is_streaming {
+                let _ = bridge
+                    .request(RpcCommand::FollowUp {
+                        id: None,
+                        message: msg,
+                    })
+                    .await;
+                state.notice = Some(("queued follow-up".to_string(), "info".to_string()));
+            } else {
+                let _ = bridge
+                    .request(RpcCommand::Prompt {
+                        id: None,
+                        message: msg,
+                        images: None,
+                        streaming_behavior: None,
+                    })
+                    .await;
+            }
+        }
         KeyCode::Enter => {
             // Resume modal open → handled above (modal key capture).
+            // Preserve the hovered popup row: completion must use it, and the
+            // old reset-to-zero here silently forced the first entry.
+            let selected_candidate = state.cand_sel;
             let msg = std::mem::take(&mut state.input);
             state.cursor = 0;
             state.cand_sel = 0;
@@ -696,10 +928,75 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.help_sel = 0;
                 return;
             }
+            // /cache — local KV disk cache manager (never RPC).
+            if msg == "/cache" || msg.starts_with("/cache ") {
+                let args = msg.strip_prefix("/cache").unwrap_or("").trim();
+                state.cache_command(args);
+                return;
+            }
+            // /rename, /export, /clone — RPC session controls.
+            if msg == "/rename" || msg.starts_with("/rename ") {
+                let name = msg.strip_prefix("/rename").unwrap_or("").trim().to_string();
+                if name.is_empty() {
+                    state
+                        .entries
+                        .push(state::ChatEntry::Diag("usage: /rename <name>".to_string()));
+                } else {
+                    let _ = bridge
+                        .request(RpcCommand::SetSessionName { id: None, name })
+                        .await;
+                    state.notice = Some(("session renamed".to_string(), "info".to_string()));
+                }
+                return;
+            }
+            if msg == "/export" || msg.starts_with("/export ") {
+                let path = msg.strip_prefix("/export").unwrap_or("").trim().to_string();
+                let _ = bridge
+                    .request(RpcCommand::ExportHtml {
+                        id: None,
+                        output_path: (!path.is_empty()).then_some(path),
+                    })
+                    .await;
+                state.notice = Some(("exporting session…".to_string(), "info".to_string()));
+                return;
+            }
+            if msg == "/clone" {
+                let _ = bridge.request(RpcCommand::Clone { id: None }).await;
+                state.notice = Some(("cloning session…".to_string(), "info".to_string()));
+                return;
+            }
+            // /sidebar — auto-hide on narrow terminals, or force show/hide.
+            if msg == "/sidebar" {
+                state.cycle_sidebar_mode();
+                return;
+            }
+            // /permissions and /yolo — local policy switches.
+            if msg == "/permissions" || msg == "/perms" {
+                state.open_permissions_modal();
+                return;
+            }
+            if msg == "/yolo" {
+                state.toggle_yolo();
+                return;
+            }
+            // /opencode — OpenCode session importer (writes a pi JSONL,
+            // then switches this TUI to it; never launches a nested
+            // frontend). NOT /import: session-panel owns /import for
+            // task/scratchpad state.
+            if msg == "/opencode" || msg.starts_with("/opencode ") {
+                let args = msg
+                    .strip_prefix("/opencode")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let cwd = state.cwd.clone();
+                import_opencode(state, bridge, &cwd, &args).await;
+                return;
+            }
             // Local fixed commands.
             match msg.as_str() {
                 "/quit" | "/q" => {
-                    state.should_quit = true;
+                    graceful_quit(state, bridge).await;
                     return;
                 }
                 "/diag" => {
@@ -722,6 +1019,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 if !exact && partial {
                     state.input = msg;
                     state.cursor = state.input.chars().count();
+                    state.cand_sel = selected_candidate;
                     state.complete_command();
                     state.cand_sel = 0;
                     return;
@@ -778,12 +1076,24 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 if echo {
                     state.push_user(msg.clone());
                 }
-                let _ = bridge
-                    .request(RpcCommand::Steer {
-                        id: None,
-                        message: msg,
-                    })
-                    .await;
+                if state.has_running_tool() {
+                    // Do not steer behind a tool that may be stuck: pi queues
+                    // the message in memory and never persists it. Deliver it
+                    // as a fresh Prompt once this turn settles (watchdog or
+                    // normal completion).
+                    state.queued_prompts.push(msg);
+                    state.notice = Some((
+                        "queued — delivered when the running tool settles".to_string(),
+                        "info".to_string(),
+                    ));
+                } else {
+                    let _ = bridge
+                        .request(RpcCommand::Steer {
+                            id: None,
+                            message: msg,
+                        })
+                        .await;
+                }
             } else {
                 if echo {
                     state.push_user(msg.clone());
@@ -852,16 +1162,384 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
     }
 }
 
+/// `/import [latest|<id>|list] [full]` — bridge to `scripts/opencode.mjs`.
+/// The importer converts the OpenCode SQLite session into a pi JSONL without
+/// launching anything (`--no-launch`), then we switch this TUI to it.
+async fn import_opencode(
+    state: &mut AppState,
+    bridge: &mut RpcBridge,
+    cwd: &std::path::Path,
+    args: &str,
+) {
+    if state.is_streaming {
+        state.entries.push(state::ChatEntry::Diag(
+            "import: finish/dissolve the current turn first".to_string(),
+        ));
+        return;
+    }
+    let Some(script) = bridge.officina_script("opencode.mjs") else {
+        state.entries.push(state::ChatEntry::Diag(
+            "import: opencode.mjs not found next to this Officina build".to_string(),
+        ));
+        return;
+    };
+
+    let mut parts = args.split_whitespace();
+    let sub = parts.next().unwrap_or("latest");
+    let listing = sub == "list";
+    let full = args
+        .split_whitespace()
+        .any(|a| a == "--full" || a == "full");
+    let target = sub.to_string();
+    let cwd_display = cwd.display().to_string();
+    let cwd = cwd.to_path_buf();
+
+    let run = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("node");
+        cmd.arg(&script);
+        if listing {
+            cmd.args(["list", "--json"]);
+        } else {
+            cmd.arg("import");
+            cmd.arg(&target);
+            cmd.args(["--json", "--no-launch"]);
+            if full {
+                cmd.arg("--full");
+            }
+        }
+        cmd.current_dir(&cwd);
+        cmd.output()
+    })
+    .await;
+
+    let out = match run {
+        Ok(Ok(out)) if out.status.success() => out,
+        Ok(Ok(out)) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "import failed: {}",
+                if err.is_empty() {
+                    format!("exit {:?}", out.status.code())
+                } else {
+                    err
+                }
+            )));
+            return;
+        }
+        Ok(Err(e)) => {
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "import failed to run node: {e}"
+            )));
+            return;
+        }
+        Err(e) => {
+            state
+                .entries
+                .push(state::ChatEntry::Diag(format!("import task failed: {e}")));
+            return;
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let Ok(data) = serde_json::from_str::<serde_json::Value>(&stdout) else {
+        state.entries.push(state::ChatEntry::Diag(
+            "import: importer returned no JSON report".to_string(),
+        ));
+        return;
+    };
+
+    if listing {
+        let Some(sessions) = data.as_array() else {
+            state.entries.push(state::ChatEntry::Diag(
+                "import list: unexpected report shape".to_string(),
+            ));
+            return;
+        };
+        if sessions.is_empty() {
+            state.entries.push(state::ChatEntry::Diag(
+                "import: no OpenCode sessions for this project".to_string(),
+            ));
+            return;
+        }
+        state.entries.push(state::ChatEntry::Diag(format!(
+            "OpenCode sessions for {cwd_display}:"
+        )));
+        for session in sessions.iter().take(30) {
+            let id = session.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let title = session.get("title").and_then(|v| v.as_str()).unwrap_or("");
+            let updated = session
+                .get("updated")
+                .and_then(|v| v.as_i64())
+                .map(|ms| {
+                    let secs = ms / 1000;
+                    let days = (chrono_like_now().saturating_sub(secs)) / 86_400;
+                    format!("{days}d ago")
+                })
+                .unwrap_or_default();
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "  {id}  {title}  {updated}"
+            )));
+        }
+        state.entries.push(state::ChatEntry::Diag(
+            "import with: /import <id>   (/import latest for the newest)".to_string(),
+        ));
+        return;
+    }
+
+    let Some(path) = data.get("path").and_then(|v| v.as_str()) else {
+        state.entries.push(state::ChatEntry::Diag(
+            "import: report has no session path".to_string(),
+        ));
+        return;
+    };
+    let title = data
+        .get("source")
+        .and_then(|s| s.get("title"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("OpenCode session");
+    state.entries.push(state::ChatEntry::Diag(format!(
+        "imported {title} -> {}",
+        path
+    )));
+    let _ = bridge
+        .request(RpcCommand::SwitchSession {
+            id: None,
+            session_path: path.to_string(),
+        })
+        .await;
+}
+
+/// Seconds since the Unix epoch, without a chrono dependency.
+fn chrono_like_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Env override for a seconds knob; invalid/missing falls back to `default`.
+fn env_secs(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+/// Ask pi to abort an in-flight turn and wait briefly for it to flush its
+/// session before the TUI exits. Killing the child mid-tool is what created
+/// dangling tool calls and corrupted long sessions.
+async fn graceful_quit(state: &mut AppState, bridge: &mut RpcBridge) {
+    // Resolve extension dialogs before abort. A pending confirm/select is a
+    // promise inside pi's beforeToolCall; leaving it unanswered while the
+    // child is torn down is how dangling tool calls were born.
+    cancel_pending_dialogs(state, bridge).await;
+    if state.is_streaming {
+        let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+        for _ in 0..30 {
+            if !state.is_streaming {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+    state.should_quit = true;
+}
+
+/// Answer every queued extension dialog with `cancelled: true`.
+async fn cancel_pending_dialogs(state: &mut AppState, bridge: &mut RpcBridge) {
+    while let Some(dialog) = state.dialogs.pop_front() {
+        let payload = dialog_cancelled(&dialog.id);
+        let _ = bridge.send_raw(&payload.to_string()).await;
+    }
+}
+
+/// Tool-call stall watchdog. A tool with no `tool_execution_end` leaves
+/// `is_streaming` true forever, which turns later user prompts into RPC
+/// `Steer` messages queued behind a turn that will never finish. After the
+/// threshold, cancel any blocking dialog, abort once, and (if the abort also
+/// fails to settle) surface an explicit restart hint.
+async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
+    if state.tool_watchdog_secs == 0 {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let mut stalled = false;
+
+    // Stage 0: an assistant turn announced a tool call, but pi never emitted
+    // `tool_execution_start`. That is the exact "persisted tool call, nothing
+    // happened" failure; it has no running tool entry to age out.
+    let start_limit = std::time::Duration::from_secs(state.tool_watchdog_secs.min(60).max(15));
+    if let Some((id, age)) = state.oldest_expected_tool_call() {
+        if age >= start_limit && state.watchdog_fired.insert(format!("expected:{id}")) {
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "harness watchdog: tool call {} never started after {}s — cancelling and aborting the turn",
+                id.chars().take(8).collect::<String>(),
+                age.as_secs()
+            )));
+            stalled = true;
+        }
+    }
+
+    if let Some((key, name, age, timeout_s)) = state.oldest_running_tool() {
+        // A declared tool timeout is authoritative: wait it out plus grace.
+        let base = std::time::Duration::from_secs(state.tool_watchdog_secs);
+        let limit = timeout_s
+            .map(|s| std::time::Duration::from_secs(s.saturating_add(60)))
+            .map_or(base, |t| t.max(base));
+        if age >= limit && state.watchdog_fired.insert(key) {
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "harness watchdog: {name} idle {}s with no result — cancelling and aborting the turn",
+                age.as_secs()
+            )));
+            stalled = true;
+        }
+    } else if state.expected_tool_calls.is_empty() {
+        state.abort_deadline = None;
+    }
+
+    if stalled {
+        cancel_pending_dialogs(state, bridge).await;
+        let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+        state.abort_deadline = Some(now + std::time::Duration::from_secs(10));
+    }
+
+    if state.abort_deadline.is_some_and(|deadline| now >= deadline) {
+        state.abort_deadline = None;
+        state.entries.push(state::ChatEntry::Diag(
+            "harness watchdog: abort did not settle (pi child may be stuck). \
+             Session is preserved; /quit then relaunch Officina to repair it."
+                .to_string(),
+        ));
+    }
+}
+
+/// Is the pointer inside the last-rendered sidebar panel?
+fn over_sidebar(state: &AppState, column: u16, row: u16) -> bool {
+    state.last_sidebar_area.is_some_and(|a| {
+        column >= a.x && column < a.x + a.width && row >= a.y && row < a.y + a.height
+    })
+}
+
+async fn handle_dialog_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
+    let Some(dialog) = state.dialogs.front_mut() else {
+        return;
+    };
+    let id = dialog.id.clone();
+    let kind = dialog.kind;
+    let mut reply: Option<serde_json::Value> = None;
+
+    match kind {
+        state::DialogKind::Confirm => match key.code {
+            KeyCode::Esc => reply = Some(dialog_cancelled(&id)),
+            KeyCode::Char('y') | KeyCode::Char('Y') => reply = Some(dialog_confirmed(&id, true)),
+            KeyCode::Char('n') | KeyCode::Char('N') => reply = Some(dialog_confirmed(&id, false)),
+            KeyCode::Left | KeyCode::Right | KeyCode::Tab => {
+                dialog.selected = if dialog.selected == 0 { 1 } else { 0 };
+            }
+            KeyCode::Enter => reply = Some(dialog_confirmed(&id, dialog.selected == 0)),
+            _ => {}
+        },
+        state::DialogKind::Select => match key.code {
+            KeyCode::Esc => reply = Some(dialog_cancelled(&id)),
+            KeyCode::Up | KeyCode::Char('k') => dialog.selected = dialog.selected.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => {
+                if dialog.selected + 1 < dialog.options.len() {
+                    dialog.selected += 1;
+                }
+            }
+            KeyCode::PageUp => dialog.selected = dialog.selected.saturating_sub(8),
+            KeyCode::PageDown => {
+                if !dialog.options.is_empty() {
+                    dialog.selected = (dialog.selected + 8).min(dialog.options.len() - 1);
+                }
+            }
+            KeyCode::Home => dialog.selected = 0,
+            KeyCode::End => dialog.selected = dialog.options.len().saturating_sub(1),
+            KeyCode::Enter => {
+                if let Some(value) = dialog.options.get(dialog.selected).cloned() {
+                    reply = Some(dialog_value(&id, value));
+                }
+            }
+            _ => {}
+        },
+        state::DialogKind::Input | state::DialogKind::Editor => {
+            let is_editor = kind == state::DialogKind::Editor;
+            match key.code {
+                KeyCode::Esc => reply = Some(dialog_cancelled(&id)),
+                KeyCode::Enter
+                    if !is_editor
+                        || key.modifiers.contains(KeyModifiers::ALT)
+                        || key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    reply = Some(dialog_value(&id, dialog.input.clone()));
+                }
+                KeyCode::Enter => dialog.insert_char('\n'),
+                KeyCode::Backspace => dialog.backspace(),
+                KeyCode::Delete => dialog.delete(),
+                KeyCode::Left => dialog.move_left(),
+                KeyCode::Right => dialog.move_right(),
+                KeyCode::Home => dialog.cursor = 0,
+                KeyCode::End => dialog.cursor = dialog.input.chars().count(),
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    dialog.input.clear();
+                    dialog.cursor = 0;
+                }
+                KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    while dialog.cursor > 0 {
+                        let prev = dialog.input.chars().nth(dialog.cursor - 1);
+                        dialog.backspace();
+                        if prev.is_some_and(char::is_whitespace) {
+                            break;
+                        }
+                    }
+                }
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    dialog.insert_char(c)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(payload) = reply {
+        state.dialogs.pop_front();
+        let _ = bridge.send_raw(&payload.to_string()).await;
+    }
+}
+
+fn dialog_cancelled(id: &str) -> serde_json::Value {
+    serde_json::json!({ "type": "extension_ui_response", "id": id, "cancelled": true })
+}
+
+fn dialog_confirmed(id: &str, confirmed: bool) -> serde_json::Value {
+    serde_json::json!({ "type": "extension_ui_response", "id": id, "confirmed": confirmed })
+}
+
+fn dialog_value(id: &str, value: String) -> serde_json::Value {
+    serde_json::json!({ "type": "extension_ui_response", "id": id, "value": value })
+}
+
 async fn handle_mouse(m: crossterm::event::MouseEvent, state: &mut AppState) {
     use crossterm::event::{MouseButton, MouseEventKind};
     match m.kind {
         MouseEventKind::ScrollUp => {
             state.clear_selection();
-            state.scroll_up(3);
+            if over_sidebar(state, m.column, m.row) {
+                state.sidebar_scroll_up(3);
+            } else {
+                state.scroll_up(3);
+            }
         }
         MouseEventKind::ScrollDown => {
             state.clear_selection();
-            state.scroll_down(3);
+            if over_sidebar(state, m.column, m.row) {
+                state.sidebar_scroll_down(3);
+            } else {
+                state.scroll_down(3);
+            }
         }
         // Text selection (owner request 2026-09-03): left-drag across the
         // transcript anchors a row range; ^c copies it. Plain click clears.
@@ -1131,6 +1809,56 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                 state.commands = parsed;
             }
         }
+        Some("get_available_models") => {
+            let models: Vec<crate::rpc::protocol::Model> = data
+                .get("models")
+                .and_then(|m| m.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            if models.is_empty() {
+                state.entries.push(state::ChatEntry::Diag(
+                    "no models available — check provider/auth".to_string(),
+                ));
+                state.models_open = false;
+                return false;
+            }
+            // Start on the currently selected row so Enter is a no-op unless
+            // the user moves.
+            let current = state
+                .model
+                .as_ref()
+                .map(|m| (m.provider.clone(), m.id.clone()));
+            state.models_sel = current
+                .and_then(|(provider, id)| {
+                    models
+                        .iter()
+                        .position(|m| m.provider == provider && m.id == id)
+                })
+                .unwrap_or(0);
+            state.models = models;
+            state.models_filter.clear();
+            state.models_sel = state.models_sel.min(state.models.len().saturating_sub(1));
+            state.models_open = true;
+        }
+        Some("export_html") => {
+            let path = data
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("session.html");
+            state.notice = Some((format!("exported → {path}"), "info".to_string()));
+        }
+        Some("set_session_name") => {
+            state.notice = Some(("session renamed".to_string(), "info".to_string()));
+        }
+        Some("set_model") => {
+            if let Ok(model) = serde_json::from_value::<crate::rpc::protocol::Model>(data.clone()) {
+                state.model = Some(model);
+            }
+        }
         _ => {}
     }
     false
@@ -1145,9 +1873,28 @@ const CONTINUE_PROMPT: &str = "Continue the open work — pick up exactly where 
 /// the compaction auto-continue (see CONTINUE_PROMPT).
 fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Value) -> bool {
     match event_type {
-        "agent_start" => state.is_streaming = true,
+        "agent_start" => {
+            state.is_streaming = true;
+            state.watchdog_fired.clear();
+            state.abort_deadline = None;
+            state.expected_tool_calls.clear();
+        }
         "agent_end" | "agent_settled" => {
             state.is_streaming = false;
+            state.abort_deadline = None;
+            let expected = state.expected_tool_calls.len();
+            state.expected_tool_calls.clear();
+            // A turn that ends with a running tool means pi never emitted a
+            // tool_execution_end (abort while the tool or its beforeToolCall
+            // was pending). Close the spinner honestly; startup session
+            // repair fixes the persisted dangling call on next launch.
+            let abandoned = state.abandon_running_tools("turn ended before tool result");
+            if abandoned > 0 || expected > 0 {
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "harness: {} tool call(s) ended without a result — session repair will run on next launch",
+                    abandoned + expected
+                )));
+            }
         }
         "message_update" => {
             if let Some(ae) = fields.get("assistantMessageEvent") {
@@ -1176,6 +1923,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 .to_string();
             if role == "assistant" {
                 if let Some(content) = msg.and_then(|m| m.get("content")) {
+                    state.note_expected_tool_calls(content);
                     let text = content_text(content);
                     let have_streamed = matches!(&state.entries.last(), Some(e)
                         if matches!(e, state::ChatEntry::Assistant(t) if !t.is_empty())
@@ -1196,6 +1944,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 .get("args")
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
+            state.note_tool_started(tool_call_id);
             state.tool_start(tool_call_id, name, &args);
         }
         "tool_execution_update" => {
@@ -1264,6 +2013,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                         .map(String::from)
                 })
                 .unwrap_or_default();
+            state.note_tool_finished(tool_call_id);
             state.tool_end(tool_call_id, name, &result_text, is_err);
         }
         "extension_error" => {
@@ -1398,7 +2148,11 @@ async fn handle_ui_request(
                         .collect()
                 })
                 .unwrap_or_default();
-            state.set_widget(key, lines);
+            let placement = fields
+                .get("widgetPlacement")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            state.set_widget_placed(key, lines, placement);
         }
         "setTitle" => {
             if let Some(t) = fields.get("title").and_then(|v| v.as_str()) {
@@ -1433,17 +2187,69 @@ async fn handle_ui_request(
             }
         }
         "select" | "confirm" | "input" | "editor" => {
-            // Interactive dialogs not yet supported — cancel so the agent
-            // never hangs waiting for a response that would never come.
-            if let Some(id) = fields.get("id").and_then(|v| v.as_str()) {
-                let payload = serde_json::json!({
-                    "type": "extension_ui_response", "id": id, "cancelled": true
-                });
-                let _ = bridge.send_raw(&payload.to_string()).await;
-                state.entries.push(state::ChatEntry::Diag(format!(
-                    "{} dialog auto-cancelled (unsupported)",
-                    method
-                )));
+            // Extension dialogs are real modals in the Rust TUI (2026-11-10).
+            // Queue them; the response is sent when the user decides.
+            let id = fields
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if id.is_empty() {
+                return;
+            }
+            let title = fields
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or(method)
+                .to_string();
+            let message = fields
+                .get("message")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            match method {
+                "select" => {
+                    let options: Vec<String> = fields
+                        .get("options")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|v| v.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if options.is_empty() {
+                        let payload = serde_json::json!({
+                            "type": "extension_ui_response", "id": id, "cancelled": true
+                        });
+                        let _ = bridge.send_raw(&payload.to_string()).await;
+                    } else {
+                        state
+                            .dialogs
+                            .push_back(state::Dialog::select(id, title, options));
+                    }
+                }
+                "confirm" => {
+                    state
+                        .dialogs
+                        .push_back(state::Dialog::confirm(id, title, message));
+                }
+                _ => {
+                    // `placeholder` is a hint, not content — only `prefill`
+                    // (editor) seeds the value.
+                    let prefill = fields
+                        .get("prefill")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let kind = if method == "editor" {
+                        state::DialogKind::Editor
+                    } else {
+                        state::DialogKind::Input
+                    };
+                    state
+                        .dialogs
+                        .push_back(state::Dialog::input(id, kind, title, prefill));
+                }
             }
         }
         _ => {}
@@ -1453,6 +2259,40 @@ async fn handle_ui_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialog_input_edits_at_cursor() {
+        let mut d = state::Dialog::input(
+            "id".into(),
+            state::DialogKind::Input,
+            "title".into(),
+            "abc".into(),
+        );
+        d.move_left();
+        d.insert_char('X');
+        assert_eq!(d.input, "abXc");
+        assert_eq!(d.cursor, 3);
+        d.backspace();
+        assert_eq!(d.input, "abc");
+        d.delete();
+        assert_eq!(d.input, "ab");
+    }
+
+    #[test]
+    fn dialog_responses_match_rpc_payloads() {
+        assert_eq!(
+            dialog_cancelled("x"),
+            serde_json::json!({"type":"extension_ui_response","id":"x","cancelled":true})
+        );
+        assert_eq!(
+            dialog_confirmed("x", false),
+            serde_json::json!({"type":"extension_ui_response","id":"x","confirmed":false})
+        );
+        assert_eq!(
+            dialog_value("x", "Allow".into()),
+            serde_json::json!({"type":"extension_ui_response","id":"x","value":"Allow"})
+        );
+    }
 
     #[test]
     fn b64_rfc4648_vectors() {
@@ -1515,6 +2355,68 @@ mod tests {
         s.entries.push(state::ChatEntry::User("hi".into()));
         s.entries.push(state::ChatEntry::Assistant("second".into()));
         assert_eq!(s.last_assistant().as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn model_command_opens_picker_or_switches_directly() {
+        let mut s = AppState::default();
+        assert!(matches!(
+            s.local_dispatch("/model"),
+            Some(RpcCommand::GetAvailableModels { .. })
+        ));
+        match s.local_dispatch("/model zai/glm-4.6") {
+            Some(RpcCommand::SetModel {
+                provider, model_id, ..
+            }) => {
+                assert_eq!(provider, "zai");
+                assert_eq!(model_id, "glm-4.6");
+            }
+            other => panic!("expected SetModel, got {other:?}"),
+        }
+        assert!(s.local_dispatch("/model bogus").is_none());
+        assert_eq!(s.entries.len(), 1, "bad form gets one diagnostic");
+    }
+
+    #[test]
+    fn available_models_response_opens_picker_on_current_model() {
+        let mut s = AppState::default();
+        s.model = Some(
+            serde_json::from_value(serde_json::json!({"id": "b", "provider": "p", "name": "B"}))
+                .unwrap(),
+        );
+        let resp: crate::rpc::protocol::RpcResponse = serde_json::from_value(serde_json::json!({
+            "type": "response",
+            "command": "get_available_models",
+            "success": true,
+            "data": { "models": [
+                { "id": "a", "provider": "p", "name": "A" },
+                { "id": "b", "provider": "p", "name": "B" }
+            ]}
+        }))
+        .unwrap();
+        assert!(!handle_response(&mut s, &resp));
+        assert!(s.models_open);
+        assert_eq!(s.models.len(), 2);
+        assert_eq!(s.models_sel, 1, "starts on the active model");
+        assert!(s.models_filter.is_empty());
+    }
+
+    #[test]
+    fn model_picker_filter_and_clamp() {
+        let mut s = AppState::default();
+        s.models = serde_json::from_value(serde_json::json!([
+            {"id": "glm-4.6", "provider": "zai", "name": "GLM 4.6", "contextWindow": 200000},
+            {"id": "qwen3.8", "provider": "llamacpp", "name": "Qwen 3.8"},
+            {"id": "glm-5-air", "provider": "zai", "name": "GLM 5 Air"}
+        ]))
+        .unwrap();
+        s.models_filter = "glm".into();
+        assert_eq!(s.filtered_models().len(), 2);
+        s.models_filter = "zai glm-5".into();
+        assert_eq!(s.filtered_models().len(), 1);
+        s.models_sel = 99;
+        s.models_clamp_selection();
+        assert_eq!(s.models_sel, 0, "clamped to filtered list");
     }
 }
 

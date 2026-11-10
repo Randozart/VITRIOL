@@ -113,6 +113,24 @@ pub enum RpcCommand {
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },
+    #[serde(rename = "set_session_name")]
+    SetSessionName {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        name: String,
+    },
+    #[serde(rename = "export_html")]
+    ExportHtml {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(rename = "outputPath", skip_serializing_if = "Option::is_none")]
+        output_path: Option<String>,
+    },
+    #[serde(rename = "clone")]
+    Clone {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
     // Extension UI response (client → agent)
     #[serde(rename = "extension_ui_response")]
     ExtensionUiResponse {
@@ -158,7 +176,10 @@ impl RpcCommand {
             | Self::CycleThinkingLevel { id }
             | Self::Compact { id, .. }
             | Self::Bash { id, .. }
-            | Self::GetCommands { id } => id.as_deref(),
+            | Self::GetCommands { id }
+            | Self::SetSessionName { id, .. }
+            | Self::ExportHtml { id, .. }
+            | Self::Clone { id } => id.as_deref(),
             Self::ExtensionUiResponse { id, .. } => Some(id),
         }
     }

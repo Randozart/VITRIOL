@@ -26,8 +26,8 @@ if [[ -z "$HITS" ]]; then ok "no live external project paths"; else bad "externa
 echo "── 2. officina tests + typecheck ──"
 if (cd "$HERE" && npx vitest --run .pi/extensions >/dev/null 2>&1); then ok "vitest extensions"; else bad "vitest extensions"; fi
 if (cd "$HERE" && npm run typecheck >/dev/null 2>&1); then ok "typecheck"; else bad "typecheck"; fi
-if (cd "$HERE" && npx vitest --run scripts/caduceus-lib.test.mjs scripts/caduceus-accounts-lib.test.mjs scripts/caduceus-oauth-lib.test.mjs scripts/opencode-import-lib.test.mjs scripts/cache-report-lib.test.mjs scripts/fiat-lux-lib.test.mjs >/dev/null 2>&1); then ok "caduceus cli helpers"; else bad "caduceus cli helpers"; fi
-for f in caduceus.mjs caduceus-lib.mjs caduceus-accounts-lib.mjs caduceus-oauth-lib.mjs cache-report.mjs cache-report-lib.mjs settings-tui.mjs opencode.mjs opencode-import-lib.mjs fiat.mjs fiat-lux-lib.mjs; do
+if (cd "$HERE" && npx vitest --run scripts/caduceus-lib.test.mjs scripts/caduceus-accounts-lib.test.mjs scripts/caduceus-oauth-lib.test.mjs scripts/opencode-import-lib.test.mjs scripts/cache-report-lib.test.mjs scripts/fiat-lux-lib.test.mjs scripts/config-schema.test.mjs >/dev/null 2>&1); then ok "caduceus cli helpers"; else bad "caduceus cli helpers"; fi
+for f in caduceus.mjs caduceus-lib.mjs caduceus-accounts-lib.mjs caduceus-oauth-lib.mjs cache-report.mjs cache-report-lib.mjs settings-tui.mjs opencode.mjs opencode-import-lib.mjs fiat.mjs fiat-lux-lib.mjs config-schema.mjs config-drift.mjs; do
   if node --check "$HERE/scripts/$f" >/dev/null 2>&1; then ok "caduceus cli syntax: $f"; else bad "caduceus cli syntax: $f"; fi
 done
 
@@ -73,6 +73,23 @@ echo "── 3b. provenance headers (docs/PROVENANCE.md registry) ──"
 if [[ -f "${HOME}/.config/trismegistus/config.yaml" ]]; then ok "unified config present"; else bad "unified config missing"; fi
 KB="${HOME}/.pi/agent/keybindings.json"
 if [[ -f "$KB" ]] && grep -q '"tui.input.tab"' "$KB"; then ok "TAB unbound (no conflict banner)"; else skip "keybindings.json not written yet (first officina run writes it)"; fi
+
+  echo "── 4b. harness config schema + drift (verification T0.3) ──"
+  # The MTP post-mortem failure mode: a config edit silently drops a
+  # behaviour-bearing key and nothing notices for weeks. Missing REQUIRED
+  # keys fail the gate; a fingerprint change since the last bless is
+  # reported (it may be intentional — re-bless after reviewing).
+  if node "$HERE/scripts/config-drift.mjs" >/tmp/officina-config-drift.$$ 2>&1; then
+    ok "config schema + no drift"
+  else
+    rc=$?
+    if [[ $rc -eq 2 ]]; then
+      bad "config drift since last bless (review, then: node scripts/config-drift.mjs --bless)"
+    else
+      bad "config schema violation:"; sed -n '1,12p' /tmp/officina-config-drift.$$ | sed 's/^/        /'
+    fi
+  fi
+  rm -f /tmp/officina-config-drift.$$
 
 if [[ "${1:-}" == "--live" ]]; then
   echo "── 5. live engine checks ──"

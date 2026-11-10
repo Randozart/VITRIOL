@@ -1,5 +1,19 @@
 # Catching Officina bugs earlier — verification strategy (2026-11-10)
 
+Status: Tier 0 implemented and committed 2026-11-10 (execution log with
+deviations: `verification-rollout-2026-11-10.md` — read that first for the
+as-built state). Tier 1 (properties + Kani) and Tier 3 (invariants-in-plans)
+pending. Highlights of what T0 already caught:
+
+- **13 unmodelled pi RPC commands** (incl. `get_tree`, `fork`, `abort_bash`)
+  — the goldens' d.ts parser fails the build on upstream drift now.
+- **Phase misclassification** during compaction and **double `agent_end`**
+  false alarms — caught by the transition-table wiring tests before they
+  shipped.
+- **False schema warnings** on first live run (pi's `modelOverrides` are
+  flat `"provider/model"` keys, not nested) — caught by running the
+  drift detector against the real `~/.pi/agent/settings.json`.
+
 ## Findings: what the bug classes actually are
 
 From the post-mortems, AGENTS.md contracts, and the 2026-11-10 wave:

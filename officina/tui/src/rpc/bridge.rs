@@ -284,30 +284,8 @@ impl RpcBridge {
         let id = format!("req_{}", self.next_id.fetch_add(1, Ordering::Relaxed));
 
         // Inject the correlation ID into the command
-        match &mut cmd {
-            RpcCommand::Prompt { id: ref mut i, .. }
-            | RpcCommand::Steer { id: ref mut i, .. }
-            | RpcCommand::FollowUp { id: ref mut i, .. }
-            | RpcCommand::Abort { id: ref mut i }
-            | RpcCommand::NewSession { id: ref mut i, .. }
-            | RpcCommand::SwitchSession { id: ref mut i, .. }
-            | RpcCommand::GetState { id: ref mut i }
-            | RpcCommand::GetMessages { id: ref mut i }
-            | RpcCommand::GetSessionStats { id: ref mut i }
-            | RpcCommand::SetModel { id: ref mut i, .. }
-            | RpcCommand::CycleModel { id: ref mut i }
-            | RpcCommand::GetAvailableModels { id: ref mut i }
-            | RpcCommand::GetCommands { id: ref mut i }
-            | RpcCommand::SetThinkingLevel { id: ref mut i, .. }
-            | RpcCommand::CycleThinkingLevel { id: ref mut i }
-            | RpcCommand::Compact { id: ref mut i, .. }
-            | RpcCommand::Bash { id: ref mut i, .. }
-            | RpcCommand::SetSessionName { id: ref mut i, .. }
-            | RpcCommand::ExportHtml { id: ref mut i, .. }
-            | RpcCommand::Clone { id: ref mut i } => {
-                *i = Some(id.clone());
-            }
-            RpcCommand::ExtensionUiResponse { .. } => {} // ID already set
+        if let Some(slot) = cmd.id_mut() {
+            *slot = Some(id.clone());
         }
 
         let json = serde_json::to_string(&cmd)?;

@@ -827,6 +827,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     .request(RpcCommand::FollowUp {
                         id: None,
                         message: msg,
+                        images: None,
                     })
                     .await;
                 state.notice = Some(("queued follow-up".to_string(), "info".to_string()));
@@ -1095,6 +1096,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                         .request(RpcCommand::Steer {
                             id: None,
                             message: msg,
+                            images: None,
                         })
                         .await;
                 }

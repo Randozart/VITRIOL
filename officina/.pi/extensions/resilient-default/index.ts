@@ -1,0 +1,430 @@
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ModelRoute,
+  ModelRouteRequest,
+} from "@earendil-works/pi-coding-agent";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
+import { classifyTurn } from "../auto-route/classifier.ts";
+import { configFromEnv, decideTier, parseModelSpec, type Tier } from "../adaptive-router/overflow.ts";
+import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
+import {
+  budgetSummaryText,
+  canSpendCloud,
+} from "../_shared/budget.ts";
+import {
+  cooldownRemaining,
+  cooling as healthCooling,
+  recordFailure,
+  recordRetryAfter,
+  recordSuccess,
+} from "../_shared/provider-health.ts";
+import {
+  lastRouteEntry,
+  recordRoute,
+  todaySummary,
+  type RouteLedgerEntry,
+} from "../_shared/route-ledger.ts";
+import {
+  profileAllowsCloud,
+  readProfile,
+  sortIdsForProfile,
+  writeProfile,
+  type RoutingProfile,
+} from "../_shared/profiles.ts";
+
+// resilient-default — the always-selectable virtual model `officina/lapis`
+// ("Lapis Occultus"). It is keyless and therefore present in /model even when
+// the VITRIOL engine or the Caduceus gateway is down; each request routes to a
+// physical model:
+//   user turn   local if up/idle, free/cloud if busy, cloud failover if down
+//   continuation stick to the previous physical model (tool-loop cache)
+//   retry       local failure -> cloud; cloud failure -> next candidate/local
+//   direct      local if up, else cloud
+// Sensitive/confidential turns never leave local.
+//
+// The virtual model is the default; adaptive-router skips virtual selections.
+
+type Model = NonNullable<ExtensionContext["model"]>;
+
+interface LapisState {
+  tier: Tier;
+  switches: number;
+  turnsOnTier: number;
+  failoverActive: boolean;
+}
+
+interface LastDecision {
+  reason: string;
+  tier: Tier;
+  provider: string;
+  model: string;
+  profile: RoutingProfile;
+  localState: "up" | "down" | "busy" | "unknown";
+  startedAt: number;
+}
+
+const CLOUD_RESERVE_TOKENS = 16_384;
+const CATALOG = join(homedir(), ".vitriol", "officina", "caduceus-models.json");
+const DEFAULT_FALLBACKS = [
+  "caduceus/opencode-go/deepseek-v4.1-flash",
+  "caduceus/opencode-go/qwen3.8-flash",
+];
+
+const initial = (): LapisState => ({
+  tier: "local",
+  switches: 0,
+  turnsOnTier: 0,
+  failoverActive: false,
+});
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
+        return String((part as { text?: unknown }).text ?? "");
+      }
+      return "";
+    })
+    .join("\n");
+}
+
+function latestUserText(messages: readonly unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i] as { role?: string; content?: unknown };
+    if (m?.role === "user") return messageText(m.content);
+  }
+  return "";
+}
+
+export default function (pi: ExtensionAPI) {
+  if (process.env.OFFICINA_RESILIENT_DEFAULT === "0") return;
+  const cfg = configFromEnv();
+  const fallbacks = (process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK || DEFAULT_FALLBACKS.join(","))
+    .split(",")
+    .map((s) => parseModelSpec(s))
+    .filter((s): s is { provider: string; id: string } => !!s);
+
+  let localIdleSince: number | null = Date.now();
+  let cloudCandidates: Model[] = [];
+  let catalogLoaded = false;
+  let activeCloud: Model | undefined;
+  let lastDecision: LastDecision | null = null;
+
+  startEnginePolling();
+  onEngineUpdate(() => {
+    const s = getEngineSnapshot();
+    const busy =
+      !s.up || s.processing > 0 || s.deferred > 0 || s.stalled || s.queueWaitMs >= cfg.queueWaitMs;
+    if (busy) localIdleSince = null;
+    else if (localIdleSince == null) localIdleSince = Date.now();
+  });
+
+  const loadCandidates = (ctx: ExtensionContext): void => {
+    if (catalogLoaded) return;
+    catalogLoaded = true;
+    cloudCandidates = [];
+    const profile = readProfile();
+    const ids: string[] = [];
+    try {
+      if (existsSync(CATALOG)) {
+        const raw = JSON.parse(readFileSync(CATALOG, "utf8"));
+        ids.push(...freeToolCandidates(extractCatalogModels(raw)).map((c) => c.id));
+      }
+    } catch {
+      // fall through to explicit fallbacks
+    }
+    const ordered = sortIdsForProfile(
+      ids.map((id) => ({ id })),
+      profile,
+    ).map((x) => x.id);
+    const specs = [
+      ...ordered.map((id) => ({ provider: "caduceus", id })),
+      ...fallbacks,
+    ];
+    const seen = new Set<string>();
+    const perOwner = Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8));
+    const ownerCount = new Map<string, number>();
+    const max = Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48));
+    for (const spec of specs) {
+      if (seen.has(`${spec.provider}/${spec.id}`)) continue;
+      const owner = (spec.id.split("/")[0] ?? "").toLowerCase();
+      const n = ownerCount.get(owner) ?? 0;
+      if (n >= perOwner) continue;
+      const model = ctx.modelRegistry.find(spec.provider, spec.id);
+      if (!model) continue;
+      if (!ctx.modelRegistry.hasConfiguredAuth(model)) continue;
+      seen.add(`${spec.provider}/${spec.id}`);
+      ownerCount.set(owner, n + 1);
+      cloudCandidates.push(model);
+      if (cloudCandidates.length >= max) break;
+    }
+  };
+
+  const pickCloud = (tokens: number, now: number): Model | undefined =>
+    cloudCandidates.find(
+      (m) =>
+        tokens + CLOUD_RESERVE_TOKENS < (m.contextWindow ?? 0) &&
+        !healthCooling(m.provider, m.id, now),
+    );
+
+  const setRouteWidget = (ctx: ExtensionContext, tier: Tier, model?: Model, profile = readProfile()): void => {
+    const text =
+      tier === "cloud" && model
+        ? `route lapis · ${model.id.split("/").pop()} · ${profile}`
+        : `route lapis · local · ${profile}`;
+    ctx.ui.setStatus("overflow", text);
+    ctx.ui.setWidget("overflow-route", [text], { placement: "belowEditor" });
+  };
+
+  const route = async (
+    request: ModelRouteRequest<LapisState>,
+    ctx: ExtensionContext,
+  ): Promise<ModelRoute<LapisState>> => {
+    loadCandidates(ctx);
+    const now = Date.now();
+    const profile = readProfile();
+    const local = ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
+    const snap = getEngineSnapshot();
+    const localDown = cfg.failover && snap.polled && !snap.up;
+    const load = {
+      processing: snap.polled ? (snap.up ? snap.processing : 1) : 0,
+      deferred: snap.polled ? (snap.up ? snap.deferred : 0) : 0,
+      queueWaitMs: snap.polled ? (snap.up ? snap.queueWaitMs : 0) : 0,
+      stalled: snap.polled && snap.stalled,
+      gpuLoad: snap.gpuLoad,
+    };
+    const tokens = ctx.getContextUsage()?.tokens ?? 0;
+    const candidate =
+      profileAllowsCloud(profile) && canSpendCloud() ? pickCloud(tokens, now) : undefined;
+    const previous = request.previous?.model;
+    const failed = request.failed?.model;
+    const privacy = latestUserText(request.messages)
+      ? classifyTurn({
+          promptText: latestUserText(request.messages),
+          recentErrorCount: 0,
+          churnLoops: 0,
+          scratchpadContextLines: [],
+          filesTouched: 0,
+          turnCount: 0,
+        }).privacy
+      : "safe";
+    let state = request.state ?? initial();
+    let tier: Tier = state.tier;
+
+    const remember = (chosen: Model, chosenTier: Tier): void => {
+      const stateKind: LastDecision["localState"] = localDown
+        ? "down"
+        : load.processing > 0 || load.deferred > 0 || load.queueWaitMs >= cfg.queueWaitMs
+          ? "busy"
+          : "up";
+      lastDecision = {
+        reason: request.reason,
+        tier: chosenTier,
+        provider: chosen.provider,
+        model: chosen.id,
+        profile,
+        localState: stateKind,
+        startedAt: now,
+      };
+    };
+
+    if (request.reason === "continuation" && previous && previous.id !== "lapis") {
+      // Never leave the current physical model mid tool-loop.
+      remember(previous, previous.provider === "llamacpp" ? "local" : "cloud");
+      return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
+    }
+
+    if (request.reason === "retry") {
+      if (failed && failed.provider === "llamacpp") {
+        recordFailure(failed.provider, failed.id, undefined, { errorClass: "local_retry" });
+        tier = candidate ? "cloud" : "local";
+        state = { ...state, failoverActive: true };
+      } else if (failed && failed.provider === "caduceus") {
+        recordFailure(failed.provider, failed.id, undefined, { errorClass: "cloud_retry" });
+        const next = pickCloud(tokens, now);
+        tier = next ? "cloud" : "local";
+        if (next) state = { ...state, failoverActive: true };
+      } else {
+        tier = candidate && localDown ? "cloud" : "local";
+      }
+    } else if (request.reason === "direct") {
+      tier = localDown ? "cloud" : "local";
+    } else {
+      const decision = decideTier(
+        {
+          state: {
+            tier: state.tier,
+            switches: state.switches,
+            turnsOnTier: state.turnsOnTier,
+            cloudTokens: 0,
+          },
+          load,
+          privacy,
+          cloudFits: !!candidate,
+          budgetLeft: !!candidate,
+          localIdleForMs: localIdleSince != null ? now - localIdleSince : null,
+          localDown,
+          failoverActive: state.failoverActive,
+        },
+        cfg,
+      );
+      tier = decision.tier;
+      const emergency = localDown && tier === "cloud";
+      if (tier !== state.tier) {
+        state = {
+          tier,
+          switches: state.switches + (emergency || state.failoverActive ? 0 : 1),
+          turnsOnTier: 1,
+          failoverActive: emergency ? true : tier === "local" ? false : state.failoverActive,
+        };
+      } else {
+        state = { ...state, turnsOnTier: state.turnsOnTier + 1 };
+      }
+    }
+
+    if (tier === "cloud" && candidate) {
+      activeCloud = candidate;
+      remember(candidate, "cloud");
+      setRouteWidget(ctx, "cloud", candidate, profile);
+      return { model: candidate, thinkingLevel: request.thinkingLevel, state };
+    }
+    if (local) {
+      activeCloud = undefined;
+      remember(local, "local");
+      setRouteWidget(ctx, "local", undefined, profile);
+      return { model: local, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "local", failoverActive: false } };
+    }
+    if (candidate) {
+      activeCloud = candidate;
+      remember(candidate, "cloud");
+      setRouteWidget(ctx, "cloud", candidate, profile);
+      return { model: candidate, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "cloud" } };
+    }
+    throw new Error("Lapis Occultus: no physical model available (engine and cloud both unavailable)");
+  };
+
+  pi.on("after_provider_response", (event) => {
+    if (!activeCloud) return;
+    const status = event.status;
+    const retryAfterMs = recordRetryAfter(activeCloud.provider, activeCloud.id, event.headers ?? {});
+    if (status && status >= 400) {
+      recordFailure(activeCloud.provider, activeCloud.id, status, { retryAfterMs });
+    }
+  });
+
+  pi.on("message_end", (event, ctx) => {
+    if (!lastDecision) return;
+    const decision = lastDecision;
+    const msg = event.message as {
+      role?: string;
+      provider?: string;
+      model?: string;
+      stopReason?: string;
+      usage?: {
+        input?: number;
+        output?: number;
+        cacheRead?: number;
+        cacheWrite?: number;
+        totalTokens?: number;
+      };
+    };
+    if (msg.role !== "assistant") return;
+    const failed = msg.stopReason === "error";
+    if (!failed) recordSuccess(decision.provider, decision.model);
+    const usage = msg.usage ?? {};
+    const entry: RouteLedgerEntry = {
+      ts: new Date().toISOString(),
+      reason: decision.reason,
+      tier: decision.tier,
+      provider: decision.provider,
+      model: decision.model,
+      profile: decision.profile,
+      localState: decision.localState,
+      latencyMs: Date.now() - decision.startedAt,
+      tokensIn: usage.input ?? 0,
+      tokensOut: usage.output ?? 0,
+      cacheRead: usage.cacheRead ?? 0,
+      cacheWrite: usage.cacheWrite ?? 0,
+      costEstimate: 0,
+      outcome: failed ? "error" : "ok",
+      errorClass: failed ? "completion_error" : undefined,
+    };
+    recordRoute(entry);
+    lastDecision = null;
+  });
+
+  pi.registerCommand("profile", {
+    description: "Routing profile: auto | fast | deep | local",
+    handler: async (args: string, ctx: { ui: any }) => {
+      const raw = args.trim().toLowerCase();
+      const next = raw as RoutingProfile;
+      if (!["auto", "fast", "deep", "local"].includes(next)) {
+        await ctx.ui.notify?.("profile: auto | fast | deep | local", "info");
+        return;
+      }
+      writeProfile(next);
+      catalogLoaded = false;
+      cloudCandidates = [];
+      await ctx.ui.notify?.(`profile: ${next}`, "info");
+    },
+  });
+
+  pi.registerCommand("why", {
+    description: "Explain the last routing decision",
+    handler: async (_args: string, ctx: { ui: any }) => {
+      const last = lastRouteEntry();
+      if (!last) {
+        await ctx.ui.notify?.("why: no routing entries yet", "info");
+        return;
+      }
+      await ctx.ui.notify?.(
+        `why: ${last.tier} via ${last.provider}/${last.model} · ${last.reason} · profile ${last.profile} · ${last.outcome}`,
+        "info",
+      );
+    },
+  });
+
+  pi.registerCommand("cost", {
+    description: "Free token usage for today and this month",
+    handler: async (_args: string, ctx: { ui: any }) => {
+      const t = todaySummary();
+      await ctx.ui.notify?.(
+        `cost: today ${t.tokensIn + t.tokensOut} tok · ${t.requests} req · ${t.failures} fail · ${budgetSummaryText()}`,
+        "info",
+      );
+    },
+  });
+
+  pi.registerCommand("free", {
+    description: "List free overflow candidates and cooldowns",
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      loadCandidates(ctx);
+      const now = Date.now();
+      const rows = cloudCandidates.slice(0, 20).map((m, i) => {
+        const cool = cooldownRemaining(m.provider, m.id, now);
+        return `${i + 1}. ${m.id} · ${Math.round((m.contextWindow ?? 0) / 1000)}k${cool > 0 ? ` · cooling ${Math.ceil(cool / 60_000)}m` : ""}`;
+      });
+      await (ctx.ui as any).notify?.(
+        rows.length ? `free candidates (${cloudCandidates.length}):\n${rows.join("\n")}` : "free: no candidates",
+        "info",
+      );
+    },
+  });
+
+  pi.registerVirtualModel<LapisState>({
+    provider: "officina",
+    id: "lapis",
+    name: "Lapis Occultus",
+    contextWindow: 262_144,
+    maxTokens: 4_096,
+    thinkingLevels: ["off", "low", "medium", "high"],
+    route,
+  });
+}

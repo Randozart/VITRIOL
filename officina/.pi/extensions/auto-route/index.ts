@@ -102,6 +102,10 @@ function readChurnLoops(): number {
 }
 
 export default function (pi: ExtensionAPI) {
+  // Overflow routing owns the tier decision when armed (adaptive-router);
+  // running auto-route too would double-classify and inject an ascensus
+  // verdict into a cloud-routed turn.
+  if (process.env.OFFICINA_OVERFLOW === "1") return;
   let mode = resolveMode(process.env.OFFICINA_ROUTE_MODE);
   if (process.env.OFFICINA_NO_AUTO_ROUTE === "1" || mode === "off") return;
 

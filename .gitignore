@@ -124,3 +124,5 @@ vitriol-gpu-rs/*.ltoir
 vitriol-gpu-rs/*.cubin
 /llama.cpp
 .officina/
+# pi snapshot checkpoints (session-local state)
+.pi/ckpt/

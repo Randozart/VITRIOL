@@ -12,7 +12,7 @@ describe("shouldArmEngineSync", () => {
   });
 
   it("does not arm for explicit non-local providers", () => {
-    expect(shouldArmEngineSync("omniroute")).toBe(false);
+    expect(shouldArmEngineSync("caduceus")).toBe(false);
     expect(shouldArmEngineSync("opencode-go")).toBe(false);
     expect(shouldArmEngineSync("anthropic")).toBe(false);
     expect(shouldArmEngineSync("ollama")).toBe(false);

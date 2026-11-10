@@ -15,18 +15,18 @@ engine's native programming environment. Source of truth:
 through to the scaffold CLI: `-p "one-shot"`, `-c` continue, `-r` resume).
 OFFICINA_DIR overrides the location for non-standard installs.
 
-## Subscription providers via OmniRoute (2026-11-09)
+## Subscription providers via Caduceus (2026-11-09)
 
 Officina keeps the local VITRIOL engine as its default provider. A local
-OmniRoute gateway adds subscription providers (starting with OpenCode Go)
-without weakening that coupling: an explicit OmniRoute selection persists
-across sessions, and a fresh session still selects the local engine.
+Caduceus gateway (powered by the MIT-licensed OmniRoute vendor) adds subscription providers (starting with OpenCode Go)
+without weakening that coupling: an explicit Caduceus selection persists
+across sessions; the resilient `officina/lapis` virtual default still prefers the local engine and fails over to Caduceus.
 
-    vitriol omniroute setup --free --opencode-key-stdin < ~/.config/opencode-go.key
-    vitriol omniroute doctor
-    vitriol omniroute service install
-    vitriol omniroute use ddgw/gpt-5.4-mini   # persist cloud default
-    vitriol officina        # then /model -> omniroute/<model>
+    vitriol caduceus setup --free --opencode-key-stdin < ~/.config/opencode-go.key
+    vitriol caduceus doctor
+    vitriol caduceus service install
+    vitriol caduceus use caduceus/ddgw/gpt-5.4-mini   # persist cloud default
+    vitriol officina        # then /model -> caduceus/<model>
 
 What `setup` does:
 
@@ -37,13 +37,13 @@ What `setup` does:
 - creates a local inference key for Officina;
 - disables compression, semantic cache, and memory globally; prompt cache
   stays on;
-- writes `OFFICINA_OMNIROUTE*` to `~/.vitriol/officina/env` (mode 600).
+- writes `OFFICINA_CADUCEUS*` to `~/.vitriol/officina/env` (mode 600).
 
 `setup --free` additionally runs free onboarding, reuses existing OpenCode auth,
 and enables provider cache overrides. `use <model>` writes the pi default
-provider/model so new sessions open directly on OmniRoute; `use --local
+provider/model so new sessions open directly on Caduceus; `use --local
 <model>` restores the local default. `doctor` is a read-only health report;
-`service install` writes `~/.config/systemd/user/vitriol-omniroute.service`,
+`service install` writes `~/.config/systemd/user/vitriol-caduceus.service`,
 enables it, and best-effort enables lingering so the gateway survives reboot.
 
 Strict passthrough is also enforced per request by the Officina provider,
@@ -54,31 +54,31 @@ so a global toggle drift cannot silently rewrite prompts:
     x-omniroute-no-memory: true
 
 The provider catalog is fetched live from
-`GET /v1/models?prefix=alias`, filtered to active OmniRoute connection
+`GET /v1/models?prefix=alias`, filtered to active Caduceus connection
 providers via the local management API, mapped to pi model metadata, and
-cached at `~/.vitriol/officina/omniroute-models.json`. Alias mode is
-required for no-auth providers (`ddgw/`, `cfp/`, `unc/`). `vitriol omniroute
+cached at `~/.vitriol/officina/caduceus-models.json`. Alias mode is
+required for no-auth providers (`ddgw/`, `cfp/`, `unc/`). `vitriol caduceus
 sync` refreshes the cache; pi's own `/model` refresh also re-fetches.
 
 Operational notes:
 
-- `vitriol omniroute up|down` controls the gateway.
-- `vitriol omniroute status` reports gateway health, provider connection,
+- `vitriol caduceus up|down` controls the gateway.
+- `vitriol caduceus status` reports gateway health, provider connection,
   catalog size, and whether the inference key is present (masked).
 - If the gateway is down, Officina keeps cached models or falls back to
   the local engine; startup is never blocked.
-- Rollback: `vitriol omniroute down`, remove the `OFFICINA_OMNIROUTE*`
+- Rollback: `vitriol caduceus down`, remove the `OFFICINA_CADUCEUS*`
   lines from `~/.vitriol/officina/env`, re-enable cache/compression in the
-  OmniRoute dashboard. The local engine is untouched.
-- Kill switch: `OFFICINA_OMNIROUTE=0` prevents the provider extension from
+  Caduceus dashboard. The local engine is untouched.
+- Kill switch: `OFFICINA_CADUCEUS=0` prevents the provider extension from
   registering.
 
 ### Bulk accounts (API keys + OAuth assist)
 
-OmniRoute 3.8.53 ships 375 catalog providers. Accounts automation is split
+Caduceus 3.8.53 ships 375 catalog providers. Accounts automation is split
 by what can be automated safely:
 
-- **API-key providers (252)** — bulk import. `vitriol omniroute accounts sync`
+- **API-key providers (252)** — bulk import. `vitriol caduceus accounts sync`
   builds one `providers import` payload from `accounts.json`.
 - **OAuth (28 total, 8 CLI flows)** — assisted. Browser/device consent stays
   interactive; `cursor` and `zed` can import local system credentials.
@@ -87,14 +87,14 @@ by what can be automated safely:
 
 Zero-key free providers and existing local credentials:
 
-    vitriol omniroute accounts free --json       # preview
-    vitriol omniroute accounts free --apply      # add eligible free providers
-    vitriol omniroute accounts free --plans      # 123 free API-key providers + signup URLs
-    vitriol omniroute accounts free --template    # write them disabled to accounts.json
-    vitriol omniroute accounts discover --json   # preview OpenCode auth reuse
-    vitriol omniroute accounts discover --apply  # import OpenCode auth keys
+    vitriol caduceus accounts free --json       # preview
+    vitriol caduceus accounts free --apply      # add eligible free providers
+    vitriol caduceus accounts free --plans      # 123 free API-key providers + signup URLs
+    vitriol caduceus accounts free --template    # write them disabled to accounts.json
+    vitriol caduceus accounts discover --json   # preview OpenCode auth reuse
+    vitriol caduceus accounts discover --apply  # import OpenCode auth keys
 
-`accounts free` uses OmniRoute's free-onboarding API and currently adds the
+`accounts free` uses Caduceus's free-onboarding API and currently adds the
 working no-auth providers: DuckDuckGo AI Chat, Cloudflare AI Playground, and
 AI Horde. `uncloseai` is excluded because its public beta is closed. Naga.ac
 free models need a (free) account key, so they are not auto-added. Existing
@@ -108,11 +108,11 @@ providers.
 
 Create and edit the config:
 
-    vitriol omniroute accounts init
+    vitriol caduceus accounts init
     $EDITOR ~/.vitriol/officina/accounts.json
-    vitriol omniroute accounts sync --dry-run
-    vitriol omniroute accounts sync
-    vitriol omniroute accounts status
+    vitriol caduceus accounts sync --dry-run
+    vitriol caduceus accounts sync
+    vitriol caduceus accounts status
 
 `accounts.json` references env vars, never literal secrets:
 
@@ -152,11 +152,11 @@ in `finally`.
 
 OAuth assist:
 
-    vitriol omniroute accounts oauth list
-    vitriol omniroute accounts oauth login cursor
-    vitriol omniroute accounts oauth login copilot
-    vitriol omniroute accounts oauth login codex
-    vitriol omniroute accounts oauth status
+    vitriol caduceus accounts oauth list
+    vitriol caduceus accounts oauth login cursor
+    vitriol caduceus accounts oauth login copilot
+    vitriol caduceus accounts oauth login codex
+    vitriol caduceus accounts oauth status
 
 Native flows: `gemini`, `antigravity`, `cursor`, `zed`, `kiro`,
 `claude-code`, `codex`, `copilot`. `cursor`/`zed` default to
@@ -165,20 +165,20 @@ also needs `--social google|github`.
 
 Free OAuth added by the Officina wrapper:
 
-    vitriol omniroute accounts oauth login openference
-    vitriol omniroute accounts oauth login agy
-    vitriol omniroute accounts oauth login qoder
-    vitriol omniroute accounts oauth login freebuff
-    vitriol omniroute accounts oauth login amazon-q   # alias of kiro
+    vitriol caduceus accounts oauth login openference
+    vitriol caduceus accounts oauth login agy
+    vitriol caduceus accounts oauth login qoder
+    vitriol caduceus accounts oauth login freebuff
+    vitriol caduceus accounts oauth login amazon-q   # alias of kiro
 
 `openference` and `agy` are browser PKCE flows (paste the callback URL/code).
 `freebuff` is a device-code flow. `qoder` is browser auth-code but stays
-disabled unless the OmniRoute server has `QODER_OAUTH_*` configured.
+disabled unless the Caduceus server has `QODER_OAUTH_*` configured.
 `amazon-q` delegates to Kiro's social flow. Web-cookie providers remain
 dashboard/manual.
 
 Provider-specific fields (Azure resource/version, Bedrock region/keys, Vertex
-project, etc.) go verbatim in `provider_specific_data`; OmniRoute validates
+project, etc.) go verbatim in `provider_specific_data`; Caduceus validates
 them at import time.
 
 ## OpenCode session import (2026-11-09)
@@ -227,12 +227,12 @@ selected, `OFFICINA_CACHE_MODE=auto` switches to cache-safe behavior:
 
 Provider-native caching:
 
-    vitriol omniroute cache status
-    vitriol omniroute cache enable --providers opencode-go,glm
-    vitriol omniroute cache disable --providers glm
+    vitriol caduceus cache status
+    vitriol caduceus cache enable --providers opencode-go,glm
+    vitriol caduceus cache disable --providers glm
 
 `cache enable` sets `providerSpecificData.cache.supportsPromptCaching=true` on
-the OmniRoute connection, so OmniRoute injects `prompt_cache_key` where the
+the Caduceus connection, so Caduceus injects `prompt_cache_key` where the
 upstream accepts it. Verified: `opencode-go/glm-5.2` reported
 `cached_tokens=3840/4024` on the second identical request. Revert a provider
 with `cache disable` if it ignores or rejects the hint.
@@ -254,15 +254,15 @@ Env:
 
 Convenience toggles (written to `~/.vitriol/officina/env`):
 
-    vitriol omniroute config get
-    vitriol omniroute config set cache auto|local|cloud|off
-    vitriol omniroute config set praetor on|off
+    vitriol caduceus config get
+    vitriol caduceus config set cache auto|local|cloud|off
+    vitriol caduceus config set praetor on|off
 
 ## Native Praetor (advisory)
 
 Praetor is a first-class advisory utility, off by default:
 
-    vitriol omniroute config set praetor on
+    vitriol caduceus config set praetor on
     vitriol officina
 
 Equivalent: `OFFICINA_PRAETOR=1 vitriol officina`.
@@ -283,15 +283,15 @@ diagnostics-loop path. Missing `praetor` disables cleanly.
 Egress is **fixed-only by policy**. No automatic IP rotation and no
 quota-triggered proxy switching — those are anti-abuse/ToS risks.
 
-    vitriol omniroute egress status
-    vitriol omniroute egress set --proxy socks5://127.0.0.1:1080
-    vitriol omniroute egress set --proxy http://user:pass@host:8080 --no-proxy 127.0.0.1,localhost
-    vitriol omniroute egress clear
-    vitriol omniroute egress test
+    vitriol caduceus egress status
+    vitriol caduceus egress set --proxy socks5://127.0.0.1:1080
+    vitriol caduceus egress set --proxy http://user:pass@host:8080 --no-proxy 127.0.0.1,localhost
+    vitriol caduceus egress clear
+    vitriol caduceus egress test
 
 Config: `~/.vitriol/officina/egress.json` (mode 600). The proxy URL is applied
-to the OmniRoute daemon via `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` plus
-`NO_PROXY`; OmniRoute's network layer consumes those variables. `set/clear`
+to the Caduceus daemon via `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY` plus
+`NO_PROXY`; Caduceus's network layer consumes those variables. `set/clear`
 restarts the daemon when running; `status` masks credentials; `test` checks the
 egress IP through the proxy. Kill switch: `OFFICINA_EGRESS=0`.
 

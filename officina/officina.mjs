@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// DEPRECATED (2026-11-10): this JS frontend is legacy. The canonical Officina
+// UI is the Rust TUI (`officina/tui`, binary `officina`, installed into
+// ~/.local/bin). Keep this entry only for fallback/reference; new feature work
+// belongs in the Rust TUI. The shared `.pi/extensions/*` surface is NOT
+// deprecated — the Rust TUI runs pi in RPC mode and uses those extensions.
+// Silence the runtime notice with OFFICINA_LEGACY_JS=1.
+//
 // OFFICINA — the VITRIOL coding workshop (2026-08-31).
 //
 // The first-party agent harness, bundled with the engine it is coupled to:
@@ -50,6 +57,17 @@ try {
 } catch {
   // env file is optional; a bad one must never block launch
 }
+
+// Deprecation notice (2026-11-10): stderr, before the TUI claims the
+// terminal, so launchers/logs capture it. The Rust TUI does not use this
+// entry point at all.
+if (process.env.OFFICINA_LEGACY_JS !== "1") {
+  console.error(
+    "[officina] DEPRECATED: the JS frontend is legacy — use the Rust TUI (`officina`). " +
+      "Set OFFICINA_LEGACY_JS=1 to silence this notice.",
+  );
+}
+
 // Session continuity: pi's picker is per-project (cwd), so prior sessions
 // for THIS folder are reachable from the session manager; -c/--continue and
 // -r/--resume pass through for direct resume. Advertised in the widget-free

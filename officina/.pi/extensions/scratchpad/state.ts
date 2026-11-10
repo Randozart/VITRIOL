@@ -20,16 +20,26 @@ export interface ScratchpadConfig {
   dir: string;
   /** Max characters per entry line (budget guard). */
   maxLineChars: number;
+  /** Limit ADVERTISED to the model. Deliberately stricter than the enforced
+   *  cap: LLMs are terrible at estimating line sizes — a model told "500"
+   *  routinely emits 550+. Advertise 275 while enforcing 350 so typical
+   *  attempts land under the hard cap instead of bouncing on validation. */
+  advertisedLineChars: number;
 }
 
 export function scratchpadConfig(env: NodeJS.ProcessEnv = process.env): ScratchpadConfig {
   const capNum = Number(env.OFFICINA_SCRATCHPAD_CAP);
   const cap = Number.isFinite(capNum) && capNum >= 0 ? capNum : 512;
+  const lineNum = Number(env.OFFICINA_SCRATCHPAD_LINE_CHARS);
+  const lineChars = Number.isFinite(lineNum) && lineNum >= 0 ? lineNum : 350;
+  const maxLineChars = Math.max(20, Math.floor(lineChars));
   return {
     enabled: env.OFFICINA_SCRATCHPAD !== "0",
     cap: Math.max(10, Math.floor(cap)),
     dir: env.OFFICINA_SCRATCHPAD_DIR || ".officina",
-    maxLineChars: 200,
+    maxLineChars,
+    // 275/350 ≈ 0.7857 — keeps the advertised budget ~22% under the cap.
+    advertisedLineChars: Math.max(20, Math.floor((maxLineChars * 275) / 350)),
   };
 }
 
@@ -107,7 +117,7 @@ export function applyUpdate(
       if (!s) return { error: `${name}[${i}]: empty entry (omit the line instead)` };
       if (s.length > cfg.maxLineChars) {
         return {
-          error: `${name}[${i}]: ${s.length} chars — exceeds ${cfg.maxLineChars}-char max per line (separate from the ${cfg.cap}-line cap). Split or shorten.`,
+          error: `${name}[${i}]: ${s.length} chars — exceeds ${cfg.maxLineChars}-char max per line (aim for <=${cfg.advertisedLineChars}; separate from the ${cfg.cap}-line cap). Split or shorten.`,
         };
       }
       next[name].push(s);

@@ -1719,28 +1719,29 @@ usage() {
                               harness in the current directory (local-inference
                               tuned; engine telemetry in the editor). Args pass
                               through to the scaffold CLI (e.g. -p "one-shot").
-   vitriol omniroute setup    install/configure the local OmniRoute gateway
+   vitriol caduceus setup    install/configure the local Caduceus gateway (OmniRoute vendor)
                               (OpenCode Go subscription, strict passthrough)
-   vitriol omniroute status|up|down|sync
+   vitriol caduceus status|up|down|sync
                               gateway health, start/stop, catalog refresh
-   vitriol omniroute accounts init|sync|status
+   vitriol caduceus accounts init|sync|status
                               bulk API-key accounts (env refs) + OAuth assist
-   vitriol omniroute accounts free|discover
+   vitriol caduceus accounts free|discover
                               zero-key free providers / reuse OpenCode auth
-   vitriol omniroute cache status|enable|disable
+   vitriol caduceus cache status|enable|disable
                               provider-native prompt-cache overrides
-   vitriol omniroute egress status|set|clear|test
+   vitriol caduceus egress status|set|clear|test
                               fixed proxy/VPN egress (no quota rotation)
-   vitriol omniroute doctor   one-shot health report
-   vitriol omniroute use <model> [--local]
+   vitriol caduceus doctor   one-shot health report
+   vitriol caduceus use <model> [--local]
                               persist default pi provider/model
-   vitriol omniroute config get|set
+   vitriol caduceus config get|set
                               cache/praetor env toggles
-   vitriol omniroute service install|status|remove
+   vitriol caduceus service install|status|remove
                               systemd user unit (boot persistence)
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL
    vitriol settings           interactive settings TUI (engine + Officina)
    vitriol opencode           import/resume OpenCode sessions
+   vitriol fiat               Fiat Lux: free-tier merry-go-round (one screen)
    vitriol validate           harness config gate (ex-tris)
   vitriol lanes              GPU lane report (ex-tris)
   vitriol budget             allocation vs measured ledger (ex-tris)
@@ -3228,6 +3229,27 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         exec node --disable-warning=ExperimentalWarning "$OPENCODE_IMPORT" "$@"
         ;;
 
+    fiat)
+        # Fiat Lux: the free-tier merry-go-round (2026-11-09). One screen,
+        # every zero-cost provider, minimal owner effort.
+        shift
+        FIAT_ENTRY="${PROJECT_DIR}/officina/scripts/fiat.mjs"
+        if [[ ! -f "$FIAT_ENTRY" ]]; then
+            echo "[vitriol] fiat entry not found: $FIAT_ENTRY" >&2
+            exit 1
+        fi
+        if ! command -v node >/dev/null 2>&1; then
+            NODE_BIN="$(find "${HOME}/.local/share/fnm/node-versions" -path '*/installation/bin/node' 2>/dev/null | sort -V | tail -1)"
+            [[ -z "$NODE_BIN" && -x /usr/bin/node ]] && NODE_BIN=/usr/bin/node
+            if [[ -z "$NODE_BIN" ]]; then
+                echo "[vitriol] fiat needs node (fnm or system) — not found." >&2
+                exit 1
+            fi
+            PATH="$(dirname "$NODE_BIN"):$PATH"
+        fi
+        exec node "$FIAT_ENTRY" "$@"
+        ;;
+
     settings)
         # Interactive settings TUI for ~/.vitriol/config + Officina env.
         shift
@@ -3260,26 +3282,26 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         exec node "$CACHE_REPORT" "$@"
         ;;
 
-    omniroute)
-        # OmniRoute gateway bootstrap (2026-11-09): installation, provider
+    caduceus)
+        # Caduceus gateway bootstrap (2026-11-09): installation, provider
         # credentials, strict-passthrough settings, and Officina env wiring.
         shift
         OFFICINA_DIR="${OFFICINA_DIR:-${PROJECT_DIR}/officina}"
-        OMNIROUTE_ENTRY="${OFFICINA_DIR}/scripts/omniroute.mjs"
-        if [[ ! -f "$OMNIROUTE_ENTRY" ]]; then
-            echo "[vitriol] omniroute helper not found at ${OMNIROUTE_ENTRY}" >&2
+        CADUCEUS_ENTRY="${OFFICINA_DIR}/scripts/caduceus.mjs"
+        if [[ ! -f "$CADUCEUS_ENTRY" ]]; then
+            echo "[vitriol] caduceus helper not found at ${CADUCEUS_ENTRY}" >&2
             exit 1
         fi
         if ! command -v node >/dev/null 2>&1; then
             NODE_BIN="$(find "${HOME}/.local/share/fnm/node-versions" -path '*/installation/bin/node' 2>/dev/null | sort -V | tail -1)"
             [[ -z "$NODE_BIN" && -x /usr/bin/node ]] && NODE_BIN=/usr/bin/node
             if [[ -z "$NODE_BIN" ]]; then
-                echo "[vitriol] omniroute needs node (fnm or system) — not found." >&2
+                echo "[vitriol] caduceus needs node (fnm or system) — not found." >&2
                 exit 1
             fi
             PATH="$(dirname "$NODE_BIN"):$PATH"
         fi
-        exec node "$OMNIROUTE_ENTRY" "$@"
+        exec node "$CADUCEUS_ENTRY" "$@"
         ;;
 
     officina)
@@ -3290,6 +3312,10 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         # 2026-08-31 bugfix: shift FIRST — without it the literal word
         # "officina" fell through into "$@" and pi read it as a first prompt.
         shift
+        # DEPRECATED frontend (2026-11-10): the canonical Officina UI is the
+        # Rust TUI binary (`officina`, source officina/tui). This path keeps
+        # the JS frontend available for fallback/reference only.
+        echo "[vitriol] DEPRECATED: 'vitriol officina' launches the legacy JS frontend; use the Rust TUI: officina" >&2
         OFFICINA_DIR="${OFFICINA_DIR:-${PROJECT_DIR}/officina}"
         OFFICINA_ENTRY="${OFFICINA_DIR}/officina.mjs"
         if [[ ! -f "$OFFICINA_ENTRY" ]]; then

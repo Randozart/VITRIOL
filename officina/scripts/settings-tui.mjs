@@ -19,7 +19,7 @@ import {
   parseColor,
   styleText,
 } from "@earendil-works/pi-tui";
-import { parseEnvFile, upsertEnvFile } from "./omniroute-lib.mjs";
+import { parseEnvFile, upsertEnvFile } from "./caduceus-lib.mjs";
 
 const HOME = process.env.HOME || homedir();
 const CONFIG = process.env.VITRIOL_CONFIG || join(HOME, ".vitriol", "config");
@@ -57,9 +57,9 @@ const ENGINE_ENUMS = {
 };
 
 const ENV_DOCS = {
-  OFFICINA_OMNIROUTE: "Enable the OmniRoute provider extension (1 = on, 0 = off).",
-  OFFICINA_OMNIROUTE_BASE_URL: "OpenAI-compatible OmniRoute base URL, normally http://127.0.0.1:20128/v1.",
-  OFFICINA_OMNIROUTE_API_KEY: "Local OmniRoute inference key. Secret; edit with $EDITOR.",
+  OFFICINA_CADUCEUS: "Enable the Caduceus provider extension (OmniRoute vendor) (1 = on, 0 = off).",
+  OFFICINA_CADUCEUS_BASE_URL: "OpenAI-compatible Caduceus base URL, normally http://127.0.0.1:20128/v1.",
+  OFFICINA_CADUCEUS_API_KEY: "Local Caduceus inference key. Secret; edit with $EDITOR.",
   OFFICINA_CACHE_MODE: "Cloud cache strategy: auto keeps local low-context; non-local providers use cache-safe mode.",
   OFFICINA_PRAETOR: "Arm the advisory Praetor extension (1 = on, 0 = off).",
   OFFICINA_PRAETOR_BUDGET: "Maximum characters of Praetor diagnostics injected after an edit.",
@@ -71,7 +71,7 @@ const ENV_DOCS = {
 };
 
 const ENV_VALUES = {
-  OFFICINA_OMNIROUTE: ["1", "0"],
+  OFFICINA_CADUCEUS: ["1", "0"],
   OFFICINA_CACHE_MODE: ["auto", "local", "cloud", "off"],
   OFFICINA_PRAETOR: ["1", "0"],
   OFFICINA_EGRESS: ["1", "0"],

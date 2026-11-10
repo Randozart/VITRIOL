@@ -17,6 +17,9 @@ const DEFAULT_POLL_MS = 700;
 
 export interface EngineSnapshot {
   up: boolean;
+  /** True once the first poll attempt has completed (success OR failure).
+   *  Failover routing must not treat the pre-poll window as "engine down". */
+  polled: boolean;
   /** token delta since previous poll + derived t/s */
   delta: { tps: number; tokens: number };
   /** context ingestion (prefill) delta + derived tokens/s */
@@ -39,6 +42,12 @@ export interface EngineSnapshot {
   total: number;
   slots: SlotInfo[];
   busy: number;
+  /** Recent queue wait from the last poll interval (ms); 0 when no new
+   *  requests. Overflow routing uses this as the local-contention signal. */
+  queueWaitMs: number;
+  /** Engine gauges: in-flight / deferred requests at the last poll. */
+  processing: number;
+  deferred: number;
   /** GPU fire load in [0,1] — power.draw/power.limit, max across GPUs
    *  (composer flames, owner request 2026-09-02); null when nvidia-smi
    *  is absent or has not answered yet. */
@@ -64,6 +73,11 @@ interface EngineState {
   before: ReturnType<typeof parseMetrics>;
   lastPoll: number;
   polledOnce: boolean;
+  /** In-flight guard: setInterval must never overlap two polls. Overlap
+   *  let one poll overwrite `before`/`lastPoll` while another was still
+   *  reading them, which poisoned the delta/tok-s math under endpoint
+   *  stalls (2026-11-10). */
+  polling: boolean;
   base: string;
   pollMs: number;
 }
@@ -74,6 +88,7 @@ const state: EngineState =
     listeners: new Set<Listener>(),
     snap: {
       up: false,
+      polled: false,
       delta: { tps: 0, tokens: 0 },
       ingest: { tps: 0, tokens: 0 },
       cumulativeIngest: 0,
@@ -85,6 +100,9 @@ const state: EngineState =
       total: 0,
       slots: [],
       busy: 0,
+      queueWaitMs: 0,
+      processing: 0,
+      deferred: 0,
       gpuLoad: null,
     },
     nvidiaMissing: false,
@@ -92,6 +110,7 @@ const state: EngineState =
     before: null,
     lastPoll: 0,
     polledOnce: false,
+    polling: false,
     base: "",
     pollMs: DEFAULT_POLL_MS,
   });
@@ -166,51 +185,75 @@ async function fetchText(url: string, timeoutMs: number): Promise<FetchOutcome> 
 const HTTP_TIMEOUT_MS = 1500;
 
 async function poll(): Promise<void> {
-  pollNvidiaSmi();
-  const now = Date.now();
-  const metrics = await fetchText(`${state.base}/metrics`, HTTP_TIMEOUT_MS);
-  if (metrics.kind !== "ok") {
-    state.before = null;
-    state.polledOnce = true;
-    if (metrics.kind === "down") {
-      state.snap = { ...state.snap, up: false, stalled: false, busy: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "", rpc: [] };
-    } else {
-      // alive-but-busy: queue-backed endpoint didn't answer in time
-      state.snap = { ...state.snap, up: true, stalled: true };
+  // One poll at a time (2026-11-10): the interval is 700 ms but a stalled
+  // /metrics + /slots + /v1/models + /props chain can take seconds. Without
+  // this guard those ticks overlapped and each one rewrote `before` /
+  // `lastPoll` while another was mid-read, so the tok/s delta was divided
+  // by the wrong interval (or double-counted tokens). Serialize the loop.
+  if (state.polling) return;
+  state.polling = true;
+  try {
+    pollNvidiaSmi();
+    const metrics = await fetchText(`${state.base}/metrics`, HTTP_TIMEOUT_MS);
+    // Sample time is when the counters were READ, not when the request
+    // started: a queue-backed /metrics can answer seconds later, and using
+    // the request-start clock understated/overstated the rate.
+    const sampledAt = Date.now();
+    if (metrics.kind !== "ok") {
+      state.before = null;
+      state.polledOnce = true;
+      if (metrics.kind === "down") {
+        state.snap = { ...state.snap, up: false, polled: true, stalled: false, busy: 0, queueWaitMs: 0, processing: 0, deferred: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "", rpc: [] };
+      } else {
+        // alive-but-busy: queue-backed endpoint didn't answer in time
+        state.snap = { ...state.snap, up: true, polled: true, stalled: true };
+      }
+      notify();
+      return;
     }
+    const after = parseMetrics(metrics.text);
+    if (!after) return;
+    const seconds = state.lastPoll ? (sampledAt - state.lastPoll) / 1000 : 0;
+    const delta = counterDelta(state.before, after, seconds);
+    // ingestion (prefill) rate from the prompt-tokens counter, same math
+    const ingestTokens = state.before ? Math.max(0, after.promptTokens - state.before.promptTokens) : 0;
+    const ingest = {
+      tps: seconds > 0 ? ingestTokens / seconds : 0,
+      tokens: ingestTokens,
+    };
+    let queueWaitMs = 0;
+    if (
+      state.before &&
+      after.queueCount !== undefined &&
+      state.before.queueCount !== undefined
+    ) {
+      const dc = after.queueCount - state.before.queueCount;
+      const ds = (after.queueSum ?? 0) - (state.before.queueSum ?? 0);
+      if (dc > 0) queueWaitMs = Math.max(0, (ds / dc) * 1000);
+    }
+    state.before = after;
+    state.lastPoll = sampledAt;
+    const slotsOut = await fetchText(`${state.base}/slots`, HTTP_TIMEOUT_MS);
+    const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : state.snap.slots;
+    const busy = busySlots(slots, delta.tokens);
+    // The ENGINE's loaded model (owner request 2026-09-03): /v1/models
+    // reports the alias of whatever the server actually loaded — distinct
+    // from pi's selected-model label.
+    const modelsOut = await fetchText(`${state.base}/v1/models`, HTTP_TIMEOUT_MS);
+    const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : state.snap.loaded_model;
+    const propsOut = await fetchText(`${state.base}/props`, HTTP_TIMEOUT_MS);
+    const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : state.snap.loaded_path;
+    const rpc = propsOut.kind === "ok" ? parseRpcServers(propsOut.text) : state.snap.rpc;
+    // Secondary endpoints queue-wait by design (/slots) — their stall is the
+    // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
+    const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
+    // cumulativeIngest = total prompt tokens processed since engine boot
+    state.snap = { up: true, polled: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.predictedTokens, slots, busy, queueWaitMs, processing: after.processing ?? 0, deferred: after.deferred ?? 0, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path, rpc };
+    state.polledOnce = true;
     notify();
-    return;
+  } finally {
+    state.polling = false;
   }
-  const after = parseMetrics(metrics.text);
-  if (!after) return;
-  const seconds = state.lastPoll ? (now - state.lastPoll) / 1000 : 0;
-  const delta = counterDelta(state.before, after, seconds);
-  // ingestion (prefill) rate from the prompt-tokens counter, same math
-  const ingestTokens = state.before ? Math.max(0, after.promptTokens - state.before.promptTokens) : 0;
-  const ingest = {
-    tps: seconds > 0 ? ingestTokens / seconds : 0,
-    tokens: ingestTokens,
-  };
-  state.before = after;
-  state.lastPoll = now;
-  const slotsOut = await fetchText(`${state.base}/slots`, HTTP_TIMEOUT_MS);
-  const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : state.snap.slots;
-  const busy = busySlots(slots, delta.tokens);
-  // The ENGINE's loaded model (owner request 2026-09-03): /v1/models
-  // reports the alias of whatever the server actually loaded — distinct
-  // from pi's selected-model label.
-  const modelsOut = await fetchText(`${state.base}/v1/models`, HTTP_TIMEOUT_MS);
-  const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : state.snap.loaded_model;
-  const propsOut = await fetchText(`${state.base}/props`, HTTP_TIMEOUT_MS);
-  const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : state.snap.loaded_path;
-  const rpc = propsOut.kind === "ok" ? parseRpcServers(propsOut.text) : state.snap.rpc;
-  // Secondary endpoints queue-wait by design (/slots) — their stall is the
-  // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
-  const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
-  // cumulativeIngest = total prompt tokens processed since engine boot
-  state.snap = { up: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.decodeTokens, slots, busy, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path, rpc };
-  state.polledOnce = true;
-  notify();
 }
 
 function notify(): void {

@@ -6,7 +6,11 @@
 //   P1 docked two-column split, P2 composer floor-pin, P3 ui.setSidebar
 //   plumbing, P4 sidebar bottom-anchor, P5 tool-execution display names
 //   (separate file), P6 sidebar visibility bridge, P7 native ANSI/merge
-//   delegation, P8 mouse reporting, P9 dynamic mode tint, P10 scrollback.
+//   delegation, P8 mouse reporting, P9 dynamic mode tint, P10 scrollback,
+//   P11 composer wrap-edge marker (»), P12 bundle chunk hook (the runtime
+//   loads dist/bundle/cli-runtime.js, whose chunk inlines its own
+//   InteractiveMode+CustomEditor — the vendor file above is never imported),
+//   P13 opaque slash-menu/autocomplete background.
 // Re-base by re-running build-patch.mjs after bumping the pin; anchors assert.
 
 // [officina P1] OfficinaSplit — docked two-column layout. JS port of
@@ -135,6 +139,9 @@ class OfficinaSplit {
             mainLines = [...new Array(pad).fill(""), ...slice, indicator, ...rest];
         }
         else {
+            // [officina P11] Composer wrap-edge marker (») — implemented in
+            // the P12 chunk patch (runtime/patched/chunks/chunk-44DLKSKE.js),
+            // which hooks the bundle's own CustomEditor.prototype.render.
             mainLines = [];
             partLines.forEach((ls, i) => {
                 if (i === this.editorIndex && filler > 0) {
@@ -180,6 +187,7 @@ class OfficinaSplit {
                 let right = r >= sbPad ? sbLines[r - sbPad] ?? "" : "";
                 if (officinaVisibleWidth(right) > SB_W) right = officinaCut(right, SB_W);
                 const pad = Math.max(0, SB_W - officinaVisibleWidth(right));
+                // Gap column: coldBlue divider on panel background
                 line += SB_BG + "│" + " ".repeat(Math.max(0, GAP - 1)) + SB_BG + right + " ".repeat(pad) + SB_RESET;
             }
             out.push(line);
@@ -187,6 +195,7 @@ class OfficinaSplit {
         return out;
     }
 }
+
 // [officina FOCUS-TEST] focusable sidebar wrapper — experiment rig, enabled
 // only with OFFICINA_SIDEBAR_FOCUS_TEST=1. Delegates rendering to the real
 // sidebar Container; captures typed keys to prove input routing.

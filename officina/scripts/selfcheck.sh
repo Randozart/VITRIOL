@@ -26,9 +26,9 @@ if [[ -z "$HITS" ]]; then ok "no live external project paths"; else bad "externa
 echo "── 2. officina tests + typecheck ──"
 if (cd "$HERE" && npx vitest --run .pi/extensions >/dev/null 2>&1); then ok "vitest extensions"; else bad "vitest extensions"; fi
 if (cd "$HERE" && npm run typecheck >/dev/null 2>&1); then ok "typecheck"; else bad "typecheck"; fi
-if (cd "$HERE" && npx vitest --run scripts/omniroute-lib.test.mjs scripts/omniroute-accounts-lib.test.mjs scripts/omniroute-oauth-lib.test.mjs scripts/opencode-import-lib.test.mjs scripts/cache-report-lib.test.mjs >/dev/null 2>&1); then ok "omniroute cli helpers"; else bad "omniroute cli helpers"; fi
-for f in omniroute.mjs omniroute-lib.mjs omniroute-accounts-lib.mjs omniroute-oauth-lib.mjs cache-report.mjs cache-report-lib.mjs settings-tui.mjs opencode.mjs opencode-import-lib.mjs; do
-  if node --check "$HERE/scripts/$f" >/dev/null 2>&1; then ok "omniroute cli syntax: $f"; else bad "omniroute cli syntax: $f"; fi
+if (cd "$HERE" && npx vitest --run scripts/caduceus-lib.test.mjs scripts/caduceus-accounts-lib.test.mjs scripts/caduceus-oauth-lib.test.mjs scripts/opencode-import-lib.test.mjs scripts/cache-report-lib.test.mjs scripts/fiat-lux-lib.test.mjs >/dev/null 2>&1); then ok "caduceus cli helpers"; else bad "caduceus cli helpers"; fi
+for f in caduceus.mjs caduceus-lib.mjs caduceus-accounts-lib.mjs caduceus-oauth-lib.mjs cache-report.mjs cache-report-lib.mjs settings-tui.mjs opencode.mjs opencode-import-lib.mjs fiat.mjs fiat-lux-lib.mjs; do
+  if node --check "$HERE/scripts/$f" >/dev/null 2>&1; then ok "caduceus cli syntax: $f"; else bad "caduceus cli syntax: $f"; fi
 done
 
 echo "── 2b. Vitriolum palette parity (vitriol-tui/src/theme.rs ↔ theme/officina.json ↔ .pi/extensions/_shared/vitriolum.ts) ──"

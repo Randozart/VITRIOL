@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -24,6 +25,19 @@ import { renderTaskBlock, taskStateConfig, validateTasks, type TaskItem } from "
 // Kill switch: TRIS_NO_TASK_STATE=1.
 
 const CUSTOM_TYPE = "lc-tasks";
+
+/** Chat view of a status — glyph + theme color. */
+const STATUS_VIEW = {
+  in_progress: { glyph: "▶", color: "warning" },
+  pending: { glyph: "·", color: "muted" },
+  completed: { glyph: "✓", color: "success" },
+  cancelled: { glyph: "✗", color: "dim" },
+} as const;
+
+function clip(text: string, max = 100): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
 
 // Session-scoped task file path (2026-09-06): globalThis-backed singleton —
 // jiti (moduleCache: false) gives each import site its own module instance,
@@ -142,6 +156,34 @@ export default function (pi: ExtensionAPI) {
         { description: "Full replacement list, ordered" },
       ),
     }),
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+      const parts = [theme.fg("toolTitle", theme.bold("☑ tasks"))];
+      if (tasks.length === 0) parts.push(theme.fg("dim", "  (empty list)"));
+      for (const task of tasks) {
+        const status = STATUS_VIEW[task.status] ?? STATUS_VIEW.pending;
+        const id = task.id === undefined ? "" : `${task.id}. `;
+        parts.push(
+          theme.fg(status.color, `  ${status.glyph} `) +
+            theme.fg("toolOutput", `${id}${clip(task.description)}`),
+        );
+      }
+      text.setText(parts.join("\n"));
+      return text;
+    },
+    renderResult(result, _options, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      if (result.isError) {
+        const first = result.content.find((c) => c.type === "text");
+        const message = first && first.type === "text" ? first.text : "update_tasks failed";
+        text.setText(theme.fg("error", `✗ ${clip(message, 160)}`));
+        return text;
+      }
+      const d = (result.details ?? {}) as { done?: number; total?: number };
+      text.setText(theme.fg("success", `✓ task list saved · ${d.done ?? 0}/${d.total ?? 0} done`));
+      return text;
+    },
     async execute(_id, { tasks }) {
       const v = validateTasks(tasks);
       if (v.error) {
@@ -162,7 +204,10 @@ export default function (pi: ExtensionAPI) {
       // log; the sidebar's task section only re-renders when asked. Mutators of
       // sidebar-visible state request the update after persisting.
       requestSidebarUpdate();
-      return { content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${sessionState.file}` }], details: {} };
+      return {
+        content: [{ type: "text" as const, text: `task state saved: ${done}/${(v.tasks ?? []).length} done → ${sessionState.file}` }],
+        details: { done, total: (v.tasks ?? []).length, file: sessionState.file },
+      };
     },
   });
 

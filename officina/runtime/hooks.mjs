@@ -1,11 +1,11 @@
-// Loader hook — serves the Officina-patched interactive-mode to the pinned
-// pi runtime (2026-08-31, layout fork steps 2-4).
+// Loader hook — serves the Officina-patched modules to the pinned pi
+// runtime (2026-08-31, layout fork steps 2-4).
 //
 // Mechanism: module.register() routes ALL resolves/loads through here.
-// When the docked layout is active and the requested module is pi's
-// interactive-mode.js, the LOAD returns our patched source while RESOLVE
-// still pins every relative dependency to the original package directory —
-// so the 5k-line module keeps its whole import graph without any rewriting.
+// When the docked layout is active and the requested module is a patched
+// target, the LOAD returns our patched source while RESOLVE still pins
+// every relative dependency to the original package directory — so the
+// patched module keeps its whole import graph without any rewriting.
 //
 // Everything else resolves/loads untouched.
 //
@@ -27,11 +27,22 @@ const PATCHED = new Map([
   ["dist/modes/interactive/components/session-selector.js", "session-selector.officina.js"],
   ["dist/modes/interactive/components/tool-execution.js", "components/tool-execution.js"],
   ["node_modules/@earendil-works/pi-tui/dist/components/markdown.js", "markdown.officina.js"],
+  // [officina P12] the BUNDLED CLI (dist/bundle/cli-runtime.js) never imports
+  // the vendor interactive-mode.js above — its chunks inline their own
+  // InteractiveMode/CustomEditor. Serve the P12-patched chunk (composer
+  // wrap-edge hook) so P11 works in docked/bundle mode.
+  ["dist/bundle/chunks/chunk-44DLKSKE.js", "chunks/chunk-44DLKSKE.js"],
 ]);
 function originalUrlFor(parentPath) {
   if (!pkgDist) return null;
   for (const rel of PATCHED.keys()) {
     if (parentPath.endsWith(rel)) return pathToFileURL(join(pkgRoot, rel)).href;
+  }
+  // Relative imports from INSIDE a patched bundle chunk must resolve as if
+  // they came from the original chunk (same directory, ./chunk-*.js peers).
+  if (parentPath.includes("/patched/chunks/")) {
+    const base = pathToFileURL(join(pkgRoot, "dist", "bundle", "chunks")).href;
+    return base;
   }
   return null;
 }
@@ -43,7 +54,13 @@ let pkgRoot = null; // pi-coding-agent's package root
 let dockedActive = true;
 export function initialize(data) {
   const d = data && data.pkgDist;
-  if (d && existsSync(join(d, "modes", "interactive", "interactive-mode.js"))) {
+  // Sticky: initialize() can run more than once (register from both the
+  // launcher and the child's NODE_OPTIONS --import). Only adopt a new
+  // pkgDist when we have none yet, or when it differs from the current one.
+  // Do NOT re-derive pkgRoot from a failed existsSync guard — the guard's
+  // vendor file (dist/modes/interactive/interactive-mode.js) is absent in
+  // bundle mode, where the chunk hooks still must serve.
+  if (d && (pkgDist === null || pkgDist !== d)) {
     pkgDist = d;
     pkgRoot = dirname(d); // strip the trailing dist/
   }
@@ -76,7 +93,10 @@ export function load(url, context, nextLoad) {
     for (const [rel, patchedName] of PATCHED) {
       const orig = pkgRoot ? pathToFileURL(join(pkgRoot, rel)).href : null;
       if (orig && url === orig) {
-        const source = readFileSync(join(fileURLToPath(new URL(".", import.meta.url)), "patched", patchedName), "utf-8");
+        const patchedPath = join(fileURLToPath(new URL(".", import.meta.url)), "patched", patchedName);
+        if (!existsSync(patchedPath)) return nextLoad(url, context);
+        const source = readFileSync(patchedPath, "utf-8");
+        { const _t = process.env.HOOKS_TRACE_FILE; if (_t) { import("node:fs").then(f=>f.appendFileSync(_t, "SERVE pid=" + process.pid + " rel=" + rel + " len=" + source.length + " url=" + url + "\n")).catch(()=>{}); } }
         return { format: "module", source, shortCircuit: true };
       }
     }

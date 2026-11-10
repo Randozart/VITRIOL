@@ -134,8 +134,8 @@ describe("buildChildEnv", () => {
 });
 
 describe("resolveLauncher / defaultConcurrency", () => {
-  it("points at bin/little-coder.mjs", () => {
-    expect(resolveLauncher().replace(/\\/g, "/")).toMatch(/\/bin\/little-coder\.mjs$/);
+  it("points at pi's bundled CLI", () => {
+    expect(resolveLauncher().replace(/\\/g, "/")).toMatch(/\/pi-coding-agent\/dist\/bundle\/cli\.js$/);
   });
   it("defaults concurrency to 1 (serial) and honors explicit values incl. 0 (issue #57)", () => {
     const prev = process.env.LITTLE_CODER_SUBCODER_CONCURRENCY;

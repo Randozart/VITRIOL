@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { fireLoad, fmtRate, fmtTokens } from "./decode.ts";
 import { RAMPS, renderGauge } from "./braille.ts";
 import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
+import { getVitriolLogSnapshot } from "../_shared/vitriol-log.ts";
 
 // vitriol-decode — live engine telemetry below the editor (2026-08-31).
 //
@@ -74,9 +75,31 @@ export default function (pi: ExtensionAPI) {
       `◈ VITRIOL  ${slotGauge} slots ${busy}/${total}` +
       `   ${tpsGauge} ${decoding ? `${fmtRate(last.delta.tps)} tok/s` : "idle"}` +
       `   ·  ${fmtTokens(last.total)} decoded this boot`;
-    const line2 = sessionDir ? `◈ ${sessionDir}` : undefined;
+    const log = getVitriolLogSnapshot();
+    const logFresh = log && log.ageMs < 10_000 && log.task != null;
+    let logLine = "";
+    if (logFresh && log) {
+      if (log.phase === "prefill") {
+        logLine =
+          `◈ log  task ${log.task} · prefill ${log.progress != null ? Math.round(log.progress * 100) + "%" : "?"}` +
+          ` (${log.promptTokens ?? "?"} tok) · ${log.prefillTps != null ? log.prefillTps.toFixed(0) : "?"} t/s`;
+      } else if (log.phase === "decode") {
+        logLine =
+          `◈ log  task ${log.task} · ${log.generated ?? "?"} gen · ${log.tg != null ? log.tg.toFixed(1) : "?"} t/s` +
+          `${log.tg3s != null ? ` (3s ${log.tg3s.toFixed(1)})` : ""}` +
+          `${log.draftAcceptance != null ? ` · accept ${(log.draftAcceptance * 100).toFixed(0)}%` : ""}`;
+      } else if (log.phase === "done") {
+        logLine =
+          `◈ log  task ${log.task} · done` +
+          `${log.evalTps != null ? ` · ${log.evalTps.toFixed(1)} t/s` : ""}` +
+          `${log.draftAcceptance != null ? ` · accept ${(log.draftAcceptance * 100).toFixed(0)}%` : ""}`;
+      }
+    }
+    const line2 = logLine || (sessionDir ? `◈ ${sessionDir}` : "");
     const rpc = last.rpc.length > 0 ? `   ·  rpc ${last.rpc.map((s) => s.split(":")[0]).join(",")}` : "";
-    ui.setWidget("vitriol-decode", line2 ? [line1 + rpc, line2] : [line1 + rpc], { placement: "belowEditor" });
+    const lines = [line1 + rpc];
+    if (line2) lines.push(line2);
+    ui.setWidget("vitriol-decode", lines, { placement: "belowEditor" });
   };
 
   pi.on("session_start", (_event, ctx) => {

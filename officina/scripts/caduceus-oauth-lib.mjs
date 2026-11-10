@@ -1,4 +1,4 @@
-// Pure OAuth metadata/parsing for Officina's OmniRoute wrapper. The server-side
+// Pure OAuth metadata/parsing for Officina's Caduceus wrapper (OmniRoute vendor). The server-side
 // provider registry is the source of truth; this mirrors the stable ids/flows
 // needed to drive browser and device grants from the CLI.
 

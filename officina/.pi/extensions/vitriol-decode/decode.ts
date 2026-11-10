@@ -10,15 +10,32 @@
 
 export interface MetricsCounters {
   promptTokens: number;
+  /** llama_decode() calls — decode STEPS, excludes speculative/draft tokens. */
   decodeTokens: number;
+  /** Tokens actually emitted, including accepted MTP draft tokens. This is
+   *  the truthful throughput counter (2026-11-10: with MTP n=3 the live
+   *  session showed 289k predicted vs 110k decode steps, so using the step
+   *  counter understated tok/s ~2.6x). */
+  predictedTokens: number;
   /** VITRIOL sparse-KV: cells ejected since boot (0 on stock engines). */
   ejected?: number;
+  /** Cumulative queue wait (seconds) and request count — overflow routing. */
+  queueSum?: number;
+  queueCount?: number;
+  /** Engine gauges: in-flight / deferred requests. */
+  processing?: number;
+  deferred?: number;
 }
 
 const COUNTER_KEYS: Record<string, keyof MetricsCounters> = {
   "llamacpp:prompt_tokens_total": "promptTokens",
   "llamacpp:n_decode_total": "decodeTokens",
+  "llamacpp:tokens_predicted_total": "predictedTokens",
   "llamacpp:kv_ejected_total": "ejected",
+  "llamacpp:queue_time_seconds_sum": "queueSum",
+  "llamacpp:queue_time_seconds_count": "queueCount",
+  "llamacpp:requests_processing": "processing",
+  "llamacpp:requests_deferred": "deferred",
 };
 
 export function parseMetrics(text: string): MetricsCounters | null {
@@ -31,8 +48,21 @@ export function parseMetrics(text: string): MetricsCounters | null {
     if (!Number.isFinite(n)) return null;
     out[field] = n;
   }
-  if (out.promptTokens === undefined || out.decodeTokens === undefined) return null;
-  return { promptTokens: out.promptTokens, decodeTokens: out.decodeTokens, ejected: out.ejected ?? 0 };
+  if (out.promptTokens === undefined) return null;
+  // Prefer the predicted-token counter; older engines without it fall back
+  // to decode steps (which is the old, MTP-understated behaviour).
+  const predicted = out.predictedTokens ?? out.decodeTokens;
+  if (predicted === undefined) return null;
+  return {
+    promptTokens: out.promptTokens,
+    decodeTokens: out.decodeTokens ?? predicted,
+    predictedTokens: predicted,
+    ejected: out.ejected ?? 0,
+    ...(out.queueSum !== undefined ? { queueSum: out.queueSum } : {}),
+    ...(out.queueCount !== undefined ? { queueCount: out.queueCount } : {}),
+    ...(out.processing !== undefined ? { processing: out.processing } : {}),
+    ...(out.deferred !== undefined ? { deferred: out.deferred } : {}),
+  };
 }
 
 /**
@@ -91,7 +121,10 @@ export function counterDelta(
   seconds: number,
 ): DecodeDelta {
   if (!before || seconds <= 0) return { tps: 0, tokens: 0 };
-  const tokens = Math.max(0, after.decodeTokens - before.decodeTokens);
+  const tokens = Math.max(
+    0,
+    after.predictedTokens - before.predictedTokens,
+  );
   return { tps: tokens / seconds, tokens };
 }
 

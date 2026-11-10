@@ -22,6 +22,7 @@ import {
   fillModelDefaults,
   formatContextWindow,
   loadProviders,
+  modelsUrlFor,
   probeContextWindow,
   shouldArmEngineSync,
   windowChange,
@@ -87,14 +88,21 @@ export default async function (pi: ExtensionAPI) {
     let engineAlias = "";
     if (name === "llamacpp") {
       try {
-        const resp = await fetch(`${entry.baseUrl}/v1/models`, {
+        const resp = await fetch(modelsUrlFor(entry.baseUrl), {
           signal: AbortSignal.timeout(3000),
         });
         if (resp.ok) {
           const data = await resp.json();
           engineAlias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
           if (engineAlias && !models.some((m) => m.id === engineAlias)) {
-            models = [...models, fillModelDefaults({ id: engineAlias, name: engineAlias }, name, models.length)];
+            // Carry the probed window onto the alias entry: the auto-synced
+            // selection must not fall back to the 32k default when the engine
+            // actually serves 262k (owner-visible context budget).
+            models = [...models, fillModelDefaults({
+              id: engineAlias,
+              name: engineAlias,
+              contextWindow: models[0]?.contextWindow,
+            }, name, models.length)];
           }
         }
       } catch {
@@ -187,12 +195,16 @@ export default async function (pi: ExtensionAPI) {
       if (!alias) {
         // Engine was down at provider registration — try to discover now.
         try {
-          const resp = await fetch(`${lc.baseUrl}/v1/models`, { signal: AbortSignal.timeout(3000) });
+          const resp = await fetch(modelsUrlFor(lc.baseUrl), { signal: AbortSignal.timeout(3000) });
           if (resp.ok) {
             const data = await resp.json();
             alias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
             if (alias && !lc.models.some((m) => m.id === alias)) {
-              lc.models = [...lc.models, fillModelDefaults({ id: alias, name: alias }, "llamacpp", lc.models.length)];
+              lc.models = [...lc.models, fillModelDefaults({
+                id: alias,
+                name: alias,
+                contextWindow: lc.registeredCtx,
+              }, "llamacpp", lc.models.length)];
               pi.registerProvider("llamacpp", {
                 baseUrl: lc.baseUrl,
                 apiKey: lc.apiKey,
@@ -229,7 +241,8 @@ export default async function (pi: ExtensionAPI) {
     const armSync = (ctx: SyncCtx) => {
       lastCtx = ctx;
       // Officina divergence (2026-11-09): explicit non-local selections (the
-      // OmniRoute gateway, native subscriptions) must survive session_start.
+      // Caduceus gateway, virtual defaults, native subscriptions) must survive
+      // session_start.
       // Only an empty selection or llamacpp may be forced to the engine alias.
       if (!shouldArmEngineSync(ctx.model?.provider ?? ctx.getModel?.()?.provider)) return;
       if (syncTimer) return; // already retrying

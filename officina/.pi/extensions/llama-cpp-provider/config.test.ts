@@ -10,6 +10,7 @@ import {
   mergeProviders,
   resolveOverridePath,
   propsUrlFor,
+  modelsUrlFor,
   contextWindowFromProps,
   probeContextWindow,
   withContextWindow,
@@ -341,6 +342,15 @@ describe("propsUrlFor", () => {
     expect(propsUrlFor("http://host:8888/v1/")).toBe("http://host:8888/props");
     expect(propsUrlFor("http://host:8888")).toBe("http://host:8888/props");
     expect(propsUrlFor("http://host:8888/")).toBe("http://host:8888/props");
+  });
+});
+
+describe("modelsUrlFor", () => {
+  it("does not double the /v1 segment", () => {
+    expect(modelsUrlFor("http://127.0.0.1:8279/v1")).toBe("http://127.0.0.1:8279/v1/models");
+    expect(modelsUrlFor("http://127.0.0.1:8279/v1/")).toBe("http://127.0.0.1:8279/v1/models");
+    expect(modelsUrlFor("http://host:8888")).toBe("http://host:8888/v1/models");
+    expect(modelsUrlFor("http://host:8888/v1/models")).toBe("http://host:8888/v1/models");
   });
 });
 

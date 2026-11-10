@@ -26,13 +26,13 @@ describe("resolveCacheMode", () => {
     expect(resolveCacheMode("auto", undefined).cloud).toBe(false);
   });
   it("is cloud for non-local providers in auto mode", () => {
-    expect(resolveCacheMode("auto", "omniroute").cloud).toBe(true);
+    expect(resolveCacheMode("auto", "caduceus").cloud).toBe(true);
     expect(resolveCacheMode("auto", "opencode-go").cloud).toBe(true);
   });
   it("honours forced local/cloud/off", () => {
-    expect(resolveCacheMode("local", "omniroute").cloud).toBe(false);
+    expect(resolveCacheMode("local", "caduceus").cloud).toBe(false);
     expect(resolveCacheMode("cloud", "llamacpp").cloud).toBe(true);
-    expect(resolveCacheMode("off", "omniroute").cloud).toBe(false);
+    expect(resolveCacheMode("off", "caduceus").cloud).toBe(false);
   });
   it("treats empty provider as local", () => {
     expect(providerIsLocal("")).toBe(true);
@@ -43,9 +43,9 @@ describe("resolveCacheMode", () => {
 
 describe("shared state", () => {
   it("updates on provider selection", () => {
-    setCacheModeFromProvider("omniroute", { OFFICINA_CACHE_MODE: "auto" });
+    setCacheModeFromProvider("caduceus", { OFFICINA_CACHE_MODE: "auto" });
     expect(isCloudCacheMode()).toBe(true);
-    expect(getCacheModeState().provider).toBe("omniroute");
+    expect(getCacheModeState().provider).toBe("caduceus");
     setCacheModeFromProvider("llamacpp", { OFFICINA_CACHE_MODE: "auto" });
     expect(isCloudCacheMode()).toBe(false);
   });
@@ -60,7 +60,7 @@ describe("clear policy", () => {
   });
 
   it("defers clearing in cloud mode below the threshold", () => {
-    setCacheModeFromProvider("omniroute", { OFFICINA_CACHE_MODE: "auto" });
+    setCacheModeFromProvider("caduceus", { OFFICINA_CACHE_MODE: "auto" });
     expect(shouldDeferToolClear(40, {})).toBe(true);
     expect(shouldDeferToolClear(null, {})).toBe(true);
     expect(shouldDeferToolClear(95, {})).toBe(false);

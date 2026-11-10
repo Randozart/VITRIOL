@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 import { fgSeq } from "../_shared/vitriolum.ts";
@@ -50,6 +50,9 @@ const SIDEBAR_W = 42;
 // chars onto the next row). The JS split trims 1 pad col — 40 fits both.
 const CONTENT_W = SIDEBAR_W - 2;
 export { CONTENT_W };
+
+/** Let llama-cpp-provider's session_start sync settle before warning. */
+const MISMATCH_GRACE_MS = 5000;
 
 // (ANSI-stripped visible width — exported for tests alongside embDiv.)
 export const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
@@ -125,6 +128,10 @@ export default function (pi: ExtensionAPI) {
   const couplings = loadCouplings();
   let ctxUsage: { tokens: number | null; contextWindow: number; percent: number | null } | null = null;
   let sessionCtx: any = null;
+  /** When the current engine/pi model divergence was first observed. */
+  let mismatchOnset: number | null = null;
+  const mismatchGraceElapsed = (): boolean =>
+    mismatchOnset !== null && Date.now() - mismatchOnset >= MISMATCH_GRACE_MS;
 
   const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
 
@@ -163,6 +170,69 @@ export default function (pi: ExtensionAPI) {
     return [truncate(sc(GOLD, "◈ " + couplingFull), CONTENT_W)];
   });
 
+  // P11: Active permission mode (ask / auto / yolo). Runtime file wins over
+  // the launch env, matching permissions-guard's resolution order.
+  registerSidebarSection("perm", 11, () => {
+    const modePath = process.env.OFFICINA_PERMISSIONS_MODE_FILE
+      || join(process.env.HOME || "", ".vitriol", "officina", "permissions-mode");
+    let mode = process.env.OFFICINA_PERMISSIONS_MODE || "ask";
+    try {
+      if (existsSync(modePath)) {
+        const raw = readFileSync(modePath, "utf8").trim().toLowerCase();
+        if (raw === "ask" || raw === "auto" || raw === "yolo") mode = raw;
+      }
+    } catch { /* cosmetic */ }
+    const color = mode === "yolo" ? VIOLET : mode === "auto" ? GOLD : SAFETY;
+    return [truncate(sc(MUTED, "perm ") + sc(color, mode), CONTENT_W)];
+  });
+
+  // P12: readiness summary — one fact per line. No secrets, only presence.
+  registerSidebarSection("ready", 12, () => {
+    const eng = getEngineSnapshot();
+    const home = process.env.HOME || "";
+    const envPath = join(home, ".vitriol", "officina", "env");
+    const accountsPath = join(home, ".vitriol", "officina", "accounts.json");
+    const profilePath = join(home, ".vitriol", "officina", "routing-profile");
+    const healthPath = join(home, ".vitriol", "officina", "provider-health.json");
+    const envKeys = new Set<string>();
+    try {
+      if (existsSync(envPath)) {
+        for (const line of readFileSync(envPath, "utf8").split(/\r?\n/)) {
+          const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+          if (m) envKeys.add(m[1]);
+        }
+      }
+    } catch { /* cosmetic */ }
+    let total = 0;
+    let present = 0;
+    try {
+      if (existsSync(accountsPath)) {
+        const doc = JSON.parse(readFileSync(accountsPath, "utf8"));
+        for (const a of Array.isArray(doc?.accounts) ? doc.accounts : []) {
+          const key = String(a?.credential_env ?? "").trim();
+          if (!key) continue;
+          total += 1;
+          if (envKeys.has(key) || String(process.env[key] ?? "").trim()) present += 1;
+        }
+      }
+    } catch { /* cosmetic */ }
+    let profile = "auto";
+    try { profile = readFileSync(profilePath, "utf8").trim() || "auto"; } catch { /* auto */ }
+    let cooling = 0;
+    try {
+      const health = JSON.parse(readFileSync(healthPath, "utf8"));
+      const now = Date.now();
+      cooling = Object.values(health?.models ?? {}).filter((r: any) => Number(r?.cooldownUntil) > now).length;
+    } catch { /* none */ }
+    const lines = [
+      truncate(sc(MUTED, "local ") + sc(eng.up ? SAFETY : GOLD, eng.up ? "up" : "down"), CONTENT_W),
+      truncate(sc(MUTED, "cloud ") + sc(SAFETY, `${present}/${total} keys`), CONTENT_W),
+      truncate(sc(MUTED, "profile ") + sc(VIOLET, profile), CONTENT_W),
+    ];
+    if (cooling > 0) lines.push(truncate(sc(MUTED, "cooling ") + sc(GOLD, String(cooling)), CONTENT_W));
+    return lines;
+  });
+
   // P13: Divider with embedded group header (engine stats follow)
   registerSidebarSection("div1", 13, () => {
     if (!sidebarEnriched()) return undefined;
@@ -177,10 +247,20 @@ export default function (pi: ExtensionAPI) {
     const g = renderGauge(RAMPS.capacity, Math.min(1, (pct ?? 0) / 100), 6);
     const filled = ctxUsage.tokens != null ? fmtTokens(ctxUsage.tokens) : "--";
     const total = fmtTokens(ctxUsage.contextWindow);
+    // Depth is the dominant speed tax: warn before compaction gets urgent.
+    const pctColor = pct != null && pct >= 90 ? VIOLET : pct != null && pct >= 75 ? GOLD : SAFETY;
+    const lines = [
+      truncate(`${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(pctColor, pct.toFixed(1) + "%") : sc(MUTED, "--")}`, CONTENT_W),
+      truncate(`${sc(MUTED, "tokens ")}${sc(SAFETY, filled)}${sc(MUTED, "/")}${sc(SAFETY, total)}`, CONTENT_W),
+    ];
+    if (pct != null && pct >= 75) {
+      lines.push(truncate(sc(pctColor, "compact soon: /compact"), CONTENT_W));
+    }
     const ejected = getEngineSnapshot().ejected;
-    const ej = ejected > 0 ? sc(MUTED, " ⤓ ") + sc(SOLVENT, fmtTokens(ejected)) : "";
-    const line = `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(SAFETY, pct.toFixed(1) + "%") : sc(MUTED, "--")} ${sc(MUTED, "· " + filled + "/" + total)}${ej}`;
-    return [truncate(line, CONTENT_W)];
+    if (ejected > 0) {
+      lines.push(truncate(`${sc(MUTED, "ejected ")}${sc(SOLVENT, fmtTokens(ejected))}`, CONTENT_W));
+    }
+    return lines;
   });
 
   // P21: Prompt-cache activity (cloud providers). Shows cumulative cache reads
@@ -189,8 +269,11 @@ export default function (pi: ExtensionAPI) {
     if (state.cacheRead + state.cacheWrite <= 0) return undefined;
     const prompt = state.tokensIn + state.cacheRead + state.cacheWrite;
     const hit = prompt > 0 ? (state.cacheRead / prompt) * 100 : 0;
-    const line = `${sc(MUTED, "cache ")}${sc(SOLVENT, fmtTokens(state.cacheRead))}${sc(MUTED, " R · ")}${sc(VIOLET, fmtTokens(state.cacheWrite))}${sc(MUTED, " W · ")}${sc(SAFETY, hit.toFixed(0) + "%")}`;
-    return [truncate(line, CONTENT_W)];
+    return [
+      truncate(`${sc(MUTED, "cache read ")}${sc(SOLVENT, fmtTokens(state.cacheRead))}`, CONTENT_W),
+      truncate(`${sc(MUTED, "cache write ")}${sc(VIOLET, fmtTokens(state.cacheWrite))}`, CONTENT_W),
+      truncate(`${sc(MUTED, "cache hit ")}${sc(SAFETY, hit.toFixed(0) + "%")}`, CONTENT_W),
+    ];
   });
 
   // P25: Engine throughput — the ONE live-rate row (2026-09-03 declutter:
@@ -237,22 +320,32 @@ export default function (pi: ExtensionAPI) {
     if (!eng.up || !eng.loaded_model) return undefined;
     const base = eng.loaded_path.split("/").pop()?.replace(/\.gguf$/i, "") ?? "";
     const aligned = modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
-    if (!aligned && modelId) {
-      return [truncate(
-        sc(SAFETY, `loaded ${eng.loaded_model}`)
-          + sc(MUTED, " ⚠ pi says ")
-          + sc(SAFETY, modelId),
-        CONTENT_W,
-      )];
+    const virtualDefault = providerName === "officina";
+    if (process.env.OFFICINA_OVERFLOW === "1" || virtualDefault) {
+      return [
+        truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W),
+        truncate(
+          sc(MUTED, "route ") + sc(VIOLET, virtualDefault ? "Lapis Occultus" : "overflow"),
+          CONTENT_W,
+        ),
+      ];
     }
-    const detail = base ? sc(MUTED, " · ") + sc(SOLVENT, base) : "";
-    return [truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model) + detail, CONTENT_W)];
+    if (!aligned && modelId && mismatchGraceElapsed()) {
+      return [
+        truncate(sc(MUTED, "loaded ") + sc(SAFETY, eng.loaded_model), CONTENT_W),
+        truncate(sc(MUTED, "pi ") + sc(SAFETY, modelId), CONTENT_W),
+        truncate(sc(SAFETY, "⚠ model mismatch"), CONTENT_W),
+      ];
+    }
+    const lines = [truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W)];
+    if (base) lines.push(truncate(sc(MUTED, "file ") + sc(SOLVENT, base), CONTENT_W));
+    return lines;
   });
 
-  // P28: Divider with embedded group header (the Plans group follows)
+  // P28: Divider with embedded group header (the Todo group follows)
   registerSidebarSection("div2", 28, () => {
     if (!sidebarEnriched()) return undefined;
-    return [embDiv("Plans")];
+    return [embDiv("Todo")];
   });
 
   // P35: Task state — counts + the actual open items (owner request
@@ -262,47 +355,75 @@ export default function (pi: ExtensionAPI) {
   // NAME moved into the divider (div2 → "── Plans ─…"), so the counts
   // row drops its inline prefix — the checklist starts on its own row,
   // nothing sits weirdly after the name.
-  registerSidebarSection("tasks", 35, () => {
+  registerSidebarSection("tasks", 30, () => {
     if (!sidebarEnriched()) return undefined;
     const summary = getTaskSummary();
     if (!summary) return undefined;
+    // One fact per line (owner request 2026-11-10: the combined counts row
+    // and the 4-item preview made the list unreadable). Open items are shown
+    // IN FULL, in progress first.
     const lines: string[] = [];
-    const parts: string[] = [];
-    if (summary.inProgress > 0) parts.push(sc(SAFETY, `[>] ${summary.inProgress}`));
-    if (summary.pending > 0) parts.push(sc(MUTED, `[ ] ${summary.pending}`));
-    parts.push(sc(SAFETY, `${summary.completed} done`));
-    lines.push(truncate(parts.join(sc(MUTED, " · ")), CONTENT_W));
-    const items = getTaskItems().filter((t) => t.status === "in_progress" || t.status === "pending");
-    for (const t of items.slice(0, 4)) {
+    if (summary.inProgress > 0) {
+      lines.push(truncate(`${sc(SAFETY, "[>] ")}${sc(SAFETY, `${summary.inProgress} in progress`)}`, CONTENT_W));
+    }
+    if (summary.pending > 0) {
+      lines.push(truncate(`${sc(MUTED, "[ ] ")}${sc(MUTED, `${summary.pending} pending`)}`, CONTENT_W));
+    }
+    if (summary.completed > 0) {
+      lines.push(truncate(`${sc(MUTED, "✓ ")}${sc(MUTED, `${summary.completed} done`)}`, CONTENT_W));
+    }
+    if (summary.cancelled > 0) {
+      lines.push(truncate(`${sc(MUTED, "✗ ")}${sc(MUTED, `${summary.cancelled} cancelled`)}`, CONTENT_W));
+    }
+    const open = getTaskItems().filter(
+      (t) => t.status === "in_progress" || t.status === "pending",
+    );
+    const shown = open.slice(0, 6);
+    for (const t of shown) {
       const mark = t.status === "in_progress" ? sc(SAFETY, "[>] ") : sc(MUTED, "[ ] ");
       lines.push(truncate("  " + mark + sc(TEXT, t.description), CONTENT_W));
+    }
+    if (open.length > shown.length) {
+      lines.push(truncate(sc(MUTED, `  +${open.length - shown.length} open`), CONTENT_W));
     }
     return lines;
   });
 
-  // P36: Scratchpad — summary + the actual open lines (facts, then leads;
-  // owner request 2026-09-02). Cap at 4 content lines.
+  // P34: Divider with embedded group header (the Notebook follows).
+  registerSidebarSection("div2b", 34, () => {
+    if (!sidebarEnriched()) return undefined;
+    return [embDiv("Notebook")];
+  });
+
+  // P36: Scratchpad — counts one per line, then the actual open lines
+  // (facts / context / leads, owner request 2026-11-10: full notebook, one
+  // fact per line; dead ends collapse to a count).
   registerSidebarSection("scratchpad", 36, () => {
     if (!sidebarEnriched()) return undefined;
     const s = getScratchpadSummary();
     if (!s) return undefined;
-    const lines: string[] = [truncate(
-      sc(MUTED, "note ")
-        + sc(VIOLET, `${s.facts} facts`)
-        + sc(MUTED, " · ")
-        + sc(VIOLET, `${s.leads} lead${s.leads === 1 ? "" : "s"}`)
-        + sc(MUTED, " · ")
-        + sc(VIOLET, `${s.dead} dead`)
-        + sc(MUTED, ` · ${s.lines}/${s.cap}`),
-      CONTENT_W,
-    )];
+    const lines: string[] = [
+      truncate(sc(MUTED, "facts ") + sc(VIOLET, String(s.facts)), CONTENT_W),
+      truncate(sc(MUTED, "context ") + sc(VIOLET, String(s.context)), CONTENT_W),
+      truncate(sc(MUTED, "leads ") + sc(VIOLET, String(s.leads)), CONTENT_W),
+      truncate(sc(MUTED, "dead ") + sc(VIOLET, String(s.dead)), CONTENT_W),
+      truncate(sc(MUTED, "lines ") + sc(VIOLET, `${s.lines}/${s.cap}`), CONTENT_W),
+    ];
     const items = getScratchpadItems();
     if (items) {
-      for (const f of items.facts.slice(0, 2)) {
-        lines.push(truncate("  " + sc(VIOLET, "▪ ") + sc(TEXT, f), CONTENT_W));
-      }
-      for (const l of items.leads.slice(0, 2)) {
-        lines.push(truncate("  " + sc(SOLVENT, "→ ") + sc(TEXT, l), CONTENT_W));
+      const budget = 8;
+      let used = 0;
+      const pushItem = (prefix: string, text: string) => {
+        if (used >= budget) return;
+        used += 1;
+        lines.push(truncate("  " + prefix + sc(TEXT, text), CONTENT_W));
+      };
+      for (const f of items.facts) pushItem(sc(VIOLET, "▪ "), f);
+      for (const c of items.context) pushItem(sc(MUTED, "· "), c);
+      for (const l of items.leads) pushItem(sc(SOLVENT, "→ "), l);
+      const totalItems = items.facts.length + items.context.length + items.leads.length;
+      if (totalItems > used) {
+        lines.push(truncate(sc(MUTED, `  +${totalItems - used} more`), CONTENT_W));
       }
     }
     return lines;
@@ -310,14 +431,12 @@ export default function (pi: ExtensionAPI) {
 
   // P40: Files touched
   registerSidebarSection("files", 40, () => {
-    const files = [...state.files.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, 4);
+    const files = [...state.files.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, 5);
     if (files.length === 0) return undefined;
-    return [
-      truncate(`${sc(MUTED, "files: ")}${files.map(([p, f]) => {
-        const counts = f.add || f.del ? ` ${sc(SAFETY, "+" + f.add)} ${sc(SUBSTRATE, "−" + f.del)}` : "";
-        return sc(VIOLET, shortPath(p)) + counts;
-      }).join(sc(MUTED, "  "))}`, CONTENT_W),
-    ];
+    return files.map(([p, f]) => {
+      const counts = f.add || f.del ? ` ${sc(SAFETY, "+" + f.add)} ${sc(SUBSTRATE, "−" + f.del)}` : "";
+      return truncate(sc(VIOLET, shortPath(p)) + counts, CONTENT_W);
+    });
   });
 
   // P42: Divider with embedded group header (session/skills follow)
@@ -331,7 +450,9 @@ export default function (pi: ExtensionAPI) {
   // `SESSION ID: #… @ ~/path`).
   registerSidebarSection("session", 45, () => {
     return [
-      truncate(`${sc(SAFETY, `↑${state.tokensIn}`)}${sc(MUTED, " ↓")}${sc(SAFETY, `${state.tokensOut}`)}${sc(MUTED, ` · ${state.turns} turns`)}`, CONTENT_W),
+      truncate(sc(MUTED, "in ") + sc(SAFETY, String(state.tokensIn)), CONTENT_W),
+      truncate(sc(MUTED, "out ") + sc(SAFETY, String(state.tokensOut)), CONTENT_W),
+      truncate(sc(MUTED, "turns ") + sc(SAFETY, String(state.turns)), CONTENT_W),
     ];
   });
 
@@ -341,8 +462,14 @@ export default function (pi: ExtensionAPI) {
     if (!sidebarEnriched()) return undefined;
     const tools = getRecentTools();
     if (tools.length === 0) return undefined;
-    const shown = tools.slice(0, 5);
-    return [truncate(sc(MUTED, "tools ") + shown.map((t) => sc(VIOLET, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${tools.length} active`), CONTENT_W)];
+    const lines = [truncate(sc(MUTED, "tools ") + sc(SAFETY, String(tools.length)), CONTENT_W)];
+    for (const t of tools.slice(0, 5)) {
+      lines.push(truncate("  " + sc(VIOLET, t), CONTENT_W));
+    }
+    if (tools.length > 5) {
+      lines.push(truncate(sc(MUTED, `  +${tools.length - 5} more`), CONTENT_W));
+    }
+    return lines;
   });
 
   // P55: Knowledge refs
@@ -350,8 +477,14 @@ export default function (pi: ExtensionAPI) {
     if (!sidebarEnriched()) return undefined;
     const topics = getLastTopics();
     if (topics.length === 0) return undefined;
-    const shown = topics.slice(0, 4);
-    return [truncate(sc(MUTED, "ref ") + shown.map((t) => sc(SOLVENT, t)).join(sc(MUTED, " · ")) + sc(MUTED, ` · ${topics.length} injected`), CONTENT_W)];
+    const lines = [truncate(sc(MUTED, "refs ") + sc(SAFETY, String(topics.length)), CONTENT_W)];
+    for (const t of topics.slice(0, 5)) {
+      lines.push(truncate("  " + sc(SOLVENT, t), CONTENT_W));
+    }
+    if (topics.length > 5) {
+      lines.push(truncate(sc(MUTED, `  +${topics.length - 5} more`), CONTENT_W));
+    }
+    return lines;
   });
 
   // P58: Divider with embedded group header (command hints follow)
@@ -362,7 +495,9 @@ export default function (pi: ExtensionAPI) {
 
   // P90: Command hints
   registerSidebarSection("hints", 90, () => {
-    return [truncate(sc(MUTED, "/help · /resume · /tree · /history · /mode"), CONTENT_W)];
+    return ["/help", "/model", "/agent", "/permissions", "/cache", "/tools", "/opencode"].map((cmd) =>
+      truncate(sc(MUTED, cmd), CONTENT_W),
+    );
   });
 
   // ── Render coordinator ────────────────────────────────────────────────
@@ -474,17 +609,31 @@ export default function (pi: ExtensionAPI) {
         // 2026-09-03): the engine's loaded model vs pi's selection.
         // Uses modelMatchesLoaded (2026-09-04) — the raw !== fired on
         // aligned sessions whose id is the GGUF filename.
+        //
+        // Grace window (2026-11-10): llama-cpp-provider auto-syncs pi's
+        // selection to the engine alias on session_start via a bounded
+        // retry. The first engine poll can land BEFORE that sync settles,
+        // producing a scary "engine loaded Lapis Occultus, pi selected
+        // <old-gguf>" toast that immediately becomes false. Require the
+        // mismatch to persist for MISMATCH_GRACE_MS first; a real drift
+        // still warns.
         try {
           const eng = getEngineSnapshot();
-          const mismatch = eng.up && !!eng.loaded_model && !!modelId
+          const overflowArmed = process.env.OFFICINA_OVERFLOW === "1";
+          const virtualDefault = providerName === "officina";
+          const mismatch = !overflowArmed && !virtualDefault && eng.up && !!eng.loaded_model && !!modelId
             && !modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
-          if (mismatch && !mismatchNotified) {
-            mismatchNotified = true;
-            void (ctx as any)?.ui?.notify?.(
-              `model mismatch: engine loaded ${eng.loaded_model}, pi selected ${modelId}`,
-              "warning",
-            );
-          } else if (!mismatch && mismatchNotified) {
+          if (mismatch) {
+            mismatchOnset ??= Date.now();
+            if (!mismatchNotified && mismatchGraceElapsed()) {
+              mismatchNotified = true;
+              void (ctx as any)?.ui?.notify?.(
+                `model mismatch: engine loaded ${eng.loaded_model}, pi selected ${modelId}`,
+                "warning",
+              );
+            }
+          } else {
+            mismatchOnset = null;
             mismatchNotified = false; // re-arm on match
           }
         } catch {}
@@ -575,7 +724,7 @@ export default function (pi: ExtensionAPI) {
   // ── /import — pull another session's tasks + scratchpad into this one ───
   pi.registerCommand("import", {
     description: "Import tasks and scratchpad from another session (/import or /import <stem>)",
-    handler: async (args: string, ctx: { ui: any; sessionManager: any }) => {
+    handler: async (args: string, ctx: { ui: any; sessionManager: any; mode?: string }) => {
       const tasksDir = join(cwd, ".officina", "tasks");
       const scratchDir = join(cwd, ".officina");
       try {
@@ -613,6 +762,20 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
+        const copySession = async (target: { stem: string; tasks: number; hasScratch: boolean }) => {
+          const srcTasks = j(tasksDir, `${target.stem}.json`);
+          const dstTasks = j(tasksDir, `${curStem}.json`);
+          if (existsSync(srcTasks)) copyFileSync(srcTasks, dstTasks);
+          const srcScratch = j(scratchDir, `${target.stem}.md`);
+          const dstScratch = j(scratchDir, `${curStem}.md`);
+          if (existsSync(srcScratch)) copyFileSync(srcScratch, dstScratch);
+          await ctx.ui.notify?.(
+            `imported from ${target.stem} (${target.tasks} tasks${target.hasScratch ? " + scratchpad" : ""})`,
+            "info",
+          );
+          renderSidebar();
+        };
+
         // If args provided, try direct import
         if (args.trim()) {
           const target = sessions.find((s) => s.stem === args.trim() || s.stem.startsWith(args.trim()));
@@ -620,20 +783,25 @@ export default function (pi: ExtensionAPI) {
             await ctx.ui.notify?.(`session not found: ${args.trim()}`, "warning");
             return;
           }
-          // Copy task file
-          const srcTasks = j(tasksDir, `${target.stem}.json`);
-          const dstTasks = j(tasksDir, `${curStem}.json`);
-          if (existsSync(srcTasks)) copyFileSync(srcTasks, dstTasks);
-          // Copy scratchpad file
-          const srcScratch = j(scratchDir, `${target.stem}.md`);
-          const dstScratch = j(scratchDir, `${curStem}.md`);
-          if (existsSync(srcScratch)) copyFileSync(srcScratch, dstScratch);
-          await ctx.ui.notify?.(`imported from ${target.stem} (${target.tasks} tasks${target.hasScratch ? " + scratchpad" : ""})`, "info");
-          renderSidebar();
+          await copySession(target);
           return;
         }
 
-        // Interactive list via custom overlay
+        // RPC has no custom-component support: use the supported select dialog
+        // instead of the TUI-only overlay (2026-11-10).
+        if (ctx.mode === "rpc" || typeof ctx.ui.custom !== "function") {
+          const labels = sessions.map(
+            (s) => `${s.date} · ${s.tasks} tasks${s.hasScratch ? " + scratch" : ""} · ${s.stem.slice(0, 24)}`,
+          );
+          const choice = await ctx.ui.select?.("Import session state from…", labels);
+          if (choice) {
+            const idx = labels.indexOf(choice);
+            if (idx >= 0) await copySession(sessions[idx]);
+          }
+          return;
+        }
+
+        // Interactive list via custom overlay (TUI only)
         let selected = 0;
         await ctx.ui.custom(
           (tui: any, _theme: any, _keys: any, close: () => void) => ({
@@ -658,15 +826,8 @@ export default function (pi: ExtensionAPI) {
               if (data === `${ESC}[A`) selected = Math.max(0, selected - 1);
               else if (data === `${ESC}[B`) selected = Math.min(sessions.length - 1, selected + 1);
               else if (data === "\r" || data === "\n") {
-                const target = sessions[selected];
-                const srcTasks = j(tasksDir, `${target.stem}.json`);
-                const dstTasks = j(tasksDir, `${curStem}.json`);
-                if (existsSync(srcTasks)) copyFileSync(srcTasks, dstTasks);
-                const srcScratch = j(scratchDir, `${target.stem}.md`);
-                const dstScratch = j(scratchDir, `${curStem}.md`);
-                if (existsSync(srcScratch)) copyFileSync(srcScratch, dstScratch);
+                void copySession(sessions[selected]);
                 close();
-                renderSidebar();
                 return;
               }
               else return;

@@ -4,7 +4,7 @@ import {
   OAUTH_PROVIDERS,
   parseOAuthCallback,
   resolveBackendKey,
-} from "./omniroute-oauth-lib.mjs";
+} from "./caduceus-oauth-lib.mjs";
 
 describe("OAuth provider map", () => {
   it("contains native and free flows", () => {

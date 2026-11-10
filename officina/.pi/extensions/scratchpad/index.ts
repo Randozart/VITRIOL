@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,6 +37,13 @@ import { sessionFileStem } from "../task-state/index.ts";
 
 const CUSTOM_TYPE = "lc-scratchpad";
 const FILE_NAME = "SCRATCHPAD.md";
+const SECTIONS = ["facts", "context", "leads", "dead"] as const;
+
+/** One-line display clip (the stored line can be up to the 350-char budget). */
+function clip(text: string, max = 96): string {
+  const one = text.replace(/\s+/g, " ").trim();
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
 
 const cfg = scratchpadConfig();
 // Session-scoped scratchpad path (2026-09-06): globalThis-backed singleton —
@@ -69,11 +77,15 @@ export function getScratchpadSummary(): { lines: number; cap: number; facts: num
 /** Scratchpad CONTENT for sidebar display: the actual open lines —
  *  facts (evidence) and leads (open threads), each already one line.
  *  Null when the notebook is empty. */
-export function getScratchpadItems(): { facts: string[]; leads: string[] } | null {
+export function getScratchpadItems(): {
+  facts: string[];
+  context: string[];
+  leads: string[];
+} | null {
   try {
     const doc = readDoc();
     if (totalLines(doc) === 0) return null;
-    return { facts: doc.facts, leads: doc.leads };
+    return { facts: doc.facts, context: doc.context, leads: doc.leads };
   } catch {
     return null;
   }
@@ -105,7 +117,7 @@ export default function (pi: ExtensionAPI) {
       "Update the project hot notebook (external state, survives compaction, re-injected every turn). " +
       "Detective-notebook discipline: evidence in `facts` (numbers verbatim), structured working data in `context` " +
       "(error lists, file excerpts, intermediate results), open hypotheses in `leads`, " +
-      `ruled-out ideas in \`dead\`. Hard cap ${cfg.cap} lines total; max ${cfg.maxLineChars} chars per line. ` +
+      `ruled-out ideas in \`dead\`. Hard cap ${cfg.cap} lines total; keep lines under ${cfg.advertisedLineChars} chars. ` +
       "A section you name is REPLACED wholesale — omit stale lines to prune them. Not history.",
     parameters: Type.Object({
       facts: Type.Optional(Type.Array(Type.String(), { description: "Replace the facts section (evidence: numbers, shapes, argv, observed behavior)" })),
@@ -114,12 +126,51 @@ export default function (pi: ExtensionAPI) {
       dead: Type.Optional(Type.Array(Type.String(), { description: "Replace the dead section (ruled out, stated briefly; prune when cold)" })),
       reset: Type.Optional(Type.Boolean({ description: "Wipe the entire notebook before applying (true = start fresh)" })),
     }),
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const parts = [theme.fg("toolTitle", theme.bold("▤ scratchpad"))];
+      if (args.reset) parts.push(theme.fg("warning", "  reset all"));
+      let sections = 0;
+      for (const name of SECTIONS) {
+        const items = args[name];
+        if (!Array.isArray(items)) continue;
+        sections++;
+        parts.push(theme.fg("accent", `  ${name}`) + theme.fg("muted", ` (${items.length})`));
+        for (const item of items.slice(0, 3)) {
+          parts.push(theme.fg("toolOutput", `    · ${clip(String(item ?? ""))}`));
+        }
+        if (items.length > 3) parts.push(theme.fg("dim", `    +${items.length - 3} more`));
+      }
+      if (sections === 0 && !args.reset) parts.push(theme.fg("dim", "  no sections named"));
+      text.setText(parts.join("\n"));
+      return text;
+    },
+    renderResult(result, _options, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      const first = result.content.find((c) => c.type === "text");
+      const message = first && first.type === "text" ? first.text : "scratchpad_write";
+      if (result.isError) {
+        text.setText(theme.fg("error", `✗ ${clip(message, 160)}`));
+        return text;
+      }
+      const d = (result.details ?? {}) as {
+        total?: number;
+        cap?: number;
+        counts?: Record<string, number>;
+      };
+      const c = d.counts ?? {};
+      const summary =
+        `✓ scratchpad saved · ${d.total ?? 0}/${d.cap ?? cfg.cap} lines` +
+        ` · facts=${c.facts ?? 0} context=${c.context ?? 0} leads=${c.leads ?? 0} dead=${c.dead ?? 0}`;
+      text.setText(theme.fg("success", summary));
+      return text;
+    },
     async execute(_id, update) {
       const before = readDoc();
       const v = applyUpdate(before, update, cfg);
       if (v.error || !v.doc) {
         const counts = `current: facts=${before.facts.length} context=${before.context.length} leads=${before.leads.length} dead=${before.dead.length}`;
-        return { content: [{ type: "text" as const, text: `scratchpad_write rejected: ${v.error} (${counts})` }], details: {}, isError: true };
+        return { content: [{ type: "text" as const, text: `scratchpad_write rejected: ${v.error} (${counts})` }], details: { error: v.error }, isError: true };
       }
       try {
         mkdirSync(cfg.dir, { recursive: true });
@@ -138,7 +189,17 @@ export default function (pi: ExtensionAPI) {
           type: "text" as const,
           text: `scratchpad saved: ${total}/${cfg.cap} lines (facts=${v.doc.facts.length} context=${v.doc.context.length} leads=${v.doc.leads.length} dead=${v.doc.dead.length}) -> ${docState.file}`,
         }],
-        details: {},
+        details: {
+          total,
+          cap: cfg.cap,
+          counts: {
+            facts: v.doc.facts.length,
+            context: v.doc.context.length,
+            leads: v.doc.leads.length,
+            dead: v.doc.dead.length,
+          },
+          file: docState.file,
+        },
       };
     },
   });

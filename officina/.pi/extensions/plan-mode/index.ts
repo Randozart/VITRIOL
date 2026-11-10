@@ -647,20 +647,25 @@ export default function (pi: ExtensionAPI) {
   // pi's thinking-level cycle (issue #47). Raw mode disables flow control, so
   // ctrl+q is a clean \x11 byte on every terminal — unlike alt+p, which many
   // terminals deliver as a literal "π" rather than ESC+p, so the toggle never fired.
+  const togglePlan = (ctx: any, force?: boolean) => {
+    if (orchestrating) return;
+    planModeOn = force ?? !planModeOn;
+    setIndicator(ctx, planModeOn);
+    ctx.ui?.notify?.(planModeOn ? "plan mode on" : "plan mode off", "info");
+  };
+
   pi.registerShortcut("ctrl+q", {
     description: "Toggle plan mode",
+    handler: (ctx: any) => togglePlan(ctx),
+  });
 
-    handler: (ctx: any) => {
-      if (orchestrating) return;
-
-      planModeOn = !planModeOn;
-
-      setIndicator(ctx, planModeOn);
-
-      ctx.ui?.notify?.(
-        planModeOn ? "plan mode on" : "plan mode off",
-        "info",
-      );
+  // RPC mode exposes commands, not extension shortcuts. The Rust TUI maps
+  // ctrl+q to this command (2026-11-10).
+  pi.registerCommand("plan", {
+    description: "Toggle plan mode (ctrl+q): /plan, /plan on, /plan off",
+    handler: async (args: string, ctx: any) => {
+      const a = args.trim().toLowerCase();
+      togglePlan(ctx, a === "on" ? true : a === "off" ? false : undefined);
     },
   });
 

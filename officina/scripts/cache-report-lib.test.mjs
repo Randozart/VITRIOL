@@ -6,7 +6,7 @@ function msg(usage, extra = {}) {
     type: "message",
     message: {
       role: "assistant",
-      provider: "omniroute",
+      provider: "caduceus",
       model: "ddgw/gpt-5.4-mini",
       timestamp: 1000,
       usage,

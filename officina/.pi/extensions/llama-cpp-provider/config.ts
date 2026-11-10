@@ -201,6 +201,18 @@ export function propsUrlFor(baseUrl: string): string {
   return `${root}/props`;
 }
 
+/** OpenAI-compatible model-list URL. The base URL usually already ends in
+ *  `/v1` (`http://127.0.0.1:8279/v1`), so appending `/v1/models` produced
+ *  `/v1/v1/models` — a silent 404 that kept the engine alias out of the
+ *  registry and defeated the model auto-sync (root cause of the persistent
+ *  "model mismatch" toast, fixed 2026-11-10). */
+export function modelsUrlFor(baseUrl: string): string {
+  const trimmed = baseUrl.replace(/\/+$/, "");
+  if (/\/v1\/models$/i.test(trimmed)) return trimmed;
+  if (/\/v1$/i.test(trimmed)) return `${trimmed}/models`;
+  return `${trimmed}/v1/models`;
+}
+
 /** Pull the context window (n_ctx) out of a llama.cpp /props response. It lives
  *  at default_generation_settings.n_ctx (the per-slot window — exactly what one
  *  conversation can use); some builds also expose a top-level n_ctx. Returns
@@ -240,7 +252,7 @@ export function windowChange(
 
 /** Auto-sync may only force the local engine when the session is already on
  *  llamacpp (or has no selection yet). Any explicit non-local selection — e.g.
- *  the OmniRoute gateway — must survive session_start unchanged. Pure so the
+ *  the Caduceus gateway (and virtual defaults) — must survive session_start unchanged. Pure so the
  *  local-vs-explicit selection rule is testable without a pi runtime. */
 export function shouldArmEngineSync(currentProvider: string | undefined): boolean {
   return !currentProvider || currentProvider === "llamacpp";

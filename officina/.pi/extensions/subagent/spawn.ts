@@ -105,9 +105,26 @@ function emptyUsage(): SubCoderUsage {
 // .pi/extensions/subagent/spawn.ts → up 3 → package root → bin/little-coder.mjs.
 // Same path math as branding/index.ts; works in the local checkout and the
 // installed npm layout.
+/** pi's own bundled CLI (2026-11-10: the old little-coder.mjs launcher no
+ *  longer exists in the Officina monorepo, which made every subagent die
+ *  before it started). */
 export function resolveLauncher(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, "..", "..", "..", "bin", "little-coder.mjs");
+  const officina = resolve(here, "..", "..", "..");
+  return resolve(
+    officina,
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "dist",
+    "bundle",
+    "cli.js",
+  );
+}
+
+function officinaExtension(name: string): string {
+  const here = dirname(fileURLToPath(import.meta.url));
+  return resolve(here, "..", name);
 }
 
 export function buildChildEnv(extra?: Record<string, string>): NodeJS.ProcessEnv {
@@ -281,11 +298,16 @@ async function runSubCoderOnce(opts: RunSubCoderOptions): Promise<SubCoderResult
 
   const args = [
     launcher,
-    "--no-update-check",
     "--mode",
     "json",
     "-p",
     "--no-session",
+    "--tools",
+    "+grep,+find,+ls",
+    "-e",
+    officinaExtension("llama-cpp-provider"),
+    "-e",
+    officinaExtension("tool-gating"),
     // Match the parent's model so children run on the same backend. Without
     // this the child would fall back to pi's default model.
     ...(opts.model ? ["--model", opts.model] : []),

@@ -140,8 +140,14 @@ function importSession(id, flags, cwd = process.cwd()) {
   }
 
   if (!flags["no-launch"]) {
-    const args = flags.fork ? ["officina", "--fork", written.path] : ["officina", "--session", written.path];
-    const launched = spawnSync(VITRIOL, args, { stdio: "inherit" });
+    // Rust TUI is canonical (2026-11-10). Launch it directly; fall back to
+    // the deprecated vitriol/JS path only when the binary is absent.
+    const launchArgs = flags.fork ? ["--fork", written.path] : ["--session", written.path];
+    const configured = process.env.OFFICINA_BIN || "officina";
+    let launched = spawnSync(configured, launchArgs, { stdio: "inherit" });
+    if (launched.error?.code === "ENOENT") {
+      launched = spawnSync(VITRIOL, ["officina", ...launchArgs], { stdio: "inherit" });
+    }
     if (launched.status !== 0) process.exit(launched.status ?? 1);
   }
   return report;

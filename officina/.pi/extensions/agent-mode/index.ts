@@ -47,7 +47,7 @@ export default function (pi: ExtensionAPI) {
   /** Widget line for a quiet mode: BOLD glyph+label, hint in muted. */
   const badgeLine = (def: ReturnType<typeof getModeDef>): string => {
     const base = `${BOLD}${modeColorSeq(def)}${def.glyph} ${def.label}${RESET}`;
-    const hint = `${fgSeq("gray")} · ${def.hint} · TAB / /mode ${nextMode(def.name).name}${RESET}`;
+    const hint = `${fgSeq("gray")} · ${def.hint} · TAB / /agent ${nextMode(def.name).name}${RESET}`;
     return base + hint;
   };
 
@@ -61,7 +61,7 @@ export default function (pi: ExtensionAPI) {
     const defNext = nextMode(def.name);
     // Loud (directive) modes paint the whole hint line in the mode color.
     const line = def.directive
-      ? `${BOLD}${modeColorSeq(def)}${def.glyph} ${def.label} MODE — ${def.hint} · TAB / /mode ${defNext.name}${RESET}`
+      ? `${BOLD}${modeColorSeq(def)}${def.glyph} ${def.label} AGENT — ${def.hint} · TAB / /agent ${defNext.name}${RESET}`
       : badgeLine(def);
     ui.setWidget?.("agent-mode", [line], { placement: "belowEditor" });
   };
@@ -75,11 +75,11 @@ export default function (pi: ExtensionAPI) {
   const setMode = (name: string, ctx?: { ui?: any }) => {
     const def = getModeDef(name);
     if (def.name === getModeDef().name) {
-      ctx?.ui?.notify?.(`agent mode: already ${def.name}`, "info");
+      ctx?.ui?.notify?.(`agent: already ${def.name}`, "info");
       return;
     }
     if (!setAgentMode(name)) {
-      ctx?.ui?.notify?.(`agent mode: unknown mode "${name}"`, "warning");
+      ctx?.ui?.notify?.(`agent: unknown agent "${name}"`, "warning");
       return;
     }
     if (def.enterDirective) enterDirectivePending = def.enterDirective;
@@ -127,7 +127,6 @@ export default function (pi: ExtensionAPI) {
       const hex = def.color.startsWith("#") ? def.color : (VITRIOLUM as Record<string, string>)[def.color];
       if (!hex) return;
       const base = ui.getTheme?.("officina") ?? ui.theme;
-      console.error("[officina] applyModeTheme base:", !!base, "fgColors:", !!base?.fgColors, "setTheme:", typeof ui.setTheme);
       if (!base?.fgColors) return;
       const { r, g, b } = hexToRgb(hex);
       const clone = Object.create(Object.getPrototypeOf(base));
@@ -149,24 +148,27 @@ export default function (pi: ExtensionAPI) {
 
   // TAB cycles through the registered modes in definition order.
   pi.registerShortcut("tab", {
-    description: "Cycle agent modes (Plan / Build / custom)",
+    description: "Cycle agents (Plan / Build / custom)",
     handler: async (ctx: { ui?: any }) => {
       setMode(nextMode().name, ctx);
     },
   });
 
-  pi.registerCommand("mode", {
-    description: "Agent mode: TAB or /mode <name> — /mode alone lists modes",
+  const agentCommand = {
+    description: "Agent: TAB or /agent <name> — /agent alone lists agents",
     handler: async (args: string, ctx: { ui: any }) => {
       const a = args.trim().toLowerCase();
       if (!a) {
         const list = allModes().map((m) => m.name).join(", ");
-        await ctx.ui.notify?.(`agent mode: ${getModeDef().name} (modes: ${list})`, "info");
+        await ctx.ui.notify?.(`agent: ${getModeDef().name} (agents: ${list})`, "info");
         return;
       }
       setMode(a, ctx);
     },
-  });
+  };
+  pi.registerCommand("agent", agentCommand);
+  // Legacy alias (2026-11-10: terminology moved from "mode" to "agent").
+  pi.registerCommand("mode", { ...agentCommand, description: "Alias for /agent" });
 
   // Enforcement: per-mode write gate (plan blocks non-.md writes).
   pi.on("tool_call", (event) => {
@@ -179,7 +181,7 @@ export default function (pi: ExtensionAPI) {
     return {
       block: true,
       reason:
-        `${def.label} MODE is active: only *.md files may be written. Finish your research/plan, or run /mode ${allModes()[0]?.name ?? "build"} to unlock writes.`,
+        `${def.label} AGENT is active: only *.md files may be written. Finish your research/plan, or run /agent ${allModes()[0]?.name ?? "build"} to unlock writes.`,
     } as never;
   });
 

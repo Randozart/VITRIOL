@@ -126,6 +126,10 @@ def cmd_code(extra: list[str]) -> int:
     cfg = _cfg_dict()
     mode = str(dig(cfg, "scaffold.mode") or "officina")
     if mode == "officina":
+        print(
+            "tris code: DEPRECATED — the JS frontend is legacy; use the Rust TUI binary `officina`.",
+            file=sys.stderr,
+        )
         entry = Path.home() / "Desktop/Projects/VITRIOL/officina/officina.mjs"  # officina moved into VITRIOL (2026-08-31)
         if entry.exists():
             env = _guarantees(cfg)

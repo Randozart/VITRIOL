@@ -1,20 +1,29 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
-import { decide, parseSnapshot, pathOf, type PermSnapshot } from "./perms.ts";
+import { parseSnapshot, pathOf, type PermSnapshot } from "./perms.ts";
+import {
+  commandVerdict,
+  parseMode,
+  pathVerdict,
+  type PermMode,
+  type Verdict,
+} from "./policy.ts";
 
-// permissions-guard — the safety.permissions DSL, enforced (gap D1).
-// Policy source: ~/.config/trismegistus/config.yaml, mirrored to
-// permissions.json by `trismegistus perms-sync` (this runtime has no YAML
-// parser; the mirror carries source_hash so the validator can catch drift).
+// permissions-guard — path + shell policy, enforced (gap D1).
 //
-// Enforcement at tool_call (pre-execution veto — the same hook write-guard
-// uses). Semantics (docs/DAILY-DRIVER-GAP.md Decision 1):
-//   deny          -> block with reason
-//   ask + TUI     -> ui.confirm; declined = block
-//   ask + headless-> BLOCK (fail-closed: unattended runs cannot self-approve)
-//   no snapshot   -> default policy + one loud WARN event
-//   read_file/... scope: edit|write|read only; bash stays with write-guard.
+// Policy sources, in precedence order:
+//   1. protected roots (hardcoded in policy.ts; YOLO cannot bypass)
+//   2. ~/.config/trismegistus/permissions.json path rules (perms-sync mirror)
+//   3. permission MODE from ~/.vitriol/officina/permissions-mode, then
+//      OFFICINA_PERMISSIONS_MODE, default "ask"
+//
+// Modes (2026-11-10 operator decision):
+//   ask  — in-cwd writes allowed; outside edits + risky shell ask.
+//   auto — risky shell allowed; protected roots still ask.
+//   yolo — everything auto-approved EXCEPT protected roots and catastrophic
+//          commands.
 //
 // Kill switch: TRIS_NO_PERMS=1 registers nothing.
 
@@ -22,6 +31,21 @@ import { decide, parseSnapshot, pathOf, type PermSnapshot } from "./perms.ts";
  * mirror — caught by the wiring suite; env must win dynamically). */
 function snapshotPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.TRIS_PERMS_FILE || `${env.HOME || ""}/.config/trismegistus/permissions.json`;
+}
+
+function modePath(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.OFFICINA_PERMISSIONS_MODE_FILE) return env.OFFICINA_PERMISSIONS_MODE_FILE;
+  return `${env.HOME || homedir()}/.vitriol/officina/permissions-mode`;
+}
+
+function currentMode(env: NodeJS.ProcessEnv = process.env): PermMode {
+  try {
+    const p = modePath(env);
+    if (existsSync(p)) return parseMode(readFileSync(p, "utf8"));
+  } catch {
+    // fall through to env/default
+  }
+  return parseMode(env.OFFICINA_PERMISSIONS_MODE);
 }
 
 export default function (pi: ExtensionAPI) {
@@ -38,45 +62,80 @@ export default function (pi: ExtensionAPI) {
       if (snap) cache = { mtime: m, snap };
       return snap;
     } catch {
-      return null; // missing file: permissive default, warned once below
+      return null; // missing file: policy defaults still apply
     }
+  }
+
+  async function decideAndEnforce(
+    tool: string,
+    verdict: Verdict,
+    detail: string,
+    ctx: { mode?: string; hasUI?: boolean; ui?: any },
+  ): Promise<{ block: true; reason: string } | undefined> {
+    const mode = currentMode();
+    if (verdict.action === "allow") {
+      emitHarnessEvent(harnessEvent("lc-perms", "allow", { detail: `${mode} ${detail}` }));
+      return undefined;
+    }
+    if (verdict.action === "deny") {
+      emitHarnessEvent(harnessEvent("lc-perms", "deny", { detail: `${mode} ${detail}` }));
+      return { block: true, reason: `permissions: ${verdict.reason}` };
+    }
+    const headless = ctx.mode !== "tui" && ctx.mode !== "rpc";
+    if (headless || !ctx.hasUI) {
+      emitHarnessEvent(harnessEvent("lc-perms", "ask-denied-headless", { detail: `${mode} ${detail}` }));
+      return {
+        block: true,
+        reason: `permissions: ${verdict.reason} — denied in headless mode (fail-closed)`,
+      };
+    }
+    const yes = await ctx.ui?.confirm(
+      "permissions",
+      `Allow ${tool}?\n${verdict.reason}\n${detail}\n(mode: ${mode})`,
+    );
+    emitHarnessEvent(
+      harnessEvent("lc-perms", yes ? "ask-approved" : "ask-declined", {
+        detail: `${mode} ${detail}`,
+      }),
+    );
+    if (!yes) return { block: true, reason: `permissions: user declined ${tool}` };
+    return undefined;
   }
 
   pi.on("tool_call", async (event, ctx) => {
     const e = event as { toolName?: string; input?: Record<string, unknown> };
     const tool = String(e.toolName ?? "").toLowerCase();
-    if (tool !== "edit" && tool !== "write" && tool !== "read") return undefined;
-    const path = pathOf(e.input);
-    if (!path) return undefined;
+    const input = e.input ?? {};
+    const cwd = (ctx as { cwd?: string }).cwd || process.cwd();
+    const home = process.env.HOME || homedir();
+    const mode = currentMode();
 
     const snap = load();
-    if (!snap) {
-      if (!warned) {
-        warned = true;
-        emitHarnessEvent(harnessEvent("lc-perms", "no-snapshot", { detail: "allow-all until perms-sync" }));
-        ctx.ui.notify("permissions-guard: no permissions.json (run `trismegistus perms-sync`) — default policy in effect", "warning");
-      }
-      return undefined;
+    if (!snap && !warned) {
+      warned = true;
+      emitHarnessEvent(harnessEvent("lc-perms", "no-snapshot", { detail: "mode policy only" }));
+      ctx.ui.notify(
+        "permissions-guard: no permissions.json (run `trismegistus perms-sync`) — mode policy in effect",
+        "warning",
+      );
     }
 
-    const v = decide(snap, tool, path, ctx.cwd);
-    if (v.action === "allow") {
-      if (v.ruleIndex >= 0) emitHarnessEvent(harnessEvent("lc-perms", "allow", { detail: `${tool} ${path}` }));
-      return undefined;
+    if (tool === "bash" || tool === "powershell") {
+      const command = String(input.command ?? "");
+      if (!command.trim()) return undefined;
+      const verdict = commandVerdict(command, cwd, home, mode);
+      return decideAndEnforce(tool, verdict, shortCommand(command), ctx as any);
     }
-    if (v.action === "deny") {
-      emitHarnessEvent(harnessEvent("lc-perms", "deny", { detail: `${tool} ${path}` }));
-      return { block: true, reason: `permissions: ${v.pattern} denies ${tool} on this path (unified config safety.permissions)` };
-    }
-    // ask
-    const headless = ctx.mode !== "tui" && ctx.mode !== "rpc";
-    if (headless || !ctx.hasUI) {
-      emitHarnessEvent(harnessEvent("lc-perms", "ask-denied-headless", { detail: `${tool} ${path}` }));
-      return { block: true, reason: `permissions: ${v.pattern} requires approval for ${tool} — denied in headless mode (fail-closed)` };
-    }
-    const yes = await ctx.ui.confirm("permissions", `Allow ${tool} on ${path}?\n(rule: ${v.pattern})`);
-    emitHarnessEvent(harnessEvent("lc-perms", yes ? "ask-approved" : "ask-declined", { detail: `${tool} ${path}` }));
-    if (!yes) return { block: true, reason: `permissions: user declined ${tool} on ${path}` };
-    return undefined;
+
+    if (tool !== "edit" && tool !== "write" && tool !== "read") return undefined;
+    const path = pathOf(input);
+    if (!path) return undefined;
+    const verdict = pathVerdict(tool, path, cwd, home, mode, snap);
+    return decideAndEnforce(tool, verdict, `${tool} ${path}`, ctx as any);
   });
+}
+
+function shortCommand(command: string): string {
+  const one = command.replace(/\s+/g, " ").trim();
+  return one.length > 120 ? `${one.slice(0, 119)}…` : one;
 }

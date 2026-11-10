@@ -130,7 +130,7 @@ describe("jiti isolation: cross-extension contracts survive separate module inst
     const { a, b } = jitiPair();
     const modeA = (await a.import(CACHE_MODE)) as typeof import("./cache-mode.ts");
     const modeB = (await b.import(CACHE_MODE)) as typeof import("./cache-mode.ts");
-    modeA.setCacheModeFromProvider("omniroute", { OFFICINA_CACHE_MODE: "auto" });
+    modeA.setCacheModeFromProvider("caduceus", { OFFICINA_CACHE_MODE: "auto" });
     expect(modeB.isCloudCacheMode()).toBe(true);
     modeB.setCacheModeFromProvider("llamacpp", { OFFICINA_CACHE_MODE: "auto" });
     expect(modeA.isCloudCacheMode()).toBe(false);

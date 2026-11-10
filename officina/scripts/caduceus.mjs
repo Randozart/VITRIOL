@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// OmniRoute bootstrap for Officina. Keeps the local VITRIOL engine as the default
-// provider and registers OmniRoute as an explicit OpenAI-compatible gateway.
+// Caduceus bootstrap for Officina. Keeps the local VITRIOL engine as the default
+// provider and registers the Caduceus gateway (backed by the OmniRoute vendor
+// package) as an explicit OpenAI-compatible provider.
 //
 // PROVENANCE: integration glue only; OmniRoute itself is MIT and installed as a
 // pinned vendor package. No OmniRoute source is copied into this repo.
@@ -8,29 +9,33 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import {
+  appendFileSync,
   chmodSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseEnvFile, systemdUnit, upsertEnvFile } from "./omniroute-lib.mjs";
+import { parseEnvFile, systemdUnit, upsertEnvFile } from "./caduceus-lib.mjs";
 import {
   findOAuthProvider,
   OAUTH_PROVIDERS,
   parseOAuthCallback,
-} from "./omniroute-oauth-lib.mjs";
+} from "./caduceus-oauth-lib.mjs";
 import {
   buildFreeAccountTemplate,
   buildImportPayload,
   catalogMap,
+  enableAccountsForKeys,
   mapOpenCodeAuth,
   maskSecret,
   normalizeAccountsConfig,
@@ -38,7 +43,7 @@ import {
   selectOptionalFreeProviders,
   stripAnsi,
   summarizeImportResults,
-} from "./omniroute-accounts-lib.mjs";
+} from "./caduceus-accounts-lib.mjs";
 
 const HOME = process.env.HOME || homedir();
 const PIN = "3.8.53";
@@ -49,11 +54,25 @@ const VENDOR_DIR = join(HOME, ".vitriol", "vendor", "omniroute");
 const BIN = join(VENDOR_DIR, "node_modules", ".bin", "omniroute");
 const API_MODULE = join(VENDOR_DIR, "node_modules", "omniroute", "bin", "cli", "api.mjs");
 const ENV_FILE = join(HOME, ".vitriol", "officina", "env");
-const CACHE_FILE = join(HOME, ".vitriol", "officina", "omniroute-models.json");
+const CACHE_FILE = join(HOME, ".vitriol", "officina", "caduceus-models.json");
 const ACCOUNTS_FILE = join(HOME, ".vitriol", "officina", "accounts.json");
 const EGRESS_FILE = join(HOME, ".vitriol", "officina", "egress.json");
 const EGRESS_ENV_FILE = join(HOME, ".vitriol", "officina", "egress.env");
-const SERVICE_UNIT = join(HOME, ".config", "systemd", "user", "vitriol-omniroute.service");
+const SERVICE_UNIT = join(HOME, ".config", "systemd", "user", "vitriol-caduceus.service");
+const OLD_SERVICE_UNIT = join(HOME, ".config", "systemd", "user", "vitriol-omniroute.service");
+const OLD_CACHE_FILE = join(HOME, ".vitriol", "officina", "omniroute-models.json");
+const SESSIONS_DIR = join(HOME, ".pi", "agent", "sessions");
+const SIGNUP_PROGRESS = join(HOME, ".vitriol", "officina", "signup-progress.json");
+const DAHL_BASE_URL = (process.env.DAHL_BASE_URL || "https://inference.dahl.global/v1").replace(/\/+$/, "");
+const DAHL_KEEPALIVE_FILE = join(HOME, ".vitriol", "officina", "dahl-keepalive.json");
+const DAHL_KEEPALIVE_SERVICE = join(HOME, ".config", "systemd", "user", "vitriol-dahl-keepalive.service");
+const DAHL_KEEPALIVE_TIMER = join(HOME, ".config", "systemd", "user", "vitriol-dahl-keepalive.timer");
+const DAHL_KEEPALIVE_DAYS = Math.max(1, Math.min(6, Number(process.env.DAHL_KEEPALIVE_DAYS) || 3));
+const ENGINE_URL = (process.env.VITRIOL_ENGINE_URL || "http://127.0.0.1:8279").replace(/\/+$/, "");
+const ROUTE_LEDGER_DIR = process.env.OFFICINA_ROUTE_LEDGER_DIR || join(HOME, ".vitriol", "officina");
+const PROVIDER_HEALTH_FILE = process.env.OFFICINA_PROVIDER_HEALTH_FILE || join(HOME, ".vitriol", "officina", "provider-health.json");
+const ROUTING_PROFILE_FILE = process.env.OFFICINA_ROUTING_PROFILE_FILE || join(HOME, ".vitriol", "officina", "routing-profile");
+const TUI_LOCK_FILE = process.env.OFFICINA_TUI_LOCK || join(HOME, ".vitriol", "officina", "tui.lock");
 const PI_SETTINGS = join(HOME, ".pi", "agent", "settings.json");
 const OPENCODE_AUTH_FILE =
   process.env.OPENCODE_AUTH_FILE || join(HOME, ".local", "share", "opencode", "auth.json");
@@ -79,7 +98,7 @@ function log(message) {
 }
 
 function warn(message) {
-  process.stderr.write(`[omniroute] ${message}\n`);
+  process.stderr.write(`[caduceus] ${message}\n`);
 }
 
 function fail(message, code = 1) {
@@ -160,6 +179,10 @@ function readEnv() {
   }
 }
 
+function mergedEnv() {
+  return { ...Object.fromEntries(readEnv()), ...process.env };
+}
+
 function writeEnv(updates) {
   const dir = dirname(ENV_FILE);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -209,8 +232,8 @@ async function waitForDown(timeoutMs = 15_000) {
 async function startServer() {
   if (await serverUp()) return false;
   if (existsSync(SERVICE_UNIT)) {
-    const res = systemctlUser(["start", "vitriol-omniroute.service"]);
-    if (!res.ok) fail(`could not start vitriol-omniroute.service: ${res.out}`);
+    const res = systemctlUser(["start", "vitriol-caduceus.service"]);
+    if (!res.ok) fail(`could not start vitriol-caduceus.service: ${res.out}`);
   } else {
     runCli(["serve", "--headless", "--daemon", "--port", String(PORT)], {
       env: { PORT: String(PORT), OMNIROUTE_HEADLESS: "1", ...egressEnv() },
@@ -224,9 +247,9 @@ async function startServer() {
 async function stopServer() {
   if (!(await serverUp())) return true;
   if (existsSync(SERVICE_UNIT)) {
-    const res = systemctlUser(["stop", "vitriol-omniroute.service"]);
+    const res = systemctlUser(["stop", "vitriol-caduceus.service"]);
     if (!res.ok) {
-      warn(`could not stop vitriol-omniroute.service: ${res.out}`);
+      warn(`could not stop vitriol-caduceus.service: ${res.out}`);
       return false;
     }
     return waitForDown();
@@ -254,8 +277,8 @@ function playwrightInstalled() {
 function installOmniRoute(force = false) {
   const version = installedVersion();
   if (!force && version === PIN && playwrightInstalled()) return;
-  if (!hasCommand("npm")) fail("npm is required to install OmniRoute");
-  log(`[omniroute] installing omniroute@${PIN} + playwright@${PLAYWRIGHT_PIN} under ${VENDOR_DIR}`);
+  if (!hasCommand("npm")) fail("npm is required to install the OmniRoute vendor package");
+  log(`[caduceus] installing OmniRoute vendor package@${PIN} + playwright@${PLAYWRIGHT_PIN} under ${VENDOR_DIR}`);
   mkdirSync(VENDOR_DIR, { recursive: true });
   run(
     "npm",
@@ -272,7 +295,7 @@ function installOmniRoute(force = false) {
     { inherit: true, timeout: 900_000 },
   );
   const after = installedVersion();
-  if (after !== PIN) fail(`OmniRoute install finished but version is ${after ?? "missing"}`);
+  if (after !== PIN) fail(`OmniRoute vendor install finished but version is ${after ?? "missing"}`);
   if (!playwrightInstalled()) fail("playwright package was not installed");
 }
 
@@ -299,7 +322,7 @@ function ensureBrowserRuntime() {
     warn("playwright CLI missing; browser-backed free providers will not work");
     return false;
   }
-  log("[omniroute] installing Chromium for browser-backed free providers");
+  log("[caduceus] installing Chromium for browser-backed free providers");
   try {
     run(process.execPath, [cli, "install", "chromium"], {
       inherit: true,
@@ -329,7 +352,7 @@ function providerConnectionCount(provider) {
 function addOpenCodeProvider(flags = {}) {
   const existing = providerConnectionCount(PROVIDER_ID);
   if (existing && existing > 0) {
-    log(`[omniroute] provider ${PROVIDER_ID} already configured`);
+    log(`[caduceus] provider ${PROVIDER_ID} already configured`);
     return false;
   }
 
@@ -345,7 +368,7 @@ function addOpenCodeProvider(flags = {}) {
   }
   if (!credential) fail("OpenCode credential was empty");
 
-  log(`[omniroute] adding provider ${PROVIDER_ID}`);
+  log(`[caduceus] adding provider ${PROVIDER_ID}`);
   runCli(
     [
       "--base-url",
@@ -364,7 +387,7 @@ function addOpenCodeProvider(flags = {}) {
 }
 
 async function createInferenceKey() {
-  log("[omniroute] creating local inference key for Officina");
+  log("[caduceus] creating local inference key for Officina");
   const res = await gatewayApi("/api/keys", {
     method: "POST",
     body: { name: "officina" },
@@ -375,7 +398,7 @@ async function createInferenceKey() {
   }
   const parsed = await res.json();
   const key = typeof parsed?.key === "string" ? parsed.key : "";
-  if (!key) fail("could not parse the inference key from OmniRoute");
+  if (!key) fail("could not parse the inference key from the gateway");
   return key;
 }
 
@@ -445,7 +468,7 @@ function cacheCatalog(baseUrl, data) {
 
 function writePassthroughSettings() {
   if (!existsSync(DB_FILE)) {
-    warn(`OmniRoute DB not found at ${DB_FILE}; relying on per-request headers`);
+    warn(`gateway DB not found at ${DB_FILE}; relying on per-request headers`);
     return false;
   }
   if (!hasCommand("sqlite3")) {
@@ -482,16 +505,16 @@ function clearCachedResponses() {
 }
 
 function resolveInferenceKey(env) {
-  return env.get("OFFICINA_OMNIROUTE_API_KEY") || "";
+  return env.get("OFFICINA_CADUCEUS_API_KEY") || "";
 }
 
 async function setup(flags) {
   if (!flags["no-install"]) installOmniRoute(Boolean(flags.force));
-  else if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN} (remove --no-install)`);
+  else if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN} (remove --no-install)`);
 
   let startedByUs = false;
   try {
-    log(`[omniroute] ensuring gateway on ${ORIGIN}`);
+    log(`[caduceus] ensuring gateway on ${ORIGIN}`);
     startedByUs = await startServer();
 
     addOpenCodeProvider(flags);
@@ -521,22 +544,22 @@ async function setup(flags) {
     }
 
     writeEnv({
-      OFFICINA_OMNIROUTE: "1",
-      OFFICINA_OMNIROUTE_BASE_URL: `${ORIGIN}/v1`,
-      OFFICINA_OMNIROUTE_API_KEY: apiKey,
+      OFFICINA_CADUCEUS: "1",
+      OFFICINA_CADUCEUS_BASE_URL: `${ORIGIN}/v1`,
+      OFFICINA_CADUCEUS_API_KEY: apiKey,
     });
 
     log("");
-    log("OmniRoute ready.");
+    log("Caduceus ready (powered by OmniRoute).");
     log(`  base URL: ${ORIGIN}/v1`);
     log(`  models:   ${catalog.ok ? catalog.data.length : "unavailable"}`);
     log(`  env:      ${ENV_FILE}`);
     log("");
-    log("Next: vitriol officina, then /model -> omniroute/<model>.");
+    log("Next: vitriol officina, then /model -> caduceus/<model>.");
 
     if (flags.free) {
       log("");
-      log("[omniroute] --free: adding zero-key providers and reusing local auth");
+      log("[caduceus] --free: adding zero-key providers and reusing local auth");
       await cmdAccountsFree({ ...flags, apply: true, _: [] });
       await cmdCache({ _: ["enable"], providers: "opencode-go,glm" });
     }
@@ -550,27 +573,27 @@ async function setup(flags) {
 }
 
 async function cmdUp() {
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
   const started = await startServer();
-  log(started ? "OmniRoute started." : "OmniRoute already running.");
+  log(started ? "Caduceus gateway started." : "Caduceus gateway already running.");
 }
 
 async function cmdDown() {
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}`);
   const stopped = await stopServer();
-  if (!stopped) fail("OmniRoute did not stop");
-  log("OmniRoute stopped.");
+  if (!stopped) fail("Caduceus gateway did not stop");
+  log("Caduceus gateway stopped.");
 }
 
 async function cmdStatus() {
   const env = readEnv();
-  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_CADUCEUS_API_KEY || "";
   const up = await serverUp();
   const version = installedVersion();
   const catalog = up ? await fetchModels(apiKey) : { ok: false, status: 0, data: [] };
   const connections = providerConnectionCount(PROVIDER_ID);
 
-  log(`OmniRoute ${version ?? "not installed"}`);
+  log(`Caduceus ${version ?? "not installed"} (OmniRoute vendor)`);
   log(`  gateway:    ${up ? `up (${ORIGIN})` : "down"}`);
   const connectionText =
     connections === null
@@ -588,9 +611,9 @@ async function cmdStatus() {
 
 async function cmdSync() {
   const env = readEnv();
-  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
-  if (!apiKey) fail("missing OFFICINA_OMNIROUTE_API_KEY; run: vitriol omniroute setup");
-  if (!(await serverUp())) fail(`gateway is down at ${ORIGIN}; run: vitriol omniroute up`);
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_CADUCEUS_API_KEY || "";
+  if (!apiKey) fail("missing OFFICINA_CADUCEUS_API_KEY; run: vitriol caduceus setup");
+  if (!(await serverUp())) fail(`gateway is down at ${ORIGIN}; run: vitriol caduceus up`);
   const catalog = await fetchModels(apiKey);
   if (!catalog.ok) fail(`catalog fetch failed with HTTP ${catalog.status}`);
   cacheCatalog(`${ORIGIN}/v1`, catalog.data);
@@ -765,11 +788,189 @@ function systemctlUser(args) {
   return { ok: res.status === 0, out: String(res.stdout || res.stderr || "").trim() };
 }
 
+function migrateString(value) {
+  if (value === "omniroute") return "caduceus";
+  if (value.startsWith("omniroute/")) return `caduceus/${value.slice("omniroute/".length)}`;
+  return value;
+}
+
+function migrateJson(value) {
+  if (typeof value === "string") return migrateString(value);
+  if (Array.isArray(value)) return value.map(migrateJson);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[migrateString(k)] = migrateJson(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function migrateEnvText(text) {
+  const lines = String(text).split(/\r?\n/);
+  const newKeys = new Set();
+  for (const line of lines) {
+    const m = line.match(/^\s*(OFFICINA_CADUCEUS[A-Z0-9_]*)\s*=/);
+    if (m) newKeys.add(m[1]);
+  }
+  const out = [];
+  let changed = 0;
+  for (const line of lines) {
+    const old = line.match(/^(\s*)OFFICINA_OMNIROUTE([A-Z0-9_]*)\s*=/);
+    if (!old) {
+      out.push(line);
+      continue;
+    }
+    const key = `OFFICINA_CADUCEUS${old[2]}`;
+    changed += 1;
+    if (newKeys.has(key)) continue;
+    newKeys.add(key);
+    out.push(line.replace(/^\s*OFFICINA_OMNIROUTE[A-Z0-9_]*\s*=/, `${key}=`));
+  }
+  return { text: out.join("\n"), changed };
+}
+
+function walkJsonl(dir, out = []) {
+  if (!existsSync(dir)) return out;
+  for (const ent of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, ent.name);
+    if (ent.isDirectory()) walkJsonl(path, out);
+    else if (ent.isFile() && ent.name.endsWith(".jsonl")) out.push(path);
+  }
+  return out;
+}
+
+function migrateSessionFile(file, write = true) {
+  const text = readFileSync(file, "utf8");
+  if (!text.includes("omniroute")) return { changed: false, lines: 0 };
+  let changedLines = 0;
+  const out = text.split("\n").map((line) => {
+    if (!line.includes("omniroute")) return line;
+    try {
+      const parsed = JSON.parse(line);
+      const migrated = migrateJson(parsed);
+      const next = JSON.stringify(migrated);
+      if (next !== line) changedLines += 1;
+      return next;
+    } catch {
+      // Never corrupt a line that is not valid JSON; leave it for manual review.
+      return line;
+    }
+  });
+  if (changedLines === 0) return { changed: false, lines: 0 };
+  if (write) {
+    const tmp = `${file}.migrate-${process.pid}`;
+    writeFileSync(tmp, out.join("\n"));
+    chmodSync(tmp, statSync(file).mode);
+    renameSync(tmp, file);
+  }
+  return { changed: true, lines: changedLines };
+}
+
+async function cmdMigrate(flags) {
+  const apply = Boolean(flags.apply) && !flags["dry-run"];
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDir = join(HOME, ".vitriol", "officina", `migrate-backup-${stamp}`);
+  const summary = { env: 0, settings: false, sessions: [], cache: false, unit: false, backupDir };
+  const backup = (src, rel) => {
+    if (!apply) return;
+    const dst = join(backupDir, rel);
+    mkdirSync(dirname(dst), { recursive: true, mode: 0o700 });
+    copyFileSync(src, dst);
+    chmodSync(dst, statSync(src).mode);
+  };
+  if (apply) mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+
+  // env keys
+  if (existsSync(ENV_FILE)) {
+    const raw = readFileSync(ENV_FILE, "utf8");
+    const migrated = migrateEnvText(raw);
+    summary.env = migrated.changed;
+    if (migrated.changed > 0) {
+      backup(ENV_FILE, "env");
+      if (apply) {
+        const tmp = `${ENV_FILE}.migrate-${process.pid}`;
+        writeFileSync(tmp, migrated.text, { mode: 0o600 });
+        chmodSync(tmp, 0o600);
+        renameSync(tmp, ENV_FILE);
+      }
+    }
+  }
+
+  // cache
+  if (existsSync(OLD_CACHE_FILE) && !existsSync(CACHE_FILE)) {
+    summary.cache = true;
+    if (apply) {
+      backup(OLD_CACHE_FILE, "omniroute-models.json");
+      copyFileSync(OLD_CACHE_FILE, CACHE_FILE);
+      chmodSync(CACHE_FILE, 0o600);
+      rmSync(OLD_CACHE_FILE, { force: true });
+    }
+  }
+
+  // pi settings
+  for (const file of [PI_SETTINGS, join(HOME, ".pi", "agent", "models-store.json")]) {
+    if (!existsSync(file)) continue;
+    const raw = readFileSync(file, "utf8");
+    if (!raw.includes("omniroute")) continue;
+    try {
+      const parsed = JSON.parse(raw);
+      const migrated = migrateJson(parsed);
+      summary.settings = true;
+      backup(file, file.endsWith("settings.json") ? "settings.json" : "models-store.json");
+      if (apply) {
+        const tmp = `${file}.migrate-${process.pid}`;
+        writeFileSync(tmp, `${JSON.stringify(migrated, null, 2)}\n`);
+        chmodSync(tmp, statSync(file).mode);
+        renameSync(tmp, file);
+      }
+    } catch (error) {
+      warn(`could not migrate ${file}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  // session JSONL provider/model references
+  for (const file of walkJsonl(SESSIONS_DIR)) {
+    const raw = readFileSync(file, "utf8");
+    if (!raw.includes("omniroute")) continue;
+    if (apply) backup(file, join("sessions", file.slice(SESSIONS_DIR.length + 1)));
+    const result = migrateSessionFile(file, apply);
+    if (result.changed) summary.sessions.push({ file, lines: result.lines });
+  }
+
+  // service unit
+  if (existsSync(OLD_SERVICE_UNIT) || systemctlUser(["is-active", "vitriol-omniroute.service"]).ok) {
+    summary.unit = true;
+    if (apply) {
+      if (existsSync(OLD_SERVICE_UNIT)) backup(OLD_SERVICE_UNIT, "vitriol-omniroute.service");
+      systemctlUser(["disable", "--now", "vitriol-omniroute.service"]);
+      if (existsSync(OLD_SERVICE_UNIT)) rmSync(OLD_SERVICE_UNIT, { force: true });
+      systemctlUser(["daemon-reload"]);
+      if (!flags["no-service"]) await cmdService({ _: ["install"] });
+    }
+  }
+  if (existsSync(OLD_CACHE_FILE) && apply) rmSync(OLD_CACHE_FILE, { force: true });
+
+  if (flags.json) {
+    log(JSON.stringify({ applied: apply, ...summary }, null, 2));
+    return;
+  }
+  log(`${apply ? "Migrated" : "Dry run:"} OmniRoute -> Caduceus`);
+  log(`  env keys: ${summary.env}`);
+  log(`  settings: ${summary.settings ? "changed" : "no change"}`);
+  log(`  cache: ${summary.cache ? "renamed" : "no change"}`);
+  log(`  sessions: ${summary.sessions.length} file(s)`);
+  log(`  service unit: ${summary.unit ? "migrated" : "no change"}`);
+  if (apply) log(`  backup: ${backupDir}`);
+  else log("  re-run with --apply to write changes");
+}
+
 async function cmdService(flags) {
   const sub = flags._[0] || "status";
   if (sub === "status") {
-    const enabled = systemctlUser(["is-enabled", "vitriol-omniroute.service"]);
-    const active = systemctlUser(["is-active", "vitriol-omniroute.service"]);
+    const enabled = systemctlUser(["is-enabled", "vitriol-caduceus.service"]);
+    const active = systemctlUser(["is-active", "vitriol-caduceus.service"]);
     const up = await serverUp();
     const report = {
       installed: existsSync(SERVICE_UNIT),
@@ -791,7 +992,7 @@ async function cmdService(flags) {
   }
 
   if (sub === "install") {
-    if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+    if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
     mkdirSync(join(HOME, ".config", "systemd", "user"), { recursive: true });
     writeEgressEnv(readEgress());
     const unit = systemdUnit({
@@ -801,13 +1002,13 @@ async function cmdService(flags) {
     });
     writeFileSync(SERVICE_UNIT, unit, { mode: 0o644 });
     if (await serverUp()) {
-      log("[omniroute] stopping the running gateway to free the port for the user service");
+      log("[caduceus] stopping the running gateway to free the port for the user service");
       await stopServer();
     }
     const reload = systemctlUser(["daemon-reload"]);
     if (!reload.ok) fail(`systemctl --user daemon-reload failed: ${reload.out}`);
-    const enable = systemctlUser(["enable", "--now", "vitriol-omniroute.service"]);
-    if (!enable.ok) fail(`could not enable vitriol-omniroute.service: ${enable.out}`);
+    const enable = systemctlUser(["enable", "--now", "vitriol-caduceus.service"]);
+    if (!enable.ok) fail(`could not enable vitriol-caduceus.service: ${enable.out}`);
     const linger = spawnSync("loginctl", ["enable-linger", process.env.USER || ""], {
       encoding: "utf8",
       timeout: 15_000,
@@ -817,12 +1018,12 @@ async function cmdService(flags) {
     }
     if (!(await waitForServer())) fail("service started but gateway is not healthy");
     log(`Installed and started ${SERVICE_UNIT}`);
-    log("Next: vitriol omniroute service status");
+    log("Next: vitriol caduceus service status");
     return;
   }
 
   if (sub === "remove") {
-    systemctlUser(["disable", "--now", "vitriol-omniroute.service"]);
+    systemctlUser(["disable", "--now", "vitriol-caduceus.service"]);
     if (existsSync(SERVICE_UNIT)) {
       rmSync(SERVICE_UNIT, { force: true });
       log(`Removed ${SERVICE_UNIT}`);
@@ -841,15 +1042,15 @@ async function cmdDoctor(flags) {
   const add = (name, status, detail) => checks.push({ name, status, detail });
 
   const version = installedVersion();
-  if (!version) add("omniroute binary", "fail", `missing at ${BIN}`);
-  else if (version === PIN) add("omniroute binary", "ok", version);
-  else add("omniroute binary", "warn", `${version} (pinned ${PIN})`);
+  if (!version) add("gateway binary", "fail", `missing at ${BIN}`);
+  else if (version === PIN) add("gateway binary", "ok", version);
+  else add("gateway binary", "warn", `${version} (pinned ${PIN})`);
 
   const up = await serverUp();
   add("gateway", up ? "ok" : "fail", up ? ORIGIN : `down at ${ORIGIN}`);
 
   const env = readEnv();
-  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_CADUCEUS_API_KEY || "";
   add("inference key", apiKey ? "ok" : "fail", apiKey ? `set (...${apiKey.slice(-4)})` : "missing");
 
   if (existsSync(ENV_FILE)) {
@@ -857,6 +1058,22 @@ async function cmdDoctor(flags) {
     add("env permissions", mode === 0o600 ? "ok" : "warn", `${mode.toString(8)} ${ENV_FILE}`);
   } else {
     add("env permissions", "warn", `missing ${ENV_FILE}`);
+  }
+
+  const ka = keepaliveStatus();
+  if (!ka.keyPresent) {
+    add("dahl keepalive", "warn", "DAHL_API_KEY missing");
+  } else if (!ka.lastAt) {
+    add("dahl keepalive", "warn", "never requested; run vitriol caduceus keepalive");
+  } else if (ka.ageDays != null && ka.ageDays >= 7) {
+    add("dahl keepalive", "fail", `${ka.ageDays.toFixed(1)}d stale — free tokens may have burned`);
+  } else if (ka.ageDays != null && ka.ageDays >= 5) {
+    add("dahl keepalive", "warn", `${ka.ageDays.toFixed(1)}d ago — 7d inactivity burns free tokens`);
+  } else {
+    add("dahl keepalive", "ok", `${ka.ageDays?.toFixed(1) ?? "?"}d ago`);
+  }
+  if (ka.keyPresent && !ka.timerInstalled) {
+    add("dahl keepalive timer", "warn", "not installed; run vitriol caduceus keepalive --install");
   }
 
   let connections = [];
@@ -904,8 +1121,8 @@ async function cmdDoctor(flags) {
   const egress = readEgress();
   add("egress", egress.mode === "fixed" ? "ok" : "warn", egress.mode === "fixed" ? maskProxy(egress.proxy) : "off");
 
-  const enabled = systemctlUser(["is-enabled", "vitriol-omniroute.service"]);
-  const active = systemctlUser(["is-active", "vitriol-omniroute.service"]);
+  const enabled = systemctlUser(["is-enabled", "vitriol-caduceus.service"]);
+  const active = systemctlUser(["is-active", "vitriol-caduceus.service"]);
   add(
     "boot service",
     enabled.ok && active.ok ? "ok" : "warn",
@@ -956,13 +1173,13 @@ async function cmdUse(flags) {
     return;
   }
 
-  if (!requested) fail("usage: vitriol omniroute use <model-id> [--local]");
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  if (!requested) fail("usage: vitriol caduceus use <model-id> [--local]");
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
   await startServer();
 
   const env = readEnv();
-  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_OMNIROUTE_API_KEY || "";
-  if (!apiKey) fail("missing inference key; run: vitriol omniroute setup");
+  const apiKey = resolveInferenceKey(env) || process.env.OFFICINA_CADUCEUS_API_KEY || "";
+  if (!apiKey) fail("missing inference key; run: vitriol caduceus setup");
   const catalog = await fetchModels(apiKey);
   if (!catalog.ok) fail(`catalog fetch failed with HTTP ${catalog.status}`);
 
@@ -977,15 +1194,15 @@ async function cmdUse(flags) {
     );
   }
 
-  settings.defaultProvider = "omniroute";
+  settings.defaultProvider = "caduceus";
   settings.defaultModel = model.id;
   writeJsonAtomic(PI_SETTINGS, settings);
   chmodSync(PI_SETTINGS, 0o600);
 
   if (flags.json) {
-    log(JSON.stringify({ provider: "omniroute", model: model.id, settings: PI_SETTINGS }, null, 2));
+    log(JSON.stringify({ provider: "caduceus", model: model.id, settings: PI_SETTINGS }, null, 2));
   } else {
-    log(`Default model set to omniroute/${model.id}`);
+    log(`Default model set to caduceus/${model.id}`);
     log(`Settings: ${PI_SETTINGS}`);
     log("Next: vitriol officina");
   }
@@ -1006,7 +1223,7 @@ function cmdConfig(flags) {
       cache: configValue("cache") || "auto",
       praetor: configValue("praetor") === "1" || configValue("praetor") === "on" ? "on" : "off",
       egress: readEgress().mode,
-      omniroute: readEnv().get("OFFICINA_OMNIROUTE") ?? "unset",
+      caduceus: readEnv().get("OFFICINA_CADUCEUS") ?? "unset",
       envFile: ENV_FILE,
     };
     if (flags.json) {
@@ -1015,7 +1232,7 @@ function cmdConfig(flags) {
       log(`cache:     ${report.cache}`);
       log(`praetor:   ${report.praetor}`);
       log(`egress:    ${report.egress}`);
-      log(`omniroute: ${report.omniroute}`);
+      log(`caduceus: ${report.caduceus}`);
       log(`env file:  ${report.envFile}`);
     }
     return;
@@ -1024,7 +1241,7 @@ function cmdConfig(flags) {
   if (sub !== "set") fail(`unknown config command: ${sub}`);
   const key = flags._[1];
   const raw = flags._[2];
-  if (!key || !raw) fail("usage: vitriol omniroute config set <cache|praetor> <value>");
+  if (!key || !raw) fail("usage: vitriol caduceus config set <cache|praetor> <value>");
   const spec = CONFIG_KEYS[key];
   if (!spec) fail(`unknown config key: ${key}`);
 
@@ -1038,7 +1255,7 @@ function cmdConfig(flags) {
 }
 
 async function cmdCache(flags) {
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
   const sub = flags._[0] || "status";
   if (sub !== "status" && sub !== "enable" && sub !== "disable") {
     fail(`unknown cache command: ${sub}`);
@@ -1101,7 +1318,7 @@ function resolveAccountsPath(flags = {}) {
 function loadAccountConfig(flags = {}) {
   const path = resolveAccountsPath(flags);
   if (!existsSync(path)) {
-    fail(`accounts config not found at ${path}; run: vitriol omniroute accounts init`);
+    fail(`accounts config not found at ${path}; run: vitriol caduceus accounts init`);
   }
   let parsed;
   try {
@@ -1169,7 +1386,7 @@ function cmdAccountsInit(flags) {
   renameSync(tmp, path);
   chmodSync(path, 0o600);
   log(`Wrote accounts template: ${path}`);
-  log("Add provider entries with credential_env names, then run: vitriol omniroute accounts sync");
+  log("Add provider entries with credential_env names, then run: vitriol caduceus accounts sync");
 }
 
 
@@ -1209,7 +1426,7 @@ function providersFromConnections(connections) {
 }
 
 async function importProviderEntries(entries, opts = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "vitriol-omniroute-"));
+  const dir = mkdtempSync(join(tmpdir(), "vitriol-caduceus-"));
   const importFile = join(dir, "providers.json");
   try {
     chmodSync(dir, 0o700);
@@ -1290,19 +1507,287 @@ function freePlanRows(catalog) {
     .filter((provider) => provider?.hasFree === true && provider?.category === "api-key")
     .map((provider) => {
       let env = `${String(provider.id).toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_API_KEY`;
-      if (!/^[A-Za-z_]/.test(env)) env = `OMNIROUTE_${env}`;
+      if (!/^[A-Za-z_]/.test(env)) env = `CADUCEUS_${env}`;
       return {
         provider: provider.id,
         name: provider.name ?? provider.id,
         website: provider.website ?? "",
         credential_env: env,
+        freeNote: provider.freeNote ?? "",
+        authHint: provider.authHint ?? "",
       };
     })
     .sort((a, b) => a.provider.localeCompare(b.provider));
 }
 
+function readSignupProgress() {
+  try {
+    const parsed = JSON.parse(readFileSync(SIGNUP_PROGRESS, "utf8"));
+    return parsed && typeof parsed === "object" && parsed.providers ? parsed : { providers: {} };
+  } catch {
+    return { providers: {} };
+  }
+}
+
+function saveSignupProgress(progress) {
+  progress.updatedAt = new Date().toISOString();
+  writeJsonAtomic(SIGNUP_PROGRESS, progress);
+  chmodSync(SIGNUP_PROGRESS, 0o600);
+}
+
+function writeEnvKey(key, value) {
+  const old = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, "utf8") : "";
+  const next = upsertEnvFile(old, { [key]: value });
+  mkdirSync(dirname(ENV_FILE), { recursive: true, mode: 0o700 });
+  const tmp = `${ENV_FILE}.signup-${process.pid}`;
+  writeFileSync(tmp, next, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, ENV_FILE);
+  chmodSync(ENV_FILE, 0o600);
+}
+
+function ensureSignupAccounts(plans, path = ACCOUNTS_FILE) {
+  let doc = existsSync(path)
+    ? JSON.parse(readFileSync(path, "utf8"))
+    : buildFreeAccountTemplate(plans);
+  if (!Array.isArray(doc.accounts)) doc.accounts = [];
+  const seen = new Set(doc.accounts.map((a) => String(a?.provider ?? "").toLowerCase()));
+  for (const plan of plans) {
+    if (seen.has(plan.provider.toLowerCase())) continue;
+    doc.accounts.push({
+      provider: plan.provider,
+      name: plan.name,
+      credential_env: plan.credential_env,
+      website: plan.website,
+      enabled: false,
+    });
+    seen.add(plan.provider.toLowerCase());
+  }
+  writeJsonAtomic(path, doc);
+  chmodSync(path, 0o600);
+  return doc;
+}
+
+function enableSignupAccount(plan, path = ACCOUNTS_FILE) {
+  const doc = JSON.parse(readFileSync(path, "utf8"));
+  if (!Array.isArray(doc.accounts)) doc.accounts = [];
+  let entry = doc.accounts.find(
+    (a) => String(a?.provider ?? "").toLowerCase() === plan.provider.toLowerCase(),
+  );
+  if (!entry) {
+    entry = {
+      provider: plan.provider,
+      name: plan.name,
+      credential_env: plan.credential_env,
+      website: plan.website,
+    };
+    doc.accounts.push(entry);
+  }
+  entry.credential_env = plan.credential_env;
+  entry.enabled = true;
+  writeJsonAtomic(path, doc);
+  chmodSync(path, 0o600);
+}
+
+async function promptHidden(label) {
+  if (!process.stdin.isTTY) return promptLine(label);
+  process.stdout.write(label);
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const wasRaw = stdin.isRaw;
+    let buffer = "";
+    const cleanup = () => {
+      stdin.off("data", onData);
+      try {
+        stdin.setRawMode(Boolean(wasRaw));
+      } catch {
+        // terminal already gone
+      }
+      if (!wasRaw) stdin.pause();
+      process.stdout.write("\n");
+    };
+    const onData = (chunk) => {
+      for (const ch of String(chunk)) {
+        if (ch === "\r" || ch === "\n") {
+          cleanup();
+          resolve(buffer.trim());
+          return;
+        }
+        if (ch === "\u0003") {
+          cleanup();
+          reject(new Error("cancelled"));
+          return;
+        }
+        if (ch === "\u007f" || ch === "\b") {
+          buffer = buffer.slice(0, -1);
+          continue;
+        }
+        if (ch >= " ") buffer += ch;
+      }
+    };
+    stdin.setRawMode(true);
+    stdin.resume();
+    stdin.setEncoding("utf8");
+    stdin.on("data", onData);
+  });
+}
+
+async function syncSignupProvider(plan, catalog) {
+  const loaded = loadAccountConfig({ file: ACCOUNTS_FILE });
+  const payload = buildImportPayload(loaded, catalog, mergedEnv(), { only: plan.provider });
+  if (payload.errors.length > 0) {
+    return { ok: false, detail: payload.errors.map((e) => e.reason).join(", ") };
+  }
+  if (payload.entries.length === 0) {
+    return { ok: false, detail: "no importable account (missing env?)" };
+  }
+  const summary = await importProviderEntries(payload.entries);
+  return {
+    ok: summary.counts.failed === 0,
+    detail: `created=${summary.counts.created} existing=${summary.counts.skipped_existing} failed=${summary.counts.failed}`,
+  };
+}
+
+async function cmdSignup(flags) {
+  if (flags.reset) {
+    rmSync(SIGNUP_PROGRESS, { force: true });
+    log("Signup progress reset.");
+    return;
+  }
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
+  await startServer();
+
+  const catalog = loadProviderCatalog();
+  const allPlans = freePlanRows(catalog);
+  const only = typeof flags.only === "string"
+    ? new Set(flags.only.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean))
+    : null;
+  let plans = only ? allPlans.filter((p) => only.has(p.provider.toLowerCase())) : allPlans;
+  if (typeof flags["start-at"] === "string") {
+    const start = flags["start-at"].trim().toLowerCase();
+    const idx = plans.findIndex((p) => p.provider.toLowerCase() === start);
+    if (idx > 0) plans = plans.slice(idx);
+  }
+  const progress = readSignupProgress();
+  progress.providers ??= {};
+
+  if (flags.status || flags.json) {
+    const counts = { keyed: 0, skipped: 0, failed: 0, pending: 0 };
+    for (const plan of allPlans) {
+      const status = progress.providers[plan.provider]?.status ?? "pending";
+      counts[status] = (counts[status] ?? 0) + 1;
+    }
+    if (flags.json) {
+      log(JSON.stringify({ counts, progress }, null, 2));
+    } else {
+      log(`Signup progress: keyed ${counts.keyed} · skipped ${counts.skipped} · failed ${counts.failed} · pending ${counts.pending}`);
+      for (const [provider, entry] of Object.entries(progress.providers)) {
+        log(`  ${provider}\t${entry.status}${entry.detail ? `\t${entry.detail}` : ""}`);
+      }
+    }
+    return;
+  }
+
+  ensureSignupAccounts(allPlans);
+  log("Caduceus signup wizard — manual signup, one account per provider.");
+  log("Nothing is submitted automatically; keys are written only after you type them.");
+  log(`Providers: ${plans.length}. Enter=next, k=paste key, s=skip, o=reopen, q=quit.`);
+  if (!process.stdin.isTTY) log("warning: stdin is not a TTY; key input may echo.");
+
+  let createdSince = 0;
+  for (let i = 0; i < plans.length; i++) {
+    const plan = plans[i];
+    const prior = progress.providers[plan.provider]?.status;
+    if (!flags.redo && (prior === "keyed" || prior === "skipped")) continue;
+    const url = plan.website || "";
+    log("");
+    log(`[${i + 1}/${plans.length}] ${plan.provider} — ${plan.name}`);
+    if (plan.freeNote) log(`  ${plan.freeNote}`);
+    if (url) log(`  signup: ${url}`);
+    log(`  env:    ${plan.credential_env}`);
+    if (url && !flags["no-open"]) openOAuthBrowser(url);
+
+    let answered = false;
+    while (!answered) {
+      const action = await promptLine("[Enter] next · k key · s skip · o reopen · q quit › ");
+      const cmd = action.toLowerCase();
+      if (cmd === "q" || cmd === "quit") {
+        saveSignupProgress(progress);
+        log(`Stopped. ${createdSince} key(s) added this run.`);
+        return;
+      }
+      if (cmd === "" || cmd === "n" || cmd === "next") {
+        answered = true;
+        continue;
+      }
+      if (cmd === "o" || cmd === "open") {
+        if (url) openOAuthBrowser(url);
+        continue;
+      }
+      if (cmd === "s" || cmd === "skip") {
+        progress.providers[plan.provider] = { status: "skipped", updatedAt: new Date().toISOString() };
+        saveSignupProgress(progress);
+        answered = true;
+        continue;
+      }
+      let key = "";
+      if (cmd === "k" || cmd === "key") {
+        try {
+          key = await promptHidden("API key (hidden): ");
+        } catch {
+          log("  cancelled.");
+          answered = true;
+          continue;
+        }
+      } else if (action.length >= 8 && !/^[a-z]+$/.test(action)) {
+        // Low-friction: pasting the key directly at the action prompt works.
+        key = action;
+      } else {
+        log("  unknown action; use Enter, k, s, o, or q.");
+        continue;
+      }
+      if (!key) {
+        log("  empty key; try again.");
+        continue;
+      }
+      writeEnvKey(plan.credential_env, key);
+      process.env[plan.credential_env] = key;
+      enableSignupAccount(plan);
+      if (flags["no-sync"]) {
+        progress.providers[plan.provider] = { status: "keyed", detail: "saved (sync skipped)", updatedAt: new Date().toISOString() };
+        saveSignupProgress(progress);
+        createdSince += 1;
+        log(`  saved ${plan.credential_env} (sync skipped)`);
+        answered = true;
+        continue;
+      }
+      let result;
+      try {
+        result = await syncSignupProvider(plan, catalog);
+      } catch (error) {
+        result = { ok: false, detail: error instanceof Error ? error.message : String(error) };
+      }
+      if (result.ok) {
+        progress.providers[plan.provider] = { status: "keyed", detail: result.detail, updatedAt: new Date().toISOString() };
+        createdSince += 1;
+        log(`  ✓ synced (${result.detail})`);
+      } else {
+        progress.providers[plan.provider] = { status: "failed", detail: result.detail, updatedAt: new Date().toISOString() };
+        log(`  ✗ sync failed: ${result.detail}`);
+        log("  key is saved in the env file; re-run signup to retry, or check the key.");
+      }
+      saveSignupProgress(progress);
+      answered = true;
+    }
+  }
+  saveSignupProgress(progress);
+  log(`\nDone. ${createdSince} key(s) added this run.`);
+  log(`Progress: ${SIGNUP_PROGRESS}`);
+  log("Next: restart Officina so the Caduceus catalog/router sees the new providers.");
+}
+
 async function cmdAccountsFree(flags) {
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
 
   const catalog = loadProviderCatalog();
   if (flags.template) {
@@ -1463,7 +1948,7 @@ async function cmdAccountsFree(flags) {
 }
 
 async function cmdAccountsDiscover(flags) {
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
   const auth = readOpenCodeAuth();
   if (!auth) fail(`OpenCode auth file not found or unreadable: ${OPENCODE_AUTH_FILE}`);
 
@@ -1528,11 +2013,11 @@ async function cmdAccountsDiscover(flags) {
 
 async function cmdAccountsSync(flags) {
   if (flags.only === true) fail("--only needs a value");
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}; run: vitriol omniroute setup`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}; run: vitriol caduceus setup`);
 
   const loaded = loadAccountConfig(flags);
   const catalog = loadProviderCatalog();
-  const payload = buildImportPayload(loaded, catalog, process.env, {
+  const payload = buildImportPayload(loaded, catalog, mergedEnv(), {
     only: flags.only,
     strict: Boolean(flags.strict),
   });
@@ -1569,7 +2054,7 @@ async function cmdAccountsSync(flags) {
   }
 
   await startServer();
-  const dir = mkdtempSync(join(tmpdir(), "vitriol-omniroute-"));
+  const dir = mkdtempSync(join(tmpdir(), "vitriol-caduceus-"));
   const importFile = join(dir, "providers.json");
   try {
     chmodSync(dir, 0o700);
@@ -1636,6 +2121,760 @@ async function cmdAccountsSync(flags) {
   }
 }
 
+function accountEnvNames(config) {
+  return new Set(
+    (Array.isArray(config?.accounts) ? config.accounts : [])
+      .map((account) =>
+        String(
+          account?.credential_env ?? account?.credentialEnv ?? account?.api_key_env ?? account?.apiKeyEnv ?? "",
+        ).trim(),
+      )
+      .filter(Boolean),
+  );
+}
+
+async function syncEnabledAccounts(accountsPath) {
+  const loaded = loadAccountConfig({ file: accountsPath });
+  const catalog = loadProviderCatalog();
+  const payload = buildImportPayload(loaded, catalog, mergedEnv(), {});
+  if (payload.entries.length === 0) {
+    return { summary: summarizeImportResults([]), payload };
+  }
+  await startServer();
+  const summary = await importProviderEntries(payload.entries);
+  return { summary, payload };
+}
+
+async function cmdAccountsEnable(flags) {
+  const path = resolveAccountsPath(flags);
+  if (!existsSync(path)) fail(`accounts config not found at ${path}; run: vitriol caduceus accounts init`);
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  const env = mergedEnv();
+  const present = new Set(
+    [...accountEnvNames(config)].filter((key) => String(env[key] ?? "").trim()),
+  );
+  const result = enableAccountsForKeys(config, present, {
+    disableMissing: Boolean(flags["disable-missing"]),
+  });
+  if (!flags["dry-run"]) {
+    writeJsonAtomic(path, config);
+    chmodSync(path, 0o600);
+  }
+  let synced = null;
+  if (flags.sync && !flags["dry-run"]) {
+    synced = await syncEnabledAccounts(path);
+  }
+  const report = {
+    config: path,
+    dryRun: Boolean(flags["dry-run"]),
+    enabled: result.enabled,
+    disabled: result.disabled,
+    present: result.matched,
+    missing: result.missing,
+    sync: synced ? synced.summary : undefined,
+  };
+  if (flags.json) {
+    log(JSON.stringify(report, null, 2));
+    return;
+  }
+  log(`${report.dryRun ? "Would enable" : "Enabled"} ${result.enabled} account(s); ${result.matched} key(s) present; ${result.disabled} disabled.`);
+  if (synced) printImportSummary(synced.summary);
+  if (!flags["dry-run"] && !flags.sync) log("Next: vitriol caduceus accounts sync");
+}
+
+async function cmdImportKeys(flags) {
+  const positional = (flags._ ?? []).filter((v) => v !== "import-keys");
+  const file =
+    typeof positional[0] === "string"
+      ? positional[0]
+      : typeof flags["keys-file"] === "string"
+        ? flags["keys-file"]
+        : "";
+  if (!file) fail("usage: vitriol caduceus accounts import-keys <keys-file> [--dry-run] [--no-sync] [--json]");
+  if (!existsSync(file)) fail(`keys file not found: ${file}`);
+  try {
+    const mode = statSync(file).mode & 0o777;
+    if (mode & 0o077) log(`warning: ${file} is mode ${mode.toString(8)}; recommend chmod 600.`);
+  } catch {
+    // best-effort warning only
+  }
+  const updates = Object.fromEntries(parseEnvFile(readFileSync(file, "utf8")));
+  const names = Object.keys(updates).filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+  if (names.length === 0) fail(`no KEY=VALUE entries found in ${file}`);
+  const path = resolveAccountsPath(flags);
+  if (!existsSync(path)) fail(`accounts config not found at ${path}; run: vitriol caduceus accounts init`);
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  const result = enableAccountsForKeys(config, new Set(names), {});
+  if (!flags["dry-run"]) {
+    if (existsSync(ENV_FILE)) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const backup = `${ENV_FILE}.bak-${stamp}`;
+      copyFileSync(ENV_FILE, backup);
+      chmodSync(backup, 0o600);
+    }
+    writeEnv(updates);
+    writeJsonAtomic(path, config);
+    chmodSync(path, 0o600);
+  }
+  let synced = null;
+  if (!flags["no-sync"] && !flags["dry-run"]) {
+    synced = await syncEnabledAccounts(path);
+  }
+  const report = {
+    keysFile: file,
+    dryRun: Boolean(flags["dry-run"]),
+    imported: names.length,
+    matchedAccounts: result.matched,
+    unmatchedKeys: result.unmatched,
+    synced: synced ? synced.summary : undefined,
+    config: path,
+  };
+  if (flags.json) {
+    log(JSON.stringify(report, null, 2));
+    return;
+  }
+  log(`${report.dryRun ? "Would import" : "Imported"} ${names.length} key(s) from ${file}; ${result.matched} matched account(s).`);
+  if (result.unmatched.length > 0) log(`  unmatched env names: ${result.unmatched.join(", ")}`);
+  if (synced) printImportSummary(synced.summary);
+  if (!flags["dry-run"] && flags["no-sync"]) log("Next: vitriol caduceus accounts sync");
+}
+
+function readKeepalive() {
+  try {
+    return JSON.parse(readFileSync(DAHL_KEEPALIVE_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function keepaliveStatus() {
+  const record = readKeepalive();
+  const env = mergedEnv();
+  const key = String(env.DAHL_API_KEY ?? "").trim();
+  const last = record?.lastAt ? Date.parse(record.lastAt) : 0;
+  const ageMs = last ? Date.now() - last : null;
+  return {
+    keyPresent: Boolean(key),
+    keyMasked: key ? maskSecret(key) : null,
+    lastAt: record?.lastAt ?? null,
+    ageDays: ageMs == null ? null : ageMs / 86_400_000,
+    model: record?.model ?? null,
+    endpoint: DAHL_BASE_URL,
+    timerInstalled: existsSync(DAHL_KEEPALIVE_TIMER),
+  };
+}
+
+async function cmdKeepalive(flags) {
+  if (flags.status) {
+    const status = keepaliveStatus();
+    if (flags.json) {
+      log(JSON.stringify(status, null, 2));
+    } else {
+      log(`Dahl keepalive: ${status.keyPresent ? `key set (${status.keyMasked})` : "DAHL_API_KEY missing"}`);
+      log(`  endpoint: ${status.endpoint}`);
+      log(`  last request: ${status.lastAt ?? "never"}${status.ageDays != null ? ` (${status.ageDays.toFixed(1)}d ago)` : ""}`);
+      log(`  timer: ${status.timerInstalled ? "installed" : "not installed"}`);
+    }
+    return;
+  }
+
+  if (flags.remove) {
+    systemctlUser(["disable", "--now", "vitriol-dahl-keepalive.timer"]);
+    rmSync(DAHL_KEEPALIVE_TIMER, { force: true });
+    rmSync(DAHL_KEEPALIVE_SERVICE, { force: true });
+    systemctlUser(["daemon-reload"]);
+    log("Dahl keepalive timer removed.");
+    return;
+  }
+
+  if (flags.install) {
+    const node = process.execPath;
+    const script = process.argv[1] ? resolve(process.argv[1]) : "";
+    if (!script) fail("cannot resolve the caduceus script path for the timer");
+    mkdirSync(join(HOME, ".config", "systemd", "user"), { recursive: true });
+    const service = `[Unit]
+Description=Caduceus Dahl keepalive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart="${node}" "${script}" keepalive --quiet
+`;
+    const timer = `[Unit]
+Description=Caduceus Dahl keepalive timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=${DAHL_KEEPALIVE_DAYS}d
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`;
+    writeFileSync(DAHL_KEEPALIVE_SERVICE, service, { mode: 0o644 });
+    writeFileSync(DAHL_KEEPALIVE_TIMER, timer, { mode: 0o644 });
+    systemctlUser(["daemon-reload"]);
+    const enable = systemctlUser(["enable", "--now", "vitriol-dahl-keepalive.timer"]);
+    if (!enable.ok) fail(`could not enable vitriol-dahl-keepalive.timer: ${enable.out}`);
+    log(`Installed Dahl keepalive timer (every ${DAHL_KEEPALIVE_DAYS}d).`);
+    log(`  ${DAHL_KEEPALIVE_TIMER}`);
+    return;
+  }
+
+  const env = mergedEnv();
+  const key = String(env.DAHL_API_KEY ?? "").trim();
+  if (!key) fail("DAHL_API_KEY is missing (add it to ~/.vitriol/officina/env)");
+  const model = typeof flags.model === "string" ? flags.model : process.env.DAHL_KEEPALIVE_MODEL || "MiniMaxAI/MiniMax-M2.7";
+  if (flags["dry-run"]) {
+    log(`Would POST ${DAHL_BASE_URL}/chat/completions · model ${model} · key ${maskSecret(key)}`);
+    return;
+  }
+  const body = {
+    model,
+    messages: [{ role: "user", content: "ping" }],
+    max_tokens: 1,
+    temperature: 0,
+    stream: false,
+  };
+  let status = 0;
+  let detail = "";
+  try {
+    const res = await fetch(`${DAHL_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(30_000),
+    });
+    status = res.status;
+    detail = (await res.text()).slice(0, 300);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+    }
+    let usage = null;
+    try {
+      usage = JSON.parse(detail)?.usage ?? null;
+    } catch {
+      // keepalive still succeeded
+    }
+    const record = {
+      lastAt: new Date().toISOString(),
+      status,
+      model,
+      endpoint: DAHL_BASE_URL,
+      usage,
+    };
+    writeJsonAtomic(DAHL_KEEPALIVE_FILE, record);
+    chmodSync(DAHL_KEEPALIVE_FILE, 0o600);
+    if (!flags.quiet) {
+      log(`Dahl keepalive ok · ${model} · HTTP ${status}`);
+      if (usage) log(`  usage: ${JSON.stringify(usage)}`);
+    }
+    if (flags.json) log(JSON.stringify(record, null, 2));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (flags.json) log(JSON.stringify({ ok: false, status, error: message }, null, 2));
+    else process.stderr.write(`[caduceus] Dahl keepalive failed: ${message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+function readJsonSafe(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readRouteLedger(days = 31) {
+  const rows = [];
+  try {
+    const names = readdirSync(ROUTE_LEDGER_DIR)
+      .filter((name) => /^route-ledger-\d{8}\.jsonl$/.test(name))
+      .sort()
+      .slice(-days);
+    for (const name of names) {
+      for (const line of readFileSync(join(ROUTE_LEDGER_DIR, name), "utf8").split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          rows.push(JSON.parse(line));
+        } catch {
+          // torn line
+        }
+      }
+    }
+  } catch {
+    // no ledger
+  }
+  return rows;
+}
+
+function summarizeRoutes(rows) {
+  const out = {
+    requests: 0,
+    local: 0,
+    cloud: 0,
+    failures: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    byModel: {},
+  };
+  for (const e of rows) {
+    out.requests += 1;
+    if (e.tier === "local") out.local += 1;
+    else out.cloud += 1;
+    if (e.outcome === "error") out.failures += 1;
+    out.tokensIn += Number(e.tokensIn) || 0;
+    out.tokensOut += Number(e.tokensOut) || 0;
+    out.cacheRead += Number(e.cacheRead) || 0;
+    out.cacheWrite += Number(e.cacheWrite) || 0;
+    const key = `${e.provider ?? "?"}/${e.model ?? "?"}`;
+    const row = (out.byModel[key] ??= { requests: 0, tokensIn: 0, tokensOut: 0, failures: 0 });
+    row.requests += 1;
+    row.tokensIn += Number(e.tokensIn) || 0;
+    row.tokensOut += Number(e.tokensOut) || 0;
+    if (e.outcome === "error") row.failures += 1;
+  }
+  return out;
+}
+
+async function cmdStats(flags) {
+  const rows = readRouteLedger(31);
+  const today = new Date().toISOString().slice(0, 10);
+  const month = today.slice(0, 7);
+  const filtered = rows.filter((e) => {
+    if (flags.today) return String(e.ts ?? "").slice(0, 10) === today;
+    if (flags.month) return String(e.ts ?? "").slice(0, 7) === month;
+    return true;
+  });
+  const summary = summarizeRoutes(filtered);
+  if (flags.json) {
+    log(JSON.stringify({ scope: flags.today ? "today" : flags.month ? "month" : "30d", ...summary }, null, 2));
+    return;
+  }
+  log(`Route stats (${flags.today ? "today" : flags.month ? "month" : "30d"}): ${summary.requests} requests · local ${summary.local} · cloud ${summary.cloud} · ${summary.failures} failures`);
+  log(`  tokens in ${summary.tokensIn} · out ${summary.tokensOut} · cache read ${summary.cacheRead} · write ${summary.cacheWrite}`);
+  const top = Object.entries(summary.byModel).sort((a, b) => (b[1].tokensIn + b[1].tokensOut) - (a[1].tokensIn + a[1].tokensOut)).slice(0, 10);
+  for (const [model, row] of top) {
+    log(`  ${model}\t${row.requests} req\t${row.tokensIn + row.tokensOut} tok\t${row.failures} fail`);
+  }
+}
+
+async function cmdPreflight(flags) {
+  const checks = [];
+  if (flags["start-local"]) {
+    const start = spawnSync("systemctl", ["start", "vitriol-server"], { encoding: "utf8", timeout: 30_000 });
+    if (start.status !== 0) log(`warning: could not start vitriol-server: ${(start.stderr || start.stdout || "").trim()}`);
+  }
+  const add = (name, status, detail) => checks.push({ name, status, detail });
+  let local = false;
+  try {
+    const res = await fetch(`${ENGINE_URL}/health`, { signal: AbortSignal.timeout(1500) });
+    local = res.ok;
+  } catch {
+    local = false;
+  }
+  add("local engine", local ? "ok" : "warn", local ? ENGINE_URL : `down at ${ENGINE_URL}`);
+  const gateway = await serverUp();
+  add("caduceus gateway", gateway ? "ok" : "fail", gateway ? ORIGIN : `down at ${ORIGIN}`);
+
+  const env = mergedEnv();
+  const accounts = readJsonSafe(ACCOUNTS_FILE);
+  const accountRows = Array.isArray(accounts?.accounts) ? accounts.accounts : [];
+  const present = accountRows.filter((a) => {
+    const key = String(a?.credential_env ?? "").trim();
+    return key && String(env[key] ?? "").trim();
+  }).length;
+  add("provider keys", present > 0 ? "ok" : "warn", `${present}/${accountRows.length} present`);
+
+  let catalogAge = null;
+  try {
+    catalogAge = (Date.now() - statSync(CACHE_FILE).mtimeMs) / 3_600_000;
+  } catch {
+    // missing
+  }
+  add("catalog", catalogAge == null ? "warn" : catalogAge < 48 ? "ok" : "warn", catalogAge == null ? "missing" : `${catalogAge.toFixed(1)}h old`);
+
+  const ka = keepaliveStatus();
+  add("dahl keepalive", ka.lastAt && ka.ageDays < 7 ? "ok" : "warn", ka.lastAt ? `${ka.ageDays.toFixed(1)}d ago` : "never");
+
+  let profile = "auto";
+  try {
+    profile = readFileSync(ROUTING_PROFILE_FILE, "utf8").trim() || "auto";
+  } catch {
+    // auto
+  }
+  add("profile", "ok", profile);
+
+  const health = readJsonSafe(PROVIDER_HEALTH_FILE);
+  const now = Date.now();
+  const cooling = Object.values(health?.models ?? {}).filter((r) => Number(r?.cooldownUntil) > now).length;
+  add("cooling lanes", "ok", `${cooling} cooling`);
+
+  const failures = checks.filter((c) => c.status === "fail").length;
+  const warnings = checks.filter((c) => c.status === "warn").length;
+  if (flags.json) {
+    log(JSON.stringify({ ok: failures === 0, failures, warnings, checks }, null, 2));
+  } else {
+    for (const c of checks) log(`${c.status.toUpperCase().padEnd(4)} ${c.name}: ${c.detail}`);
+    log(`\n${failures} failure(s), ${warnings} warning(s)`);
+  }
+  if (failures > 0) process.exitCode = 1;
+}
+
+function sessionDirFor(cwd) {
+  const encoded = `--${String(cwd).replace(/^\//, "").replace(/\//g, "-")}--`;
+  return join(HOME, ".pi", "agent", "sessions", encoded);
+}
+
+function newestSession(dir) {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.endsWith(".jsonl"))
+      .filter((name) => !name.includes(".bak-") && !name.includes(".corrupt-") && !name.includes(".recovered-") && !name.includes(".tmp-"))
+      .map((name) => ({ name, mtime: statSync(join(dir, name)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0]?.name;
+  } catch {
+    return undefined;
+  }
+}
+
+function tuiRunning() {
+  try {
+    const pid = Number(readFileSync(TUI_LOCK_FILE, "utf8").trim());
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return null;
+    try {
+      process.kill(pid, 0);
+      return pid;
+    } catch (error) {
+      return error?.code === "EPERM" ? pid : null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function assertTuiStopped(action) {
+  const pid = tuiRunning();
+  if (pid) fail(`${action}: Officina TUI is running (PID ${pid}); exit it first`);
+}
+
+function inspectSessionFile(file) {
+  const health = {
+    file,
+    valid: false,
+    entries: 0,
+    dangling: 0,
+    duplicateIds: 0,
+    missingParents: 0,
+    badCompactions: 0,
+    reason: "",
+  };
+  let entries;
+  try {
+    entries = readFileSync(file, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  } catch (error) {
+    health.reason = `invalid JSONL: ${error instanceof Error ? error.message : String(error)}`;
+    return health;
+  }
+  health.entries = entries.length;
+  if (entries[0]?.type !== "session") {
+    health.reason = "missing session header";
+    return health;
+  }
+  const byId = new Map();
+  for (const entry of entries) {
+    if (!entry?.id) continue;
+    if (byId.has(entry.id)) health.duplicateIds += 1;
+    else byId.set(entry.id, entry);
+  }
+  if (health.duplicateIds > 0) {
+    health.reason = `${health.duplicateIds} duplicate entry id(s)`;
+    return health;
+  }
+  let cursor = entries[entries.length - 1]?.id;
+  const path = [];
+  const seen = new Set();
+  while (cursor) {
+    if (seen.has(cursor)) {
+      health.reason = "cycle in parent chain";
+      return health;
+    }
+    seen.add(cursor);
+    const entry = byId.get(cursor);
+    if (!entry) {
+      health.missingParents += 1;
+      health.reason = `missing parent entry ${cursor}`;
+      return health;
+    }
+    path.push(entry);
+    cursor = entry.parentId;
+  }
+  path.reverse();
+  const results = new Set(
+    path
+      .map((e) => e?.message)
+      .filter((m) => m?.role === "toolResult")
+      .map((m) => m.toolCallId),
+  );
+  for (const entry of path) {
+    const msg = entry?.message;
+    if (msg?.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (part?.type === "toolCall" && part.id && !results.has(part.id)) health.dangling += 1;
+    }
+  }
+  for (const entry of path) {
+    if (entry?.firstKeptEntryId && !byId.has(entry.firstKeptEntryId)) health.badCompactions += 1;
+  }
+  if (path.some((entry) => String(entry?.id ?? "").startsWith("recover-"))) {
+    health.reason = "synthetic recovery entries; start a fresh session";
+    return health;
+  }
+  if (health.dangling > 0) {
+    health.reason = `${health.dangling} dangling tool call(s) on the active path`;
+    return health;
+  }
+  if (health.badCompactions > 0) {
+    health.reason = `${health.badCompactions} broken compaction reference(s)`;
+    return health;
+  }
+  health.valid = true;
+  return health;
+}
+
+async function cmdSessionDoctor(flags) {
+  const cwd = typeof flags.cwd === "string" ? flags.cwd : process.cwd();
+  let file = typeof flags.file === "string" ? flags.file : "";
+  if (!file) {
+    const dir = sessionDirFor(cwd);
+    const name = newestSession(dir);
+    if (!name) fail(`no session found for ${cwd}`);
+    file = join(dir, name);
+  }
+  if (!existsSync(file)) fail(`session file not found: ${file}`);
+  const health = inspectSessionFile(file);
+  if (flags.json) {
+    log(JSON.stringify(health, null, 2));
+  } else {
+    log(`Session: ${health.file}`);
+    log(`  entries: ${health.entries}`);
+    log(`  dangling tool calls: ${health.dangling}`);
+    log(`  duplicate ids: ${health.duplicateIds}`);
+    log(`  broken compactions: ${health.badCompactions}`);
+    log(`  status: ${health.valid ? "OK" : "CORRUPT"}${health.reason ? ` — ${health.reason}` : ""}`);
+  }
+  if (!health.valid) process.exitCode = 1;
+}
+
+async function cmdRecoverSession(flags) {
+  const cwd = typeof flags.cwd === "string" ? flags.cwd : process.cwd();
+  let file = typeof flags.file === "string" ? flags.file : "";
+  if (!file) {
+    const dir = sessionDirFor(cwd);
+    const name = newestSession(dir);
+    if (!name) fail(`no session found for ${cwd}`);
+    file = join(dir, name);
+  }
+  if (!existsSync(file)) fail(`session file not found: ${file}`);
+  assertTuiStopped("recover-session");
+  const lines = readFileSync(file, "utf8").split("\n").filter(Boolean);
+  const entries = [];
+  for (const line of lines) {
+    try {
+      entries.push(JSON.parse(line));
+    } catch {
+      fail(`session is not valid JSONL: ${file}`);
+      return;
+    }
+  }
+  const header = entries[0]?.type === "session" ? entries[0] : null;
+  const byId = new Map(entries.filter((e) => e?.id).map((e) => [e.id, e]));
+  const leafId = entries[entries.length - 1]?.id;
+  const path = [];
+  let cursor = leafId;
+  while (cursor && byId.has(cursor)) {
+    path.push(byId.get(cursor));
+    cursor = byId.get(cursor).parentId;
+  }
+  path.reverse();
+  const resultIds = new Set(
+    path
+      .map((e) => e?.message)
+      .filter((m) => m?.role === "toolResult")
+      .map((m) => m.toolCallId),
+  );
+  const missing = [];
+  for (const entry of path) {
+    const msg = entry?.message;
+    for (const call of Array.isArray(msg?.content) ? msg.content : []) {
+      if (call?.type === "toolCall" && call.id && !resultIds.has(call.id)) {
+        missing.push({ entry, call });
+      }
+    }
+  }
+  if (missing.length === 0) {
+    log("No dangling tool calls on the active path; session is already resumable.");
+    return;
+  }
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const out = flags.deep ? `${file}.recovered-${stamp}.jsonl` : file;
+  const synthetic = [];
+  if (flags.deep) {
+    let tail = null;
+    for (const entry of path) {
+      const cloned = { ...entry, parentId: tail };
+      synthetic.push(cloned);
+      tail = cloned.id;
+      const msg = entry?.message;
+      for (const call of Array.isArray(msg?.content) ? msg.content : []) {
+        if (call?.type !== "toolCall" || !call.id || resultIds.has(call.id)) continue;
+        const id = `recover-${stamp}-${call.id.slice(0, 8)}`;
+        synthetic.push({
+          type: "message",
+          id,
+          parentId: tail,
+          timestamp: new Date().toISOString(),
+          message: {
+            role: "toolResult",
+            toolCallId: call.id,
+            toolName: call.name ?? "tool",
+            content: [{
+              type: "text",
+              text: "[interrupted] This tool call was interrupted before execution. It was not executed; continue without its result unless you need to re-run it.",
+            }],
+            isError: true,
+            timestamp: Date.now(),
+          },
+        });
+        tail = id;
+      }
+    }
+    if (header) synthetic.unshift(header);
+  } else {
+    let tail = path[path.length - 1]?.id;
+    for (const { call } of missing) {
+      const id = `recover-${stamp}-${call.id.slice(0, 8)}`;
+      synthetic.push({
+        type: "message",
+        id,
+        parentId: tail,
+        timestamp: new Date().toISOString(),
+        message: {
+          role: "toolResult",
+          toolCallId: call.id,
+          toolName: call.name ?? "tool",
+          content: [{
+            type: "text",
+            text: "[interrupted] Tool call was interrupted before it completed. It was not executed. Re-run it if the result is still needed.",
+          }],
+          isError: true,
+          timestamp: Date.now(),
+        },
+      });
+      tail = id;
+    }
+  }
+  if (flags["dry-run"]) {
+    log(`${flags.deep ? "Would linearize" : "Would append"} ${missing.length} synthetic tool result(s).`);
+    if (flags.deep) log(`Output would be: ${out}`);
+    return;
+  }
+  if (flags.deep) {
+    const tmp = `${out}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${synthetic.map((e) => JSON.stringify(e)).join("\n")}\n`, { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, out);
+    log(`Recovered ${missing.length} dangling call(s) into ${out}`);
+    log(`Launch with: officina --session ${out}`);
+  } else {
+    const backup = `${file}.bak-${stamp}`;
+    copyFileSync(file, backup);
+    chmodSync(backup, 0o600);
+    appendFileSync(file, `${synthetic.map((e) => JSON.stringify(e)).join("\n")}\n`, { mode: 0o600 });
+    chmodSync(file, 0o600);
+    log(`Recovered ${missing.length} interrupted tool call(s) in ${file}`);
+    log(`Backup: ${backup}`);
+    log("Restart Officina to reload the session.");
+  }
+}
+
+async function cmdKeys(flags) {
+  const loaded = loadAccountConfig(flags);
+  const fileEnv = readEnv();
+  const env = mergedEnv();
+  let connections = [];
+  if (await serverUp()) {
+    try {
+      const parsed = parseCliJson(
+        runCli(["--base-url", ORIGIN, "providers", "list", "--json"], { timeout: 30_000 }),
+      );
+      connections = Array.isArray(parsed) ? parsed : parsed?.providers ?? parsed?.connections ?? [];
+    } catch {
+      // key presence is still useful without link status
+    }
+  }
+  const linked = new Set(
+    connections.map((connection) => {
+      const provider = String(connection?.provider ?? "").toLowerCase();
+      const name = String(connection?.name || connection?.provider || "").toLowerCase();
+      return `${provider}\0${name}`;
+    }),
+  );
+  const rows = loaded.accounts.map((account) => {
+    if (!account || typeof account !== "object") return null;
+    const provider = String(account.provider ?? "").trim();
+    const name = String(account.name ?? provider).trim();
+    const key = String(
+      account.credential_env ?? account.credentialEnv ?? account.api_key_env ?? account.apiKeyEnv ?? "",
+    ).trim();
+    if (!key) return null;
+    const shellValue = process.env[key]?.trim() ?? "";
+    const fileValue = String(fileEnv.get(key) ?? "").trim();
+    const value = shellValue || fileValue;
+    return {
+      provider,
+      name,
+      env: key,
+      present: Boolean(value),
+      source: shellValue ? "shell" : fileValue ? "env-file" : "missing",
+      masked: value ? maskSecret(value) : null,
+      gateway: linked.has(`${provider.toLowerCase()}\0${name.toLowerCase()}`),
+    };
+  }).filter(Boolean);
+  const object = flags.all ? rows : rows.filter((row) => row.present);
+  const inference = env.OFFICINA_CADUCEUS_API_KEY?.trim() ?? "";
+  const report = {
+    envFile: ENV_FILE,
+    inferenceKey: inference ? maskSecret(inference) : null,
+    keys: object,
+    summary: {
+      present: rows.filter((row) => row.present).length,
+      missing: rows.filter((row) => !row.present).length,
+      linked: rows.filter((row) => row.gateway).length,
+    },
+  };
+  if (flags.json) {
+    log(JSON.stringify(report, null, 2));
+    return;
+  }
+  log(`Env file: ${ENV_FILE}`);
+  log(`Caduceus inference key: ${inference ? `set (${maskSecret(inference)})` : "missing"}`);
+  if (object.length === 0) {
+    log("No provider keys found (use --all to list missing entries).");
+    return;
+  }
+  for (const row of object) {
+    log(
+      `  ${row.present ? "✓" : "·"} ${row.provider}/${row.name}  ${row.env}  ${row.masked ?? "missing"}  ${row.source}${row.gateway ? "  gateway" : ""}`,
+    );
+  }
+  log(`Summary: ${report.summary.present} present · ${report.summary.missing} missing · ${report.summary.linked} gateway-linked`);
+}
+
 async function cmdAccountsStatus(flags) {
   const loaded = loadAccountConfig(flags);
   const catalog = loadProviderCatalog();
@@ -1659,6 +2898,8 @@ async function cmdAccountsStatus(flags) {
     }
   }
 
+  const fileEnv = readEnv();
+  const env = mergedEnv();
   const configured = new Set(
     connections.map((connection) => {
       const provider = String(connection?.provider ?? "").toLowerCase();
@@ -1678,10 +2919,13 @@ async function cmdAccountsStatus(flags) {
         : provider;
     const credentialEnv =
       account.credential_env ?? account.credentialEnv ?? account.api_key_env ?? account.apiKeyEnv;
-    const credential = credentialEnv
-      ? process.env[String(credentialEnv)]?.trim()
-        ? `env:${credentialEnv} (${maskSecret(process.env[String(credentialEnv)])})`
-        : `env:${credentialEnv} (missing)`
+    const key = credentialEnv ? String(credentialEnv) : "";
+    const shellValue = key ? process.env[key]?.trim() : "";
+    const fileValue = key ? String(fileEnv.get(key) ?? "").trim() : "";
+    const source = shellValue ? "shell" : fileValue ? "env-file" : "missing";
+    const value = shellValue || fileValue;
+    const credential = key
+      ? `env:${key} (${value ? `${maskSecret(value)}, ${source}` : "missing"})`
       : account.allow_no_credential || account.allowNoCredential
         ? "no credential"
         : "missing credential_env";
@@ -1690,6 +2934,9 @@ async function cmdAccountsStatus(flags) {
       name,
       configured: configured.has(`${provider.toLowerCase()}\0${name.toLowerCase()}`),
       credential,
+      credential_env: key || null,
+      credential_source: source,
+      credential_masked: value ? maskSecret(value) : null,
     };
   });
 
@@ -1707,9 +2954,12 @@ async function cmdAccountsStatus(flags) {
     return;
   }
 
+  const present = rows.filter((row) => row.credential_source !== "missing").length;
+  const linked = rows.filter((row) => row.configured).length;
   log(`Accounts config: ${loaded.path}`);
   log(`Gateway: ${up ? `up (${ORIGIN})` : "down"}`);
   if (connectionError) log(`Connection read failed: ${connectionError}`);
+  log(`Keys present: ${present}/${rows.length} · gateway connections matched: ${linked}`);
   for (const row of rows) {
     log(
       `  ${row.configured ? "configured" : "missing   "}  ${row.provider}/${row.name}  [${row.credential}]`,
@@ -1881,9 +3131,9 @@ async function cmdAccountsOauth(flags) {
     return;
   }
 
-  if (!existsSync(BIN)) fail(`OmniRoute not installed at ${BIN}`);
+  if (!existsSync(BIN)) fail(`Caduceus gateway not installed at ${BIN}`);
   if (sub === "status") {
-    if (!(await serverUp())) fail(`gateway is down at ${ORIGIN}; run: vitriol omniroute up`);
+    if (!(await serverUp())) fail(`gateway is down at ${ORIGIN}; run: vitriol caduceus up`);
     run(BIN, ["--base-url", ORIGIN, "oauth", "status"], { inherit: true, timeout: 60_000 });
     return;
   }
@@ -1891,7 +3141,7 @@ async function cmdAccountsOauth(flags) {
   if (sub !== "login") fail(`unknown accounts oauth command: ${sub}`);
   const provider = findOAuthProvider(String(id ?? ""));
   if (!provider) {
-    fail(`unsupported OAuth provider: ${id ?? "(missing)"}; try: vitriol omniroute accounts oauth list`);
+    fail(`unsupported OAuth provider: ${id ?? "(missing)"}; try: vitriol caduceus accounts oauth list`);
   }
 
   if (provider.native) {
@@ -1916,7 +3166,11 @@ async function cmdAccounts(flags) {
   if (sub === "init") return cmdAccountsInit(flags);
   if (sub === "sync") return cmdAccountsSync(flags);
   if (sub === "status") return cmdAccountsStatus(flags);
+  if (sub === "keys") return cmdKeys(flags);
+  if (sub === "enable") return cmdAccountsEnable(flags);
+  if (sub === "import-keys") return cmdImportKeys(flags);
   if (sub === "free") return cmdAccountsFree(flags);
+  if (sub === "signup") return cmdSignup(flags);
   if (sub === "discover") return cmdAccountsDiscover(flags);
   if (sub === "oauth") return cmdAccountsOauth(flags);
   if (sub === "help") {
@@ -1928,23 +3182,28 @@ async function cmdAccounts(flags) {
 }
 
 function printAccountsHelp() {
-  log(`vitriol omniroute accounts — bulk API-key import + assisted OAuth
+  log(`vitriol caduceus accounts — bulk API-key import + assisted OAuth
 
 Usage:
-  vitriol omniroute accounts init [--file PATH] [--force]
-  vitriol omniroute accounts sync [--file PATH] [--dry-run] [--json]
+  vitriol caduceus accounts init [--file PATH] [--force]
+  vitriol caduceus accounts sync [--file PATH] [--dry-run] [--json]
                                   [--only ID] [--strict]
-  vitriol omniroute accounts status [--file PATH] [--json]
-  vitriol omniroute accounts free [--apply] [--json] [--strict]
+  vitriol caduceus accounts status [--file PATH] [--json]
+  vitriol caduceus accounts keys [--all] [--json]
+  vitriol caduceus accounts enable [--sync] [--disable-missing] [--dry-run] [--json]
+  vitriol caduceus accounts import-keys <keys-file> [--dry-run] [--no-sync] [--json]
+  vitriol caduceus accounts free [--apply] [--json] [--strict]
                                   [--no-optional] [--no-existing-auth]
                                   [--no-browser] [--plans] [--template]
                                   [--file PATH] [--force]
-  vitriol omniroute accounts discover [--apply] [--json] [--strict]
-  vitriol omniroute accounts oauth list
-  vitriol omniroute accounts oauth login <id> [--no-browser]
+  vitriol caduceus accounts signup [--only a,b] [--start-at id] [--status]
+                                  [--reset] [--no-open] [--no-sync] [--redo] [--json]
+  vitriol caduceus accounts discover [--apply] [--json] [--strict]
+  vitriol caduceus accounts oauth list
+  vitriol caduceus accounts oauth login <id> [--no-browser]
                                   [--import-from-system] [--no-import-system]
                                   [--social google|github] [--timeout MS]
-  vitriol omniroute accounts oauth status
+  vitriol caduceus accounts oauth status
 
 Config: ${ACCOUNTS_FILE}
 Credentials are referenced by env-var name (credential_env), never stored in
@@ -1952,27 +3211,39 @@ the config. Supported OAuth flows: ${OAUTH_PROVIDERS.map((p) => p.id).join(", ")
 }
 
 function printHelp() {
-  log(`vitriol omniroute — local OmniRoute gateway for Officina
+  log(`vitriol caduceus — local Caduceus gateway for Officina
 
 Usage:
-  vitriol omniroute setup [--opencode-key-stdin] [--no-install] [--force]
+  vitriol caduceus setup [--opencode-key-stdin] [--no-install] [--force]
                           [--free] [--no-browser]
-  vitriol omniroute up
-  vitriol omniroute down
-  vitriol omniroute status
-  vitriol omniroute sync
-  vitriol omniroute accounts init|sync|status
-  vitriol omniroute accounts oauth list|login|status
-  vitriol omniroute cache status|enable|disable [--providers a,b] [--json]
-  vitriol omniroute egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
-  vitriol omniroute service install|status|remove
-  vitriol omniroute doctor [--json]
-  vitriol omniroute use <model-id> [--local] [--json]
-  vitriol omniroute config get [--json]
-  vitriol omniroute config set cache auto|local|cloud|off
-  vitriol omniroute config set praetor on|off
+  vitriol caduceus up
+  vitriol caduceus down
+  vitriol caduceus status
+  vitriol caduceus sync
+  vitriol caduceus accounts init|sync|status|keys|enable|import-keys
+  vitriol caduceus keys [--all] [--json]   # present provider keys (masked)
+  vitriol caduceus enable [--sync] [--disable-missing] [--dry-run] [--json]
+  vitriol caduceus import-keys <keys-file> [--dry-run] [--no-sync] [--json]
+  vitriol caduceus keepalive [--status|--install|--remove|--dry-run|--json|--quiet]
+  vitriol caduceus stats [--today|--month|--json]
+  vitriol caduceus preflight [--json] [--start-local]
+  vitriol caduceus recover-session [--file PATH] [--cwd DIR] [--deep] [--dry-run]
+  vitriol caduceus session-doctor [--latest|--file PATH] [--cwd DIR] [--json]
+  vitriol caduceus accounts signup
+  vitriol caduceus signup [--only a,b] [--start-at id] [--status]
+                          [--reset] [--no-open] [--no-sync] [--redo] [--json]
+  vitriol caduceus accounts oauth list|login|status
+  vitriol caduceus cache status|enable|disable [--providers a,b] [--json]
+  vitriol caduceus egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
+  vitriol caduceus service install|status|remove
+  vitriol caduceus migrate [--dry-run|--apply] [--no-service] [--json]
+  vitriol caduceus doctor [--json]
+  vitriol caduceus use <model-id> [--local] [--json]
+  vitriol caduceus config get [--json]
+  vitriol caduceus config set cache auto|local|cloud|off
+  vitriol caduceus config set praetor on|off
 
-Setup installs omniroute@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
+Setup installs the OmniRoute vendor package@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
 creates a local inference key, disables compression/semantic-cache/memory, and
 writes ${ENV_FILE}. Accounts sync bulk-imports API-key providers from
 ${ACCOUNTS_FILE}; accounts free adds zero-key free providers and reuses existing
@@ -1993,6 +3264,16 @@ async function main() {
   if (command === "cache") return cmdCache(parseFlags(argv.slice(1)));
   if (command === "egress") return cmdEgress(parseFlags(argv.slice(1)));
   if (command === "service") return cmdService(parseFlags(argv.slice(1)));
+  if (command === "migrate") return cmdMigrate(parseFlags(argv.slice(1)));
+  if (command === "signup") return cmdSignup(parseFlags(argv.slice(1)));
+  if (command === "keys") return cmdKeys(parseFlags(argv.slice(1)));
+  if (command === "enable") return cmdAccountsEnable(parseFlags(argv.slice(1)));
+  if (command === "import-keys") return cmdImportKeys(parseFlags(argv.slice(1)));
+  if (command === "keepalive") return cmdKeepalive(parseFlags(argv.slice(1)));
+  if (command === "stats") return cmdStats(parseFlags(argv.slice(1)));
+  if (command === "preflight") return cmdPreflight(parseFlags(argv.slice(1)));
+  if (command === "recover-session") return cmdRecoverSession(parseFlags(argv.slice(1)));
+  if (command === "session-doctor") return cmdSessionDoctor(parseFlags(argv.slice(1)));
   if (command === "doctor") return cmdDoctor(parseFlags(argv.slice(1)));
   if (command === "use") return cmdUse(parseFlags(argv.slice(1)));
   if (command === "config") return cmdConfig(parseFlags(argv.slice(1)));
@@ -2007,6 +3288,6 @@ async function main() {
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`[omniroute] ${message}\n`);
+  process.stderr.write(`[caduceus] ${message}\n`);
   process.exit(Number(error?.exitCode) || 1);
 });

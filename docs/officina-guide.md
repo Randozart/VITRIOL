@@ -15,38 +15,75 @@
 - **Grammar**: `[COMMIT … >] KEYWORD > target args`. Uppercase keywords first,
   lowercase targets/args, `>` is the work conduit.
 
-## Subscriptions via OmniRoute
+## Subscriptions via Caduceus
 
-Officina remains engine-first. To use subscription providers such as OpenCode
-Go, run:
+Caduceus is Officina’s name for its local gateway integration; the upstream
+OmniRoute vendor remains separately installed and MIT-attributed.
 
-    vitriol omniroute setup --opencode-key-stdin < keyfile
-    vitriol omniroute status
+Officina remains engine-first through the resilient `officina/lapis` default
+(local when up, Caduceus failover when down). To use subscription providers
+such as OpenCode Go, run:
 
-Then open `vitriol officina` and select `/model` → `omniroute/<model>`. The
-choice persists. A fresh session still defaults to the local VITRIOL engine.
-`vitriol omniroute up|down|sync` manages the gateway. See `docs/OFFICINA.md`
+    vitriol caduceus setup --opencode-key-stdin < keyfile
+    vitriol caduceus status
+
+Then open `vitriol officina` and select `/model` → `caduceus/<model>`. The
+choice persists. The resilient virtual default prefers the local VITRIOL engine
+and falls back to Caduceus only when it is busy or down.
+`vitriol caduceus up|down|sync` manages the gateway. See `docs/OFFICINA.md`
 for the passthrough contract and rollback steps.
 
 Zero-key free providers:
 
-    vitriol omniroute setup --free
-    vitriol omniroute doctor
-    vitriol omniroute service install
-    vitriol omniroute use ddgw/gpt-5.4-mini       # persist cloud default
-    vitriol omniroute accounts free --template    # fill-in free API-key list
-    vitriol omniroute accounts free --apply
-    vitriol omniroute accounts discover --apply   # reuse OpenCode auth
+    vitriol caduceus setup --free
+    vitriol caduceus doctor
+    vitriol caduceus service install
+    vitriol caduceus use caduceus/ddgw/gpt-5.4-mini       # persist cloud default
+    vitriol caduceus accounts free --template    # fill-in free API-key list
+    vitriol caduceus accounts free --apply
+    vitriol caduceus accounts discover --apply   # reuse OpenCode auth
+
+Guided free-tier signup (all 123 API-key providers, one at a time):
+
+    vitriol caduceus signup              # open pages + paste keys (hidden)
+    vitriol caduceus signup --status     # progress
+    vitriol caduceus signup --reset      # start over
+
+Check what is actually configured:
+
+    vitriol caduceus keys              # present keys, masked, with source
+    vitriol caduceus keys --all        # include missing entries
+    vitriol caduceus accounts status   # provider + env name + gateway link
+    vitriol caduceus preflight         # local/gateway/keys/keepalive/cooling
+    vitriol caduceus stats --today     # route/token usage
+
+In the TUI: `/profile auto|fast|deep|local`, `/why`, `/free`, `/cost`,
+`/keys`, `/providers`.
+
+Session safety:
+```bash
+officina --new                         # force a clean session
+vitriol caduceus session-doctor        # validate the newest session
+vitriol caduceus recover-session       # offline only; refuses while TUI runs
+```
+The TUI holds `~/.vitriol/officina/tui.lock` and quarantines corrupt
+sessions (`.corrupt-*`) at startup instead of resuming them.
+
+Bulk key import (one file, one pass):
+
+    vitriol caduceus accounts import-keys ~/keys.env   # KEY=VALUE bundle
+    vitriol caduceus accounts enable --present --sync  # enable all present keys
+    vitriol caduceus accounts keys --all               # verify present/missing
 
 Bulk accounts:
 
-    vitriol omniroute accounts init       # ~/.vitriol/officina/accounts.json
-    vitriol omniroute accounts sync       # API keys via credential_env refs
-    vitriol omniroute accounts status
-    vitriol omniroute accounts oauth list
-    vitriol omniroute accounts oauth login openference
-    vitriol omniroute accounts oauth login agy
-    vitriol omniroute accounts oauth login freebuff
+    vitriol caduceus accounts init       # ~/.vitriol/officina/accounts.json
+    vitriol caduceus accounts sync       # API keys via credential_env refs
+    vitriol caduceus accounts status
+    vitriol caduceus accounts oauth list
+    vitriol caduceus accounts oauth login openference
+    vitriol caduceus accounts oauth login agy
+    vitriol caduceus accounts oauth login freebuff
 
 API-key providers import in bulk. OAuth is assisted, not unattended: browser
 or device consent is still required except `cursor`/`zed` system imports.
@@ -56,14 +93,14 @@ Config toggles:
 
     vitriol opencode                       # import an OpenCode session
     vitriol settings                       # full-screen searchable settings TUI
-    vitriol omniroute config set cache auto
-    vitriol omniroute config set praetor on
+    vitriol caduceus config set cache auto
+    vitriol caduceus config set praetor on
 
 ## Cloud cache, Praetor, egress
 
 Cloud cache mode is automatic for non-local providers:
 
-    vitriol omniroute cache enable --providers opencode-go,glm
+    vitriol caduceus cache enable --providers opencode-go,glm
     vitriol cache-report
 
 Praetor is advisory and opt-in:
@@ -72,9 +109,9 @@ Praetor is advisory and opt-in:
 
 Fixed egress only (no quota-based IP rotation):
 
-    vitriol omniroute egress set --proxy socks5://127.0.0.1:1080
-    vitriol omniroute egress status
-    vitriol omniroute egress test
+    vitriol caduceus egress set --proxy socks5://127.0.0.1:1080
+    vitriol caduceus egress status
+    vitriol caduceus egress test
 
 See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 

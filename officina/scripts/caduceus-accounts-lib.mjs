@@ -1,4 +1,4 @@
-// Pure account-config helpers for `vitriol omniroute accounts`. Kept separate
+// Pure account-config helpers for `vitriol caduceus accounts`. Kept separate
 // from the CLI entrypoint so validation, redaction, and import-payload building
 // are unit-testable without touching the gateway or filesystem.
 
@@ -317,4 +317,39 @@ export function buildFreeAccountTemplate(plans, oauth = FREE_OAUTH_PROVIDERS) {
     })),
     oauth: [...oauth],
   };
+}
+
+/**
+ * Enable accounts whose `credential_env` appears in `keys` (a Set of env
+ * names). Mutates `config.accounts`; returns counts + env names that matched
+ * no account. Used by `accounts enable --present` and `accounts import-keys`.
+ * Pure; no I/O.
+ */
+export function enableAccountsForKeys(config, keys, opts = {}) {
+  const present = keys instanceof Set ? keys : new Set(keys ?? []);
+  const matched = new Set();
+  let enabled = 0;
+  let disabled = 0;
+  let missing = 0;
+  const accounts = Array.isArray(config?.accounts) ? config.accounts : [];
+  for (const account of accounts) {
+    if (!account || typeof account !== "object") continue;
+    const env = String(
+      account.credential_env ?? account.credentialEnv ?? account.api_key_env ?? account.apiKeyEnv ?? "",
+    ).trim();
+    if (env && present.has(env)) {
+      matched.add(env);
+      if (account.enabled !== true) {
+        account.enabled = true;
+        enabled += 1;
+      }
+    } else if (opts.disableMissing === true && account.enabled === true) {
+      account.enabled = false;
+      disabled += 1;
+    } else if (!env || !present.has(env)) {
+      missing += 1;
+    }
+  }
+  const unmatched = [...present].filter((env) => !matched.has(env));
+  return { config, enabled, disabled, missing, matched: matched.size, unmatched };
 }

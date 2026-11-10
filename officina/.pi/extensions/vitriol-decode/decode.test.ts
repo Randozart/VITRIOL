@@ -17,13 +17,14 @@ import {
 const METRICS = `# HELP llamacpp:prompt_tokens_total Number of prompt tokens processed.
 llamacpp:prompt_tokens_total 17500
 llamacpp:n_decode_total 812
+llamacpp:tokens_predicted_total 2400
 llamacpp:n_tokens_max 4096
 garbage line without number
 `;
 
 describe("parseMetrics", () => {
   it("parses the fork's counter names and ignores everything else", () => {
-    expect(parseMetrics(METRICS)).toEqual({ promptTokens: 17500, decodeTokens: 812, ejected: 0 });
+    expect(parseMetrics(METRICS)).toEqual({ promptTokens: 17500, decodeTokens: 812, predictedTokens: 2400, ejected: 0 });
   });
 
   it("parses the loaded model from /v1/models shapes", () => {
@@ -49,6 +50,17 @@ describe("parseMetrics", () => {
     expect(parseRpcServers('{"rpc_servers":["", 7]}')).toEqual([]);
   });
 
+  it("parses queue wait and processing gauges", () => {
+    const m = parseMetrics(
+      METRICS +
+        "llamacpp:queue_time_seconds_sum 12.5\n" +
+        "llamacpp:queue_time_seconds_count 5\n" +
+        "llamacpp:requests_processing 1\n" +
+        "llamacpp:requests_deferred 2\n",
+    );
+    expect(m).toMatchObject({ queueSum: 12.5, queueCount: 5, processing: 1, deferred: 2 });
+  });
+
   it("parses the sparse-KV ejected counter when present", () => {
     const m = METRICS + "llamacpp:kv_ejected_total 12000\n";
     expect(parseMetrics(m)?.ejected).toBe(12000);
@@ -63,14 +75,23 @@ describe("parseMetrics", () => {
   it("returns null on non-numeric values", () => {
     expect(parseMetrics("llamacpp:prompt_tokens_total NaN\nllamacpp:n_decode_total x")).toBeNull();
   });
+
+  it("falls back to decode steps when tokens_predicted_total is absent", () => {
+    expect(parseMetrics("llamacpp:prompt_tokens_total 10\nllamacpp:n_decode_total 5")).toEqual({
+      promptTokens: 10,
+      decodeTokens: 5,
+      predictedTokens: 5,
+      ejected: 0,
+    });
+  });
 });
 
 describe("counterDelta", () => {
-  const after = { promptTokens: 18000, decodeTokens: 900 };
+  const after = { promptTokens: 18000, decodeTokens: 900, predictedTokens: 2700 };
 
   it("computes t/s and token delta from the previous poll", () => {
-    const before = { promptTokens: 17500, decodeTokens: 812 };
-    expect(counterDelta(before, after, 5)).toEqual({ tps: 17.6, tokens: 88 });
+    const before = { promptTokens: 17500, decodeTokens: 812, predictedTokens: 2400 };
+    expect(counterDelta(before, after, 5)).toEqual({ tps: 60, tokens: 300 });
   });
 
   it("is zero without a previous reading (first poll after boot)", () => {
@@ -78,7 +99,7 @@ describe("counterDelta", () => {
   });
 
   it("is zero across an engine restart (counter went backwards)", () => {
-    const before = { promptTokens: 999999, decodeTokens: 999999 };
+    const before = { promptTokens: 999999, decodeTokens: 999999, predictedTokens: 999999 };
     const d = counterDelta(before, after, 5);
     expect(d.tokens).toBe(0);
     expect(d.tps).toBe(0);

@@ -74,6 +74,25 @@ must stay OUT of the ggml-cuda source GLOB.
 - **Sidebar-refresh contract (2026-09-04)**: any extension whose TOOL mutates sidebar-visible state (task list, scratchpad — anything surfaced by session-panel's `registerSidebarSection`) MUST call `requestSidebarUpdate()` (from `_shared/sidebar.ts`) after persisting. The `emitHarnessEvent` records are a passive audit log — they never signal the sidebar. Regression test: `.pi/extensions/task-state/sidebar-refresh.test.ts`.
 - **Cross-extension state contract (2026-09-06) — jiti isolation**: pi loads EVERY `-e` extension through a **separate jiti instance** with `moduleCache: false` (pi `loader.js:325-332`). Module-level state does **not** cross extension boundaries — three silent bugs came from exactly this (stale sidebar listener Set; task/scratchpad session-file paths updated in one instance while session-panel's imported getters read another; three parallel engine pollers). Rule: any module-level mutable that crosses an extension boundary MUST be a `globalThis`-backed singleton (pattern: `__officina*State` — see `_shared/sidebar.ts`, `_shared/engine.ts`, task-state, scratchpad, skill-inject, knowledge-inject). Guard: `.pi/extensions/_shared/jiti-isolation.test.ts` loads two jiti instances and asserts the contracts — new cross-extension state gets a test there.
 
+- **Caduceus gateway + Lapis default (2026-11-10)**: Officina's local
+  gateway integration is named **Caduceus**; the CLI is `vitriol caduceus`
+  (provider id `caduceus`, model ids `caduceus/...`). The resilient default
+  model is the virtual `officina/lapis` ("Lapis Occultus"): local-first,
+  free/cloud overflow, and cloud failover when VITRIOL is down. Vendor
+  internals keep their upstream names (`~/.vitriol/vendor/omniroute`,
+  `~/.omniroute`, `OMNIROUTE_HEADLESS`, `X-OmniRoute-*`) and OmniRoute MIT
+  attribution lives in `NOTICE` + `officina/THIRD_PARTY_NOTICES.md`.
+
+- **Officina frontends (2026-11-10) — Rust is canonical**: the operator runs
+  the Rust TUI binary `officina` (installed at `~/.local/bin/officina`, source
+  `officina/tui/`). The JS frontend (`officina/officina.mjs` +
+  `officina/runtime/patched/*` + the pi bundle hooks) is **DEPRECATED legacy**
+  — do not add new feature work there unless the operator explicitly asks.
+  The Rust TUI spawns `pi --mode rpc`, so the shared `.pi/extensions/*`
+  surface is **not** deprecated: sidebar, tools, scratchpad/tasks, engine
+  telemetry, bash titles, etc. still live there and are load-bearing for both.
+  /3rd-party pi TUI patches are legacy-only.
+
 ## Vendor Patch Rule (2026-09-01 incident — do not repeat)
 
 `officina/runtime/patched/*` are GENERATED or vendor-pinned copies. **A patch that exists only in a generated file is a patch waiting to be lost.**

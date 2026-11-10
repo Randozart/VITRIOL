@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildFreeAccountTemplate,
+  enableAccountsForKeys,
   buildImportPayload,
   catalogMap,
   mapOpenCodeAuth,
@@ -10,7 +11,7 @@ import {
   selectOptionalFreeProviders,
   stripAnsi,
   summarizeImportResults,
-} from "./omniroute-accounts-lib.mjs";
+} from "./caduceus-accounts-lib.mjs";
 
 const catalog = catalogMap({
   providers: [
@@ -277,5 +278,38 @@ describe("buildFreeAccountTemplate", () => {
     ]);
     expect(template.oauth).toContain("openference");
     expect(JSON.stringify(template)).not.toContain("apiKey");
+  });
+});
+
+
+describe("enableAccountsForKeys", () => {
+  it("enables present keys, leaves missing entries alone, reports unmatched", () => {
+    const config = {
+      accounts: [
+        { provider: "groq", name: "groq", credential_env: "GROQ_API_KEY", enabled: false },
+        { provider: "mistral", name: "mistral", credential_env: "MISTRAL_API_KEY", enabled: false },
+        { provider: "disabled", name: "disabled", credential_env: "DISABLED_API_KEY", enabled: false },
+      ],
+    };
+    const result = enableAccountsForKeys(config, new Set(["GROQ_API_KEY", "UNKNOWN_KEY"]));
+    expect(result.enabled).toBe(1);
+    expect(result.matched).toBe(1);
+    expect(result.unmatched).toEqual(["UNKNOWN_KEY"]);
+    expect(config.accounts[0].enabled).toBe(true);
+    expect(config.accounts[1].enabled).toBe(false);
+    expect(config.accounts[2].enabled).toBe(false);
+  });
+
+  it("can disable enabled entries whose keys are absent", () => {
+    const config = {
+      accounts: [
+        { provider: "groq", name: "groq", credential_env: "GROQ_API_KEY", enabled: true },
+        { provider: "mistral", name: "mistral", credential_env: "MISTRAL_API_KEY", enabled: true },
+      ],
+    };
+    const result = enableAccountsForKeys(config, new Set(["GROQ_API_KEY"]), { disableMissing: true });
+    expect(result.enabled).toBe(0);
+    expect(result.disabled).toBe(1);
+    expect(config.accounts[1].enabled).toBe(false);
   });
 });

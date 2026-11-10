@@ -582,6 +582,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         match key.code {
             KeyCode::Esc => {
                 if state.models_filter.is_empty() {
+                    state.note_phase(state::UiEvent::CloseModal);
                     state.models_open = false;
                 } else {
                     state.models_filter.clear();
@@ -619,6 +620,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     .map(|m| (*m).clone());
                 if let Some(model) = picked {
                     let label = model.name.clone().unwrap_or_else(|| model.id.clone());
+                    state.note_phase(state::UiEvent::CloseModal);
                     state.models_open = false;
                     let _ = bridge
                         .request(RpcCommand::SetModel {
@@ -656,6 +658,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             KeyCode::Enter => {
                 if let Some(entry) = state.resume_entries.get(state.resume_sel) {
                     let path = entry.path.to_string_lossy().to_string();
+                    state.note_phase(state::UiEvent::CloseModal);
                     state.resume_open = false;
                     if state.is_streaming {
                         state.entries.push(state::ChatEntry::Diag(
@@ -1053,6 +1056,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                             Ok(Ok(list)) if !list.is_empty() => {
                                 state.resume_entries = list;
                                 state.resume_sel = 0;
+                                state.note_phase(state::UiEvent::OpenModal);
                                 state.resume_open = true;
                             }
                             Ok(Ok(_)) => {
@@ -1505,6 +1509,7 @@ async fn handle_dialog_key(key: KeyEvent, state: &mut AppState, bridge: &mut Rpc
     }
 
     if let Some(payload) = reply {
+        state.note_phase(state::UiEvent::CloseDialog);
         state.dialogs.pop_front();
         let _ = bridge.send_raw(&payload.to_string()).await;
     }
@@ -1842,6 +1847,7 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             state.models = models;
             state.models_filter.clear();
             state.models_sel = state.models_sel.min(state.models.len().saturating_sub(1));
+            state.note_phase(state::UiEvent::OpenModal);
             state.models_open = true;
         }
         Some("export_html") => {
@@ -1874,12 +1880,14 @@ const CONTINUE_PROMPT: &str = "Continue the open work — pick up exactly where 
 fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Value) -> bool {
     match event_type {
         "agent_start" => {
+            state.note_phase(state::UiEvent::AgentStart);
             state.is_streaming = true;
             state.watchdog_fired.clear();
             state.abort_deadline = None;
             state.expected_tool_calls.clear();
         }
         "agent_end" | "agent_settled" => {
+            state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
             state.abort_deadline = None;
             let expected = state.expected_tool_calls.len();
@@ -2043,11 +2051,13 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 .push(state::ChatEntry::Diag("retry settled".to_string()));
         }
         "compaction_start" => {
+            state.note_phase(state::UiEvent::CompactionStart);
             state.is_compacting = true;
             // Re-arm the one-shot auto-continue for THIS compaction.
             state.compaction_auto_armed = true;
         }
         "compaction_end" => {
+            state.note_phase(state::UiEvent::CompactionEnd);
             state.is_compacting = false;
             let reason = fields.get("reason").and_then(|v| v.as_str()).unwrap_or("");
             let will_retry = fields
@@ -2223,12 +2233,14 @@ async fn handle_ui_request(
                         });
                         let _ = bridge.send_raw(&payload.to_string()).await;
                     } else {
+                        state.note_phase(state::UiEvent::OpenDialog);
                         state
                             .dialogs
                             .push_back(state::Dialog::select(id, title, options));
                     }
                 }
                 "confirm" => {
+                    state.note_phase(state::UiEvent::OpenDialog);
                     state
                         .dialogs
                         .push_back(state::Dialog::confirm(id, title, message));
@@ -2246,6 +2258,7 @@ async fn handle_ui_request(
                     } else {
                         state::DialogKind::Input
                     };
+                    state.note_phase(state::UiEvent::OpenDialog);
                     state
                         .dialogs
                         .push_back(state::Dialog::input(id, kind, title, prefill));
@@ -2569,5 +2582,100 @@ mod compaction_tests {
         assert!(diag
             .iter()
             .any(|d| d.contains("compaction failed: Context overflow recovery failed")));
+    }
+}
+
+// ── Phase-wiring tests (verification-rollout T0.1) ────────────────────
+//
+// The transition table is only useful if the real event stream never trips
+// it. These tests replay the sequences pi actually emits and assert the
+// wiring produces NO "state: unexpected …" diagnostics.
+#[cfg(test)]
+mod phase_wiring_tests {
+    use super::*;
+
+    fn state_diags(s: &AppState) -> Vec<String> {
+        s.entries
+            .iter()
+            .filter_map(|e| match e {
+                state::ChatEntry::Diag(t) if t.starts_with("state:") => Some(t.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn fire(s: &mut AppState, ty: &str) -> bool {
+        handle_event(s, ty, &serde_json::json!({}))
+    }
+
+    #[test]
+    fn normal_turn_emits_no_state_diag() {
+        let mut s = AppState::default();
+        fire(&mut s, "agent_start");
+        assert_eq!(s.phase(), state::UiPhase::Streaming);
+        fire(&mut s, "agent_end");
+        // pi emits agent_end AND agent_settled for one turn.
+        fire(&mut s, "agent_settled");
+        assert_eq!(s.phase(), state::UiPhase::Idle);
+        assert!(
+            state_diags(&s).is_empty(),
+            "normal turn must not trip the table: {:?}",
+            state_diags(&s)
+        );
+    }
+
+    #[test]
+    fn compaction_inside_turn_emits_no_state_diag() {
+        let mut s = AppState::default();
+        fire(&mut s, "agent_start");
+        fire(&mut s, "compaction_start");
+        assert_eq!(s.phase(), state::UiPhase::Compacting);
+        fire(&mut s, "compaction_end");
+        fire(&mut s, "agent_end");
+        assert!(
+            state_diags(&s).is_empty(),
+            "compaction sequence tripped the table: {:?}",
+            state_diags(&s)
+        );
+    }
+
+    #[test]
+    fn picker_opened_and_closed_mid_turn_emits_no_state_diag() {
+        let mut s = AppState::default();
+        fire(&mut s, "agent_start");
+        s.note_phase(state::UiEvent::OpenModal);
+        s.models_open = true;
+        // Streaming outranks Modal — the turn stays the visible phase.
+        assert_eq!(s.phase(), state::UiPhase::Streaming);
+        s.note_phase(state::UiEvent::CloseModal);
+        s.models_open = false;
+        fire(&mut s, "agent_end");
+        assert!(
+            state_diags(&s).is_empty(),
+            "picker mid-turn tripped the table: {:?}",
+            state_diags(&s)
+        );
+    }
+
+    #[test]
+    fn dialog_answered_mid_turn_emits_no_state_diag() {
+        let mut s = AppState::default();
+        fire(&mut s, "agent_start");
+        s.note_phase(state::UiEvent::OpenDialog);
+        s.dialogs.push_back(state::Dialog::confirm(
+            "id".to_string(),
+            "t".to_string(),
+            Some("m".to_string()),
+        ));
+        assert_eq!(s.phase(), state::UiPhase::Dialog);
+        s.note_phase(state::UiEvent::CloseDialog);
+        s.dialogs.pop_front();
+        assert_eq!(s.phase(), state::UiPhase::Streaming);
+        fire(&mut s, "agent_end");
+        assert!(
+            state_diags(&s).is_empty(),
+            "mid-turn dialog tripped the table: {:?}",
+            state_diags(&s)
+        );
     }
 }

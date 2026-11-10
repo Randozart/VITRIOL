@@ -673,7 +673,305 @@ impl Default for AppState {
     }
 }
 
+// ── UI phase state machine (verification-rollout T0.1) ─────────────────
+//
+// The TUI's phase-level state is governed by a declared transition table.
+// All phase mutations MUST go through `AppState::advance`; the table is the
+// spec (illegal (phase, event) pairs are rejected with a typed error and
+// debug_assert! in dev builds). Non-phase data (scroll, cursor, filters)
+// stays as direct field writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiPhase {
+    /// No dialog, no streaming, no modal: the idle composer.
+    Idle,
+    /// An agent turn is in flight (agent_start..agent_end).
+    Streaming,
+    /// A threshold compaction is in progress.
+    Compacting,
+    /// A picker modal is open (models / cache / resume).
+    Modal,
+    /// A dialog is on the stack (extension dialog or the permissions modal).
+    Dialog,
+}
+
+/// Events that mutate the UI phase (key actions + RPC lifecycle events).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiEvent {
+    /// RPC `agent_start`.
+    AgentStart,
+    /// RPC `agent_end` / `agent_settled`.
+    AgentEnd,
+    /// RPC `compaction_start`.
+    CompactionStart,
+    /// RPC `compaction_end`.
+    CompactionEnd,
+    /// A picker modal opened (models / cache / resume).
+    OpenModal,
+    /// A picker modal closed.
+    CloseModal,
+    /// A dialog pushed onto the stack (extension or permissions modal).
+    OpenDialog,
+    /// A dialog popped from the stack.
+    CloseDialog,
+}
+
+/// One row of the declared transition table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Transition {
+    pub from: UiPhase,
+    pub event: UiEvent,
+    pub to: UiPhase,
+}
+
+/// The declared legal transitions. This table IS the spec — it is a
+/// function (one row per (from, event) pair); the property test asserts
+/// every row is reachable and every other (phase, event) pair is rejected.
+///
+/// The `to` field documents the intended resulting phase; the *effective*
+/// phase after a mutation is always re-derived by `AppState::phase()`
+/// (which keeps its priority order). Rows whose `to` equals `from` are real
+/// events that do not move the phase — e.g. a picker opened mid-turn stays
+/// hidden behind the Streaming phase.
+pub const TRANSITIONS: &[Transition] = &[
+    // Idle
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::AgentStart,
+        to: UiPhase::Streaming,
+    },
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::CompactionStart,
+        to: UiPhase::Compacting,
+    },
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::OpenModal,
+        to: UiPhase::Modal,
+    },
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::OpenDialog,
+        to: UiPhase::Dialog,
+    },
+    // Closing is checked AFTER the data mutation, so the phase has already
+    // fallen back to the underlying one (this is how a dialog queued during
+    // graceful quit is cancelled while idle).
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::CloseModal,
+        to: UiPhase::Idle,
+    },
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::CloseDialog,
+        to: UiPhase::Idle,
+    },
+    // pi emits BOTH agent_end and agent_settled for one turn: the second
+    // lands on an already-idle UI. Idempotent re-delivery, not a desync.
+    Transition {
+        from: UiPhase::Idle,
+        event: UiEvent::AgentEnd,
+        to: UiPhase::Idle,
+    },
+    // Streaming
+    // agent_start re-fires on retry/abort-restart while the turn is up.
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::AgentStart,
+        to: UiPhase::Streaming,
+    },
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::AgentEnd,
+        to: UiPhase::Idle,
+    },
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::CompactionStart,
+        to: UiPhase::Compacting,
+    },
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::OpenModal,
+        to: UiPhase::Streaming,
+    },
+    // Pickers stay hidden behind Streaming in phase priority, so both edges
+    // (open and close) remain Streaming while a turn is in flight.
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::CloseModal,
+        to: UiPhase::Streaming,
+    },
+    // A confirm answered mid-turn pops the last dialog -> back under Streaming.
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::CloseDialog,
+        to: UiPhase::Streaming,
+    },
+    Transition {
+        from: UiPhase::Streaming,
+        event: UiEvent::OpenDialog,
+        to: UiPhase::Dialog,
+    },
+    // Compacting (own spinner; can wrap a live turn)
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::AgentEnd,
+        to: UiPhase::Compacting,
+    },
+    // Compaction ended: the effective phase is re-derived from the flags
+    // (Idle when the turn is over, Streaming when a turn continues under it).
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::CompactionEnd,
+        to: UiPhase::Idle,
+    },
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::AgentStart,
+        to: UiPhase::Streaming,
+    },
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::OpenModal,
+        to: UiPhase::Compacting,
+    },
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::CloseModal,
+        to: UiPhase::Compacting,
+    },
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::CloseDialog,
+        to: UiPhase::Compacting,
+    },
+    Transition {
+        from: UiPhase::Compacting,
+        event: UiEvent::OpenDialog,
+        to: UiPhase::Dialog,
+    },
+    // Modal (picker open, no turn in flight)
+    Transition {
+        from: UiPhase::Modal,
+        event: UiEvent::CloseModal,
+        to: UiPhase::Idle,
+    },
+    Transition {
+        from: UiPhase::Modal,
+        event: UiEvent::OpenModal,
+        to: UiPhase::Modal,
+    },
+    Transition {
+        from: UiPhase::Modal,
+        event: UiEvent::OpenDialog,
+        to: UiPhase::Dialog,
+    },
+    // A turn can start underneath an open picker; Streaming outranks Modal.
+    Transition {
+        from: UiPhase::Modal,
+        event: UiEvent::AgentStart,
+        to: UiPhase::Streaming,
+    },
+    // Dialog (extension dialog / permissions modal on the stack)
+    Transition {
+        from: UiPhase::Dialog,
+        event: UiEvent::CloseDialog,
+        to: UiPhase::Idle,
+    },
+    Transition {
+        from: UiPhase::Dialog,
+        event: UiEvent::OpenDialog,
+        to: UiPhase::Dialog,
+    },
+    Transition {
+        from: UiPhase::Dialog,
+        event: UiEvent::AgentStart,
+        to: UiPhase::Streaming,
+    },
+    // A dialog can outlive the turn that raised it (the answer is awaited by
+    // a beforeToolCall promise, not by the agent loop).
+    Transition {
+        from: UiPhase::Dialog,
+        event: UiEvent::AgentEnd,
+        to: UiPhase::Dialog,
+    },
+    Transition {
+        from: UiPhase::Dialog,
+        event: UiEvent::CompactionStart,
+        to: UiPhase::Dialog,
+    },
+];
+
+/// A (phase, event) pair not in `TRANSITIONS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IllegalTransition {
+    pub from: UiPhase,
+    pub event: UiEvent,
+}
+
 impl AppState {
+    /// Derive the current UI phase. Priority reflects what the UI shows:
+    /// a dialog wins over everything, a compaction wins over the turn it
+    /// runs inside (it has its own spinner), then the turn, then pickers.
+    pub fn phase(&self) -> UiPhase {
+        if !self.dialogs.is_empty() || self.perm_modal_open {
+            return UiPhase::Dialog;
+        }
+        if self.is_compacting {
+            return UiPhase::Compacting;
+        }
+        if self.is_streaming {
+            return UiPhase::Streaming;
+        }
+        if self.models_open || self.cache_open || self.resume_open {
+            return UiPhase::Modal;
+        }
+        UiPhase::Idle
+    }
+
+    /// Look up the legal target for (phase, event); None if illegal.
+    pub fn lookup(from: UiPhase, event: UiEvent) -> Option<UiPhase> {
+        TRANSITIONS
+            .iter()
+            .find(|t| t.from == from && t.event == event)
+            .map(|t| t.to)
+    }
+
+    /// Check one UI event against the transition table for the CURRENT
+    /// phase. Call it in the state the caller is about to mutate (check
+    /// before opening a modal/dialog; check after popping one) so
+    /// `phase()` reflects the `from` side. Illegal (phase, event) pairs
+    /// are debug_assert! in dev and returned as a typed error in release —
+    /// callers surface them as a Diag entry and continue, so a table gap
+    /// never wedges the UI.
+    pub fn check(&self, ev: UiEvent) -> Result<UiPhase, IllegalTransition> {
+        let from = self.phase();
+        let Some(to) = Self::lookup(from, ev) else {
+            // The assert is skipped under `cfg(test)` so property tests can
+            // observe the typed error instead of unwinding.
+            if !cfg!(test) {
+                debug_assert!(false, "illegal transition: {:?} + {:?}", from, ev);
+            }
+            return Err(IllegalTransition { from, event: ev });
+        };
+        Ok(to)
+    }
+
+    /// Validate a phase event against the transition table and record a
+    /// violation as a Diag entry. Callers invoke this BEFORE the data
+    /// mutation (so `phase()` reports the `from` side). A table gap is thus
+    /// visible in the F9 diagnostics overlay without ever wedging the UI.
+    pub fn note_phase(&mut self, ev: UiEvent) {
+        if let Err(bad) = self.check(ev) {
+            self.entries.push(ChatEntry::Diag(format!(
+                "state: unexpected {:?} in {:?}",
+                bad.event, bad.from
+            )));
+        }
+    }
+
     /// Models matching the picker filter (case-insensitive, AND of words
     /// across provider/id/name). Empty filter = all models.
     pub fn filtered_models(&self) -> Vec<&Model> {
@@ -720,6 +1018,7 @@ impl AppState {
     }
 
     pub fn open_permissions_modal(&mut self) {
+        self.note_phase(UiEvent::OpenDialog);
         self.perm_mode = crate::envfile::read_permissions_mode();
         self.perm_modal_sel = self.permissions_mode_index();
         self.perm_modal_open = true;
@@ -759,6 +1058,7 @@ impl AppState {
     }
 
     pub fn cache_open_modal(&mut self) {
+        self.note_phase(UiEvent::OpenModal);
         self.cache_refresh();
         self.cache_sel = 0;
         self.cache_open = true;
@@ -3109,5 +3409,130 @@ mod panel_tests {
         assert_eq!(fmt_elapsed(45), "45s");
         assert_eq!(fmt_elapsed(723), "12m 03s");
         assert_eq!(fmt_elapsed(3725), "1h 02m");
+    }
+}
+
+// ── Transition-table property tests (verification-rollout T0.1) ──────
+//
+// The table is the spec: it must be a function (unique per (from, event)),
+// every declared row must be legal per lookup, and every (phase, event)
+// pair not in the table must be rejected. `check` returns the declared
+// target for legal pairs and Err for the rest.
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+
+    fn set_phase(s: &mut AppState, p: UiPhase) {
+        s.is_streaming = false;
+        s.is_compacting = false;
+        s.models_open = false;
+        s.cache_open = false;
+        s.resume_open = false;
+        s.perm_modal_open = false;
+        s.dialogs.clear();
+        match p {
+            UiPhase::Idle => {}
+            UiPhase::Streaming => s.is_streaming = true,
+            UiPhase::Compacting => s.is_compacting = true,
+            UiPhase::Modal => s.models_open = true,
+            UiPhase::Dialog => s.perm_modal_open = true,
+        }
+    }
+
+    #[test]
+    fn table_is_a_function() {
+        for (i, a) in TRANSITIONS.iter().enumerate() {
+            for b in TRANSITIONS.iter().skip(i + 1) {
+                assert_ne!(
+                    (a.from, a.event),
+                    (b.from, b.event),
+                    "duplicate (from, event) row"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_row_legal_and_matches_lookup() {
+        for t in TRANSITIONS {
+            assert_eq!(AppState::lookup(t.from, t.event), Some(t.to));
+        }
+    }
+
+    #[test]
+    fn unlisted_pairs_rejected() {
+        let phases = [
+            UiPhase::Idle,
+            UiPhase::Streaming,
+            UiPhase::Compacting,
+            UiPhase::Modal,
+            UiPhase::Dialog,
+        ];
+        let events = [
+            UiEvent::AgentStart,
+            UiEvent::AgentEnd,
+            UiEvent::CompactionStart,
+            UiEvent::CompactionEnd,
+            UiEvent::OpenModal,
+            UiEvent::CloseModal,
+            UiEvent::OpenDialog,
+            UiEvent::CloseDialog,
+        ];
+        for p in phases {
+            for e in events {
+                let in_table = TRANSITIONS.iter().any(|t| t.from == p && t.event == e);
+                let legal = AppState::lookup(p, e).is_some();
+                assert_eq!(
+                    in_table, legal,
+                    "pair ({:?}, {:?}) table/lookup disagree",
+                    p, e
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn check_returns_target_for_legal_pairs() {
+        for t in TRANSITIONS {
+            let mut s = AppState::default();
+            set_phase(&mut s, t.from);
+            assert_eq!(s.phase(), t.from);
+            assert_eq!(s.check(t.event), Ok(t.to));
+        }
+    }
+
+    #[test]
+    fn check_rejects_illegal_pairs() {
+        let mut s = AppState::default();
+        set_phase(&mut s, UiPhase::Idle);
+        // pi re-delivers an end event on an idle UI (agent_end then
+        // agent_settled), so that pair is deliberately legal; a compaction
+        // ending with nothing compacting is not.
+        assert!(matches!(s.check(UiEvent::AgentEnd), Ok(UiPhase::Idle)));
+        assert!(matches!(s.check(UiEvent::CompactionEnd), Err(_)));
+        set_phase(&mut s, UiPhase::Streaming);
+        // Streaming legitimately allows picker open/close; a compaction_end
+        // with nothing compacting is the impossible pair.
+        assert!(matches!(
+            s.check(UiEvent::CloseModal),
+            Ok(UiPhase::Streaming)
+        ));
+        assert!(matches!(s.check(UiEvent::CompactionEnd), Err(_)));
+        set_phase(&mut s, UiPhase::Compacting);
+        assert!(matches!(s.check(UiEvent::CompactionEnd), Ok(UiPhase::Idle)));
+        set_phase(&mut s, UiPhase::Modal);
+        assert!(matches!(s.check(UiEvent::AgentEnd), Err(_)));
+    }
+
+    #[test]
+    fn phase_priority_dialog_beats_streaming_beats_modals() {
+        let mut s = AppState::default();
+        set_phase(&mut s, UiPhase::Streaming);
+        s.models_open = true;
+        assert_eq!(s.phase(), UiPhase::Streaming);
+        s.perm_modal_open = true;
+        assert_eq!(s.phase(), UiPhase::Dialog);
+        set_phase(&mut s, UiPhase::Modal);
+        assert_eq!(s.phase(), UiPhase::Modal);
     }
 }

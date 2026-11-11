@@ -31,6 +31,7 @@ const SCRATCHPAD = join(EXT, "scratchpad", "index.ts");
 const SIDEBAR = join(EXT, "_shared", "sidebar.ts");
 const ENGINE = join(EXT, "_shared", "engine.ts");
 const CACHE_MODE = join(EXT, "_shared", "cache-mode.ts");
+const ROUTING_REGISTRY = join(EXT, "_shared", "routing-registry.ts");
 
 /** Two independent jiti instances — the exact loader shape pi uses. */
 function jitiPair() {
@@ -156,5 +157,43 @@ describe("jiti isolation: cross-extension contracts survive separate module inst
     // The dead-port poll still ran and notified the shared listener set
     // (down-snapshot is a valid notification).
     expect(notified).toBeGreaterThanOrEqual(1);
+  });
+
+  it("routing-registry: a decision published by one instance is visible to another", async () => {
+    const { a, b } = jitiPair();
+    const regA = (await a.import(ROUTING_REGISTRY)) as typeof import("./routing-registry.ts");
+    const regB = (await b.import(ROUTING_REGISTRY)) as typeof import("./routing-registry.ts");
+    const path = join(dir, "routing-registry.json");
+    const now = Date.now();
+
+    // Instance A publishes its turn decision (the adaptive-router write path).
+    regA.writeRegistryEntry(
+      {
+        ts: now,
+        tuiPid: 4242,
+        sessionId: "session-a",
+        tier: "local",
+        model: "llamacpp/Lapis Occultus",
+        ctxTokens: 120_000,
+      },
+      path,
+      now,
+    );
+
+    // Instance B (a DIFFERENT TUI process, modelled by a separate jiti
+    // instance) must see A as a peer on the next decision.
+    const peers = regB.readLivePeers(9999, { now, path });
+    expect(peers).toHaveLength(1);
+    expect(peers[0].tuiPid).toBe(4242);
+    expect(peers[0].tier).toBe("local");
+
+    // Self is never its own peer.
+    expect(regB.readLivePeers(4242, { now, path })).toHaveLength(0);
+
+    // The singleton is globalThis-backed (jiti instances do not share
+    // module scope) — the exact bug class this file exists to catch.
+    expect(
+      (globalThis as { __officinaRoutingRegistry?: unknown }).__officinaRoutingRegistry,
+    ).toBeTruthy();
   });
 });

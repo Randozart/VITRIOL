@@ -72,3 +72,27 @@ operator from a hardening menu ("Batch 1-4").
 - Legacy `routing-registry.json` deletion (transition week not over).
 - Feature backlog: vitriol-router proxy, great-harness Phase 6, standing
   TODO disposition, mtp2/mtp3 A/B.
+
+## Verification (2026-11-11 23:0x)
+
+| commit | gate |
+|---|---|
+| `aa7cc6f` | npm test 835 ✓ (+5: manual pause, re-arm, GC sweep/keeps, jiti lane-health contract), tsc ✓, canaries exit 0 |
+| `38e68b6` | cargo test 136 ✓ (+1: shard+legacy reader with fresh/expired/self/legacy cases), fmt ✓, release binary renamed over `~/.local/bin/officina` 23:0x |
+
+Findings corrected during implementation:
+- First GC draft deleted unparseable shards (contradicting the design —
+  a torn write must survive for the next publish to repair); caught by
+  the GC test before commit. Now: invalid JSON → kept, valid-but-expired
+  → swept.
+- The manual-latch re-arm test initially asserted a second setModel on a
+  session already on the cloud tier — no switch is correct there;
+  rewritten to pick manual while local, then contend.
+- The jiti lane-health test first drove the kill-switch path, which
+  bypasses the singleton by design; switched to the fail-open fetch path
+  (missing vendor module) that actually exercises the shared cache.
+
+Operator notes: running TUIs keep the old binary inode until exit — the
+runtime fence needs a restart to arm. Shard GC sweeps at most every 30s
+per process from the read path; existing 10 dead-pid shards vanish on
+the first post-restart read.

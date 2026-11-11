@@ -79,6 +79,10 @@ describe("adaptive-router wiring", () => {
     process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-adaptive-ledger-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
+    // These fixtures configure SYNTHETIC explicit lanes ("caduceus/small")
+    // to exercise candidate ordering — free-only (default ON) would drop
+    // them, so the harness tests run with free-only disabled.
+    process.env.OFFICINA_OVERFLOW_FREE_ONLY = "0";
     delete process.env.OFFICINA_NO_OVERFLOW;
   });
   afterEach(() => {
@@ -87,6 +91,7 @@ describe("adaptive-router wiring", () => {
     delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
     delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
+    delete process.env.OFFICINA_OVERFLOW_FREE_ONLY;
   });
 
   it("spills to cloud when the local engine is busy", async () => {

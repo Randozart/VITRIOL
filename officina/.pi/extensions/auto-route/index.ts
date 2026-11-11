@@ -127,6 +127,12 @@ export default function (pi: ExtensionAPI) {
   let mode = resolveMode(process.env.OFFICINA_ROUTE_MODE);
   if (process.env.OFFICINA_NO_AUTO_ROUTE === "1" || mode === "off") return;
 
+  // Free-only policy (default ON): the paid ascensus lane is out of
+  // policy — hard turns promote to free cloud lanes at the router level
+  // instead (OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE). Classification and
+  // the suggest status line stay live.
+  const freeOnly = process.env.OFFICINA_OVERFLOW_FREE_ONLY !== "0";
+
   let threshold = resolveThreshold(process.env.OFFICINA_ROUTE_THRESHOLD);
   const touchedFiles = new Set<string>();
   const escalatedHashes = new Set<string>(); // bounded dedupe of escalations
@@ -230,6 +236,15 @@ export default function (pi: ExtensionAPI) {
     );
 
     if (decision.tier !== "cloud") return undefined;
+    if (freeOnly && overflowArmed) {
+      // Escalation to a free lane is the overflow router's promote arm
+      // (decideTier complexity input) — ascensusd stays out of the loop.
+      ctx.ui.setStatus(
+        "auto-route",
+        `hard turn (thr ${threshold.toFixed(2)}) — free-only: promote handled by overflow`,
+      );
+      return undefined;
+    }
     if (mode !== "auto") {
       ctx.ui.setStatus(
         "auto-route",

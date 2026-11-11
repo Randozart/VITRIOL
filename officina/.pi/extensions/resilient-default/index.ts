@@ -223,7 +223,7 @@ export default function (pi: ExtensionAPI) {
       profileAllowsCloud(profile) && canSpendCloud() ? pickCloud(tokens, now) : undefined;
     const previous = request.previous?.model;
     const failed = request.failed?.model;
-    const privacy = latestUserText(request.messages)
+    const cls = latestUserText(request.messages)
       ? classifyTurn({
           promptText: latestUserText(request.messages),
           recentErrorCount: 0,
@@ -231,8 +231,9 @@ export default function (pi: ExtensionAPI) {
           scratchpadContextLines: [],
           filesTouched: 0,
           turnCount: 0,
-        }).privacy
-      : "safe";
+        })
+      : null;
+    const privacy = cls ? cls.privacy : "safe";
     let state = request.state ?? initial();
     let tier: Tier = state.tier;
 
@@ -333,6 +334,7 @@ export default function (pi: ExtensionAPI) {
           localIdleForMs: localIdleSince != null ? now - localIdleSince : null,
           localDown,
           failoverActive: state.failoverActive,
+          complexity: cls ? cls.complexity : undefined,
           ...peerContext,
         },
         cfg,

@@ -61,7 +61,11 @@ export default function (pi: ExtensionAPI) {
   const sessionRole: SelfView["role"] =
     process.env.OFFICINA_SESSION_ROLE === "subagent" ? "subagent" : "main";
   const cloudEnv = (process.env.OFFICINA_OVERFLOW_CLOUD || "free").trim();
-  const discoverFree = /^(free|auto)$/i.test(cloudEnv);
+  // Free-only (default ON): every lane must be a verified-free model
+  // (zero-priced or costless owner). Explicit OFFICINA_OVERFLOW_CLOUD
+  // specs are honoured only when free-only is disabled.
+  const freeOnly = cfg.freeOnly ?? true;
+  const discoverFree = freeOnly || /^(free|auto)$/i.test(cloudEnv);
   const explicitSpecs = (discoverFree ? "" : cloudEnv)
     .split(",")
     .map((s) => parseModelSpec(s))
@@ -168,7 +172,7 @@ export default function (pi: ExtensionAPI) {
     }
     if (cloudCandidates.length === 0) {
       const seen = new Set<string>();
-      const specs = [...discoverFreeModels(), ...explicitSpecs, ...fallbackSpecs];
+      const specs = [...discoverFreeModels(), ...(freeOnly ? [] : explicitSpecs), ...fallbackSpecs];
       const maxCandidates = Math.max(
         1,
         Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48),
@@ -268,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 
     const prompt =
       event.messageType === "user" ? event.prompt : "";
-    const privacy: Privacy = prompt.trim()
+    const cls = prompt.trim()
       ? classifyTurn({
           promptText: prompt,
           recentErrorCount: 0,
@@ -276,8 +280,9 @@ export default function (pi: ExtensionAPI) {
           scratchpadContextLines: [],
           filesTouched: 0,
           turnCount: 0,
-        }).privacy
-      : "safe";
+        })
+      : null;
+    const privacy: Privacy = cls ? cls.privacy : "safe";
 
     const snap = getEngineSnapshot();
     // Before the first poll completes, be optimistic (local). Treating the
@@ -328,6 +333,7 @@ export default function (pi: ExtensionAPI) {
         localIdleForMs: idleFor,
         localDown,
         failoverActive,
+        complexity: cls ? cls.complexity : undefined,
         ...peerContext,
       },
       cfg,

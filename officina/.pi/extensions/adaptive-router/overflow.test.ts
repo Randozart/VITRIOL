@@ -191,6 +191,13 @@ describe("config + model spec", () => {
     expect(configFromEnv({ OFFICINA_OVERFLOW_FAILOVER: "0" }).failover).toBe(false);
   });
 
+  it("free-lane router knobs: promote off by default, free-only on by default", () => {
+    expect(configFromEnv({}).complexityPromote).toBe(0);
+    expect(configFromEnv({}).freeOnly).toBe(true);
+    expect(configFromEnv({ OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE: "0.65" }).complexityPromote).toBe(0.65);
+    expect(configFromEnv({ OFFICINA_OVERFLOW_FREE_ONLY: "0" }).freeOnly).toBe(false);
+  });
+
   it("keeps slashes in the model id", () => {
     expect(parseModelSpec("caduceus/opencode-go/deepseek-v4-flash")).toEqual({
       provider: "caduceus",
@@ -201,5 +208,80 @@ describe("config + model spec", () => {
       id: "Lapis Occultus",
     });
     expect(parseModelSpec("nope")).toBeNull();
+  });
+});
+
+// Free-lane auto router (2026-11-11): complexity promote arm. Default
+// builds (threshold 0 / no complexity input) never see it — I1 parity.
+describe("complexity promote", () => {
+  const promoteCfg = (over: Partial<OverflowConfig> = {}): OverflowConfig => ({
+    ...cfg,
+    complexityPromote: 0.65,
+    ...over,
+  });
+
+  it("is OFF by default — hard turn on idle local stays local (I1)", () => {
+    const d = decideTier(input({ complexity: 0.95 }), cfg);
+    expect(d.tier).toBe("local");
+    expect(d.reason).toBe("local idle");
+  });
+
+  it("promotes a hard turn on an idle local to the free lane", () => {
+    const d = decideTier(input({ complexity: 0.8 }), promoteCfg());
+    expect(d.tier).toBe("cloud");
+    expect(d.reason).toContain("complexity 0.80");
+    expect(d.reason).toContain("free-lane uplift");
+    expect(d.peerDemoted).toBeUndefined();
+  });
+
+  it("respects the threshold", () => {
+    expect(decideTier(input({ complexity: 0.5 }), promoteCfg()).tier).toBe("local");
+  });
+
+  it("never fires without a complexity input (pre-classifier parity)", () => {
+    expect(decideTier(input({}), promoteCfg()).tier).toBe("local");
+  });
+
+  it("busy local uses the contention path, not promote", () => {
+    const d = decideTier(input({ complexity: 0.9, load: load({ processing: 1 }) }), promoteCfg());
+    expect(d.tier).toBe("cloud");
+    expect(d.reason).toBe("local busy — spill to cloud");
+  });
+
+  it("stays local when no free candidate fits or budget is gone", () => {
+    expect(decideTier(input({ complexity: 0.9, cloudFits: false }), promoteCfg()).tier).toBe("local");
+    expect(decideTier(input({ complexity: 0.9, budgetLeft: false }), promoteCfg()).tier).toBe("local");
+  });
+
+  it("respects the switch cap (voluntary churn, unlike peer demotions)", () => {
+    const d = decideTier(input({ complexity: 0.9, state: state({ switches: 2 }) }), promoteCfg());
+    expect(d.tier).toBe("local");
+    // Cap-exhausted + idle falls through to the plain local-idle answer;
+    // the point is that promote does NOT fire past the cap.
+    expect(d.reason).toBe("local idle");
+  });
+
+  it("privacy beats promote (confidential never leaves local)", () => {
+    const d = decideTier(input({ complexity: 0.9, privacy: "confidential" }), promoteCfg());
+    expect(d.tier).toBe("local");
+    expect(d.reason).toContain("confidential");
+  });
+
+  it("peer demotion wins the reason when both arms fire", () => {
+    const peers: PeerPeer[] = [
+      { ts: 1, tuiPid: 1, sessionId: "old", tier: "local", model: "m", ctxTokens: 10 },
+    ];
+    const d = decideTier(
+      input({
+        complexity: 0.9,
+        self: { ts: 2, tuiPid: 2, ctxTokens: 10, role: "main" },
+        peers,
+        freeSlots: 0,
+      }),
+      promoteCfg(),
+    );
+    expect(d.tier).toBe("cloud");
+    expect(d.peerDemoted).toBe(true);
+    expect(d.reason).not.toContain("free-lane uplift");
   });
 });

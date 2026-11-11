@@ -22,6 +22,19 @@ export interface OverflowConfig {
   sensitiveLocal: boolean;
   /** Emergency cloud when the local engine is actually DOWN (not just busy). */
   failover: boolean;
+  /**
+   * Free-lane auto router (2026-11-11): when an IDLE local tier sees a turn
+   * with complexity ≥ this threshold, promote the turn to the best free
+   * cloud lane. 0 / undefined = off (single-session decisions stay
+   * byte-identical — I1 parity). Env: OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE.
+   */
+  complexityPromote?: number;
+  /**
+   * Restrict EVERY cloud lane to verified-free models (zero-priced or
+   * costless subscription owners; default true). Env:
+   * OFFICINA_OVERFLOW_FREE_ONLY=0 re-allows explicitly configured paid lanes.
+   */
+  freeOnly?: boolean;
 }
 
 export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OverflowConfig {
@@ -39,6 +52,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OverflowCon
     cloudTokenBudget: num("OFFICINA_OVERFLOW_CLOUD_BUDGET", 2_000_000),
     sensitiveLocal: env.OFFICINA_OVERFLOW_SENSITIVE !== "0",
     failover: env.OFFICINA_OVERFLOW_FAILOVER !== "0",
+    complexityPromote: num("OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE", 0),
+    freeOnly: env.OFFICINA_OVERFLOW_FREE_ONLY !== "0",
   };
 }
 
@@ -77,6 +92,11 @@ export interface DecideInput {
   peers?: PeerPeer[];
   /** Engine slots not currently processing. */
   freeSlots?: number;
+  /**
+   * This turn's complexity score (0..1, from auto-route's classifier).
+   * Absent = promote arm disabled (I1 parity with pre-promotion builds).
+   */
+  complexity?: number;
 }
 
 export type PeerSelf = import("./peer-policy.ts").SelfView;
@@ -163,6 +183,29 @@ export function decideTier(
   const peerYield = peerDecision(input);
   if (peerYield?.demote && input.cloudFits && input.budgetLeft) {
     return { tier: "cloud", reason: peerYield.reason, peerDemoted: true };
+  }
+
+  // Free-lane auto router: a hard turn on an idle local promotes to the
+  // best free cloud lane (quality uplift, not contention relief). Fires
+  // only with the threshold configured (> 0) AND a complexity input —
+  // default builds never see this arm (I1). It is a voluntary tier change,
+  // so unlike peer demotions it DOES charge the switch cap (which now
+  // resets on local return / idle decay instead of stranding sessions).
+  const promoteAt = cfg.complexityPromote ?? 0;
+  if (
+    promoteAt > 0 &&
+    input.complexity != null &&
+    input.complexity >= promoteAt &&
+    state.tier === "local" &&
+    !busy &&
+    input.cloudFits &&
+    input.budgetLeft &&
+    state.switches < cfg.maxSwitches
+  ) {
+    return {
+      tier: "cloud",
+      reason: `complexity ${input.complexity.toFixed(2)} ≥ ${promoteAt.toFixed(2)} — free-lane uplift`,
+    };
   }
 
   const canSwitch = state.switches < cfg.maxSwitches;

@@ -203,6 +203,13 @@ No flags, no per-launch env — the router adapts per session, per turn
   cache-affinity cap, returning to local resets it, and an idle local
   sheds accrued switches — a session can no longer strand itself after
   two contention events.
+- Free-lane auto router (2026-11-11): every cloud lane is a verified
+  free model (zero-priced or costless owner — opencode-go, dahl,
+  freeinference, agentrouter, …; `OFFICINA_OVERFLOW_FREE_ONLY=1`
+  default). A hard turn on an idle local promotes itself to the best
+  free lane (`OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE=0.65` in the env
+  file; 0 disables). Paid ascensus escalation stands down while
+  free-only is on — classification stays live as a status line.
 - Sub-agent visibility (2026-11-11): children run without the router,
   so the parent publishes a `role: subagent` registry entry for the
   child at spawn and removes it at completion — peers see (and rank

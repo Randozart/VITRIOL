@@ -136,6 +136,10 @@ export function buildChildEnv(extra?: Record<string, string>): NodeJS.ProcessEnv
     LITTLE_CODER_PERMISSION_MODE: "auto",
     // Headless fast-path in the launcher (skip update-check + settings write).
     LITTLE_CODER_SUBAGENT: "1",
+    // Multi-session routing (P3): children are role-based subagents — the
+    // adaptive-router ranks them last, so they yield the local slot to the
+    // senior session under contention (plan I6: role-based, not content-based).
+    OFFICINA_SESSION_ROLE: "subagent",
     // Belt and suspenders: never show pi's update banner in a child.
     PI_SKIP_VERSION_CHECK: "1",
     ...extra,

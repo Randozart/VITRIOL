@@ -180,3 +180,25 @@ the result in a **named mask** — an auditable, versioned list of transactions.
 
 - `UNDO` reverts the last committed journal entry. Mask edits are versioned:
   `REVERT` on a mask is always exact.
+
+## Running multiple sessions
+
+No flags, no per-launch env — the router adapts per session, per turn
+(multi-session routing, 2026-11-10):
+
+- Every Officina TUI publishes its turn decision to a shared registry
+  (`~/.vitriol/officina/routing-registry.json`, 60 s TTL) — no prompt
+  text, only ids/tokens/tier/model.
+- All sessions start local-first (Lapis Occultus). When every engine slot
+  is committed, the **junior** session yields to a free cloud lane; the
+  senior session (oldest, then largest context) keeps the stone. When a
+  slot frees, the junior returns — its KV is reused by the engine's LCP
+  slot matching.
+- Privacy still beats utilization: confidential turns never route cloud
+  by default. Engine-down failover is unchanged.
+- Sub-agents (dispatch / Plan Mode research) carry
+  `OFFICINA_SESSION_ROLE=subagent` and always yield first under
+  contention — role-based, not content-based.
+- `parallel` stays 1 unless the operator wants true dual-local; the
+  routing works identically at `parallel=1` (one senior local, the rest
+  cloud).

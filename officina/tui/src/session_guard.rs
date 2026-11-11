@@ -29,39 +29,154 @@ pub fn lock_path() -> Option<PathBuf> {
     Some(home()?.join(".vitriol").join("officina").join("tui.lock"))
 }
 
-/// Acquire the global TUI lock. A live PID in the file blocks offline repair.
-pub struct LockGuard(Option<PathBuf>);
+// ---- Cross-process session-store lock (flock, kernel-held) ----
+//
+// The lock domain is the session STORE (pi keeps one sessions/<--cwd-->
+// directory per project): two TUIs in the same project contend, two in
+// different projects never do. The lock is an advisory flock held by an
+// open File for the TUI's whole lifetime — the kernel releases it even on
+// crash/SIGKILL, so a stale lock file can never wedge startup.
+//
+// The pre-2026-11-11 guard only WROTE a pid into a global file and never
+// checked it, which is how two TUIs ended up appending to the same session
+// jsonl (the top corruption driver; see
+// .opencode/plans/officina-multisession-hardening-2026-11-11.md, I2/I3).
 
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0 {
-            release_lock(path);
+fn lock_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("OFFICINA_LOCK_DIR") {
+        let p = PathBuf::from(dir);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
         }
     }
+    Some(home()?.join(".vitriol").join("officina").join("locks"))
 }
 
-pub fn acquire_lock() -> LockGuard {
-    LockGuard(acquire_lock_path())
+fn store_lock_path(store: &Path) -> Option<PathBuf> {
+    let name = store.file_name()?.to_string_lossy().to_string();
+    Some(lock_dir()?.join(format!("{name}.lock")))
 }
 
-fn acquire_lock_path() -> Option<PathBuf> {
-    let path = lock_path()?;
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+/// The process-lifetime session-store lock. The `File` must stay open for
+/// as long as the TUI runs: the flock (and therefore the exclusion)
+/// disappears when it closes.
+pub struct SessionLock {
+    /// None when a live peer owns the store, or when the lock filesystem
+    /// misbehaved (enforcement degrades to the old behavior rather than
+    /// blocking every startup).
+    file: Option<File>,
+    /// The store this process locked (None when it did not acquire).
+    store: Option<PathBuf>,
+}
+
+impl SessionLock {
+    /// The session store THIS process holds the lock for.
+    pub fn locked_store(&self) -> Option<&Path> {
+        self.store.as_deref()
     }
-    let pid = std::process::id();
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&path)
-        .ok()?;
-    let _ = writeln!(file, "{pid}");
-    Some(path)
 }
 
-pub fn release_lock(path: &Path) {
-    let _ = fs::remove_file(path);
+impl Drop for SessionLock {
+    fn drop(&mut self) {
+        // Mirror hygiene: clear the doctor's global pid file only when it
+        // still names THIS process (a peer may have overwritten it after
+        // our mirror write — deleting it then would un-shield the peer).
+        if let Some(path) = lock_path() {
+            if let Ok(text) = fs::read_to_string(&path) {
+                if text.trim() == std::process::id().to_string() {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+        // `file` closes here; the flock releases with it (and at process
+        // death regardless, which is the whole point of flock).
+    }
+}
+
+/// Acquire the per-session-store lock for `cwd`'s session store. Returns a
+/// lock with `locked_store() == None` when a live peer already holds the
+/// store (the caller must then not resume or mutate that store's files).
+pub fn acquire_session_lock(cwd: &Path) -> SessionLock {
+    let store = session_dir_for(cwd);
+    let mut file = None;
+    if let Some(store) = &store {
+        if let Some(path) = store_lock_path(store) {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut f) = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+            {
+                if f.try_lock().is_err() {
+                    // A live peer owns this store — we hold NOTHING.
+                    return SessionLock {
+                        file: None,
+                        store: None,
+                    };
+                }
+                let _ = f.set_len(0);
+                let _ = writeln!(f, "{} {}", std::process::id(), store.display());
+                file = Some(f);
+            }
+        }
+    }
+    // Diagnostics mirror for the offline doctor (reads the pid and probes
+    // it with kill(pid, 0) — caduceus.mjs tuiRunning).
+    if file.is_some() {
+        if let Some(path) = lock_path() {
+            if let Some(parent) = path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut g) = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&path)
+            {
+                let _ = writeln!(g, "{}", std::process::id());
+            }
+        }
+    }
+    SessionLock { file, store }
+}
+
+/// True when ANOTHER live process holds the flock for `store`'s lock file.
+/// This process's own lock never counts as busy. Best-effort: an unreadable
+/// lock path counts as free (degraded, not wedged).
+fn store_lock_busy(store: &Path, own_store: Option<&Path>) -> bool {
+    if own_store.map(|p| p == store).unwrap_or(false) {
+        return false;
+    }
+    let Some(path) = store_lock_path(store) else {
+        return false;
+    };
+    let Ok(f) = OpenOptions::new().write(true).open(&path) else {
+        return false; // no lock file yet -> nobody holds it
+    };
+    f.try_lock().is_err()
+}
+
+/// Refusal note when a live peer holds the store that `path` lives in.
+fn peer_holds_store(path: &Path, own: &SessionLock) -> Option<String> {
+    let store = path.parent()?;
+    if store_lock_busy(store, own.locked_store()) {
+        Some(format!(
+            "another officina TUI is live on this session store ({}) — starting a fresh session (use /resume to switch later)",
+            store.display()
+        ))
+    } else {
+        None
+    }
+}
+
+fn fresh_session_args(note: String) -> (Vec<String>, Option<String>) {
+    (
+        vec!["--session-id".to_string(), format!("officina-{}", stamp())],
+        Some(note),
+    )
 }
 
 pub fn session_dir_for(cwd: &Path) -> Option<PathBuf> {
@@ -388,11 +503,17 @@ pub fn repair_simple_session(path: &Path) -> Option<PathBuf> {
 
 /// Prepare extra pi args: explicit session validation, or auto-resume of the
 /// newest valid session. Returns a reason notice for the TUI diagnostics.
+///
+/// `own_lock` is this TUI's session-store lock: when a live peer holds the
+/// store a target session lives in, we neither resume nor repair/quarantine
+/// that file (I2/I3) — a live pi may be appending to it — and start a fresh
+/// session instead.
 pub fn prepare_session_args(
     cwd: &Path,
     explicit_session: Option<&str>,
     new_session: bool,
     fork: Option<&str>,
+    own_lock: &SessionLock,
 ) -> (Vec<String>, Option<String>) {
     let mut args = Vec::new();
     if new_session || fork.is_some() {
@@ -401,6 +522,9 @@ pub fn prepare_session_args(
     if let Some(session) = explicit_session {
         let path = PathBuf::from(session);
         if path.is_file() {
+            if let Some(note) = peer_holds_store(&path, own_lock) {
+                return fresh_session_args(note);
+            }
             let health = validate_session(&path);
             if health.valid {
                 args.push("--session".to_string());
@@ -428,9 +552,7 @@ pub fn prepare_session_args(
                     q.display()
                 );
                 // Start a fresh session rather than resuming a corrupt tree.
-                args.push("--session-id".to_string());
-                args.push(format!("officina-{}", stamp()));
-                return (args, Some(note));
+                return fresh_session_args(note);
             }
         }
         args.push("--session".to_string());
@@ -441,6 +563,9 @@ pub fn prepare_session_args(
     let Some(latest) = latest_session(cwd) else {
         return (args, None);
     };
+    if let Some(note) = peer_holds_store(&latest, own_lock) {
+        return fresh_session_args(note);
+    }
     let health = validate_session(&latest);
     if health.valid {
         args.push("--session".to_string());
@@ -467,9 +592,7 @@ pub fn prepare_session_args(
             health.reason,
             q.display()
         );
-        args.push("--session-id".to_string());
-        args.push(format!("officina-{}", stamp()));
-        return (args, Some(note));
+        return fresh_session_args(note);
     }
     (args, None)
 }
@@ -587,5 +710,142 @@ mod tests {
         );
         assert!(!validate_session(&path).valid);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// One body for all env-mutating lock cases: set_var is process-global
+    /// and the test harness runs tests in parallel threads.
+    #[test]
+    fn session_store_lock_lifecycle_and_peer_refusal() {
+        let tmp = std::env::temp_dir().join(format!("guard-lock-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let lock_dir = tmp.join("locks");
+        let mirror = tmp.join("tui.lock");
+        std::env::set_var("OFFICINA_LOCK_DIR", &lock_dir);
+        std::env::set_var("OFFICINA_TUI_LOCK", &mirror);
+
+        let cwd_a = tmp.join("proj-a");
+        let cwd_b = tmp.join("proj-b");
+        fs::create_dir_all(&cwd_a).unwrap();
+        fs::create_dir_all(&cwd_b).unwrap();
+
+        // 1. Same store contends (second fd in the SAME process conflicts,
+        //    which is exactly what a second TUI would hit), a different
+        //    store does not, and drop releases.
+        let l1 = acquire_session_lock(&cwd_a);
+        assert!(
+            l1.locked_store().is_some(),
+            "first acquire must own the store"
+        );
+        let l2 = acquire_session_lock(&cwd_a);
+        assert!(
+            l2.locked_store().is_none(),
+            "peer acquire must find the store held"
+        );
+        let l3 = acquire_session_lock(&cwd_b);
+        assert!(
+            l3.locked_store().is_some(),
+            "a different store must not contend"
+        );
+        drop(l1);
+        let l4 = acquire_session_lock(&cwd_a);
+        assert!(l4.locked_store().is_some(), "release must free the store");
+        drop(l4);
+        drop(l3);
+
+        // 2. A live peer on the store blocks resume AND mutation of the
+        //    session file: prepare refuses, starts fresh, leaves the file.
+        let store_a = session_dir_for(&cwd_a).unwrap();
+        fs::create_dir_all(&store_a).unwrap();
+        let session = write_session(
+            &store_a,
+            "s.jsonl",
+            &[
+                header(),
+                serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}),
+                serde_json::json!({"type":"message","id":"a","parentId":"u","message":{"role":"assistant","content":[{"type":"toolCall","id":"call","name":"bash","arguments":{}}]}}),
+            ],
+        );
+        let peer_path = store_lock_path(&store_a).unwrap();
+        let mut peer = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&peer_path)
+            .unwrap();
+        peer.try_lock().expect("simulate live peer");
+
+        let outsider = acquire_session_lock(&cwd_b); // holds a DIFFERENT store
+        let (args, notice) = prepare_session_args(
+            &cwd_a,
+            Some(session.to_str().unwrap()),
+            false,
+            None,
+            &outsider,
+        );
+        assert!(
+            notice
+                .as_deref()
+                .unwrap_or("")
+                .contains("another officina TUI"),
+            "peer-held store must produce a refusal notice, got {notice:?}"
+        );
+        assert!(
+            args.iter().any(|a| a == "--session-id"),
+            "refusal must start a fresh session, got {args:?}"
+        );
+        assert!(
+            session.is_file(),
+            "quarantine must NOT run on a peer-held store"
+        );
+
+        // 3. An invalid session in a peer-held store is likewise untouched.
+        let (args, notice) = prepare_session_args(
+            &cwd_a,
+            Some(session.to_str().unwrap()),
+            false,
+            None,
+            &outsider,
+        );
+        assert!(args.iter().any(|a| a == "--session-id"));
+        assert!(notice.is_some());
+        assert!(session.is_file());
+
+        // 4. A store the peer does NOT hold resumes normally.
+        let store_b = session_dir_for(&cwd_b).unwrap();
+        fs::create_dir_all(&store_b).unwrap();
+        let ok_session = write_session(
+            &store_b,
+            "ok.jsonl",
+            &[
+                header(),
+                serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}),
+            ],
+        );
+        let (args, notice) = prepare_session_args(
+            &cwd_b,
+            Some(ok_session.to_str().unwrap()),
+            false,
+            None,
+            &outsider,
+        );
+        assert!(
+            notice.is_none(),
+            "free store must resume cleanly, got {notice:?}"
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--session".to_string(),
+                ok_session.to_string_lossy().to_string()
+            ]
+        );
+
+        peer.unlock().unwrap();
+        drop(peer);
+        drop(outsider);
+        std::env::remove_var("OFFICINA_LOCK_DIR");
+        std::env::remove_var("OFFICINA_TUI_LOCK");
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

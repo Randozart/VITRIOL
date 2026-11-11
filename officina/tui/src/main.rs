@@ -85,11 +85,16 @@ async fn main() -> Result<()> {
     }
 
     let mut extra = Vec::new();
+    // Cross-process guard FIRST (kernel-held flock on the session store):
+    // prepare_session_args consults it to refuse resuming or mutating a
+    // store another live TUI owns (corruption guard I2/I3, 2026-11-11).
+    let lock = session_guard::acquire_session_lock(&cwd);
     let (session_args, session_notice) = session_guard::prepare_session_args(
         &cwd,
         cli.session.as_deref(),
         cli.new,
         cli.fork.as_deref(),
+        &lock,
     );
     extra.extend(session_args);
     if let Some(note) = &session_notice {
@@ -108,9 +113,8 @@ async fn main() -> Result<()> {
         extra.push(format!("officina-{stamp}"));
     }
 
-    // Cross-process guard: offline recovery/doctors must refuse while this
-    // TUI owns a session.
-    let _lock = session_guard::acquire_lock();
+    // The lock must outlive the bridge: `lock` stays bound until the end
+    // of main, so pi's session store stays fenced for the whole run.
 
     // Spawn pi --mode rpc
     let mut bridge = RpcBridge::spawn(&pi_path, &cwd, &extra)

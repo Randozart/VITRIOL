@@ -341,10 +341,20 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let indicator_h = indicators.len() as u16;
 
     let input_h = composer_box_height(&state.input, area.width);
+    // Context status row (owner request 2026-11-11): one row, only while a
+    // turn has reported context fill. Sits in the status band, above the
+    // breathing row.
+    let ctx_h = if state.ctx_bar_label().is_some() {
+        1
+    } else {
+        0
+    };
     // One breathing row between the transcript and the prompt box (owner
     // request 2026-09-03 — text flowed straight into the editor).
     let chat_area = Rect {
-        height: area.height.saturating_sub(input_h as u16 + 1 + indicator_h),
+        height: area
+            .height
+            .saturating_sub(input_h + 1 + indicator_h + ctx_h),
         ..area
     };
     let indicator_area = Rect {
@@ -352,9 +362,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         height: indicator_h,
         ..area
     };
-    let input_area = Rect {
+    let ctx_area = Rect {
         y: indicator_area.y + indicator_h,
-        height: input_h as u16,
+        height: ctx_h,
+        ..area
+    };
+    let input_area = Rect {
+        y: ctx_area.y + ctx_h,
+        height: input_h,
         ..area
     };
     let chat_width = (chat_area.width as usize).saturating_sub(1);
@@ -454,6 +469,33 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(
             Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
             indicator_area,
+        );
+    }
+
+    // Context fill row (owner request 2026-11-11): a one-row strip in the
+    // status band with the sidebar's divider style — a dim horizontal rule
+    // on the panel tone separating it from the breathing row.
+    if let Some(label) = state.ctx_bar_label() {
+        let w = ctx_area.width as usize;
+        let text = format!(" {} ", label);
+        let rule_len = w
+            .saturating_sub(text.chars().count().saturating_add(2))
+            .max(2);
+        let mut spans = vec![
+            Span::styled(format!("{:^w$}", "", w = 1), Style::default()),
+            Span::styled(label, Style::new().fg(theme::MUTED)),
+            Span::styled(" ", Style::default()),
+        ];
+        // Dim horizontal rule filling the rest of the row (sidebar divider
+        // convention: BORDER_DIM on PANEL).
+        spans.push(Span::styled(
+            "─".repeat(rule_len),
+            Style::new().fg(theme::BORDER_DIM),
+        ));
+        let line = Line::from(spans);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::new().bg(theme::PANEL)),
+            ctx_area,
         );
     }
 

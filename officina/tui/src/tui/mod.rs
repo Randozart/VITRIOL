@@ -1892,6 +1892,19 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
             state.abort_deadline = None;
+            // Capture the context fill for the bottom status row. pi's
+            // agent_end event carries contextUsage {tokens, contextWindow,
+            // percent} (agent-session.js getContextUsage) — it is the same
+            // number the JS footer shows. Ignore until the first report.
+            if let Some(cu) = fields.get("contextUsage") {
+                let tokens = cu.get("tokens").and_then(|v| v.as_u64());
+                let window = cu.get("contextWindow").and_then(|v| v.as_u64());
+                if let (Some(t), Some(w)) = (tokens, window) {
+                    if w > 0 {
+                        state.ctx_usage = Some((t, w));
+                    }
+                }
+            }
             let expected = state.expected_tool_calls.len();
             state.expected_tool_calls.clear();
             // A turn that ends with a running tool means pi never emitted a

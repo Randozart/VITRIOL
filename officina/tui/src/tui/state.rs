@@ -449,6 +449,11 @@ pub struct AppState {
     // decode gauge, scratchpad note, etc. Rendered in arrival order.
     pub widgets: Vec<WidgetBlock>,
 
+    // Live context fill, captured from the agent_end event's contextUsage
+    // (tokens used / window size). None until the first turn completes —
+    // the bottom status row hides itself rather than showing a guess.
+    pub ctx_usage: Option<(u64, u64)>,
+
     // Terminal title (setTitle)
     pub title: String,
 
@@ -609,6 +614,7 @@ impl Default for AppState {
             session_name: None,
             message_count: 0,
             widgets: Vec::new(),
+            ctx_usage: None,
             title: String::new(),
             notice: None,
             commands: Vec::new(),
@@ -970,6 +976,35 @@ impl AppState {
                 bad.event, bad.from
             )));
         }
+    }
+
+    /// Human-compact count: "12.3k", "262k", "1.2M".
+    fn short_count(n: u64) -> String {
+        if n >= 1_000_000 {
+            format!("{:.1}M", n as f64 / 1_000_000.0)
+        } else if n >= 1_000 {
+            format!("{:.1}k", n as f64 / 1_000.0)
+        } else {
+            n.to_string()
+        }
+    }
+
+    /// Bottom status row label for the context fill: "ctx 12.3k / 262k
+    /// (4%)". None while no turn has reported usage — the row hides itself
+    /// rather than displaying a guess. Pure so the format is unit-testable.
+    pub fn ctx_bar_label(&self) -> Option<String> {
+        let (tokens, window) = self.ctx_usage?;
+        if window == 0 {
+            return None;
+        }
+        let pct = (tokens as f64 / window as f64) * 100.0;
+        Some(format!(
+            "{} ctx {} / {} ({:.1}%)",
+            theme::GLYPH_VITRIOL,
+            Self::short_count(tokens),
+            Self::short_count(window),
+            pct
+        ))
     }
 
     /// Models matching the picker filter (case-insensitive, AND of words
@@ -2751,6 +2786,44 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctx_bar_label_hidden_until_first_report() {
+        let s = AppState::default();
+        assert_eq!(s.ctx_bar_label(), None);
+    }
+
+    #[test]
+    fn ctx_bar_label_formats_fill_and_percent() {
+        let mut s = AppState::default();
+        s.ctx_usage = Some((12_345, 262_144));
+        assert_eq!(
+            s.ctx_bar_label().as_deref(),
+            Some("🜖 ctx 12.3k / 262.1k (4.7%)")
+        );
+    }
+
+    #[test]
+    fn ctx_bar_label_handles_millions_and_full_window() {
+        let mut s = AppState::default();
+        s.ctx_usage = Some((1_500_000, 2_000_000));
+        assert_eq!(
+            s.ctx_bar_label().as_deref(),
+            Some("🜖 ctx 1.5M / 2.0M (75.0%)")
+        );
+        s.ctx_usage = Some((262_144, 262_144));
+        assert_eq!(
+            s.ctx_bar_label().as_deref(),
+            Some("🜖 ctx 262.1k / 262.1k (100.0%)")
+        );
+    }
+
+    #[test]
+    fn ctx_bar_label_ignores_zero_window() {
+        let mut s = AppState::default();
+        s.ctx_usage = Some((1234, 0));
+        assert_eq!(s.ctx_bar_label(), None);
+    }
 
     #[test]
     fn parse_agent_mode_captures_current_and_next() {

@@ -21,6 +21,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { removeRegistryShard, writeRegistryEntry } from "../_shared/routing-registry.ts";
 
 /**
  * Escalate to SIGKILL `delayMs` after a SIGTERM, unless the child has already
@@ -338,6 +339,28 @@ async function runSubCoderOnce(opts: RunSubCoderOptions): Promise<SubCoderResult
       return;
     }
 
+    // Publish the child to the routing registry (P3/I6, 2026-11-11): the
+    // child runs llama-cpp-provider + tool-gating only — no adaptive-router
+    // — so without this entry it is invisible to peer sessions' seniority
+    // ranking while it occupies the local slot. Shard-keyed by the child
+    // pid, role subagent; removed at completion (TTL is the backstop).
+    const childPid = proc.pid;
+    if (childPid) {
+      try {
+        writeRegistryEntry({
+          ts: Date.now(),
+          tuiPid: childPid,
+          sessionId: `subagent-${childPid}`,
+          tier: "local",
+          model: opts.model ?? "local",
+          ctxTokens: 0,
+          role: "subagent",
+        });
+      } catch {
+        // registry is advisory only
+      }
+    }
+
     let buffer = "";
     const processLine = (line: string) => {
       if (!line.trim()) return;
@@ -409,6 +432,7 @@ async function runSubCoderOnce(opts: RunSubCoderOptions): Promise<SubCoderResult
       exited = true;
       if (watchdog) clearTimeout(watchdog);
       if (buffer.trim()) processLine(buffer);
+      if (childPid) removeRegistryShard(childPid);
       resolveP(code ?? 0);
     });
     proc.on("error", (e) => {

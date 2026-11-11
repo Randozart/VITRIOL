@@ -10,6 +10,9 @@
 // jiti-isolation contract test, not here.
 
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type PeerEntry,
   type RegistryCore,
@@ -20,6 +23,9 @@ import {
   serialize,
   deserialize,
   DEFAULT_TTL_MS,
+  readLivePeers,
+  removeRegistryShard,
+  writeRegistryEntry,
 } from "./routing-registry.ts";
 
 const NOW = 1_000_000_000_000; // fixed "now" for deterministic tests
@@ -78,7 +84,7 @@ describe("upsertEntry", () => {
     }
     for (const e of JSON.parse(blob).entries) {
       for (const k of Object.keys(e)) {
-        expect(["ts", "tuiPid", "sessionId", "tier", "model", "ctxTokens", "slotId"]).toContain(k);
+        expect(["ts", "tuiPid", "sessionId", "tier", "model", "ctxTokens", "slotId", "role"]).toContain(k);
       }
     }
   });
@@ -165,5 +171,91 @@ describe("entry ordering for seniority (P3 input)", () => {
     upsertEntry(c, entry({ tuiPid: 3, sessionId: "c", ts: NOW + 100 }));
     const peers = readPeers(c, NOW + 300, 99);
     expect(peers.map((p) => p.tuiPid)).toEqual([2, 3, 1]);
+  });
+});
+
+// ── Shard-mode FS layer (2026-11-11, I7) ──────────────────────────────────
+//
+// Production writes one shard per pid into OFFICINA_ROUTING_REGISTRY_DIR;
+// readers glob-merge. The I7 pin: concurrent publishers — each doing what
+// the OLD whole-file read-modify-write did — can no longer drop each
+// other's entries, because a shard writer never touches peers' files.
+describe("shard mode", () => {
+  const NOW2 = Date.now();
+
+  function withShardDir<T>(fn: (dir: string) => T): T {
+    const dir = mkdtempSync(join(tmpdir(), "registry-shards-"));
+    const prev = process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+    process.env.OFFICINA_ROUTING_REGISTRY_DIR = dir;
+    try {
+      return fn(dir);
+    } finally {
+      if (prev === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+      else process.env.OFFICINA_ROUTING_REGISTRY_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it("concurrent publishers never lose entries (I7)", () => {
+    withShardDir(() => {
+      // Simulate two TUI processes interleaving writes, as the old
+      // read-modify-write raced them.
+      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "a", ts: NOW2 }), undefined, NOW2);
+      writeRegistryEntry(entry({ tuiPid: 202, sessionId: "b", ts: NOW2 + 1 }), undefined, NOW2 + 1);
+      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "a", ts: NOW2 + 2 }), undefined, NOW2 + 2);
+      const peers = readLivePeers(999, { now: NOW2 + 3 });
+      expect(peers.map((p) => p.tuiPid).sort()).toEqual([101, 202]);
+    });
+  });
+
+  it("a pid's rewrite replaces its own shard (session switch)", () => {
+    withShardDir(() => {
+      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "old" }), undefined, NOW2);
+      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "new", ts: NOW2 + 5 }), undefined, NOW2 + 5);
+      const peers = readLivePeers(999, { now: NOW2 + 6 });
+      expect(peers).toHaveLength(1);
+      expect(peers[0].sessionId).toBe("new");
+    });
+  });
+
+  it("expired shards are ignored on read (TTL)", () => {
+    withShardDir(() => {
+      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "dead", ts: NOW2 - (DEFAULT_TTL_MS + 1) }), undefined, NOW2);
+      writeRegistryEntry(entry({ tuiPid: 202, sessionId: "live", ts: NOW2 }), undefined, NOW2);
+      const peers = readLivePeers(999, { now: NOW2 + 1 });
+      expect(peers.map((p) => p.tuiPid)).toEqual([202]);
+    });
+  });
+
+  it("role round-trips through shards (I6 subagent visibility)", () => {
+    withShardDir(() => {
+      writeRegistryEntry(
+        entry({ tuiPid: 303, sessionId: "subagent-303", role: "subagent", ts: NOW2 }),
+        undefined,
+        NOW2,
+      );
+      const peers = readLivePeers(999, { now: NOW2 + 1 });
+      expect(peers).toHaveLength(1);
+      expect(peers[0].role).toBe("subagent");
+    });
+  });
+
+  it("removeRegistryShard drops the publisher (subagent cleanup)", () => {
+    withShardDir(() => {
+      writeRegistryEntry(entry({ tuiPid: 404, sessionId: "subagent-404", ts: NOW2 }), undefined, NOW2);
+      expect(readLivePeers(999, { now: NOW2 + 1 })).toHaveLength(1);
+      removeRegistryShard(404);
+      expect(readLivePeers(999, { now: NOW2 + 1 })).toHaveLength(0);
+      // idempotent
+      expect(() => removeRegistryShard(404)).not.toThrow();
+    });
+  });
+
+  it("self is excluded by tuiPid in shard mode too", () => {
+    withShardDir(() => {
+      writeRegistryEntry(entry({ tuiPid: 555, sessionId: "mine", ts: NOW2 }), undefined, NOW2);
+      writeRegistryEntry(entry({ tuiPid: 666, sessionId: "peer", ts: NOW2 }), undefined, NOW2);
+      expect(readLivePeers(555, { now: NOW2 + 1 }).map((p) => p.tuiPid)).toEqual([666]);
+    });
   });
 });

@@ -42,6 +42,9 @@ export interface PeerView {
   model: string;
   ctxTokens: number;
   slotId?: number;
+  /** Publisher-declared role. Carried for audit/ranking display; the
+   *  yield rule itself is SELF-role-based (rule 3), not peer-role-based. */
+  role?: "main" | "subagent";
 }
 
 export interface PeerDecisionInput {

@@ -10,7 +10,7 @@
 // Invariant I4: the entry shape carries NO prompt text — only ids, tier,
 // model, token count, and (later) the pinned slot id.
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -24,6 +24,8 @@ export interface PeerEntry {
   model: string;
   ctxTokens: number;
   slotId?: number;
+  /** Publisher-declared role (I6): subagents rank last / yield first. */
+  role?: "main" | "subagent";
 }
 
 export interface RegistryCore {
@@ -122,6 +124,7 @@ export function deserialize(core: RegistryCore, json: string): void {
       ctxTokens: e.ctxTokens,
     };
     if (typeof e.slotId === "number") entry.slotId = e.slotId;
+    if (e.role === "main" || e.role === "subagent") entry.role = e.role;
     core.entries.set(keyOf(entry.tuiPid, entry.sessionId), entry);
   }
 }
@@ -129,11 +132,26 @@ export function deserialize(core: RegistryCore, json: string): void {
 // ── FS wrapper: file-backed registry shared across TUI processes ──────────
 //
 // Each TUI is a separate process (own `pi --mode rpc`), so peer visibility
-// must go through the filesystem, not module state. Reads are fresh (another
-// process may have written since), writes are read-modify-write + atomic
-// rename so a crash mid-write cannot truncate the registry.
+// must go through the filesystem, not module state.
+//
+// Two backends (2026-11-11, I7 of multisession-hardening):
+//   • SHARD mode (production default): one file per publishing pid under
+//     ~/.vitriol/officina/routing-registry.d/<pid>.json. Concurrent writers
+//     touch DIFFERENT files, so the old read-modify-write whole-file race
+//     (last-writer-wins silently dropped a peer) is gone; readers glob-merge
+//     the shards and TTL-prune on read.
+//   • LEGACY mode: when a caller passes an explicit `path` (tests, the jiti
+//     contract), behaviour is the original single read-modify-write file.
 
-/** Path of the shared registry (mode 600). Override for tests. */
+/** Shard directory (one file per publishing pid, mode 600). */
+export function registryDir(env: NodeJS.ProcessEnv = process.env): string {
+  return (
+    env.OFFICINA_ROUTING_REGISTRY_DIR ||
+    join(homedir(), ".vitriol", "officina", "routing-registry.d")
+  );
+}
+
+/** Path of the legacy single-file registry (mode 600). Override for tests. */
 export function registryPath(env: NodeJS.ProcessEnv = process.env): string {
   return (
     env.OFFICINA_ROUTING_REGISTRY ||
@@ -157,8 +175,8 @@ function shared(path: string): SharedRegistry {
   return g.__officinaRoutingRegistry;
 }
 
-/** Read the registry from disk; missing/garbage input yields an empty core. */
-export function loadRegistry(path: string = registryPath()): RegistryCore {
+/** Read ONE registry file (single or shard); garbage yields an empty core. */
+function loadFile(path: string): RegistryCore {
   const core = createCore(Date.now());
   if (!existsSync(path)) return core;
   try {
@@ -167,6 +185,11 @@ export function loadRegistry(path: string = registryPath()): RegistryCore {
     // Unreadable registry is not fatal: peer visibility degrades to "alone".
   }
   return core;
+}
+
+/** Read the legacy single-file registry. */
+export function loadRegistry(path: string = registryPath()): RegistryCore {
+  return loadFile(path);
 }
 
 function writeAtomic(path: string, body: string): void {
@@ -178,29 +201,68 @@ function writeAtomic(path: string, body: string): void {
 }
 
 /**
- * Publish this session's decision. Read-modify-write so peers are preserved;
- * expired entries are pruned on the same pass.
+ * Publish this session's decision.
+ *
+ * Sharded default: writes THIS pid's file only — peers' shards are never
+ * read-then-rewritten, so concurrent publishers cannot lose each other's
+ * entries (I7). An explicit `path` opts into the legacy single-file
+ * read-modify-write (tests / jiti contract).
  */
 export function writeRegistryEntry(
   entry: PeerEntry,
-  path: string = registryPath(),
+  path?: string,
   now: number = Date.now(),
 ): void {
-  const core = loadRegistry(path);
-  pruneExpired(core, now);
+  if (path) {
+    const core = loadFile(path);
+    pruneExpired(core, now);
+    upsertEntry(core, entry);
+    writeAtomic(path, serialize(core));
+    shared(path).core = core;
+    return;
+  }
+  const file = join(registryDir(), `${entry.tuiPid}.json`);
+  const core = createCore(now);
   upsertEntry(core, entry);
-  writeAtomic(path, serialize(core));
-  shared(path).core = core;
+  writeAtomic(file, serialize(core));
 }
 
-/** Live peers, read fresh from disk (excludes self by tuiPid). */
+/** Remove a publisher's shard (subagent cleanup at completion). Best-effort. */
+export function removeRegistryShard(tuiPid: number): void {
+  try {
+    unlinkSync(join(registryDir(), `${tuiPid}.json`));
+  } catch {
+    // absent already / unreadable dir — nothing to do
+  }
+}
+
+/**
+ * Live peers, read fresh. Shard mode merges every shard in the registry
+ * dir (expired entries are ignored); an explicit `path` reads that single
+ * legacy file. Self is excluded by tuiPid.
+ */
 export function readLivePeers(
   selfTuiPid: number,
   opts: { now?: number; path?: string; ttlMs?: number } = {},
 ): PeerEntry[] {
-  const path = opts.path ?? registryPath();
-  const core = loadRegistry(path);
-  return readPeers(core, opts.now ?? Date.now(), selfTuiPid, opts.ttlMs);
+  const now = opts.now ?? Date.now();
+  let core: RegistryCore;
+  if (opts.path) {
+    core = loadFile(opts.path);
+  } else {
+    core = createCore(now);
+    let files: string[] = [];
+    try {
+      files = readdirSync(registryDir()).filter((f) => f.endsWith(".json"));
+    } catch {
+      files = []; // no dir yet — nobody has published
+    }
+    for (const f of files) {
+      const shard = loadFile(join(registryDir(), f));
+      for (const e of shard.entries.values()) upsertEntry(core, e);
+    }
+  }
+  return readPeers(core, now, selfTuiPid, opts.ttlMs);
 }
 
 /** Test hook: drop the cached globalThis core. */

@@ -40,7 +40,13 @@ export interface EngineSnapshot {
   stalled: boolean;
   /** decode tokens since engine boot */
   total: number;
+  /** Slot table. Persists across /slots stalls (last-known), so once a
+   *  poll has succeeded `slots.length` is trustworthy for arbitration. */
   slots: SlotInfo[];
+  /** True once ONE /slots poll has succeeded — peer arbitration uses the
+   *  last-known slot table through queue-backed stalls instead of
+   *  withholding the peer arm exactly under contention (2026-11-11). */
+  slotsSeen: boolean;
   busy: number;
   /** Recent queue wait from the last poll interval (ms); 0 when no new
    *  requests. Overflow routing uses this as the local-contention signal. */
@@ -99,6 +105,7 @@ const state: EngineState =
       stalled: false,
       total: 0,
       slots: [],
+      slotsSeen: false,
       busy: 0,
       queueWaitMs: 0,
       processing: 0,
@@ -235,6 +242,7 @@ async function poll(): Promise<void> {
     state.lastPoll = sampledAt;
     const slotsOut = await fetchText(`${state.base}/slots`, HTTP_TIMEOUT_MS);
     const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : state.snap.slots;
+    const slotsSeen = slotsOut.kind === "ok" || state.snap.slotsSeen;
     const busy = busySlots(slots, delta.tokens);
     // The ENGINE's loaded model (owner request 2026-09-03): /v1/models
     // reports the alias of whatever the server actually loaded — distinct
@@ -248,7 +256,7 @@ async function poll(): Promise<void> {
     // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
     const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
     // cumulativeIngest = total prompt tokens processed since engine boot
-    state.snap = { up: true, polled: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.predictedTokens, slots, busy, queueWaitMs, processing: after.processing ?? 0, deferred: after.deferred ?? 0, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path, rpc };
+    state.snap = { up: true, polled: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.predictedTokens, slots, slotsSeen, busy, queueWaitMs, processing: after.processing ?? 0, deferred: after.deferred ?? 0, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path, rpc };
     state.polledOnce = true;
     notify();
   } finally {

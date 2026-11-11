@@ -22,6 +22,7 @@ import {
 import {
   configFromEnv,
   decideTier,
+  localBusy,
   parseModelSpec,
   type OverflowConfig,
   type Privacy,
@@ -290,11 +291,13 @@ export default function (pi: ExtensionAPI) {
     const budgetLeft = cloudTokens < cfg.cloudTokenBudget && canSpendCloud();
     const idleFor = localIdleSince != null ? Date.now() - localIdleSince : null;
 
-    // P3: peer arbitration needs an observable engine. Without a completed
-    // poll (slots unknown) the peer arm is withheld, so a cold start keeps
-    // the pre-P3 optimistic-local behaviour.
+    // P3: peer arbitration needs an observable engine. Once /slots has
+    // answered even once, the (persisting) slot table stays usable through
+    // queue-backed stalls — withholding the peer arm exactly while the
+    // engine is busy was backwards (2026-11-11).
     const slotCount = snap.slots?.length ?? 0;
-    const peersUsable = snap.polled && snap.up && slotCount > 0;
+    const peersUsable =
+      snap.polled && snap.up && (slotCount > 0 || snap.slotsSeen === true);
     const peerContext = peersUsable
       ? {
           self: {
@@ -344,6 +347,7 @@ export default function (pi: ExtensionAPI) {
                 ? `${ctx.model.provider}/${ctx.model.id}`
                 : "local",
           ctxTokens: usage?.tokens ?? 0,
+          role: sessionRole,
         },
         undefined,
         now,
@@ -389,7 +393,11 @@ export default function (pi: ExtensionAPI) {
       if (ok) {
         tier = "local";
         activeCloud = undefined;
-        if (!failoverActive) switches += 1;
+        // Returning home RESETS the cap (2026-11-11): the cap exists to
+        // damp oscillation, not to permanently strand a session after one
+        // spill+return cycle — charging the return too left sessions
+        // inert after two contention events.
+        switches = 0;
         failoverActive = false;
         turnsOnTier = 1;
         cloudTokensSinceLocal = 0;
@@ -399,6 +407,17 @@ export default function (pi: ExtensionAPI) {
       }
     } else {
       turnsOnTier += 1;
+      // Slow cap recovery: back on an idle local for a full return window,
+      // expired oscillation debt stops counting against future spills.
+      if (
+        tier === "local" &&
+        switches > 0 &&
+        !localBusy(load, cfg) &&
+        idleFor != null &&
+        idleFor >= cfg.returnIdleMs
+      ) {
+        switches = 0;
+      }
     }
 
     if (localDown && decision.tier === "cloud") {

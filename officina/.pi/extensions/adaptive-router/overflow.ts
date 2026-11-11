@@ -172,7 +172,15 @@ export function decideTier(
     if (input.cloudFits && input.budgetLeft && canSwitch) {
       return { tier: "cloud", reason: "local busy — spill to cloud" };
     }
-    return { tier: "local", reason: busy ? "local busy — stay (cloud unavailable)" : "local" };
+    // Same tier as before the 2026-11-11 hardening; the reason now names
+    // WHICH gate blocked the spill (the old string blamed the cloud when
+    // the cache-affinity cap was the actual blocker).
+    const reason = !input.cloudFits
+      ? "local busy — stay (no cloud candidate)"
+      : !input.budgetLeft
+        ? "local busy — stay (cloud budget exhausted)"
+        : `local busy — stay (switch cap ${state.switches}/${cfg.maxSwitches})`;
+    return { tier: "local", reason };
   }
 
   // Cloud tier.

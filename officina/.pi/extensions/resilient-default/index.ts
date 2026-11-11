@@ -10,11 +10,13 @@ import { join } from "node:path";
 import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
 import { classifyTurn } from "../auto-route/classifier.ts";
 import { configFromEnv, decideTier, parseModelSpec, type Tier } from "../adaptive-router/overflow.ts";
+import type { PeerView, SelfView } from "../adaptive-router/peer-policy.ts";
 import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
 import {
   budgetSummaryText,
   canSpendCloud,
 } from "../_shared/budget.ts";
+import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
 import {
   cooldownRemaining,
   cooling as healthCooling,
@@ -46,7 +48,12 @@ import {
 //   direct      local if up, else cloud
 // Sensitive/confidential turns never leave local.
 //
-// The virtual model is the default; adaptive-router skips virtual selections.
+// Multi-session (2026-11-11): lapis is the DEFAULT model, and this is the
+// only router that runs under it — so the P1/P3 peer arbitration lives HERE
+// too: peer context from the routing registry + /slots feeds decideTier,
+// decisions publish to the registry, and peer demotions / local returns
+// respect the arbitration switch-cap rules (adaptive-router behaviour
+// mirrors it for non-virtual selections).
 
 type Model = NonNullable<ExtensionContext["model"]>;
 
@@ -110,6 +117,12 @@ export default function (pi: ExtensionAPI) {
     .split(",")
     .map((s) => parseModelSpec(s))
     .filter((s): s is { provider: string; id: string } => !!s);
+
+  // P3 identity — stable for this TUI process (mirrors adaptive-router).
+  const sessionStartedAt = Date.now();
+  const tuiPid = process.pid;
+  const sessionRole: SelfView["role"] =
+    process.env.OFFICINA_SESSION_ROLE === "subagent" ? "subagent" : "main";
 
   let localIdleSince: number | null = Date.now();
   let cloudCandidates: Model[] = [];
@@ -233,6 +246,30 @@ export default function (pi: ExtensionAPI) {
         localState: stateKind,
         startedAt: now,
       };
+      // Publish so peer sessions can rank against us (P1). Best-effort:
+      // a failed write must never break a request.
+      try {
+        const sessionId =
+          (ctx as { sessionManager?: { getSessionFile?: () => string } })
+            .sessionManager?.getSessionFile?.()
+            ?.split("/")
+            .pop() ?? `tui-${tuiPid}`;
+        writeRegistryEntry(
+          {
+            ts: now,
+            tuiPid,
+            sessionId,
+            tier: chosenTier,
+            model: `${chosen.provider}/${chosen.id}`,
+            ctxTokens: tokens,
+            role: sessionRole,
+          },
+          undefined,
+          now,
+        );
+      } catch {
+        // registry is advisory only
+      }
     };
 
     if (request.reason === "continuation" && previous && previous.id !== "lapis") {
@@ -257,6 +294,25 @@ export default function (pi: ExtensionAPI) {
     } else if (request.reason === "direct") {
       tier = localDown ? "cloud" : "local";
     } else {
+      // P3 peer arbitration (2026-11-11): lapis is the default model and
+      // this is the only router under it, so the peer arm lives here.
+      // Same gate as adaptive-router: once /slots answered, the persisting
+      // slot table arbitrates through stalls.
+      const slotCount = snap.slots?.length ?? 0;
+      const peersUsable =
+        snap.polled && snap.up && (slotCount > 0 || snap.slotsSeen === true);
+      const peerContext = peersUsable
+        ? {
+            self: {
+              ts: sessionStartedAt,
+              tuiPid,
+              ctxTokens: tokens,
+              role: sessionRole,
+            } as SelfView,
+            peers: readLivePeers(tuiPid, { now }) as PeerView[],
+            freeSlots: Math.max(0, slotCount - (snap.processing ?? 0)),
+          }
+        : {};
       const decision = decideTier(
         {
           state: {
@@ -272,20 +328,37 @@ export default function (pi: ExtensionAPI) {
           localIdleForMs: localIdleSince != null ? now - localIdleSince : null,
           localDown,
           failoverActive: state.failoverActive,
+          ...peerContext,
         },
         cfg,
       );
       tier = decision.tier;
       const emergency = localDown && tier === "cloud";
+      const peerDemoted = decision.peerDemoted === true;
       if (tier !== state.tier) {
-        state = {
-          tier,
-          switches: state.switches + (emergency || state.failoverActive ? 0 : 1),
-          turnsOnTier: 1,
-          failoverActive: emergency ? true : tier === "local" ? false : state.failoverActive,
-        };
+        if (tier === "local") {
+          // Returning home resets the cap (oscillation debt is settled).
+          state = { tier, switches: 0, turnsOnTier: 1, failoverActive: false };
+        } else {
+          state = {
+            tier,
+            // Peer demotions are arbitration, not cache-affinity churn.
+            switches: state.switches + (emergency || state.failoverActive || peerDemoted ? 0 : 1),
+            turnsOnTier: 1,
+            failoverActive: emergency ? true : state.failoverActive,
+          };
+        }
       } else {
         state = { ...state, turnsOnTier: state.turnsOnTier + 1 };
+        // Slow cap recovery on an idle local tier.
+        if (
+          tier === "local" &&
+          state.switches > 0 &&
+          localIdleSince != null &&
+          now - localIdleSince >= cfg.returnIdleMs
+        ) {
+          state = { ...state, switches: 0 };
+        }
       }
     }
 

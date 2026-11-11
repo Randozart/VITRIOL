@@ -72,12 +72,21 @@ export function cacheClearPercent(env: NodeJS.ProcessEnv = process.env): number 
   return Math.min(100, Math.max(50, Math.round(parsed)));
 }
 
+/**
+ * True when the tool-result clear pass should be SKIPPED this turn.
+ * Provider-independent (2026-11-11): the engine's KV prefix cache reuses
+ * only on exact token-prefix continuation, so ANY mid-history stub
+ * invalidates reuse from that point — on the local engine that used to
+ * mean a growing re-prefill every turn (the old local rule cleared
+ * unconditionally). Defer until the context window actually needs the
+ * room (>= OFFICINA_CACHE_CLEAR_PCT), on local and cloud alike.
+ * OFFICINA_CACHE_FORCE_CLEAR=1 restores the old always-clear behavior.
+ */
 export function shouldDeferToolClear(
   contextPercent: number | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (env.OFFICINA_CACHE_FORCE_CLEAR === "1") return false;
-  if (!isCloudCacheMode()) return false;
   if (contextPercent == null) return true;
   return contextPercent < cacheClearPercent(env);
 }

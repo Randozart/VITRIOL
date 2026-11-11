@@ -53,6 +53,13 @@ export interface ToolResultLike {
 //                                          (merged onto DEFAULT_EXCLUDE)
 //   OFFICINA_NO_ACTIVE_FILES=1             disable active-file protection
 //   OFFICINA_ACTIVE_TTL=<n>                active-file TTL in turns (default 10)
+//
+// 2026-11-11: clearing DEFERS below the context threshold on every
+// provider, local included — a mid-history stub truncates the engine's
+// KV prefix reuse at the stub position, and on llamacpp the old
+// always-clear rule meant a growing re-prefill every turn. See
+// _shared/cache-mode.ts shouldDeferToolClear and
+// .opencode/plans/officina-multisession-hardening-2026-11-11.md (I4).
 
 /** Tools whose results are load-bearing state, never consumable output.
  *  Mirrors ~/.config/trismegistus/config.yaml context_pipeline.clear.

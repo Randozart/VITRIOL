@@ -67,8 +67,14 @@ describe("clear policy", () => {
     expect(shouldDeferToolClear(40, { OFFICINA_CACHE_FORCE_CLEAR: "1" })).toBe(false);
   });
 
-  it("never defers for local mode", () => {
+  // 2026-11-11: the defer rule is provider-independent — on llamacpp the
+  // engine KV prefix cache breaks at ANY mid-history stub, so local
+  // defers below the threshold exactly like cloud (I4 prefix stability).
+  it("defers clearing in local mode below the threshold too", () => {
     setCacheModeFromProvider("llamacpp", { OFFICINA_CACHE_MODE: "auto" });
-    expect(shouldDeferToolClear(10, {})).toBe(false);
+    expect(shouldDeferToolClear(10, {})).toBe(true);
+    expect(shouldDeferToolClear(null, {})).toBe(true);
+    expect(shouldDeferToolClear(95, {})).toBe(false);
+    expect(shouldDeferToolClear(10, { OFFICINA_CACHE_FORCE_CLEAR: "1" })).toBe(false);
   });
 });

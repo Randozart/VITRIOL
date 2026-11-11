@@ -1,13 +1,26 @@
 // session-ledger — a single, deterministic orientation line kept in the
-// conversation. Unlike the other injectors it does NOT append: the ledger
-// message is REPLACED in place on every context pass, so it stays one line
-// forever and never accumulates.
+// conversation. The ledger message is RELOCATED TO THE TAIL on every
+// context pass: the previous copy is removed and a fresh one is appended
+// after the latest exchange.
+//
+// Why tail and not in-place upsert (2026-11-11): the engine reuses its KV
+// cache only on exact token-prefix continuation — ONE changed token
+// truncates reuse from that point. An in-place-updated ledger sits at its
+// original near-top injection position and changes every turn, so reuse
+// stopped there and the whole conversation tail re-prefilled every turn.
+// With the ledger always last, the break point is the ledger itself and
+// the shared prefix grows with the conversation; the only extra cost over
+// no ledger is the ~10-token ledger block. Same contract as
+// _shared/inject.ts (tail-append custom messages; never system-prompt).
 //
 // Gives a small model a stable "where am I" anchor (message count, ~token
 // estimate, files touched) without spending a read on state.
 //
+// Kill switch: OFFICINA_NO_LEDGER=1 (Rule 15).
+//
 // Provenance: original work, this repo (First-Party Mandate). Plan:
-// .opencode/plans/officina-algorithmic-support-2026-08-31.md (P6).
+// .opencode/plans/officina-algorithmic-support-2026-08-31.md (P6);
+// tail relocation: .opencode/plans/officina-multisession-hardening-2026-11-11.md (I4).
 
 export const LEDGER_CUSTOM_TYPE = "lc-ledger";
 
@@ -71,24 +84,25 @@ export function contextChars(messages: Array<{ content?: unknown }>): number {
   return chars;
 }
 
+/** True when a message is a ledger custom message. */
+export function isLedgerMessage(m: unknown): boolean {
+  const x = m as { role?: string; customType?: string };
+  return x.role === "custom" && x.customType === LEDGER_CUSTOM_TYPE;
+}
+
 /**
- * Upsert the ledger message into a message list: replaces the content of
- * the existing ledger message in place (new array + new message object),
- * or appends one when absent. Pure — never mutates inputs.
+ * Relocate the ledger to the tail of a message list: drop every existing
+ * ledger message (wherever it sits) and append a fresh one after the
+ * latest exchange. Preserves the identity of all non-ledger messages so
+ * the engine's prefix cache keeps the conversation up to the ledger
+ * position. Pure — never mutates inputs, never accumulates.
  */
-export function upsertLedger(
+export function relocateLedger(
   messages: unknown[],
   block: string,
 ): unknown[] {
-  const out = [...messages];
-  for (let i = out.length - 1; i >= 0; i--) {
-    const m = out[i] as { role?: string; customType?: string };
-    if (m.role === "custom" && m.customType === LEDGER_CUSTOM_TYPE) {
-      out[i] = { ...(m as object), content: "\n\n" + block, timestamp: Date.now() };
-      return out;
-    }
-  }
-  out.push({
+  const kept = messages.filter((m) => !isLedgerMessage(m));
+  kept.push({
     role: "custom" as const,
     customType: LEDGER_CUSTOM_TYPE,
     content: "\n\n" + block,
@@ -96,5 +110,5 @@ export function upsertLedger(
     details: {},
     timestamp: Date.now(),
   });
-  return out;
+  return kept;
 }

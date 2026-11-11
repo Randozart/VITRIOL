@@ -1,11 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import { register as registerActive } from "../_shared/active-files.ts";
-import { contextChars, ledgerConfig, renderLedger, upsertLedger, type LedgerStats } from "./ledger.ts";
+import { contextChars, ledgerConfig, relocateLedger, renderLedger, type LedgerStats } from "./ledger.ts";
 
-// session-ledger — one self-replacing orientation line in the context.
+// session-ledger — one self-relocating orientation line in the context.
 // Tracks files touched / edit counts from edit & write tool results, and
-// computes context size from the outgoing message list each pass.
+// computes context size from the outgoing message list each pass. The
+// ledger is always re-sited at the TAIL so the engine's prefix cache
+// keeps the conversation up to the ledger position (see ledger.ts).
 //
 // Kill switch: OFFICINA_NO_LEDGER=1 (Rule 15).
 
@@ -44,6 +46,6 @@ export default function (pi: ExtensionAPI) {
       lastSession = block;
       emitHarnessEvent(harnessEvent("lc-ledger", "tick", { detail: block.slice(0, 200) }));
     }
-    return { messages: upsertLedger(event.messages, block) as typeof event.messages };
+    return { messages: relocateLedger(event.messages, block) as typeof event.messages };
   });
 }

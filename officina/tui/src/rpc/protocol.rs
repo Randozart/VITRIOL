@@ -409,6 +409,7 @@ pub struct SessionStats {
     #[serde(rename = "totalMessages")]
     pub total_messages: u64,
     pub tokens: Option<TokenUsage>,
+    #[serde(rename = "contextUsage")]
     pub context_usage: Option<ContextUsage>,
 }
 

@@ -35,8 +35,24 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     .split(area);
 
     render_header(frame, rows[0], state);
+    render_header_divider(frame, rows[1]);
     render_body(frame, state, rows[2]);
     render_footer(frame, rows[3], state);
+}
+
+/// The seam under the top bar: a 1px dim rule in the sidebar/ctx-bar
+/// convention (BORDER_DIM on PANEL), replacing the old blank breathing row
+/// (owner request 2026-09-03 kept the *seam*; this gives it the divider the
+/// operator asked for). Height stays 1px so the body keeps its space.
+fn render_header_divider(frame: &mut Frame, area: Rect) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let line = Line::from(vec![Span::styled(
+        "─".repeat(area.width as usize),
+        Style::new().fg(theme::BORDER_DIM),
+    )]);
+    frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), area);
 }
 
 // ── Header ────────────────────────────────────────────────────────────────

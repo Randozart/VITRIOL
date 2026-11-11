@@ -370,6 +370,18 @@ async fn run_loop(
                                 "info".to_string(),
                             ));
                         }
+                        // Refresh the context fill for the bottom status row.
+                        // pi's wire agent_end does NOT carry contextUsage (only
+                        // {type, messages, willRetry}); the number lives in
+                        // getSessionStats, surfaced via the get_session_stats
+                        // RPC. Fire it on every turn end so the row tracks the
+                        // live fill. agent_settled would double-fetch, so only
+                        // agent_end triggers this.
+                        if event.event_type == "agent_end" {
+                            let _ = bridge
+                                .request(RpcCommand::GetSessionStats { id: None })
+                                .await;
+                        }
                         // Deliver a prompt that was typed while a tool was
                         // still running. It was echoed already, so send it
                         // directly rather than re-pushing the user transcript.
@@ -1867,6 +1879,23 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                 state.model = Some(model);
             }
         }
+        Some("get_session_stats") => {
+            // Context fill for the bottom status row. pi's wire agent_end does
+            // NOT carry contextUsage (only {type, messages, willRetry}) — the
+            // number lives in getSessionStats, which the RPC surfaces as
+            // get_session_stats. Parse it here, on the response path.
+            if let Ok(stats) =
+                serde_json::from_value::<crate::rpc::protocol::SessionStats>(data.clone())
+            {
+                if let Some(cu) = stats.context_usage {
+                    let tokens = cu.tokens.unwrap_or(0);
+                    let window = cu.context_window;
+                    if window > 0 {
+                        state.ctx_usage = Some((tokens, window));
+                    }
+                }
+            }
+        }
         _ => {}
     }
     false
@@ -1892,19 +1921,6 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
             state.abort_deadline = None;
-            // Capture the context fill for the bottom status row. pi's
-            // agent_end event carries contextUsage {tokens, contextWindow,
-            // percent} (agent-session.js getContextUsage) — it is the same
-            // number the JS footer shows. Ignore until the first report.
-            if let Some(cu) = fields.get("contextUsage") {
-                let tokens = cu.get("tokens").and_then(|v| v.as_u64());
-                let window = cu.get("contextWindow").and_then(|v| v.as_u64());
-                if let (Some(t), Some(w)) = (tokens, window) {
-                    if w > 0 {
-                        state.ctx_usage = Some((t, w));
-                    }
-                }
-            }
             let expected = state.expected_tool_calls.len();
             state.expected_tool_calls.clear();
             // A turn that ends with a running tool means pi never emitted a
@@ -2403,6 +2419,52 @@ mod tests {
         }
         assert!(s.local_dispatch("/model bogus").is_none());
         assert_eq!(s.entries.len(), 1, "bad form gets one diagnostic");
+    }
+
+    #[test]
+    fn session_stats_response_populates_ctx_usage() {
+        let mut s = AppState::default();
+        let resp: crate::rpc::protocol::RpcResponse = serde_json::from_value(serde_json::json!({
+            "type": "response",
+            "command": "get_session_stats",
+            "success": true,
+            "data": {
+                "sessionId": "s1",
+                "userMessages": 2,
+                "assistantMessages": 2,
+                "toolCalls": 1,
+                "totalMessages": 4,
+                "tokens": { "input": 100, "output": 40, "total": 140 },
+                "contextUsage": { "tokens": 12345, "contextWindow": 262144, "percent": 4.7 }
+            }
+        }))
+        .unwrap();
+        assert!(!handle_response(&mut s, &resp));
+        assert_eq!(s.ctx_usage, Some((12_345, 262_144)));
+        assert_eq!(
+            s.ctx_bar_label().as_deref(),
+            Some("🜖 ctx 12.3k / 262.1k (4.7%)")
+        );
+    }
+
+    #[test]
+    fn session_stats_response_without_window_leaves_ctx_usage_none() {
+        let mut s = AppState::default();
+        let resp: crate::rpc::protocol::RpcResponse = serde_json::from_value(serde_json::json!({
+            "type": "response",
+            "command": "get_session_stats",
+            "success": true,
+            "data": {
+                "userMessages": 0,
+                "assistantMessages": 0,
+                "toolCalls": 0,
+                "totalMessages": 0,
+                "contextUsage": { "tokens": 0, "contextWindow": 0, "percent": 0.0 }
+            }
+        }))
+        .unwrap();
+        assert!(!handle_response(&mut s, &resp));
+        assert_eq!(s.ctx_usage, None, "I1: no data ⇒ row stays hidden");
     }
 
     #[test]

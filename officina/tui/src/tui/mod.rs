@@ -4,6 +4,7 @@ pub mod layout;
 pub mod state;
 
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -18,6 +19,7 @@ use ratatui::Terminal;
 
 use crate::rpc::bridge::{RpcBridge, WireMessage};
 use crate::rpc::protocol::{RpcCommand, SlashCommand};
+use crate::session_guard;
 
 use self::layout::render;
 use self::state::AppState;
@@ -694,6 +696,12 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             KeyCode::Enter => {
                 if let Some(entry) = state.resume_entries.get(state.resume_sel) {
                     let path = entry.path.to_string_lossy().to_string();
+                    // Runtime peer fence (I2): a live peer's ACTIVE session
+                    // file must not gain a second pi writer.
+                    if let Some(note) = session_guard::peer_fenced_notice(&entry.path) {
+                        state.entries.push(state::ChatEntry::Diag(note));
+                        return;
+                    }
                     state.note_phase(state::UiEvent::CloseModal);
                     state.resume_open = false;
                     if state.is_streaming {
@@ -1375,6 +1383,12 @@ async fn import_opencode(
         ));
         return;
     };
+    // Runtime peer fence (I2): same gate as /resume — an import target
+    // that a live peer is writing must not gain a second writer.
+    if let Some(note) = session_guard::peer_fenced_notice(Path::new(path)) {
+        state.entries.push(state::ChatEntry::Diag(note));
+        return;
+    }
     let title = data
         .get("source")
         .and_then(|s| s.get("title"))

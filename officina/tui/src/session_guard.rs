@@ -179,6 +179,118 @@ fn fresh_session_args(note: String) -> (Vec<String>, Option<String>) {
     )
 }
 
+// ---- Runtime peer fence (2026-11-11, runtime-fence-batch) ----
+//
+// The flock fences STARTUP, but /resume and session imports switch files
+// while running. A peer TUI that started first holds our store; its
+// ACTIVE session file shows up in our /resume list, and switching onto
+// it would put two pi writers on one jsonl. The routing registry (which
+// every TUI publishes per decision, sessionId = session file stem) tells
+// us which file each peer is live on — that is the fence.
+
+const PEER_TTL_MS: u64 = 60_000;
+
+fn registry_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("OFFICINA_ROUTING_REGISTRY_DIR") {
+        let p = PathBuf::from(dir);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    Some(
+        home()?
+            .join(".vitriol")
+            .join("officina")
+            .join("routing-registry.d"),
+    )
+}
+
+fn legacy_registry_file() -> Option<PathBuf> {
+    if let Some(f) = std::env::var_os("OFFICINA_ROUTING_REGISTRY") {
+        let p = PathBuf::from(f);
+        if !p.as_os_str().is_empty() {
+            return Some(p);
+        }
+    }
+    Some(
+        home()?
+            .join(".vitriol")
+            .join("officina")
+            .join("routing-registry.json"),
+    )
+}
+
+/// Session-file stems (no `.jsonl`) that a LIVE peer TUI is on, read from
+/// the routing registry (shards + legacy single file). Self is excluded by
+/// pid; entries older than 60 s are stale by definition. Best-effort:
+/// unreadable registry yields an empty list (no fence, same as before).
+fn live_peer_session_stems() -> Vec<String> {
+    let now = stamp();
+    let mut stems = Vec::new();
+    let mut sources: Vec<PathBuf> = Vec::new();
+    if let Some(dir) = registry_dir() {
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for ent in entries.flatten() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if name.ends_with(".json") {
+                    sources.push(ent.path());
+                }
+            }
+        }
+    }
+    if let Some(f) = legacy_registry_file() {
+        sources.push(f);
+    }
+    for path in sources {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(list) = v.get("entries").and_then(Value::as_array) else {
+            continue;
+        };
+        for e in list {
+            let pid = e.get("tuiPid").and_then(Value::as_u64);
+            let session = e.get("sessionId").and_then(Value::as_str);
+            let ts = e.get("ts").and_then(Value::as_u64);
+            let (Some(pid), Some(session), Some(ts)) = (pid, session, ts) else {
+                continue;
+            };
+            if pid == u64::from(std::process::id()) {
+                continue;
+            }
+            if now.saturating_sub(ts) > PEER_TTL_MS {
+                continue;
+            }
+            if !stems.iter().any(|s| s == session) {
+                stems.push(session.to_string());
+            }
+        }
+    }
+    stems
+}
+
+/// True when `stem` is a session file a live peer is currently writing.
+fn session_held_by_peer(stem: &str, peers: &[String]) -> bool {
+    peers.iter().any(|s| s == stem)
+}
+
+/// Refusal notice when a live peer holds the session at `path`.
+pub fn peer_fenced_notice(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let stem = name.strip_suffix(".jsonl")?.to_string();
+    let peers = live_peer_session_stems();
+    if session_held_by_peer(&stem, &peers) {
+        Some(format!(
+            "session is live in another officina ({stem}) — not switched"
+        ))
+    } else {
+        None
+    }
+}
+
 pub fn session_dir_for(cwd: &Path) -> Option<PathBuf> {
     let home = home()?;
     let text = cwd.to_string_lossy();
@@ -847,5 +959,86 @@ mod tests {
         std::env::remove_var("OFFICINA_LOCK_DIR");
         std::env::remove_var("OFFICINA_TUI_LOCK");
         let _ = fs::remove_dir_all(&tmp);
+    }
+}
+
+#[cfg(test)]
+mod peer_fence_tests {
+    use super::*;
+
+    /// Env-mutating; isolated body like the lock lifecycle test.
+    #[test]
+    fn live_peer_stems_from_shards_and_legacy_file() {
+        let tmp = std::env::temp_dir().join(format!("guard-fence-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        let shards = tmp.join("shards");
+        fs::create_dir_all(&shards).unwrap();
+        std::env::set_var("OFFICINA_ROUTING_REGISTRY_DIR", &shards);
+        std::env::set_var("OFFICINA_ROUTING_REGISTRY", tmp.join("legacy.json"));
+
+        let now = stamp();
+        let mine = u64::from(std::process::id());
+        // Fresh peer shard, expired peer shard, our own fresh entry.
+        writeFileSync(
+            &shards.join("500.json"),
+            &serde_json::json!({"entries": [
+                {"ts": now, "tuiPid": 500, "sessionId": "peer-active", "tier": "local", "model": "m", "ctxTokens": 1},
+                {"ts": now - 61_000, "tuiPid": 500, "sessionId": "peer-stale", "tier": "local", "model": "m", "ctxTokens": 1}
+            ]})
+            .to_string(),
+        );
+        writeFileSync(
+            &shards.join("501.json"),
+            &serde_json::json!({"entries": [
+                {"ts": now - 5_000, "tuiPid": 501, "sessionId": "peer-two", "tier": "local", "model": "m", "ctxTokens": 1}
+            ]})
+            .to_string(),
+        );
+        // Legacy single file: fresh OUR-pid entry (must be excluded) + a
+        // fresh foreign one (must be included — transition compat).
+        writeFileSync(
+            &tmp.join("legacy.json"),
+            &serde_json::json!({"entries": [
+                {"ts": now, "tuiPid": mine, "sessionId": "mine-own", "tier": "local", "model": "m", "ctxTokens": 1},
+                {"ts": now - 1_000, "tuiPid": 502, "sessionId": "legacy-peer", "tier": "cloud", "model": "m", "ctxTokens": 1}
+            ]})
+            .to_string(),
+        );
+
+        let stems = live_peer_session_stems();
+        assert!(
+            stems.iter().any(|s| s == "peer-active"),
+            "fresh peer shard missed: {stems:?}"
+        );
+        assert!(
+            stems.iter().any(|s| s == "peer-two"),
+            "second shard missed: {stems:?}"
+        );
+        assert!(
+            stems.iter().any(|s| s == "legacy-peer"),
+            "legacy file missed: {stems:?}"
+        );
+        assert!(
+            !stems.iter().any(|s| s == "peer-stale"),
+            "expired entry must be skipped: {stems:?}"
+        );
+        assert!(
+            !stems.iter().any(|s| s == "mine-own"),
+            "own pid must be skipped: {stems:?}"
+        );
+
+        assert!(session_held_by_peer("peer-active", &stems));
+        assert!(!session_held_by_peer("not-a-session", &stems));
+
+        std::env::remove_var("OFFICINA_ROUTING_REGISTRY_DIR");
+        std::env::remove_var("OFFICINA_ROUTING_REGISTRY");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    fn writeFileSync(path: &Path, body: &str) {
+        use std::io::Write;
+        let mut f = File::create(path).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
     }
 }

@@ -270,6 +270,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_resume_modal(frame, state, area);
         return;
     }
+    if state.tree_open {
+        render_chat_and_editor(frame, state, area);
+        render_tree_modal(frame, state, area);
+        return;
+    }
     if state.models_open {
         render_chat_and_editor(frame, state, area);
         render_models_modal(frame, state, area);
@@ -1490,6 +1495,75 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         list,
+    );
+}
+
+/// /tree — the session entry tree, one numbered line per entry so
+/// `/fork <n>` can address an entry by its listing position. Scroll-only:
+/// selection moves the view, /fork still happens from the composer.
+fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let h = area.height.min((state.tree_lines.len() as u16 + 4).max(8));
+    let w = area.width.min(92);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            format!(
+                " {} session tree · {} entries ",
+                theme::GLYPH_QUINTESSENCE,
+                state.tree_lines.len()
+            ),
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " ↑↓ scroll · /fork <n> · esc ",
+            Style::new().fg(theme::MUTED),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 1 || inner.width < 4 {
+        return;
+    }
+
+    let visible = inner.height as usize;
+    let sel = state.tree_sel;
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
+    let width = inner.width as usize;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, _id)) in state.tree_lines.iter().enumerate().skip(skip).take(visible) {
+        let style = if i == sel {
+            Style::new()
+                .fg(theme::BG)
+                .bg(theme::GOLD)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        lines.push(Line::from(Span::styled(trunc(label, width), style)));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "empty session tree",
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        inner,
     );
 }
 

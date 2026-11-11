@@ -463,6 +463,17 @@ pub struct AppState {
     // Slash commands (get_commands) — autocomplete source
     pub commands: Vec<crate::rpc::protocol::SlashCommand>,
 
+    // /tree listing — one line per session entry, numbered so `/fork <n>`
+    // can address it by its entry id. Empty until /tree is run (the tree
+    // panel hides itself rather than showing a stale capture). The first
+    // tuple element is the rendered display line ("  7  message user"),
+    // the second the entry id /fork needs.
+    pub tree_lines: Vec<(String, String)>, // (display line, entry id)
+    // True while the /tree listing panel is on screen (esc closes it).
+    pub tree_open: bool,
+    // Scroll position within /tree (view follows it like the other modals).
+    pub tree_sel: usize,
+
     // /resume picker modal
     pub resume_open: bool,
     pub resume_entries: Vec<crate::rpc::sessions::SessionEntry>,
@@ -618,6 +629,9 @@ impl Default for AppState {
             title: String::new(),
             notice: None,
             commands: Vec::new(),
+            tree_lines: Vec::new(),
+            tree_open: false,
+            tree_sel: 0,
             resume_open: false,
             resume_entries: Vec::new(),
             resume_sel: 0,

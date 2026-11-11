@@ -562,6 +562,30 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /tree listing captures keys while open: ↑↓ scroll the view, esc/q
+    // closes. Fork addressing stays in the composer (`/fork <n>`) so the
+    // printed numbers remain stable while the panel is up.
+    if state.tree_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.note_phase(state::UiEvent::CloseModal);
+                state.tree_open = false;
+            }
+            KeyCode::Up => state.tree_sel = state.tree_sel.saturating_sub(1),
+            KeyCode::Down => {
+                if state.tree_sel + 1 < state.tree_lines.len() {
+                    state.tree_sel += 1;
+                }
+            }
+            KeyCode::Home => state.tree_sel = 0,
+            KeyCode::End => {
+                state.tree_sel = state.tree_lines.len().saturating_sub(1);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // /cache manager captures keys while open: d deletes the highlighted
     // entry, w wipes every non-protected entry, r re-scans.
     if state.cache_open {
@@ -979,6 +1003,47 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/clone" {
                 let _ = bridge.request(RpcCommand::Clone { id: None }).await;
                 state.notice = Some(("cloning session…".to_string(), "info".to_string()));
+                return;
+            }
+            // /tree — render the session entry tree (get_tree response fills
+            // state.tree_lines). Reusable: re-run to refresh after a fork.
+            if msg == "/tree" {
+                let _ = bridge.request(RpcCommand::GetTree { id: None }).await;
+                return;
+            }
+            // /fork <n> — fork the session at entry n from the /tree listing.
+            // No arg: show the /fork messages count (get_fork_messages).
+            if msg == "/fork" || msg.starts_with("/fork ") {
+                let args = msg.strip_prefix("/fork").unwrap_or("").trim();
+                if args.is_empty() {
+                    let _ = bridge
+                        .request(RpcCommand::GetForkMessages { id: None })
+                        .await;
+                    return;
+                }
+                let n: u32 = match args.parse() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        state.entries.push(state::ChatEntry::Diag(
+                            "usage: /fork <n>  (n from /tree)".to_string(),
+                        ));
+                        return;
+                    }
+                };
+                let entry_id = match state.tree_lines.get(n as usize - 1) {
+                    Some((_, id)) => id.clone(),
+                    None => {
+                        state.entries.push(state::ChatEntry::Diag(format!(
+                            "no entry {} — run /tree first",
+                            n
+                        )));
+                        return;
+                    }
+                };
+                let _ = bridge
+                    .request(RpcCommand::Fork { id: None, entry_id })
+                    .await;
+                state.notice = Some((format!("forking at entry {}…", n), "info".to_string()));
                 return;
             }
             // /sidebar — auto-hide on narrow terminals, or force show/hide.
@@ -1676,6 +1741,47 @@ fn content_text(content: &serde_json::Value) -> String {
 
 /// Returns true when the caller should re-request state + transcript
 /// (session switched or replaced).
+/// Flatten a `get_tree` session-entry tree into numbered, addressable
+/// display lines: depth-first walk (children pushed back so the stack
+/// pops them in order), each line `"<n>  <type>[ <role>]"` paired with
+/// the entry id `/fork <n>` resolves against. Isolated from the response
+/// handler so the numbering contract has a unit test.
+fn session_tree_lines(tree: &[serde_json::Value]) -> Vec<(String, String)> {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    let mut stack: Vec<&serde_json::Value> = tree.iter().rev().collect();
+    while let Some(node) = stack.pop() {
+        // A wrapper node without an entry still descends — only the line
+        // emission is conditional, never the subtree walk.
+        let entry = node.get("entry");
+        if let Some(entry) = entry {
+            let id = entry
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string();
+            let typ = entry
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("entry");
+            let role = entry
+                .get("message")
+                .and_then(|m| m.get("role"))
+                .and_then(|r| r.as_str())
+                .unwrap_or("");
+            let label = if !role.is_empty() {
+                format!("{typ} {role}")
+            } else {
+                typ.to_string()
+            };
+            lines.push((format!("{:>3}  {}", lines.len() + 1, label), id));
+        }
+        if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
+            stack.extend(children.iter().rev());
+        }
+    }
+    lines
+}
+
 fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcResponse) -> bool {
     if resp.success != Some(true) {
         if let Some(err) = &resp.error {
@@ -1700,6 +1806,9 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             state.input.clear();
             state.cursor = 0;
             state.resume_entries.clear();
+            state.tree_lines.clear();
+            state.tree_open = false;
+            state.tree_sel = 0;
             return true;
         }
         Some("get_state") => {
@@ -1873,6 +1982,51 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
         }
         Some("set_session_name") => {
             state.notice = Some(("session renamed".to_string(), "info".to_string()));
+        }
+        // /tree: flatten the session entry tree into numbered, addressable
+        // lines so `/fork <n>` can pick an entry id by position. The tree
+        // is depth-first, timestamp-sorted; each line stores (display, id).
+        Some("get_tree") => {
+            let tree = match data.get("tree").and_then(|t| t.as_array()) {
+                Some(t) => t,
+                None => {
+                    state
+                        .entries
+                        .push(state::ChatEntry::Diag("empty session tree".to_string()));
+                    return false;
+                }
+            };
+            let lines = session_tree_lines(tree);
+            if lines.is_empty() {
+                state
+                    .entries
+                    .push(state::ChatEntry::Diag("empty session tree".to_string()));
+                return false;
+            }
+            state.tree_lines = lines;
+            state.tree_sel = 0;
+            state.tree_open = true;
+        }
+        // /fork with no arg: how many user messages are fork-able.
+        Some("get_fork_messages") => {
+            let n = data
+                .get("messages")
+                .and_then(|m| m.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            state.notice = Some((
+                format!("{} forkable message(s) — /tree then /fork <n>", n),
+                "info".to_string(),
+            ));
+        }
+        Some("fork") => {
+            state.notice = Some(("forked to a new session".to_string(), "info".to_string()));
+            // Fork replaces the session — clear the stale tree capture so a
+            // fresh /tree re-fetches; transcript/widgets refresh via the
+            // switch_session rehydrate that follows.
+            state.tree_lines.clear();
+            state.tree_open = false;
+            state.tree_sel = 0;
         }
         Some("set_model") => {
             if let Ok(model) = serde_json::from_value::<crate::rpc::protocol::Model>(data.clone()) {
@@ -2303,6 +2457,40 @@ async fn handle_ui_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tree_flatten_numbers_depth_first_with_roles() {
+        let tree = serde_json::json!([
+            {
+                "entry": {"id": "a", "type": "message", "message": {"role": "user"}},
+                "children": [
+                    {"entry": {"id": "b", "type": "message", "message": {"role": "assistant"}}}
+                ]
+            },
+            {"entry": {"id": "c", "type": "tool_use"}},
+            // Nodes without an entry (e.g. synthetic roots) are skipped.
+            {"children": [{"entry": {"id": "d", "type": "compaction"}}]}
+        ]);
+        let lines = session_tree_lines(tree.as_array().unwrap());
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0], ("  1  message user".to_string(), "a".to_string()));
+        assert_eq!(
+            lines[1],
+            ("  2  message assistant".to_string(), "b".to_string())
+        );
+        assert_eq!(lines[2], ("  3  tool_use".to_string(), "c".to_string()));
+        assert_eq!(lines[3], ("  4  compaction".to_string(), "d".to_string()));
+        // /fork <n> indexes are 1-based positions in this exact order.
+        let n: usize = 4;
+        assert_eq!(lines[n - 1].1, "d");
+    }
+
+    #[test]
+    fn tree_flatten_empty_and_entryless() {
+        assert!(session_tree_lines(&[]).is_empty());
+        let tree = serde_json::json!([{"children": []}, {}]);
+        assert!(session_tree_lines(tree.as_array().unwrap()).is_empty());
+    }
 
     #[test]
     fn dialog_input_edits_at_cursor() {

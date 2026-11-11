@@ -245,7 +245,12 @@ and unloads dev1 (the engine lands ~3 GiB more there: MTP draft ctx + KV). If
 any external GPU tenant returns, load `qwen38-buffedmod-208k` (ctx 212992,
 ts 24,24) instead.
 
-MTP `draft_n_max` note (2026-09-28): **n=3** (+17% at 42.7k vs n=1; n=2 +12%).
+MTP `draft_n_max` note: **n=2 is the live daily driver** (A/B 2026-11-11 at
+~70k filled depth: mtp2 acceptance 0.953 vs mtp3 0.735 — the 3rd draft token
+is net negative on the BuffedMod-Q6K build; see
+`.opencode/plans/mtp2-vs-mtp3-ab-2026-11-11.md`). Historical 2026-09-28 note:
+n=3 (+17% at 42.7k vs n=1; n=2 +12%) — depth/build-sensitive, re-certify
+after any model or MTP-engine change.
 n=4 now also loads (ts 27,21, dev1 440 MiB) but is not faster (25.3 vs 25.7
 t/s) so it is not used. The old "n_max MUST be 1" rule was Q3_K_M/Pascal-era.
 **VRAM is NOT KV-bound**: KV at q4_0 is only ~19.1 KiB/token (hybrid arch, ~17
@@ -257,7 +262,7 @@ Saved VITRIOL profiles (load with `vitriol config load <name>`):
 
 | profile | ctx | ts | MTP | model | notes |
 |---|---|---|---|---|---|
-| `qwen38-buffedmod-262k` | 262144 | 27,21 | n=3 | BuffedMod Q6K | **live daily driver**; requires lares off; dev1 ~500 MiB free |
+| `qwen38-buffedmod-262k-cache8-mtp2` | 262144 | 27,21 | n=2 | BuffedMod Q6K | **live daily driver** (2026-11-11 A/B); requires lares off |
 | `qwen38-buffedmod-208k` | 212992 | 24,24 | n=3 | BuffedMod Q6K | fallback when external GPU tenants are resident; dev1 ~230 MiB |
 | `qwen38-mtp-131k` | 49152 | 27,9 | n=1 | ISTA IQ3_S | SUPERSEDED; (26,10 on merged base), q4k/q4v |
 | `qwen38-262k` | 262144 | 24,12 | off | ISTA IQ3_S | max native ctx, q4k/q4v |

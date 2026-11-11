@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { effectiveComplexity, resolveMode, resolveThreshold, route } from "./router.ts";
+import { overflowRoutedThisTurn } from "./index.ts";
 
 describe("resolveThreshold", () => {
   it("defaults to 0.5", () => {
@@ -60,5 +61,24 @@ describe("route", () => {
     const d = route(0.9, "safe", 0.5);
     expect(d.reason).toContain("complexity");
     expect(d.effective).toBeGreaterThan(0);
+  });
+});
+
+// Coexistence with the overflow router (2026-11-11): auto-route stands
+// down ONLY on turns overflow already routed to a cloud provider.
+describe("overflowRoutedThisTurn", () => {
+  it("is inert when overflow is not armed", () => {
+    expect(overflowRoutedThisTurn(false, "caduceus")).toBe(false);
+    expect(overflowRoutedThisTurn(false, "llamacpp")).toBe(false);
+    expect(overflowRoutedThisTurn(false, undefined)).toBe(false);
+  });
+  it("stands down on cloud providers while overflow is armed", () => {
+    expect(overflowRoutedThisTurn(true, "caduceus")).toBe(true);
+    expect(overflowRoutedThisTurn(true, "zai")).toBe(true);
+  });
+  it("stays active on the local engine (and unknown) while armed", () => {
+    expect(overflowRoutedThisTurn(true, "llamacpp")).toBe(false);
+    expect(overflowRoutedThisTurn(true, undefined)).toBe(false);
+    expect(overflowRoutedThisTurn(true, "")).toBe(false);
   });
 });

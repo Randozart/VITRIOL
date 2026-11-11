@@ -31,8 +31,24 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { getCacheModeState, providerIsLocal } from "../_shared/cache-mode.ts";
 import { classifyTurn, recentErrorSignal, scratchpadContextLines, type ClassifyInput } from "./classifier.ts";
 import { resolveMode, resolveThreshold, route } from "./router.ts";
+
+/**
+ * Coexistence with the overflow router (2026-11-11): overflow owns WHERE a
+ * turn runs (local vs cloud lane under contention); auto-route owns
+ * WHETHER a hard local turn gets a cloud co-processor verdict. They are
+ * complementary — but on a turn overflow already routed to a cloud
+ * provider, injecting an ascensus verdict would double-escalate and muddy
+ * budget accounting, so auto-route stands down for those turns only.
+ * Provider signal is the shared cache-mode state (globalThis-backed,
+ * jiti-safe); unknown provider counts as local (auto-route stays active —
+ * the pre-coexistence behaviour).
+ */
+export function overflowRoutedThisTurn(overflowArmed: boolean, provider: string | undefined): boolean {
+  return overflowArmed && !providerIsLocal(provider);
+}
 
 const ASCENSUS_URL =
   process.env.OFFICINA_ROUTE_ASCENSUS_URL || "http://127.0.0.1:8283";
@@ -102,10 +118,12 @@ function readChurnLoops(): number {
 }
 
 export default function (pi: ExtensionAPI) {
-  // Overflow routing owns the tier decision when armed (adaptive-router);
-  // running auto-route too would double-classify and inject an ascensus
-  // verdict into a cloud-routed turn.
-  if (process.env.OFFICINA_OVERFLOW === "1") return;
+  // Overflow routing owns the tier decision when armed (adaptive-router /
+  // resilient-default); auto-route no longer exits — it coexists (see
+  // overflowRoutedThisTurn) and only stands down on turns overflow
+  // already routed to a cloud lane. Complexity escalation on local turns
+  // works under overflow again (owner request 2026-11-11).
+  const overflowArmed = process.env.OFFICINA_OVERFLOW === "1";
   let mode = resolveMode(process.env.OFFICINA_ROUTE_MODE);
   if (process.env.OFFICINA_NO_AUTO_ROUTE === "1" || mode === "off") return;
 
@@ -168,6 +186,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("context", async (event, ctx) => {
     const prompt = lastUserText(event.messages);
     if (!prompt.trim()) return undefined;
+
+    // Overflow already routed this turn to a cloud lane — its answer IS
+    // the escalation; do not classify/inject on top of it.
+    if (overflowRoutedThisTurn(overflowArmed, getCacheModeState().provider)) {
+      ctx.ui.setStatus("auto-route", "overflow routed this turn — auto-route idle");
+      return undefined;
+    }
 
     // Classify once per new user turn (context fires on sub-calls too).
     const hash = `${prompt.length}:${prompt.slice(0, 120)}`;

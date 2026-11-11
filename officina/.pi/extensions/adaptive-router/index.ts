@@ -68,7 +68,14 @@ export default function (pi: ExtensionAPI) {
     .filter((s): s is { provider: string; id: string } => !!s);
   const fallbackSpecs = (
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK ||
-    "caduceus/opencode-go/deepseek-v4.1-flash,caduceus/opencode-go/qwen3.8-flash"
+    // Catalog discovery is primary; these are the no-catalog backstop
+    // (2026-11-11): the opencode-go subscription lane plus the two big
+    // AgentRouter lanes (both tool-capable, ~1M ctx, zero-priced).
+    "caduceus/opencode-go/deepseek-v4.1-flash," +
+    "caduceus/opencode-go/qwen3.8-flash," +
+    "caduceus/opencode-go/glm-5.2," +
+    "caduceus/agentrouter/gpt-5.6-sol," +
+    "caduceus/agentrouter/claude-opus-5"
   )
     .split(",")
     .map((s) => parseModelSpec(s))

@@ -47,10 +47,12 @@ import register from "./index.ts";
 
 function harness(contextWindows: Record<string, number> = {}) {
   const handlers = new Map<string, (e: any, c: any) => Promise<any> | any>();
+  const commands = new Map<string, (args: string, c: any) => Promise<void> | void>();
   const pi = {
     on: (ev: string, h: never) => handlers.set(ev, h),
     setModel,
-    registerCommand: () => undefined,
+    registerCommand: (name: string, cmd: { handler: (args: string, c: any) => any }) =>
+      commands.set(name, cmd.handler),
   };
   register(pi as never);
   const local = { provider: "llamacpp", id: "Lapis Occultus", contextWindow: 262144 };
@@ -75,7 +77,8 @@ function harness(contextWindows: Record<string, number> = {}) {
   const start = (prompt = "do the work") =>
     handlers.get("before_agent_start")!({ messageType: "user", prompt, systemPrompt: "", systemPromptOptions: {} }, ctx);
   const trigger = (ev: string, e: unknown) => handlers.get(ev)?.(e, ctx);
-  return { start, ctx, trigger };
+  const command = (name: string, args = "") => commands.get(name)?.(args, ctx);
+  return { start, ctx, trigger, command };
 }
 
 describe("adaptive-router wiring", () => {
@@ -157,5 +160,55 @@ describe("adaptive-router wiring", () => {
     const h = harness();
     await h.start();
     expect(setModel).not.toHaveBeenCalled();
+  });
+});
+
+// Manual pick respect (2026-11-11): a hand-picked non-candidate model
+// pauses ALL auto switching until /overflow on.
+describe("manual latch", () => {
+  beforeEach(() => {
+    setModel.mockClear();
+    busy.current = true;
+    engineUp.current = true;
+    process.env.OFFICINA_OVERFLOW = "1";
+    process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/opencode-go/deepseek-v4.1-flash";
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-adaptive-health-test.json";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-adaptive-ledger-test";
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
+    process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
+    process.env.OFFICINA_OVERFLOW_FREE_ONLY = "0";
+    delete process.env.OFFICINA_NO_OVERFLOW;
+  });
+  afterEach(() => {
+    delete process.env.OFFICINA_OVERFLOW;
+    delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
+    delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
+    delete process.env.OFFICINA_FREE_DAILY_TOKENS;
+    delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
+    delete process.env.OFFICINA_OVERFLOW_FREE_ONLY;
+  });
+
+  it("a manual pick stops the apply path (model sticks, routing paused)", async () => {
+    const h = harness();
+    await h.start(); // normal spill: cloud applied once
+    expect(setModel).toHaveBeenCalledTimes(1);
+    h.trigger("model_select", { model: { provider: "other", id: "hand-picked" } });
+    await h.start(); // engine still busy — but routing must NOT override
+    expect(setModel).toHaveBeenCalledTimes(1); // unchanged
+  });
+
+  it("/overflow on re-arms auto routing after a manual pick", async () => {
+    const h = harness();
+    busy.current = false; // pick a manual model while LOCAL and idle
+    await h.start();
+    expect(setModel).not.toHaveBeenCalled();
+    h.trigger("model_select", { model: { provider: "other", id: "hand-picked" } });
+    busy.current = true;
+    await h.start(); // contention — but manual pauses the spill
+    expect(setModel).not.toHaveBeenCalled();
+    await h.command("overflow", "on");
+    await h.start(); // re-armed: busy local spills to cloud now
+    expect(setModel).toHaveBeenCalledTimes(1);
+    expect(setModel.mock.calls[0][0]).toMatchObject({ provider: "caduceus" });
   });
 });

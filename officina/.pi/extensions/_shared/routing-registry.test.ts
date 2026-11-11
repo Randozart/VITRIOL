@@ -10,10 +10,11 @@
 // jiti-isolation contract test, not here.
 
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  gcExpiredShards,
   type PeerEntry,
   type RegistryCore,
   createCore,
@@ -257,5 +258,28 @@ describe("shard mode", () => {
       writeRegistryEntry(entry({ tuiPid: 666, sessionId: "peer", ts: NOW2 }), undefined, NOW2);
       expect(readLivePeers(555, { now: NOW2 + 1 }).map((p) => p.tuiPid)).toEqual([666]);
     });
+  });
+});
+
+describe("gcExpiredShards", () => {
+  it("removes dead-pid shards, keeps live and unparseable ones", () => {
+    const dir = mkdtempSync(join(tmpdir(), "registry-gc-"));
+    try {
+      const now = Date.now();
+      const ttl = DEFAULT_TTL_MS;
+      writeFileSync(join(dir, "999.json"), JSON.stringify({ entries: [{ ts: now, tuiPid: 999, sessionId: "live", tier: "local", model: "m", ctxTokens: 1 }] }));
+      writeFileSync(join(dir, "111.json"), JSON.stringify({ entries: [{ ts: now - (ttl + 1), tuiPid: 111, sessionId: "dead", tier: "local", model: "m", ctxTokens: 1 }] }));
+      writeFileSync(join(dir, "777.json"), "{not json");
+      gcExpiredShards(dir, now, ttl);
+      expect(() => readFileSync(join(dir, "999.json"))).not.toThrow(); // live kept
+      expect(() => readFileSync(join(dir, "777.json"))).not.toThrow(); // garbage kept (next pass retries)
+      expect(() => readFileSync(join(dir, "111.json"))).toThrow(); // dead swept
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("is silent on a missing directory", () => {
+    expect(() => gcExpiredShards("/nonexistent/registry-gc", Date.now())).not.toThrow();
   });
 });

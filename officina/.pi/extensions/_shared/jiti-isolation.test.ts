@@ -32,6 +32,7 @@ const SIDEBAR = join(EXT, "_shared", "sidebar.ts");
 const ENGINE = join(EXT, "_shared", "engine.ts");
 const CACHE_MODE = join(EXT, "_shared", "cache-mode.ts");
 const ROUTING_REGISTRY = join(EXT, "_shared", "routing-registry.ts");
+const LANE_HEALTH = join(EXT, "_shared", "lane-health.ts");
 
 /** Two independent jiti instances — the exact loader shape pi uses. */
 function jitiPair() {
@@ -195,5 +196,34 @@ describe("jiti isolation: cross-extension contracts survive separate module inst
     expect(
       (globalThis as { __officinaRoutingRegistry?: unknown }).__officinaRoutingRegistry,
     ).toBeTruthy();
+  });
+
+  it("lane-health: the gateway-health cache singleton is shared across instances", async () => {
+    const { a, b } = jitiPair();
+    const lhA = (await a.import(LANE_HEALTH)) as typeof import("./lane-health.ts");
+    const lhB = (await b.import(LANE_HEALTH)) as typeof import("./lane-health.ts");
+    // Deterministic no-fetch path: vendor module missing → import fails
+    // → fail-open cached state. IMPORTANT: this path still goes through
+    // the shared() singleton (the kill switch bypasses it by design).
+    process.env.OFFICINA_CADUCEUS_VENDOR_API = "/nonexistent/vendor-api.mjs";
+    try {
+      resetVia(lhA);
+      const first = await lhA.getLaneHealth();
+      const second = await lhB.getLaneHealth();
+      // Instance B must see instance A's cached state (one process, one
+      // gateway-health view) — a module-level cache would give B a fresh
+      // object and duplicate gateway fetches.
+      expect(second).toBe(first);
+      expect(
+        (globalThis as { __officinaLaneHealth?: unknown }).__officinaLaneHealth,
+      ).toBeTruthy();
+    } finally {
+      delete process.env.OFFICINA_CADUCEUS_VENDOR_API;
+      resetVia(lhA);
+    }
+
+    function resetVia(lh: typeof import("./lane-health.ts")): void {
+      lh.resetLaneHealthCache();
+    }
   });
 });

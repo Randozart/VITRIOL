@@ -237,6 +237,38 @@ export function removeRegistryShard(tuiPid: number): void {
 }
 
 /**
+ * Shard GC (2026-11-11): remove shard files whose every entry is expired
+ * (dead TUI pids otherwise accumulate forever). Fire-and-forget: a file
+ * that cannot be parsed/counted is left alone, and any error aborts the
+ * whole pass silently. Pure-FS, no lock — a shard a live publisher is
+ * mid-writing still parses (atomic rename) or fails to open (skipped).
+ */
+export function gcExpiredShards(dir: string, now: number, ttlMs: number = DEFAULT_TTL_MS): void {
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  } catch {
+    return;
+  }
+  for (const f of files) {
+    try {
+      const text = readFileSync(join(dir, f), "utf8");
+      // A shard that is not valid JSON at all is KEPT (a torn write is
+      // repaired on the next publish; deleting it would lose a live peer):
+      // JSON.parse throws -> catch -> no unlink. Valid-but-fully-expired
+      // shards fall through to the unlink.
+      JSON.parse(text);
+      const core = createCore(now);
+      deserialize(core, text);
+      const live = [...core.entries.values()].some((e) => now - e.ts <= ttlMs);
+      if (!live) unlinkSync(join(dir, f));
+    } catch {
+      // vanished mid-scan / unreadable — keep it, next pass retries
+    }
+  }
+}
+
+/**
  * Live peers, read fresh. Shard mode merges every shard in the registry
  * dir (expired entries are ignored); an explicit `path` reads that single
  * legacy file. Self is excluded by tuiPid.
@@ -251,15 +283,27 @@ export function readLivePeers(
     core = loadFile(opts.path);
   } else {
     core = createCore(now);
+    const dir = registryDir();
     let files: string[] = [];
     try {
-      files = readdirSync(registryDir()).filter((f) => f.endsWith(".json"));
+      files = readdirSync(dir).filter((f) => f.endsWith(".json"));
     } catch {
       files = []; // no dir yet — nobody has published
     }
     for (const f of files) {
-      const shard = loadFile(join(registryDir(), f));
+      const shard = loadFile(join(dir, f));
       for (const e of shard.entries.values()) upsertEntry(core, e);
+    }
+    // GC throttle: dead-pid shards are swept at most every 30 s so the
+    // per-decision read path never pays for it. Never blocks the read.
+    const g = globalThis as { __officinaRegistryGcAt?: number };
+    if (now - (g.__officinaRegistryGcAt ?? 0) > 30_000) {
+      g.__officinaRegistryGcAt = now;
+      try {
+        gcExpiredShards(dir, now, opts.ttlMs ?? DEFAULT_TTL_MS);
+      } catch {
+        // GC is advisory
+      }
     }
   }
   return readPeers(core, now, selfTuiPid, opts.ttlMs);

@@ -347,6 +347,14 @@ export default function (pi: ExtensionAPI) {
       },
       cfg,
     );
+    // Manual pick respect (2026-11-11): a hand-selected model pauses ALL
+    // auto switching (contention, failover, peer demotion, promote) until
+    // /overflow on or a new session. The decision collapses to the CURRENT
+    // tier so the apply path is a no-op while the registry still publishes
+    // the truth about what is actually running.
+    if (manual && decision.tier !== tier) {
+      decision = { tier, reason: "manual — overflow paused" };
+    }
 
     let switched = false;
     // Publish this session's decision so peers can rank against it. Peer
@@ -575,6 +583,7 @@ export default function (pi: ExtensionAPI) {
       const a = args.trim().toLowerCase();
       if (a === "on" || a === "off") {
         enabled = a === "on";
+        if (enabled) manual = false; // /overflow on re-arms auto routing
         if (!enabled) {
           await resolveModels(ctx as unknown as ExtensionContext);
           if (tier === "cloud" && localModel) {

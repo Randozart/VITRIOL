@@ -384,21 +384,34 @@ originals frozen in the trismegistus archive repo), First-Party Mandate: upstrea
 Crush) are mining sources only; pi-coding-agent is a pinned library, not
 a shipped frontend; the HTTP API is the only engine surface.
 
-## Standing TODO (2026-08-31, owner dispositions)
+## Standing TODO (2026-08-31, owner dispositions; disposition pass 2026-11-11)
 
 1. ~~small-lane A/B~~ **DROPPED** by owner — no measurement required; the
    small lane is policy, not a claim.
-2. `vitriol lanes` GPU lane arbiter — APPROVED, build next.
+2. `vitriol lanes` GPU lane arbiter — APPROVED, build next. **OPEN**
+   (2026-11-11: governor handles pressure response; a proactive lane
+   arbiter is not built).
 3. Per-slot n_kv in /slots — APPROVED, engine-side, cert-gated; makes the
-   decode widget's busy truth exact.
+   decode widget's busy truth exact. **OPEN** (2026-11-11: not shipped).
 4. little-coder fallback removal — APPROVED after a parity ledger entry.
+   **DONE (SS1, 2026-08-31)** — the fallback was removed from the workshop
+   launcher then; selfcheck's external-path gate covers the rest. The
+   condition "after a parity ledger entry" was satisfied by SS1's
+   retarget to officina models.json.
 5. Gateway replacement — APPROVED, next major build: memory, chat, and
    injection safety move off hermes-agent into Officina (hermes-bridge,
    tris chat, memory-extractor, caveman-rules, injection-guard are the
-   seeds). Last non-VITRIOL runtime in the stack.
+   seeds). Last non-VITRIOL runtime in the stack. **MOSTLY DONE**
+   (2026-11-11: the caduceus ext + scripts carry the gateway surface;
+   memory, memory-extractor, injection-guard, caveman all live as
+   Officina extensions — see the SS2 sections below. Remaining: tris
+   chat fold-in).
 6. 27B cert run — APPROVED; owner has validated the harness on 27B and
-   loves it ("we have something amazing").
-7. Retention/GC + checkpoint consolidation — APPROVED.
+   loves it ("we have something amazing"). **OPEN** (2026-11-11: cert run
+   not yet done; depth reference stays the 2026-09-04 recert).
+7. Retention/GC + checkpoint consolidation — APPROVED. **OPEN**
+   (2026-11-11: route-ledger keeps 30-day retention; the checkpoint
+   consolidation itself is not built).
 
 ## Engine vs Officina boundary (2026-08-31, owner question)
 

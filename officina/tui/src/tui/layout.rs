@@ -35,24 +35,8 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     .split(area);
 
     render_header(frame, rows[0], state);
-    render_header_divider(frame, rows[1]);
     render_body(frame, state, rows[2]);
     render_footer(frame, rows[3], state);
-}
-
-/// The seam under the top bar: a 1px dim rule in the sidebar/ctx-bar
-/// convention (BORDER_DIM on PANEL), replacing the old blank breathing row
-/// (owner request 2026-09-03 kept the *seam*; this gives it the divider the
-/// operator asked for). Height stays 1px so the body keeps its space.
-fn render_header_divider(frame: &mut Frame, area: Rect) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let line = Line::from(vec![Span::styled(
-        "─".repeat(area.width as usize),
-        Style::new().fg(theme::BORDER_DIM),
-    )]);
-    frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), area);
 }
 
 // ── Header ────────────────────────────────────────────────────────────────
@@ -460,21 +444,23 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
 
     // Gap row: explicit BG paint, ALWAYS (owner request 2026-09-03 — the
-    // terminal background must never peek through below the panels). The
-    // carved motto used to ride here (removed 2026-09-04 as redundant —
-    // the backcronym lives in the input placeholder; the row stays an
-    // empty breathing gap). Fire dots rising through the gap keep their
-    // flame fg because set_style patches bg only.
+    // terminal background must never peek through below the panels). It now
+    // carries the DIVIDER (owner request 2026-11-11): a 1px dim rule in the
+    // sidebar/ctx-bar convention (BORDER_DIM) cordonning the bottom status
+    // band (slots/engine/ctx rows) off from the transcript above — the
+    // user-space band vs the log the agent writes into. Fire dots rising
+    // through the gap keep their flame fg because set_style patches bg only.
     {
         let gap = Rect {
             y: area.y + chat_area.height,
             height: 1,
             ..area
         };
-        frame.render_widget(
-            Paragraph::new(Line::from(Vec::<Span>::new())).style(Style::new().bg(theme::BG)),
-            gap,
-        );
+        let line = Line::from(vec![Span::styled(
+            "─".repeat(gap.width as usize),
+            Style::new().fg(theme::BORDER_DIM),
+        )]);
+        frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);
     }
 
     if indicator_h > 0 {

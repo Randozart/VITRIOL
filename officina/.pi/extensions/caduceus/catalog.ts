@@ -164,6 +164,7 @@ export function filterCatalogByProviders(
 // Owner priority reflects observed viability:
 //   opencode-go       — subscription lane, tool calls work, no per-token bill
 //   dahl              — free token allowance, tool-capable
+//   freeinference     — free research key; manual models carry no price block
 //   agentrouter/agnes/api-airforce/aion/cohere/bytez — explicit zero-priced lanes
 //   glm/zai           — free FLASH tier when quota is available
 //   cloudflare-playground — free, but requires a Playwright runtime
@@ -173,19 +174,30 @@ export function filterCatalogByProviders(
 export const FREE_OWNER_RANK: Record<string, number> = {
   "opencode-go": 0,
   dahl: 1,
-  agentrouter: 2,
-  agnes: 3,
-  "api-airforce": 4,
-  aion: 5,
-  cohere: 6,
-  bytez: 7,
-  friendliai: 8,
-  glm: 9,
-  zai: 10,
-  "cloudflare-playground": 11,
-  freetheai: 12,
-  "freemodel-dev": 13,
+  freeinference: 2,
+  agentrouter: 3,
+  agnes: 4,
+  "api-airforce": 5,
+  aion: 6,
+  cohere: 7,
+  bytez: 8,
+  friendliai: 9,
+  glm: 10,
+  zai: 11,
+  "cloudflare-playground": 12,
+  freetheai: 13,
+  "freemodel-dev": 14,
 };
+
+/** Owners whose free grant has no per-token price in the gateway catalog.
+ *  Manual FreeInference models are added without a pricing block; they are
+ *  still free research lanes, never auto-billed. */
+const COSTLESS_OWNERS = new Set([
+  "opencode-go",
+  "dahl",
+  "cloudflare-playground",
+  "freeinference",
+]);
 
 export interface FreeCandidate {
   id: string;
@@ -230,7 +242,7 @@ export function freeToolCandidates(rawModels: unknown[]): FreeCandidate[] {
     const cost = costOf(record);
     const free = pricing
       ? cost.input === 0 && cost.output === 0
-      : owner === "opencode-go" || owner === "dahl" || owner === "cloudflare-playground";
+      : COSTLESS_OWNERS.has(owner);
     if (!free) continue;
 
     const contextWindow = Math.max(

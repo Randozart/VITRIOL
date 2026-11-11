@@ -138,6 +138,7 @@ describe("freeToolCandidates", () => {
       { id: "glm/paid", owned_by: "glm", pricing: { input: 1, output: 2 }, capabilities: { tool_calling: true }, context_length: 200000 },
       { id: "zai/glm-5.3-flash", owned_by: "zai", pricing: null, capabilities: { tool_calling: true }, context_length: 1000000 },
       { id: "cfp/openai/gpt-oss-120b", owned_by: "cloudflare-playground", pricing: null, capabilities: { tool_calling: true }, context_length: 400000 },
+      { id: "freeinference/deepseek-v4-flash", owned_by: "freeinference", pricing: null, capabilities: { tool_calling: true }, context_length: 1000000 },
       { id: "aihorde/pic", owned_by: "aihorde", pricing: null, capabilities: { tool_calling: false }, context_length: 200000 },
     ];
     const ids = freeToolCandidates(rows).map((m) => m.id);
@@ -146,6 +147,7 @@ describe("freeToolCandidates", () => {
     expect(ids).toContain("dahl/MiniMaxAI/MiniMax-M2.7");
     expect(ids).toContain("glm/glm-4.7-flash");
     expect(ids).toContain("cfp/openai/gpt-oss-120b");
+    expect(ids).toContain("freeinference/deepseek-v4-flash");
     expect(ids).not.toContain("ddgw/claude-haiku-4-5");
     expect(ids).not.toContain("glm/paid");
     expect(ids).not.toContain("zai/glm-5.3-flash");

@@ -26,7 +26,7 @@ describe("scratchpadConfig", () => {
     expect(c.cap).toBe(512);
     expect(c.dir).toBe(".officina");
     expect(c.maxLineChars).toBe(350);
-    expect(c.advertisedLineChars).toBe(275);
+    expect(c.advertisedLineChars).toBe(250);
     expect(scratchpadConfig({ OFFICINA_SCRATCHPAD: "0" }).enabled).toBe(false);
     expect(scratchpadConfig({ OFFICINA_SCRATCHPAD_CAP: "20" }).cap).toBe(20);
     expect(scratchpadConfig({ OFFICINA_SCRATCHPAD_CAP: "0" }).cap).toBe(10); // floor
@@ -65,8 +65,9 @@ describe("applyUpdate", () => {
     expect(applyUpdate(emptyDoc(), { facts: ["  "] }, cfg).error).toContain("empty entry");
     const over = applyUpdate(emptyDoc(), { facts: ["x".repeat(351)] }, cfg).error ?? "";
     expect(over).toContain("351 chars");
-    expect(over).toContain("350-char max per line");
-    expect(over).toContain("<=275");
+    expect(over).toContain("250-char budget per line");
+    // The enforced cap must NEVER be surfaced to the model: it is told 250.
+    expect(over).not.toContain("350");
     expect(over).toContain("512-line cap");
   });
 

@@ -5,8 +5,10 @@ import { dirname } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import {
   ckptConfig,
+  checkpointPeerGate,
   decodeMarker,
   encodeMarker,
+  markerMatchesSession,
   markerPath,
   parseSlotOpResponse,
   restoreIsCompatible,
@@ -16,6 +18,7 @@ import {
   type CkptConfig,
   type SlotOpResult,
 } from "./client.ts";
+import { readLivePeers } from "../_shared/routing-registry.ts";
 
 // vitriol-checkpoint — scaffold trigger for engine slot save/restore (§2.2,
 // step 4). Endpoints exist in this fork (POST /slots/<id>?action=save|restore,
@@ -23,6 +26,12 @@ import {
 // TRIS_CKPT_EVERY_TURNS turns (default 10, 0 = manual only), leaves a marker,
 // and a new session RESTORES from the marker instead of re-prefilling turn 0.
 // Filenames pair with the snapshot ext (turn-N) → rewind code + KV together.
+//
+// Multi-session guard (I5, 2026-11-11): with live peer sessions on the
+// engine (parallel=1, engine-assigned slots), BOTH directions are gated —
+// autosave skips (the slot may hold a peer's state) and crash-restore
+// skips (restoring would clobber the peer's resident KV). The marker must
+// also carry this session's stem-encoded filename.
 // Kill switch: TRIS_NO_VITRIOL_CKPT=1. Layer rule: HTTP API only.
 
 export default function (pi: ExtensionAPI) {
@@ -78,6 +87,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
     sessionStem = (sm?.getSessionFile?.() ?? "").split("/").pop()?.replace(/\.jsonl$/, "") || "session";
+    lastSavedTurn = -1; // a switched-in session must autosave from scratch
     const mdl = (ctx as { model?: { id?: string } }).model;
     if (mdl?.id) modelId = mdl.id;
 
@@ -92,6 +102,17 @@ export default function (pi: ExtensionAPI) {
     const marker = decodeMarker(raw);
     if (!marker) {
       clearMarker();
+      return;
+    }
+    if (!markerMatchesSession(marker, sessionStem)) {
+      ctx.ui.notify(`vitriol-checkpoint: marker file ${marker.filename} is not this session's (${turnFilename(marker.turn, sessionStem)}) — skip restore`, "warning");
+      clearMarker();
+      return;
+    }
+    const gate = checkpointPeerGate(readLivePeers(process.pid).length);
+    if (!gate.allowed) {
+      ctx.ui.notify(`vitriol-checkpoint: restore skipped — ${gate.reason}`, "warning");
+      // Keep the marker: this session may restore on a later solo start.
       return;
     }
     if (!restoreIsCompatible(marker, modelId)) {
@@ -112,6 +133,11 @@ export default function (pi: ExtensionAPI) {
     if (cfg.everyTurns <= 0) return;
     const turn = Number((event as { turnIndex?: number }).turnIndex ?? 0);
     if (turn === 0 || turn % cfg.everyTurns !== 0 || turn === lastSavedTurn) return;
+    const gate = checkpointPeerGate(readLivePeers(process.pid).length);
+    if (!gate.allowed) {
+      emitHarnessEvent(harnessEvent("lc-ckpt", "skipped", { turn, detail: gate.reason, session: sessionStem }));
+      return;
+    }
     const filename = turnFilename(turn, sessionStem);
     const r = await slotOp("save", filename);
     if (r.ok) {

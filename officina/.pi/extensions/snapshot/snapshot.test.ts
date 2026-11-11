@@ -7,11 +7,13 @@ import {
   gitOpts,
   runSnapshotSequence,
   snapshotConfig,
+  snapshotSequence,
   substituteStep,
   turnRef,
   worktreeDirty,
   type GitStep,
 } from "./snap.ts";
+import { sessionTurnRef } from "../_shared/turnkeys.ts";
 
 function git(repo: string, ...argv: string[]): string {
   return execFileSync("git", argv, { cwd: repo, env: process.env }).toString().trim();
@@ -41,6 +43,22 @@ describe("pure sequence helpers", () => {
     expect(turnRef("refs/trismegistus/turns", 7)).toBe("refs/trismegistus/turns/7");
   });
 
+  // I6: session-namespaced refs — per-session turn indexes must never
+  // share a ref namespace (concurrent sessions used to clobber each
+  // other's turns/<n> and a rewind could restore a foreign tree).
+  it("sessionTurnRef namespaces by stem and sanitizes it", () => {
+    expect(sessionTurnRef(7, "2026-11-11T10-00-00_abcd.jsonl".replace(".jsonl", ""))).toBe(
+      "refs/trismegistus/turns/2026-11-11T10-00-00_abcd/7",
+    );
+    expect(sessionTurnRef(3, "../evil")).toBe("refs/trismegistus/turns/__evil/3");
+    expect(sessionTurnRef(3, "")).toBe("refs/trismegistus/turns/session/3");
+  });
+
+  it("snapshotSequence writes the namespaced ref", () => {
+    const steps = snapshotSequence("refs/trismegistus/turns", 9, "sess-x");
+    expect(steps[steps.length - 1].argv[1]).toBe("refs/trismegistus/turns/sess-x/9");
+  });
+
   it("substituteStep chains write-tree → commit-tree → update-ref", () => {
     const step: GitStep = { argv: ["commit-tree", "__tree__", "-m", "x"], useTmpIndex: false };
     expect(substituteStep(step, { tree: "abc123" })).toEqual(["commit-tree", "abc123", "-m", "x"]);
@@ -68,7 +86,7 @@ const hasGit = (() => {
   }
 })();
 describe.skipIf(!hasGit)("snapshot plumbing against a real repo", () => {
-  it("snapshots a dirty worktree WITHOUT touching user branch/index/worktree", () => {
+  it("snapshots land on session-namespaced refs; concurrent stems never collide", () => {
     const repo = makeRepo();
     try {
       const headBefore = git(repo, "rev-parse", "HEAD");
@@ -78,23 +96,33 @@ describe.skipIf(!hasGit)("snapshot plumbing against a real repo", () => {
       const tmpIdx = join(repo, ".git", "tris-tmp-index");
       const sha = runSnapshotSequence(repo, 3, snapshotConfig({}), tmpIdx, (argv, opts) =>
         execFileSync("git", argv, opts).toString().trim(),
+        process.env,
+        "session-alpha",
       );
       rmSync(tmpIdx, { force: true });
 
       expect(sha).toBeTruthy();
-      // ref exists and is NOT the branch head
-      expect(git(repo, "rev-parse", "refs/trismegistus/turns/3")).toBe(sha);
+      // ref exists (namespaced) and is NOT the branch head
+      expect(git(repo, "rev-parse", "refs/trismegistus/turns/session-alpha/3")).toBe(sha);
       expect(git(repo, "rev-parse", "HEAD")).toBe(headBefore); // branch untouched
       expect(git(repo, "status", "--porcelain")).toBe(userIndexBefore || "?? b.txt"); // worktree untouched
       // snapshot content includes the turn work, and respects .gitignore
       const listed = git(repo, "ls-tree", "-r", "--name-only", sha as string);
       expect(listed).toContain("b.txt");
       writeFileSync(join(repo, "ignored.log"), "noise\n");
-      const sha2 = runSnapshotSequence(repo, 4, snapshotConfig({}), tmpIdx, (argv, opts) =>
+      const sha2 = runSnapshotSequence(repo, 3, snapshotConfig({}), tmpIdx, (argv, opts) =>
         execFileSync("git", argv, opts).toString().trim(),
+        process.env,
+        "session-beta",
       );
       expect(git(repo, "ls-tree", "-r", "--name-only", sha2 as string)).not.toContain("ignored.log");
       rmSync(tmpIdx, { force: true });
+      // SAME turn index, DIFFERENT session: both refs survive independently
+      // (the pre-namespacing layout let the second update-ref clobber the first).
+      // Content-identical snapshots legitimately share a sha — the
+      // invariant is independent refnames, not distinct commits.
+      expect(git(repo, "rev-parse", "refs/trismegistus/turns/session-alpha/3")).toBe(sha);
+      expect(git(repo, "rev-parse", "refs/trismegistus/turns/session-beta/3")).toBe(sha2);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -107,6 +135,8 @@ describe.skipIf(!hasGit)("snapshot plumbing against a real repo", () => {
       const tmpIdx = join(repo, ".git", "tris-tmp-index2");
       const sha = runSnapshotSequence(repo, 5, snapshotConfig({}), tmpIdx, (argv, opts) =>
         execFileSync("git", argv, opts).toString().trim(),
+        process.env,
+        "session-rewind",
       );
       rmSync(tmpIdx, { force: true });
       expect(sha).toBeTruthy();
@@ -114,7 +144,7 @@ describe.skipIf(!hasGit)("snapshot plumbing against a real repo", () => {
       git(repo, "checkout", "HEAD", "--", ".");
       expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("one\n");
       // rewind to turn 5 restores the snapshot of the work-in-progress:
-      git(repo, "checkout", "refs/trismegistus/turns/5", "--", ".");
+      git(repo, "checkout", "refs/trismegistus/turns/session-rewind/5", "--", ".");
       expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("modified by the model\n");
     } finally {
       rmSync(repo, { recursive: true, force: true });

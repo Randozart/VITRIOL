@@ -8,6 +8,7 @@
 // switch; no surprise git side effects in a workspace).
 
 import type { ExecFileSyncOptions } from "node:child_process";
+import { sessionTurnRef } from "../_shared/turnkeys.ts";
 
 export interface SnapshotConfig {
   enabled: boolean;
@@ -28,14 +29,18 @@ export interface GitStep {
   capture?: "tree" | "sha"; // when set, stdout lands in vars[name]
 }
 
-/** The full plumbing sequence for one turn (tree/sha chained via placeholders). */
-export function snapshotSequence(refPrefix: string, turn: number): GitStep[] {
+/**
+ * The full plumbing sequence for one turn (tree/sha chained via
+ * placeholders). The ref is SESSION-namespaced (I6): turn indexes collide
+ * across concurrent sessions under the flat `turns/<n>` layout.
+ */
+export function snapshotSequence(refPrefix: string, turn: number, sessionStem: string): GitStep[] {
   return [
     { argv: ["read-tree", "HEAD"], useTmpIndex: true },
     { argv: ["add", "-A", "--"], useTmpIndex: true },
     { argv: ["write-tree"], useTmpIndex: true, capture: "tree" },
     { argv: ["commit-tree", "__tree__", "-p", "HEAD", "-m", `trismegistus snapshot turn ${turn}`], useTmpIndex: false, capture: "sha" },
-    { argv: ["update-ref", turnRef(refPrefix, turn), "__sha__"], useTmpIndex: false },
+    { argv: ["update-ref", sessionTurnRef(turn, sessionStem, refPrefix), "__sha__"], useTmpIndex: false },
   ];
 }
 
@@ -44,7 +49,7 @@ export function substituteStep(step: GitStep, vars: Record<string, string>): str
   return step.argv.map((a) => a.replace(/__([a-z]+)__/g, (_, k: string) => vars[k] ?? a));
 }
 
-/** Refname for one turn snapshot. */
+/** Refname for one turn snapshot (flat, pre-2026-11-11 sessions). */
 export function turnRef(prefix: string, turn: number): string {
   return `${prefix}/${turn}`;
 }
@@ -78,10 +83,11 @@ export function runSnapshotSequence(
   tmpIndex: string,
   exec: GitExec,
   env: NodeJS.ProcessEnv = process.env,
+  sessionStem: string = "session",
 ): string | null {
   const vars: Record<string, string> = {};
   try {
-    for (const step of snapshotSequence(cfg.refPrefix, turn)) {
+    for (const step of snapshotSequence(cfg.refPrefix, turn, sessionStem)) {
       const out = exec(substituteStep(step, vars), gitOpts(repo, step.useTmpIndex ? tmpIndex : undefined, env));
       if (step.capture) vars[step.capture] = out;
     }

@@ -40,7 +40,8 @@ export function ckptConfig(env: NodeJS.ProcessEnv = process.env): CkptConfig {
 }
 
 /** Shared filename convention (single definition: _shared/turnkeys.ts). */
-export { turnFilename } from "../_shared/turnkeys.ts";
+import { turnFilename } from "../_shared/turnkeys.ts";
+export { turnFilename };
 
 /** URL for one slot action (validate shape before the request). */
 export function slotActionUrl(cfg: CkptConfig, action: "save" | "restore"): string {
@@ -129,6 +130,38 @@ export function decodeMarker(text: string): CkptMarker | null {
 /** True when a marker should be restored: same engine slot + same model. */
 export function restoreIsCompatible(m: CkptMarker, currentModel: string): boolean {
   if (!currentModel) return true; // unknown current model — engine validates
-  return m.model === currentModel; // restoring into a different model = corruption
+    return m.model === currentModel; // restoring into a different model = corruption
+}
+
+/**
+ * Session identity check (I5, 2026-11-11): a marker's KV blob must carry
+ * THIS session's stem-encoded filename. With parallel=1 the engine slot is
+ * shared and reassigned by LCP/LRU, so a foreign stem means the marker was
+ * written against another session's state — restoring it would land the
+ * wrong conversation's KV.
+ */
+export function markerMatchesSession(m: CkptMarker, sessionStem: string): boolean {
+  return m.filename === turnFilename(m.turn, sessionStem);
+}
+
+/**
+ * Peer gate (I5, 2026-11-11): when another live session shares the engine
+ * (parallel=1, slot reassigned by the engine), slot 0 may hold a PEER's
+ * state — saving would snapshot the wrong conversation and restoring would
+ * clobber the peer's resident KV. Both directions are gated on peer count.
+ */
+export interface PeerGateVerdict {
+  allowed: boolean;
+  reason?: string;
+}
+
+export function checkpointPeerGate(livePeers: number): PeerGateVerdict {
+  if (livePeers > 0) {
+    return {
+      allowed: false,
+      reason: `${livePeers} peer session(s) live — engine slot may hold foreign state`,
+    };
+  }
+  return { allowed: true };
 }
 

@@ -5,20 +5,30 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitOpts, runSnapshotSequence, snapshotConfig, turnRef, worktreeDirty } from "./snap.ts";
+import { sessionTurnRef } from "../_shared/turnkeys.ts";
 
 // snapshot — per-turn git snapshots (OpenCode §3.2 / REPORT-02 step 10).
 // Plumbing-only: a throwaway GIT_INDEX_FILE + commit-tree + update-ref under
-// refs/trismegistus/turns/<n>. The user's branch, index, and worktree are
-// NEVER touched; .gitignore rules still apply (via git add -A honoring them).
-// Rewind restores files from a ref EXPLICITLY (never automatic — Rule 12).
-// Pairing with VITRIOL slot restore (§2.2) lands when the engine endpoint
-// exists; until then rewind is code-only and says so.
+// refs/trismegistus/turns/<session-stem>/<n> (session-namespaced since
+// 2026-11-11 — I6: per-session turn indexes collided across concurrent
+// sessions under the flat layout, so a rewind could restore a foreign tree).
+// The user's branch, index, and worktree are NEVER touched; .gitignore rules
+// still apply (via git add -A honoring them). Rewind restores files from a
+// ref EXPLICITLY (never automatic — Rule 12) and falls back to the flat
+// pre-namespacing refs for old sessions.
 //
 // Default OFF: TRIS_SNAPSHOT=1 to arm. Kill switch is the same flag (Rule 15).
 
 export default function (pi: ExtensionAPI) {
   const cfg = snapshotConfig();
   if (!cfg.enabled) return;
+
+  let sessionStem = "session";
+
+  pi.on("session_start", async (_event, ctx) => {
+    const sm = (ctx as { sessionManager?: { getSessionFile?: () => string | null } }).sessionManager;
+    sessionStem = (sm?.getSessionFile?.() ?? "").split("/").pop()?.replace(/\.jsonl$/, "") || "session";
+  });
 
   function repoRoot(): string | null {
     try {
@@ -28,12 +38,12 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
-  /** Commit current worktree state to turns/<turnIndex> via plumbing. Returns sha. */
+  /** Commit current worktree state to turns/<stem>/<turnIndex> via plumbing. Returns sha. */
   function snapshotTurn(repo: string, turn: number): string | null {
     const tmp = mkdtempSync(join(tmpdir(), "tris-snap-"));
     const idx = join(tmp, "index");
     try {
-      return runSnapshotSequence(repo, turn, cfg, idx, (argv, opts) => execFileSync("git", argv, opts).toString().trim());
+      return runSnapshotSequence(repo, turn, cfg, idx, (argv, opts) => execFileSync("git", argv, opts).toString().trim(), process.env, sessionStem);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -83,14 +93,19 @@ export default function (pi: ExtensionAPI) {
     async execute(_id, { turn }) {
       const repo = repoRoot();
       if (!repo) return err("snapshot: not inside a git workspace");
-      const ref = turnRef(cfg.refPrefix, Number(turn));
-      try {
-        execFileSync("git", ["rev-parse", "--verify", ref], gitOpts(repo));
-        execFileSync("git", ["checkout", ref, "--", "."], gitOpts(repo));
-        return { content: [{ type: "text" as const, text: `restored worktree from ${ref} (KV not rewound — engine endpoint pending)` }], details: {} };
-      } catch {
-        return err(`snapshot: no snapshot for turn ${turn} (${ref})`);
+      // Session-namespaced ref first (all new snapshots); flat ref falls
+      // back for sessions snapshotted before the 2026-11-11 namespacing.
+      const refs = [sessionTurnRef(Number(turn), sessionStem, cfg.refPrefix), turnRef(cfg.refPrefix, Number(turn))];
+      for (const ref of refs) {
+        try {
+          execFileSync("git", ["rev-parse", "--verify", ref], gitOpts(repo));
+          execFileSync("git", ["checkout", ref, "--", "."], gitOpts(repo));
+          return { content: [{ type: "text" as const, text: `restored worktree from ${ref} (KV not rewound — engine endpoint pending)` }], details: {} };
+        } catch {
+          // try the next ref shape
+        }
       }
+      return err(`snapshot: no snapshot for turn ${turn} (${refs.join(" or ")})`);
     },
   });
 }

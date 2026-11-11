@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  checkpointPeerGate,
   ckptConfig,
   decodeMarker,
   encodeMarker,
+  markerMatchesSession,
   markerPath,
   parseSlotOpResponse,
   restoreIsCompatible,
@@ -105,6 +107,38 @@ describe("restoreIsCompatible", () => {
     expect(restoreIsCompatible(m, "A.gguf")).toBe(true);
     expect(restoreIsCompatible(m, "B.gguf")).toBe(false);
     expect(restoreIsCompatible(m, "")).toBe(true); // engine validates when unknown
+  });
+});
+
+// I5: a marker's KV blob must belong to THIS session — with parallel=1 the
+// slot is reassigned by the engine (LCP/LRU), so a foreign-stem marker
+// carries another conversation's state.
+describe("markerMatchesSession", () => {
+  it("accepts the session's own stem-encoded filename", () => {
+    const m = { endpoint: "", slot: 0, filename: turnFilename(10, "sess-a"), turn: 10, model: "A", at: 0 };
+    expect(markerMatchesSession(m, "sess-a")).toBe(true);
+  });
+  it("refuses a foreign session's blob", () => {
+    const m = { endpoint: "", slot: 0, filename: turnFilename(10, "sess-b"), turn: 10, model: "A", at: 0 };
+    expect(markerMatchesSession(m, "sess-a")).toBe(false);
+  });
+  it("refuses a same-stem turn mismatch", () => {
+    const m = { endpoint: "", slot: 0, filename: turnFilename(10, "sess-a"), turn: 20, model: "A", at: 0 };
+    expect(markerMatchesSession(m, "sess-a")).toBe(false);
+  });
+});
+
+// I5: with live peers on the engine, the slot may hold (or be about to
+// hold) a PEER's state — both autosave and crash-restore must stand down.
+describe("checkpointPeerGate", () => {
+  it("allows checkpointing when no peers are live", () => {
+    expect(checkpointPeerGate(0).allowed).toBe(true);
+    expect(checkpointPeerGate(0).reason).toBeUndefined();
+  });
+  it("blocks and explains when peers share the engine", () => {
+    const v = checkpointPeerGate(2);
+    expect(v.allowed).toBe(false);
+    expect(v.reason).toContain("2 peer session");
   });
 });
 

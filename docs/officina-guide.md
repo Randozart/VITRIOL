@@ -184,21 +184,46 @@ the result in a **named mask** — an auditable, versioned list of transactions.
 ## Running multiple sessions
 
 No flags, no per-launch env — the router adapts per session, per turn
-(multi-session routing, 2026-11-10):
+(multi-session routing, 2026-11-10; hardening 2026-11-11):
 
-- Every Officina TUI publishes its turn decision to a shared registry
-  (`~/.vitriol/officina/routing-registry.json`, 60 s TTL) — no prompt
-  text, only ids/tokens/tier/model.
-- All sessions start local-first (Lapis Occultus). When every engine slot
+- Every Officina TUI publishes its turn decision to the routing registry
+  (`~/.vitriol/officina/routing-registry.d/<pid>.json`, one shard per
+  TUI, 60 s TTL) — no prompt text, only ids/tokens/tier/model/role.
+  Shards are written independently, so concurrent TUIs never overwrite
+  each other's entries. The legacy single
+  `routing-registry.json` is no longer written.
+- The arbitration lives in **resilient-default** (lapis is the default
+  model); adaptive-router mirrors it for non-virtual selections.
+  All sessions start local-first (Lapis Occultus). When every engine slot
   is committed, the **junior** session yields to a free cloud lane; the
   senior session (oldest, then largest context) keeps the stone. When a
   slot frees, the junior returns — its KV is reused by the engine's LCP
   slot matching.
+- Switch-cap fairness (2026-11-11): peer demotions never charge the
+  cache-affinity cap, returning to local resets it, and an idle local
+  sheds accrued switches — a session can no longer strand itself after
+  two contention events.
+- Sub-agent visibility (2026-11-11): children run without the router,
+  so the parent publishes a `role: subagent` registry entry for the
+  child at spawn and removes it at completion — peers see (and rank
+  last) a sub-agent while it holds the local slot.
+- Second TUI in the same project (2026-11-11): a kernel-held flock per
+  session store fences auto-resume. A second TUI refuses to resume the
+  same session file and starts a fresh session (notice printed at
+  launch, `/resume` to switch later); repair/quarantine also refuse
+  while another TUI owns the store. Locks auto-release on crash.
+- Cache discipline (2026-11-11): the session ledger re-sites at the
+  context TAIL each turn and tool-result stubbing defers until ctx
+  fill ≥ `OFFICINA_CACHE_CLEAR_PCT` (92) — mid-history rewrites used to
+  truncate the engine's KV prefix reuse and re-prefill the whole tail
+  every turn.
+- Checkpoints/snapshots are session-scoped (2026-11-11): KV autosave/
+  restore gate on live peers (slot may be foreign at parallel=1) and
+  markers must carry the session stem; git snapshots live under
+  `refs/trismegistus/turns/<session-stem>/<n>` so concurrent sessions
+  never clobber each other's rewind points (flat refs stay readable).
 - Privacy still beats utilization: confidential turns never route cloud
   by default. Engine-down failover is unchanged.
-- Sub-agents (dispatch / Plan Mode research) carry
-  `OFFICINA_SESSION_ROLE=subagent` and always yield first under
-  contention — role-based, not content-based.
 - `parallel` stays 1 unless the operator wants true dual-local; the
   routing works identically at `parallel=1` (one senior local, the rest
   cloud).

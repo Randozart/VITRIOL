@@ -87,10 +87,13 @@ never reached. Plus consume-on-load (`keep_restored=false` default,
 
 ## Fix plan (stages, commit per stage)
 
-### Stage 0 — land pending diff (pre-existing)
-Divider relocation + FreeInference lanes (`tui/layout.rs`, caduceus
-`catalog.ts` + test). Gate: `cargo test` + `npm test` + build-patch
-canaries + rebuild/install `~/.local/bin/officina`.
+### Stage 0 — land pending tree work
+The survey's 3-file diff (divider + FreeInference lanes) had already
+landed as `811d067`; the working tree instead held a broken half-landed
+`/tree`+`/fork` (another session's). Completed (render_tree_modal,
+key capture, session_tree_lines + tests, modal reset on
+fork/switch_session) and committed. Gate: `cargo test` + fmt + rebuild
++ install binary.
 
 ### Stage 1 — cache-safe prompt
 - `session-ledger`: replace in-place upsert with **remove-then-append at
@@ -142,21 +145,56 @@ gets a verification addendum with command output + fingerprints.
 
 ## Invariants
 
-- **I1 (parity)**: 0 peers ⇒ routing decisions byte-identical to today;
-  pinned by the golden decision matrix in `peer-policy.test.ts` /
-  `overflow-peer.test.ts`.
+- **I1 (parity)**: 0 peers ⇒ routing **tier decisions** identical to
+  today; pinned by the golden decision matrix in `peer-policy.test.ts` /
+  `overflow-peer.test.ts`. AMENDMENT 2026-11-11 (stage 3): a
+  stay-local reason string may name the actual blocking gate
+  (cap/budget/no-candidate) when the TIER is unchanged — the old string
+  blamed the cloud during cap exhaustion and misled diagnosis.
 - **I2**: at most one live pi writer per session file, ever — pinned by
-  the lock-contention test (second TUI cannot resume the same file).
+  the lock-contention test (`session_store_lock_lifecycle_and_peer_refusal`).
 - **I3**: quarantine/repair never mutate a file held by a live writer —
-  pinned by the quarantine-vs-live-writer test.
+  pinned by the same test (peer-held store ⇒ file left in place).
 - **I4 (prefix stability)**: turn N+1's engine-visible prompt extends
-  turn N's prefix; pinned by the prefix-stability test in Stage 1.
+  turn N's prefix; pinned by the ledger prefix-stability test + the
+  provider-independent `shouldDeferToolClear` tests.
 - **I5**: checkpoint save/restore never crosses sessions (stem check +
-  peer gate) — pinned by the stem-match test.
+  peer gate) — pinned by `markerMatchesSession` + `checkpointPeerGate` tests.
 - **I6**: rewind restores only own session's code + KV — pinned by the
-  snapshot-namespacing test.
+  snapshot namespacing tests (same turn index, different stems ⇒ both
+  refs survive).
 - **I7**: concurrent registry writers never lose peer entries — pinned
-  by the shard-concurrency test.
+  by the shard-mode test (`concurrent publishers never lose entries`).
+
+## Verification (2026-11-11 21:30–21:50)
+
+All gates green; commits in order:
+
+| stage | commit | gate |
+|---|---|---|
+| 0 | `09ceddc` | /tree+/fork completion — cargo test 134 ✓ (found + fixed subtree-skip bug), fmt ✓, release binary installed `~/.local/bin/officina` 21:26 |
+| 1 | `2c843f1` | npm test 787 ✓ (adds ledger prefix-stability + local defer tests), build-patch canaries exit 0 |
+| 2 | `2d6d7f5` | TUI flock guard — cargo test 135 ✓ (adds lock lifecycle + peer-refusal test), fmt ✓ |
+| 2 | `00d0bd2` | checkpoint stem/peer gate + snapshot namespacing — npm test 794 ✓, canaries exit 0 |
+| 3 | `d4faaaa` | routing wired — npm test 800 ✓ (adds shard-mode I7 suite), canaries exit 0 |
+| gate | — | binary rebuilt + renamed over `~/.local/bin/officina` 21:41 (running TUIs keep the old inode until exit; new launches get the guard) |
+
+Findings corrected along the way:
+- Stage 0's original content (divider relocation + FreeInference lanes)
+  had already landed as `811d067` by a concurrent session; the tree
+  instead held a BROKEN half-landed `/tree`+`/fork` (missing
+  render_tree_modal) — completed + committed as `09ceddc` with owner
+  approval.
+- The `/tree` flatten skipped entire subtrees under entry-less wrapper
+  nodes (found by the new unit test before it shipped).
+
+Follow-ups (not in scope here):
+- Engine-side cache experiment: 1-day `VITRIOL_CACHE_KEEP=1` +
+  re-prefill log attribution before any `cache_ram` change (states
+  2.5–7 GiB vs cache_ram 8192 MiB — alloc-skip skips the Optane spill).
+- Runtime `/resume` onto a peer-held session file is still possible
+  (startup fence only); the registry gives the operator visibility.
+- Legacy `routing-registry.json` cleanup after one transition week.
 
 ## Gates
 

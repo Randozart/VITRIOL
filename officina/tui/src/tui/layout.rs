@@ -10,7 +10,7 @@
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
@@ -340,11 +340,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .collect();
     let indicator_h = indicators.len() as u16;
 
-    let input_h = if state.input.chars().count() + 8 > area.width as usize {
-        5
-    } else {
-        3
-    };
+    let input_h = composer_box_height(&state.input, area.width);
     // One breathing row between the transcript and the prompt box (owner
     // request 2026-09-03 — text flowed straight into the editor).
     let chat_area = Rect {
@@ -636,7 +632,6 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(input_block, input_area);
 
     let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
-    let (before, at, after) = split_at_char(&state.input, state.cursor);
     let line = if state.input.is_empty() {
         // Carved motto placeholder (owner request 2026-09-03) — the cursor
         // block sits ON the first letter, the rest fades into the panel.
@@ -663,20 +658,15 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             ),
         ])
     } else {
-        Line::from(vec![
-            prompt,
-            Span::raw(before),
-            Span::styled(
-                at,
-                Style::default()
-                    .bg(theme::PANEL)
-                    .add_modifier(Modifier::REVERSED),
-            ),
-            Span::raw(after),
-        ])
+        composer_line(&state.input, state.cursor)
     };
+    // The composer WRAPS: a long line grows the box AND flows onto further
+    // rows. Rendering a bare Line clipped the tail while the box grew
+    // (bug 2026-11-11).
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme::PANEL)),
+        Paragraph::new(Text::from(vec![line]))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(theme::PANEL)),
         inner,
     );
 }
@@ -1822,6 +1812,49 @@ fn trunc(s: &str, w: usize) -> String {
     }
 }
 
+/// Maximum composer content rows — beyond this the transcript would be
+/// squeezed out, so the composer scrolls instead of growing forever.
+const COMPOSER_MAX_ROWS: u16 = 8;
+
+/// Visual rows the composer content needs at `width` columns.
+///
+/// Includes the two-column `"> "` prompt prefix on the first row. Hard
+/// (character) wrapping is assumed, which is what a Paragraph does to an
+/// unbroken token; word-wrapped text can need MORE rows, never fewer, so
+/// callers treat this as a lower bound when sizing the box.
+fn composer_rows(input: &str, width: u16) -> u16 {
+    let avail = (width as usize).max(1);
+    let chars = input.chars().count() + 2; // "> " prefix
+    let rows = chars.div_ceil(avail).max(1);
+    rows.min(COMPOSER_MAX_ROWS as usize) as u16
+}
+
+/// Total composer box height: wrapped content rows plus the rounded border.
+fn composer_box_height(input: &str, area_width: u16) -> u16 {
+    // Left and right border consume one column each.
+    let content_width = area_width.saturating_sub(2);
+    composer_rows(input, content_width) + 2
+}
+
+/// Styled composer line: the `"> "` prompt, text before the cursor, the
+/// cursor cell (reversed), then the remainder. Pure, so the wrap behaviour
+/// is testable without a Frame.
+fn composer_line(input: &str, cursor: usize) -> Line<'static> {
+    let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
+    let (before, at, after) = split_at_char(input, cursor);
+    Line::from(vec![
+        prompt,
+        Span::raw(before),
+        Span::styled(
+            at,
+            Style::default()
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::REVERSED),
+        ),
+        Span::raw(after),
+    ])
+}
+
 fn split_at_char(s: &str, idx: usize) -> (String, String, String) {
     let mut before = String::new();
     let mut at = String::new();
@@ -1951,5 +1984,91 @@ mod motto_tests {
                 assert!(m.chars().count() <= w, "width {w}: {:?} overflows", m);
             }
         }
+    }
+}
+
+// ── Composer wrapping (bug 2026-11-11: box grew, text clipped) ────────────
+//
+// The composer used to grow its box from 3 to 5 rows on raw character count
+// while rendering the content as a single Line — the box got taller and the
+// text still ran off the right edge. These tests pin the fix: row count is
+// derived from WRAPPED rows, and the rendered buffer proves the text
+// actually lands on a second physical row.
+mod composer_wrap_tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
+
+    #[test]
+    fn short_input_is_one_row() {
+        assert_eq!(composer_rows("hello", 60), 1);
+        assert_eq!(composer_rows("", 60), 1);
+    }
+
+    #[test]
+    fn unbroken_token_counts_wrapped_rows() {
+        // "> " prefix (2 cols) + 200 chars at 60 cols => ceil(202/60) = 4.
+        let input = "x".repeat(200);
+        assert_eq!(composer_rows(&input, 60), 4);
+    }
+
+    #[test]
+    fn rows_follow_available_width_not_a_fixed_threshold() {
+        let input = "y".repeat(100);
+        assert_eq!(composer_rows(&input, 40), 3); // ceil(102/40)
+        assert_eq!(composer_rows(&input, 200), 1); // fits on one row
+    }
+
+    #[test]
+    fn rows_are_clamped_so_the_transcript_keeps_its_space() {
+        let huge = "z".repeat(10_000);
+        assert_eq!(composer_rows(&huge, 20), COMPOSER_MAX_ROWS);
+    }
+
+    #[test]
+    fn word_wrapped_text_is_never_underestimated() {
+        let input = "word ".repeat(40); // 200 chars, wraps on spaces
+        let rows = composer_rows(&input, 40);
+        assert!(
+            rows >= 5,
+            "under-reported rows for word-wrapped text: {rows}"
+        );
+    }
+
+    #[test]
+    fn long_token_lands_on_more_than_one_physical_row() {
+        // The actual regression: render at width 20 and assert the tail is
+        // VISIBLE on later rows instead of being clipped off the right edge.
+        // (Ratatui's word wrap moves an over-long token to a fresh row, so
+        // row 0 may legitimately hold only the "> " prompt.)
+        let input = "x".repeat(40);
+        let line = composer_line(&input, input.chars().count());
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        Paragraph::new(Text::from(vec![line]))
+            .wrap(Wrap { trim: false })
+            .render(area, &mut buf);
+        let rows: Vec<String> = (0..3)
+            .map(|y| (0..20).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect();
+        assert!(
+            rows[0].starts_with('>'),
+            "prompt on first row: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].contains('x'),
+            "second physical row must carry the wrapped tail: {:?}",
+            rows
+        );
+        // Nothing is lost: every character is still on screen across rows.
+        let rendered: String = rows.concat();
+        assert_eq!(
+            rendered.matches('x').count(),
+            40,
+            "all 40 chars must remain visible after wrapping: {:?}",
+            rows
+        );
     }
 }

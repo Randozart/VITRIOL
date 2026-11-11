@@ -64,6 +64,11 @@ interface LapisState {
   failoverActive: boolean;
 }
 
+/** Nimbus lane state — cloud-only, no arbitration bookkeeping needed. */
+interface NimbusState {
+  turnsOnTier: number;
+}
+
 interface LastDecision {
   reason: string;
   tier: Tier;
@@ -192,11 +197,51 @@ export default function (pi: ExtensionAPI) {
         !healthCooling(m.provider, m.id, now),
     );
 
-  const setRouteWidget = (ctx: ExtensionContext, tier: Tier, model?: Model, profile = readProfile()): void => {
+  // Publish this lane's decision so peer sessions can rank against us
+  // (P1/I7 shard registry). Best-effort: a failed write never breaks a
+  // request. Shared by both lanes (lapis route closure + nimbus).
+  const publishPeerDecision = (
+    tier: Tier,
+    chosen: Model,
+    tokens: number,
+    ctx: ExtensionContext,
+    now: number,
+  ): void => {
+    try {
+      const sessionId =
+        (ctx as { sessionManager?: { getSessionFile?: () => string } })
+          .sessionManager?.getSessionFile?.()
+          ?.split("/")
+          .pop() ?? `tui-${tuiPid}`;
+      writeRegistryEntry(
+        {
+          ts: now,
+          tuiPid,
+          sessionId,
+          tier,
+          model: `${chosen.provider}/${chosen.id}`,
+          ctxTokens: tokens,
+          role: sessionRole,
+        },
+        undefined,
+        now,
+      );
+    } catch {
+      // registry is advisory only
+    }
+  };
+
+  const setRouteWidget = (
+    ctx: ExtensionContext,
+    tier: Tier,
+    model?: Model,
+    profile = readProfile(),
+    lane = "lapis",
+  ): void => {
     const text =
       tier === "cloud" && model
-        ? `route lapis · ${model.id.split("/").pop()} · ${profile}`
-        : `route lapis · local · ${profile}`;
+        ? `route ${lane} · ${model.id.split("/").pop()} · ${profile}`
+        : `route ${lane} · local · ${profile}`;
     ctx.ui.setStatus("overflow", text);
     ctx.ui.setWidget("overflow-route", [text], { placement: "belowEditor" });
   };
@@ -252,30 +297,7 @@ export default function (pi: ExtensionAPI) {
         localState: stateKind,
         startedAt: now,
       };
-      // Publish so peer sessions can rank against us (P1). Best-effort:
-      // a failed write must never break a request.
-      try {
-        const sessionId =
-          (ctx as { sessionManager?: { getSessionFile?: () => string } })
-            .sessionManager?.getSessionFile?.()
-            ?.split("/")
-            .pop() ?? `tui-${tuiPid}`;
-        writeRegistryEntry(
-          {
-            ts: now,
-            tuiPid,
-            sessionId,
-            tier: chosenTier,
-            model: `${chosen.provider}/${chosen.id}`,
-            ctxTokens: tokens,
-            role: sessionRole,
-          },
-          undefined,
-          now,
-        );
-      } catch {
-        // registry is advisory only
-      }
+      publishPeerDecision(chosenTier, chosen, tokens, ctx, now);
     };
 
     if (request.reason === "continuation" && previous && previous.id !== "lapis") {
@@ -506,5 +528,67 @@ export default function (pi: ExtensionAPI) {
     maxTokens: 4_096,
     thinkingLevels: ["off", "low", "medium", "high"],
     route,
+  });
+
+  // Nimbus — the CLOUD-ONLY lane (owner request 2026-11-11): select
+  // officina/nimbus in /model and every turn routes to the best free
+  // cloud lane; the local engine is never selected, in any state. Same
+  // verified-free candidate pool as lapis's cloud tier (discovery +
+  // free fallbacks), same health/cooling rotation, same continuation
+  // stickiness. It dies loudly when no free lane fits instead of
+  // silently falling back to local.
+  const routeNimbus = async (
+    request: ModelRouteRequest<NimbusState>,
+    ctx: ExtensionContext,
+  ): Promise<ModelRoute<NimbusState>> => {
+    loadCandidates(ctx);
+    const now = Date.now();
+    const tokens = ctx.getContextUsage()?.tokens ?? 0;
+    const previous = request.previous?.model;
+    // Mid tool-loop: never swap the physical model under the agent.
+    if (request.reason === "continuation" && previous && previous.id !== "nimbus") {
+      return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
+    }
+    // Health-aware pick first (cooling / recently-failed lanes skipped),
+    // then a last-resort fit-only pick so the lane dies only when NO free
+    // candidate fits the context at all.
+    let candidate = pickCloud(tokens, now);
+    if (!candidate) {
+      candidate = cloudCandidates.find(
+        (m) => tokens + CLOUD_RESERVE_TOKENS < (m.contextWindow ?? 0),
+      );
+    }
+    if (!candidate) {
+      throw new Error(
+        "Nimbus: no free cloud lane fits this context (candidates cooling or too small) — switch to officina/lapis for the local engine",
+      );
+    }
+    activeCloud = candidate;
+    lastDecision = {
+      reason: request.reason,
+      tier: "cloud",
+      provider: candidate.provider,
+      model: candidate.id,
+      profile: readProfile(),
+      localState: getEngineSnapshot().up ? "up" : "down",
+      startedAt: now,
+    };
+    publishPeerDecision("cloud", candidate, tokens, ctx, now);
+    setRouteWidget(ctx, "cloud", candidate, readProfile(), "nimbus");
+    return {
+      model: candidate,
+      thinkingLevel: request.thinkingLevel,
+      state: { turnsOnTier: (request.state?.turnsOnTier ?? 0) + 1 },
+    };
+  };
+
+  pi.registerVirtualModel<NimbusState>({
+    provider: "officina",
+    id: "nimbus",
+    name: "Nimbus — free cloud lanes only",
+    contextWindow: 1_000_000,
+    maxTokens: 16_384,
+    thinkingLevels: ["off", "low", "medium", "high"],
+    route: routeNimbus,
   });
 }

@@ -8,6 +8,11 @@
 
 - **The prompt**: `┌──(☿ ALKA)-[model: …]-[context: …]-[drift: …]` then
   `└───> `. Telemetry blocks are toggled in `~/.vitriol/officina.toml`.
+- **Model lanes** (`/model`): `officina/lapis` ("Lapis Occultus") is the
+  local-first resilient default; `officina/nimbus` is the **cloud-only**
+  lane — every turn routes to the best verified-FREE cloud model, the
+  local engine is never selected, and the lane dies loudly (no silent
+  local fallback) when no free lane fits the context.
 - **Autofill**: press **Tab** to cycle keyword/target completions (shown on the
   ⧉ bar under the prompt). BackTab still cycles tabs.
 - **Scroll**: **PgUp**/**PgDn** scroll the output; Up/Down recall command

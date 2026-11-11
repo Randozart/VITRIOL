@@ -6,6 +6,8 @@
 // hysteresis: minimum dwell, max switches, and a bounded cloud-token budget
 // before returning to local.
 
+import { decidePeerYield, type PeerDecision, type PeerView, type SelfView } from "./peer-policy.ts";
+
 export type Tier = "local" | "cloud";
 export type Privacy = "safe" | "sensitive" | "confidential";
 
@@ -67,11 +69,24 @@ export interface DecideInput {
   localDown: boolean;
   /** Cloud tier was entered because the engine was down (not contention). */
   failoverActive: boolean;
+  // ── P3 multi-session slot arbitration (all optional: absent = pre-P3
+  //    behaviour exactly, which keeps single-session decisions identical) ──
+  /** This session's identity for seniority ranking. */
+  self?: PeerSelf;
+  /** Peer sessions from the routing registry (expired ones already pruned). */
+  peers?: PeerPeer[];
+  /** Engine slots not currently processing. */
+  freeSlots?: number;
 }
 
+export type PeerSelf = import("./peer-policy.ts").SelfView;
+export type PeerPeer = import("./peer-policy.ts").PeerView;
 export interface Decision {
   tier: Tier;
   reason: string;
+  /** True when this decision was a peer-arbitration demotion (the caller
+   *  must not charge it against the cache-affinity switch cap). */
+  peerDemoted?: boolean;
 }
 
 export function localBusy(load: LoadSample, cfg: OverflowConfig): boolean {
@@ -82,6 +97,24 @@ export function localBusy(load: LoadSample, cfg: OverflowConfig): boolean {
     load.stalled ||
     (load.gpuLoad != null && load.gpuLoad >= cfg.gpuLoadCutoff)
   );
+}
+
+/**
+ * Peer-arbitration view of the decision inputs, or null when the caller did
+ * not supply peer context (single-session / pre-P3 behaviour).
+ */
+function peerDecision(input: DecideInput): PeerDecision | null {
+  if (input.self === undefined || input.peers === undefined || input.freeSlots === undefined) {
+    return null;
+  }
+  const self: SelfView = input.self;
+  const peers: PeerView[] = input.peers;
+  return decidePeerYield({
+    self,
+    peers,
+    freeSlots: input.freeSlots,
+    privacy: input.privacy,
+  });
 }
 
 /**
@@ -121,6 +154,15 @@ export function decideTier(
     if (input.localIdleForMs != null && input.localIdleForMs >= 5_000) {
       return { tier: "local", reason: "engine recovered — back to local" };
     }
+  }
+
+  // P3 slot arbitration: when every engine slot is committed, the junior
+  // session yields so the senior one keeps the stone. Absent inputs (peers
+  // not supplied) preserve the pre-P3 behaviour exactly, and a peer
+  // demotion never charges the cache-affinity switch cap.
+  const peerYield = peerDecision(input);
+  if (peerYield?.demote && input.cloudFits && input.budgetLeft) {
+    return { tier: "cloud", reason: peerYield.reason, peerDemoted: true };
   }
 
   const canSwitch = state.switches < cfg.maxSwitches;

@@ -11,6 +11,8 @@ import {
 import { classifyTurn } from "../auto-route/classifier.ts";
 import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
 import { canSpendCloud } from "../_shared/budget.ts";
+import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import type { PeerView, SelfView } from "./peer-policy.ts";
 import {
   cooling as healthCooling,
   recordFailure,
@@ -52,6 +54,11 @@ export default function (pi: ExtensionAPI) {
   if (!armed) return;
 
   const cfg: OverflowConfig = configFromEnv();
+  // P3 multi-session identity: stable for the lifetime of this TUI process.
+  const sessionStartedAt = Date.now();
+  const tuiPid = process.pid;
+  const sessionRole: SelfView["role"] =
+    process.env.OFFICINA_SESSION_ROLE === "subagent" ? "subagent" : "main";
   const cloudEnv = (process.env.OFFICINA_OVERFLOW_CLOUD || "free").trim();
   const discoverFree = /^(free|auto)$/i.test(cloudEnv);
   const explicitSpecs = (discoverFree ? "" : cloudEnv)
@@ -283,6 +290,24 @@ export default function (pi: ExtensionAPI) {
     const budgetLeft = cloudTokens < cfg.cloudTokenBudget && canSpendCloud();
     const idleFor = localIdleSince != null ? Date.now() - localIdleSince : null;
 
+    // P3: peer arbitration needs an observable engine. Without a completed
+    // poll (slots unknown) the peer arm is withheld, so a cold start keeps
+    // the pre-P3 optimistic-local behaviour.
+    const slotCount = snap.slots?.length ?? 0;
+    const peersUsable = snap.polled && snap.up && slotCount > 0;
+    const peerContext = peersUsable
+      ? {
+          self: {
+            ts: sessionStartedAt,
+            tuiPid,
+            ctxTokens: usage?.tokens ?? 0,
+            role: sessionRole,
+          } as SelfView,
+          peers: readLivePeers(tuiPid, { now }) as PeerView[],
+          freeSlots: Math.max(0, slotCount - (snap.processing ?? 0)),
+        }
+      : {};
+
     let decision = decideTier(
       {
         state: { tier, switches, turnsOnTier, cloudTokens: cloudTokensSinceLocal },
@@ -293,11 +318,39 @@ export default function (pi: ExtensionAPI) {
         localIdleForMs: idleFor,
         localDown,
         failoverActive,
+        ...peerContext,
       },
       cfg,
     );
 
     let switched = false;
+    // Publish this session's decision so peers can rank against it. Peer
+    // visibility is best-effort: a failed write must never break a turn.
+    try {
+      const sessionId = ((ctx as { sessionManager?: { getSessionFile?: () => string } })
+        .sessionManager?.getSessionFile?.() ?? `tui-${tuiPid}`)
+        .split("/")
+        .pop() as string;
+      writeRegistryEntry(
+        {
+          ts: now,
+          tuiPid,
+          sessionId,
+          tier: decision.tier,
+          model:
+            decision.tier === "cloud" && candidate
+              ? `${candidate.provider}/${candidate.id}`
+              : ctx.model
+                ? `${ctx.model.provider}/${ctx.model.id}`
+                : "local",
+          ctxTokens: usage?.tokens ?? 0,
+        },
+        undefined,
+        now,
+      );
+    } catch {
+      // registry is advisory only
+    }
     // Cloud tier may need to rotate to a different candidate after a 429 or
     // when the context outgrows a 65k free model.
     let targetCloud = decision.tier === "cloud" ? candidate : undefined;
@@ -311,8 +364,9 @@ export default function (pi: ExtensionAPI) {
       if (ok) {
         tier = "cloud";
         activeCloud = targetCloud;
-        // Emergency failover must not consume the cache-affinity switch cap.
-        const emergency = failoverActive || localDown;
+        // Emergency failover AND peer-arbitration demotions must not consume
+        // the cache-affinity switch cap (availability / slot sharing wins).
+        const emergency = failoverActive || localDown || decision.peerDemoted === true;
         if (!emergency) switches += 1;
         if (localDown) failoverActive = true;
         turnsOnTier = 1;

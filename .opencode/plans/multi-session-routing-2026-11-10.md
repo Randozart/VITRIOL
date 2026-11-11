@@ -54,6 +54,26 @@ spill is a *latency* decision, not an *availability* decision.
 
 ### P2 — Slot pinning (`llama-cpp-provider`)
 
+**STATUS 2026-11-11: DEFERRED — not implementable from our side.**
+
+Verified before writing code:
+- The `llama-cpp-provider` extension only *registers* a provider
+  (`baseUrl` + `models`); requests are issued by pi's pinned core provider
+  layer, which exposes no `id_slot` hook. Forcing `id_slot` would mean
+  patching vendored, pinned pi — out of scope by policy.
+- The Rust TUI has **zero** slot awareness today (`grep slots|id_slot` in
+  `officina/tui/src` returns only fire-animation hits), so a Rust
+  "slot-pin state machine" would be dead code with no consumer.
+- The benefit P2 chased is largely already delivered: the engine picks a
+  slot by **LCP similarity** first (`server-context.cpp:1791`), so a
+  session with the same conversation prefix lands on the same slot and
+  its KV is reused. `id_slot` would add explicit stickiness, not new
+  capability.
+
+Revisit only if pi exposes per-request `id_slot`, or if we ship a
+first-party engine client (then a pin becomes meaningful and testable).
+The original design follows, retained for that day.
+
 - The engine already picks slots by LCP/LRU; make that **sticky per
   session**: when a request lands on slot K (visible in `/slots`
   `id_task` correlation or a new `slot_id` echo — engine already returns

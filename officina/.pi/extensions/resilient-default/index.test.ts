@@ -1,6 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "node:fs";
 
+// Gateway lane health — static marking the tests can mutate per case.
+const laneHealthState = {
+  hardDown: new Set<string>(),
+  backoff: new Set<string>(),
+  active: new Set<string>(),
+  checkedAt: 1,
+};
+vi.mock("../_shared/lane-health.ts", () => ({
+  getLaneHealth: async () => laneHealthState,
+  formatLanes: (rows: Array<{ id: string }>) => rows.map((r) => r.id).join("\n"),
+  EMPTY_HEALTH: () => ({ hardDown: new Set(), backoff: new Set(), active: new Set(), checkedAt: 0 }),
+}));
+
 const engine = { up: true, busy: false };
 vi.mock("../_shared/engine.ts", () => ({
   startEnginePolling: () => undefined,
@@ -155,6 +168,8 @@ describe("nimbus (cloud-only lane)", () => {
     // Provider-health persists across runs — a 429 from an earlier run
     // must not cool test-model into this one.
     rmSync("/tmp/officina-nimbus-health-test.json", { force: true });
+    laneHealthState.hardDown = new Set();
+    laneHealthState.backoff = new Set();
   });
   afterEach(() => {
     delete process.env.OFFICINA_RESILIENT_DEFAULT;
@@ -206,5 +221,47 @@ describe("nimbus (cloud-only lane)", () => {
   it("dies loudly when no free lane fits — never falls back to local", async () => {
     const h = harness({ tokens: 2_000_000 }); // fits no mock lane
     await expect(h.runLane("nimbus")("user")).rejects.toThrow(/no free cloud lane/);
+  });
+});
+
+describe("nimbus lane health (gateway-marked endpoints)", () => {
+  beforeEach(() => {
+    engine.up = true;
+    engine.busy = false;
+    process.env.OFFICINA_RESILIENT_DEFAULT = "1";
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-nimbus-health-test.json";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-nimbus-ledger-test";
+    process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
+    process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
+    rmSync("/tmp/officina-nimbus-health-test.json", { force: true });
+    laneHealthState.hardDown = new Set();
+    laneHealthState.backoff = new Set();
+  });
+  afterEach(() => {
+    delete process.env.OFFICINA_RESILIENT_DEFAULT;
+    delete process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK;
+    delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
+    delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
+    delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
+    delete process.env.OFFICINA_FREE_DAILY_TOKENS;
+    delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
+  });
+
+  it("skips a gateway-hard-down lane entirely — pre-flight, no wasted turn", async () => {
+    laneHealthState.hardDown = new Set(["test-model"]);
+    const h = harness();
+    const route = await h.runLane("nimbus")("user");
+    expect(route.model).toMatchObject({ provider: "caduceus", id: "second-model" });
+  });
+
+  it("demotes a gateway-backoff lane behind healthy ones", async () => {
+    laneHealthState.backoff = new Set(["test-model"]);
+    const h = harness();
+    // test-model is still selectable when nothing healthy fits/exists
+    // (demoted, not excluded) — with second-model healthy, it wins.
+    const route = await h.runLane("nimbus")("user");
+    expect(route.model).toMatchObject({ id: "second-model" });
   });
 });

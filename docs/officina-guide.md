@@ -13,6 +13,12 @@
   lane — every turn routes to the best verified-FREE cloud model, the
   local engine is never selected, and the lane dies loudly (no silent
   local fallback) when no free lane fits the context.
+- **Lane health** (`/nimbus`): caduceus marks unhealthy endpoints on its
+  provider connections — `isActive=false` owners are excluded from lane
+  selection before the first wasted turn, `backoffLevel>0` owners are
+  demoted behind healthy ones, and provider-health cooldowns (429/5xx)
+  rotate lanes reactively. `/nimbus` prints the lane table with gateway
+  marks, cooldowns, and the next pick.
 - **Autofill**: press **Tab** to cycle keyword/target completions (shown on the
   ⧉ bar under the prompt). BackTab still cycles tabs.
 - **Scroll**: **PgUp**/**PgDn** scroll the output; Up/Down recall command

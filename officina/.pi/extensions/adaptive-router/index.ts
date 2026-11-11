@@ -12,6 +12,7 @@ import { classifyTurn } from "../auto-route/classifier.ts";
 import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
 import { canSpendCloud } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import { getLaneHealth } from "../_shared/lane-health.ts";
 import type { PeerView, SelfView } from "./peer-policy.ts";
 import {
   cooling as healthCooling,
@@ -159,7 +160,11 @@ export default function (pi: ExtensionAPI) {
   const isLocalModel = (m: Model | undefined): boolean =>
     !!m && (sameModel(m, localModel) || LOCAL_LIKE.test(m.provider));
 
-  const resolveModels = (ctx: ExtensionContext): void => {
+  const resolveModels = async (ctx: ExtensionContext): Promise<void> => {
+    // Gateway lane health (2026-11-11): hard-down owners excluded,
+    // backoff owners demoted behind healthy ones (fail-open on unknowns).
+    const laneHealth = await getLaneHealth();
+    const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
     if (!localModel) {
       if (localSpec) {
         localModel = ctx.modelRegistry.find(localSpec.provider, localSpec.id) ?? undefined;
@@ -172,7 +177,11 @@ export default function (pi: ExtensionAPI) {
     }
     if (cloudCandidates.length === 0) {
       const seen = new Set<string>();
-      const specs = [...discoverFreeModels(), ...(freeOnly ? [] : explicitSpecs), ...fallbackSpecs];
+      const allSpecs = [...discoverFreeModels(), ...(freeOnly ? [] : explicitSpecs), ...fallbackSpecs];
+      const specs = [
+        ...allSpecs.filter((s0) => !laneHealth.hardDown.has(ownerOf(s0)) && !laneHealth.backoff.has(ownerOf(s0))),
+        ...allSpecs.filter((s0) => laneHealth.backoff.has(ownerOf(s0))),
+      ];
       const maxCandidates = Math.max(
         1,
         Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48),
@@ -257,7 +266,7 @@ export default function (pi: ExtensionAPI) {
     if (ctx.model?.api === "pi-virtual" || ctx.model?.provider === "officina") {
       return undefined;
     }
-    resolveModels(ctx);
+    await resolveModels(ctx);
     if (!localModel) {
       if (!warnedLocal) {
         warnedLocal = true;
@@ -542,7 +551,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("overflow-catalog", {
     description: "List Caduceus free/tool-capable overflow candidates and cooldowns",
     handler: async (_args: string, ctx: { ui: any }) => {
-      resolveModels(ctx as unknown as ExtensionContext);
+      await resolveModels(ctx as unknown as ExtensionContext);
       if (cloudCandidates.length === 0) {
         await ctx.ui.notify?.("overflow: no cloud candidates (catalog/key missing?)", "warning");
         return;
@@ -567,7 +576,7 @@ export default function (pi: ExtensionAPI) {
       if (a === "on" || a === "off") {
         enabled = a === "on";
         if (!enabled) {
-          resolveModels(ctx as unknown as ExtensionContext);
+          await resolveModels(ctx as unknown as ExtensionContext);
           if (tier === "cloud" && localModel) {
             applying = true;
             const ok = await pi.setModel(localModel);

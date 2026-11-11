@@ -33,6 +33,16 @@ vi.mock("../_shared/events.ts", () => ({
   harnessEvent: () => ({}),
 }));
 
+const laneHealthState = {
+  hardDown: new Set<string>(),
+  backoff: new Set<string>(),
+  active: new Set<string>(),
+  checkedAt: 1,
+};
+vi.mock("../_shared/lane-health.ts", () => ({
+  getLaneHealth: async () => laneHealthState,
+}));
+
 import register from "./index.ts";
 
 function harness(contextWindows: Record<string, number> = {}) {

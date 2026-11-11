@@ -7,6 +7,7 @@ import {
   type DecideInput,
   type LoadSample,
   type OverflowConfig,
+  type PeerPeer,
   type RouterState,
 } from "./overflow.ts";
 

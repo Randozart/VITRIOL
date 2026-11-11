@@ -17,6 +17,7 @@ import {
   canSpendCloud,
 } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import { formatLanes, getLaneHealth, type LaneRow } from "../_shared/lane-health.ts";
 import {
   cooldownRemaining,
   cooling as healthCooling,
@@ -137,6 +138,7 @@ export default function (pi: ExtensionAPI) {
   let localIdleSince: number | null = Date.now();
   let cloudCandidates: Model[] = [];
   let catalogLoaded = false;
+  let healthSig = ""; // gateway lane-health marking the pool was built against
   let activeCloud: Model | undefined;
   let lastDecision: LastDecision | null = null;
 
@@ -149,9 +151,15 @@ export default function (pi: ExtensionAPI) {
     else if (localIdleSince == null) localIdleSince = Date.now();
   });
 
-  const loadCandidates = (ctx: ExtensionContext): void => {
-    if (catalogLoaded) return;
+  const loadCandidates = async (ctx: ExtensionContext): Promise<void> => {
+    // Gateway lane health (2026-11-11): caduceus marks unhealthy endpoints
+    // (isActive=false → excluded, backoffLevel>0 → demoted). Rebuild the
+    // candidate pool when that marking changes, not on every request.
+    const health = await getLaneHealth();
+    const sig = [...health.hardDown, ...health.backoff].sort().join(",");
+    if (catalogLoaded && sig === healthSig) return;
     catalogLoaded = true;
+    healthSig = sig;
     cloudCandidates = [];
     const profile = readProfile();
     const ids: string[] = [];
@@ -171,11 +179,17 @@ export default function (pi: ExtensionAPI) {
       ...ordered.map((id) => ({ provider: "caduceus", id })),
       ...fallbacks,
     ];
+    const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
+    // Healthy lanes first, gateway-backoff lanes demoted to the tail,
+    // gateway-hard-down owners excluded entirely (fail-open: owners the
+    // gateway doesn't know about are treated as healthy).
+    const healthy = specs.filter((s) => !health.hardDown.has(ownerOf(s)) && !health.backoff.has(ownerOf(s)));
+    const demoted = specs.filter((s) => health.backoff.has(ownerOf(s)));
     const seen = new Set<string>();
     const perOwner = Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8));
     const ownerCount = new Map<string, number>();
     const max = Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48));
-    for (const spec of specs) {
+    for (const spec of [...healthy, ...demoted]) {
       if (seen.has(`${spec.provider}/${spec.id}`)) continue;
       const owner = (spec.id.split("/")[0] ?? "").toLowerCase();
       const n = ownerCount.get(owner) ?? 0;
@@ -250,7 +264,7 @@ export default function (pi: ExtensionAPI) {
     request: ModelRouteRequest<LapisState>,
     ctx: ExtensionContext,
   ): Promise<ModelRoute<LapisState>> => {
-    loadCandidates(ctx);
+    await loadCandidates(ctx);
     const now = Date.now();
     const profile = readProfile();
     const local = ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
@@ -507,7 +521,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("free", {
     description: "List free overflow candidates and cooldowns",
     handler: async (_args: string, ctx: ExtensionContext) => {
-      loadCandidates(ctx);
+      await loadCandidates(ctx);
       const now = Date.now();
       const rows = cloudCandidates.slice(0, 20).map((m, i) => {
         const cool = cooldownRemaining(m.provider, m.id, now);
@@ -515,6 +529,28 @@ export default function (pi: ExtensionAPI) {
       });
       await (ctx.ui as any).notify?.(
         rows.length ? `free candidates (${cloudCandidates.length}):\n${rows.join("\n")}` : "free: no candidates",
+        "info",
+      );
+    },
+  });
+
+  pi.registerCommand("nimbus", {
+    description: "Free cloud lanes: gateway health, cooldowns, next pick",
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      await loadCandidates(ctx);
+      const health = await getLaneHealth();
+      const now = Date.now();
+      const tokens = ctx.getContextUsage()?.tokens ?? 0;
+      const rows: LaneRow[] = cloudCandidates.map((m) => ({
+        id: m.id,
+        owner: (m.id.split("/")[0] ?? "").toLowerCase(),
+        contextWindow: m.contextWindow ?? 0,
+        coolingMs: Math.max(0, cooldownRemaining(m.provider, m.id, now)),
+      }));
+      const next = pickCloud(tokens, now);
+      const table = formatLanes(rows, health, now);
+      await (ctx.ui as any).notify?.(
+        `nimbus · ctx ${Math.round(tokens / 1000)}k · ${rows.length} lane(s) · next: ${next ? next.id : "none fits"}\n${table || "no lanes resolved"}`,
         "info",
       );
     },
@@ -541,7 +577,7 @@ export default function (pi: ExtensionAPI) {
     request: ModelRouteRequest<NimbusState>,
     ctx: ExtensionContext,
   ): Promise<ModelRoute<NimbusState>> => {
-    loadCandidates(ctx);
+    await loadCandidates(ctx);
     const now = Date.now();
     const tokens = ctx.getContextUsage()?.tokens ?? 0;
     const previous = request.previous?.model;

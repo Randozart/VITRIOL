@@ -56,6 +56,7 @@ must stay OUT of the ggml-cuda source GLOB.
 ## Workflow
 
 1. **Git commit after every stage**: each completed feature or fix gets its own commit immediately — no batching, no "commit at the end". If a stage is done and tests pass, commit it before starting the next stage.
+2. **Officina rework ⇒ updated binary**: any change to the Rust TUI (`officina/tui/`) that ships new operator-visible behaviour MUST be followed by a rebuild + reinstall before it is considered done — `cargo build --release` in `officina/tui/`, then `cp target/release/officina ~/.local/bin/officina`. The operator runs `~/.local/bin/officina`, not a dev build; a commit that is never installed is invisible to them (2026-11-11: the ctx-bar row was committed but not visible because the installed binary predated it). Gate: `cargo test` + `cargo fmt --check` green, then rebuild + copy, then confirm the row/feature actually appears in the running TUI.
 
 ## Code Conventions
 

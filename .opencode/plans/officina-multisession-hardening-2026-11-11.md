@@ -223,3 +223,17 @@ through to the rewriter/quarantine.
 Lesson: a TUI restart is only crash-safe for the session when no tool call is
 in flight — and now, even then, the guard heals in place instead of
 quarantining.
+
+## Addendum (2026-11-12 16:35): patch-at-startup is the heal, not the disease
+
+Events at 15:42 and 16:21: the briev TUI restarted with a bash call in
+flight (c4-verify run); pi died mid-turn; prepare_session_args patched at
+startup — append-only, context intact, NO quarantine. The operator read
+the patch notices as "another corruption"; they are the designed repair.
+Driver: restarts during in-flight turns. Mitigation already shipped
+(2f3eefc); consider a TUI-side warning when a turn has a running tool and
+the operator hits quit.
+
+Side finding: guard tests encoded tmp stores under the REAL sessions root
+(102 litter dirs; /sessions showed them). Fixed with _in(home, …) variants
+(commit above); litter + 17 old --tmp-* probe stores purged.

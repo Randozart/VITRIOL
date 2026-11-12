@@ -167,8 +167,9 @@ export default function (pi: ExtensionAPI) {
     },
   };
   pi.registerCommand("agent", agentCommand);
-  // Legacy alias (2026-11-10: terminology moved from "mode" to "agent").
-  pi.registerCommand("mode", { ...agentCommand, description: "Alias for /agent" });
+  // No /mode alias (2026-11-12, codex-qol stage 1): it shadowed typing
+  // /model — the command palette autocompleted to /mode first. The legacy
+  // "/mode plan" WIDGET format still parses (parse_agent_mode tests).
 
   // Enforcement: per-mode write gate (plan blocks non-.md writes).
   pi.on("tool_call", (event) => {

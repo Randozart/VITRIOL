@@ -162,6 +162,12 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   (green): real CPU seconds burned by the tool's process tree in the last
   sample window, straight from /proc. `cpu flat 120s` (amber) means the
   subtree has consumed nothing — that's a true hang, not a quiet compile.
+- **No-hang bash (longjob)** — known long-runner commands (cargo, make,
+  brievc, npm, pytest, go, …) are **auto-dispatched** instead of blocking:
+  the tool returns a job id + log path in ~50 ms; the agent polls
+  `bg_status`, waits bounded with `bg_wait`, or ends its turn — and is
+  woken with the result when the job finishes. Append `#fg` to force
+  foreground; `OFFICINA_NO_AUTOBG=1` restores blocking behaviour.
 - **Hang watchdog** — long bash calls that stop producing output get a
   notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
   (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge

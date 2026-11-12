@@ -47,9 +47,10 @@ export default function (pi: ExtensionAPI) {
           };
         }
         const result = tool.execute(input as Record<string, unknown>, runner, cwd);
+        void slug;
         return {
           content: [{ type: "text" as const, text: result.text }],
-          details: { repo: slug },
+          details: {},
         };
       },
     });

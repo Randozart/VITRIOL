@@ -20,6 +20,7 @@ import {
   readPrefs,
 } from "../_shared/caduceus-prefs.ts";
 import {
+  budgetStatus,
   budgetSummaryText,
   canSpendCloud,
 } from "../_shared/budget.ts";
@@ -447,7 +448,17 @@ export default function (pi: ExtensionAPI) {
       setRouteWidget(ctx, "cloud", candidate, profile);
       return { model: candidate, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "cloud" } };
     }
-    throw new Error("Lapis Occultus: no physical model available (engine and cloud both unavailable)");
+    // Honest failure (2026-11-12): "both unavailable" hid the actual gate —
+    // budget-exhausted afternoons made this look like an outage.
+    const budget = budgetStatus();
+    const cloudWhy = !profileAllowsCloud(profile)
+      ? `profile '${profile}' is local-only`
+      : !canSpendCloud()
+        ? `cloud budget exhausted (daily ${budget.dailyTokens}/${budget.dailyCap}, monthly ${budget.monthlyTokens}/${budget.monthlyCap})`
+        : "no free cloud lane fits or all cooling";
+    throw new Error(
+      `Lapis Occultus: no physical model available — engine ${localDown ? "down" : "unavailable"}; ${cloudWhy}`,
+    );
   };
 
   pi.on("after_provider_response", (event) => {

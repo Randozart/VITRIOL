@@ -3312,6 +3312,13 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         # 2026-08-31 bugfix: shift FIRST — without it the literal word
         # "officina" fell through into "$@" and pi read it as a first prompt.
         shift
+        # Headless one-shot (exec-infra stage 3, 2026-11-12): the full TUI
+        # harness without a TTY — lanes, prefs, guard, ALWAYS a fresh session.
+        if [[ "${1:-}" == "exec" ]]; then
+            shift
+            OFFICINA_DIR="${OFFICINA_DIR:-${PROJECT_DIR}/officina}"
+            exec node "${OFFICINA_DIR}/scripts/exec.mjs" "$@"
+        fi
         # DEPRECATED frontend (2026-11-10): the canonical Officina UI is the
         # Rust TUI binary (`officina`, source officina/tui). This path keeps
         # the JS frontend available for fallback/reference only.

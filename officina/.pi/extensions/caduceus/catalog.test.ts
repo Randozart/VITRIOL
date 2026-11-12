@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { extractCatalogModels, filterCatalogByProviders, freeToolCandidates, mapCatalogModels } from "./catalog.ts";
+import {
+  extractCatalogModels,
+  filterCatalogByProviders,
+  freeToolCandidates,
+  mapCatalogModels,
+  toolCandidates,
+} from "./catalog.ts";
 
 describe("extractCatalogModels", () => {
   it("accepts raw arrays", () => {
@@ -193,5 +199,40 @@ describe("free model preference", () => {
     expect(ids).toContain("api-airforce/qwen/qwen3-32b");
     expect(ids).toContain("friendliai/meta-llama-3.1-70b-instruct");
     expect(ids).not.toContain("baseten/zai-org/GLM-5.3-Flash");
+  });
+});
+
+describe("toolCandidates policy widening", () => {
+  const rows = [
+    { id: "opencode-go/deepseek-v4.1-flash", owned_by: "opencode-go", pricing: null, capabilities: { tool_calling: true }, context_length: 1000000 },
+    { id: "glm/glm-4.7-flash", owned_by: "glm", pricing: { input: 0, output: 0 }, capabilities: { tool_calling: true }, context_length: 200000 },
+    { id: "glm/paid", owned_by: "glm", pricing: { input: 1, output: 2 }, capabilities: { tool_calling: true }, context_length: 200000 },
+    { id: "baseten/glm-5.3-flash", owned_by: "baseten", pricing: { input: 0, output: 0 }, capabilities: { tool_calling: true }, context_length: 1048576 },
+    { id: "baseten/paid", owned_by: "baseten", pricing: { input: 3, output: 4 }, capabilities: { tool_calling: true }, context_length: 1048576 },
+  ];
+
+  it("defaults to the free lane (I1 parity with freeToolCandidates)", () => {
+    expect(toolCandidates(rows).map((c) => c.id)).toEqual(freeToolCandidates(rows).map((c) => c.id));
+  });
+
+  it("allow_paid admits only that owner's paid models", () => {
+    const ids = toolCandidates(rows, { allowPaidOwners: new Set(["glm"]) }).map((c) => c.id);
+    expect(ids).toContain("glm/paid");
+    expect(ids).not.toContain("baseten/paid");
+    expect(ids).not.toContain("baseten/glm-5.3-flash");
+  });
+
+  it("freeOnly=false admits unranked owners and their paid models", () => {
+    const ids = toolCandidates(rows, { freeOnly: false }).map((c) => c.id);
+    expect(ids).toContain("baseten/glm-5.3-flash");
+    expect(ids).toContain("baseten/paid");
+    expect(ids).toContain("opencode-go/deepseek-v4.1-flash");
+  });
+
+  it("keeps the free flag on admitted paid candidates", () => {
+    const paid = toolCandidates(rows, { allowPaidOwners: new Set(["glm"]) }).find(
+      (c) => c.id === "glm/paid",
+    );
+    expect(paid?.free).toBe(false);
   });
 });

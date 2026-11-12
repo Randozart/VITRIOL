@@ -4,14 +4,21 @@ import type {
   ModelRoute,
   ModelRouteRequest,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
 import { classifyTurn } from "../auto-route/classifier.ts";
 import { configFromEnv, decideTier, parseModelSpec, type Tier } from "../adaptive-router/overflow.ts";
 import type { PeerView, SelfView } from "../adaptive-router/peer-policy.ts";
-import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
+import { extractCatalogModels, toolCandidates } from "../caduceus/catalog.ts";
+import {
+  allowPaidOwners,
+  applyPrefs,
+  capCandidates,
+  prefsPath,
+  readPrefs,
+} from "../_shared/caduceus-prefs.ts";
 import {
   budgetSummaryText,
   canSpendCloud,
@@ -152,56 +159,73 @@ export default function (pi: ExtensionAPI) {
   });
 
   const loadCandidates = async (ctx: ExtensionContext): Promise<void> => {
-    // Gateway lane health (2026-11-11): caduceus marks unhealthy endpoints
-    // (isActive=false → excluded, backoffLevel>0 → demoted). Rebuild the
-    // candidate pool when that marking changes, not on every request.
+    // Gateway lane health (2026-11-11) and routing prefs (2026-11-12):
+    // rebuild the pool when either marking changes, not per request.
     const health = await getLaneHealth();
-    const sig = [...health.hardDown, ...health.backoff].sort().join(",");
+    const prefs = readPrefs();
+    let prefsStamp = 0;
+    try {
+      prefsStamp = statSync(prefsPath()).mtimeMs;
+    } catch {
+      // no prefs file → today's behaviour (I1)
+    }
+    const sig = `${[...health.hardDown, ...health.backoff].sort().join(",")}|prefs:${prefsStamp}`;
     if (catalogLoaded && sig === healthSig) return;
     catalogLoaded = true;
     healthSig = sig;
     cloudCandidates = [];
     const profile = readProfile();
-    const ids: string[] = [];
+    const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
+    const pool: Array<{ provider: string; id: string; owner: string; free: boolean }> = [];
     try {
       if (existsSync(CATALOG)) {
         const raw = JSON.parse(readFileSync(CATALOG, "utf8"));
-        ids.push(...freeToolCandidates(extractCatalogModels(raw)).map((c) => c.id));
+        const found = toolCandidates(extractCatalogModels(raw), {
+          freeOnly: prefs?.free_only !== false,
+          allowPaidOwners: allowPaidOwners(prefs),
+        });
+        pool.push(
+          ...found.map((c) => ({ provider: "caduceus", id: c.id, owner: c.owner, free: c.free })),
+        );
       }
     } catch {
       // fall through to explicit fallbacks
     }
-    const ordered = sortIdsForProfile(
-      ids.map((id) => ({ id })),
-      profile,
-    ).map((x) => x.id);
-    const specs = [
-      ...ordered.map((id) => ({ provider: "caduceus", id })),
-      ...fallbacks,
-    ];
-    const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
+    // Explicit fallbacks keep their backstop role; policy still applies to
+    // them (routing off / deny / rank), never enablement (I2).
+    pool.push(...fallbacks.map((s) => ({ ...s, owner: ownerOf(s), free: false })));
+    const ordered = applyPrefs(sortIdsForProfile(pool, profile), prefs);
     // Healthy lanes first, gateway-backoff lanes demoted to the tail,
     // gateway-hard-down owners excluded entirely (fail-open: owners the
     // gateway doesn't know about are treated as healthy).
-    const healthy = specs.filter((s) => !health.hardDown.has(ownerOf(s)) && !health.backoff.has(ownerOf(s)));
-    const demoted = specs.filter((s) => health.backoff.has(ownerOf(s)));
+    const healthy = ordered.filter(
+      (s) => !health.hardDown.has(s.owner) && !health.backoff.has(s.owner),
+    );
+    const demoted = ordered.filter((s) => health.backoff.has(s.owner));
     const seen = new Set<string>();
-    const perOwner = Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8));
-    const ownerCount = new Map<string, number>();
-    const max = Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48));
-    for (const spec of [...healthy, ...demoted]) {
-      if (seen.has(`${spec.provider}/${spec.id}`)) continue;
-      const owner = (spec.id.split("/")[0] ?? "").toLowerCase();
-      const n = ownerCount.get(owner) ?? 0;
-      if (n >= perOwner) continue;
-      const model = ctx.modelRegistry.find(spec.provider, spec.id);
-      if (!model) continue;
-      if (!ctx.modelRegistry.hasConfiguredAuth(model)) continue;
-      seen.add(`${spec.provider}/${spec.id}`);
-      ownerCount.set(owner, n + 1);
-      cloudCandidates.push(model);
-      if (cloudCandidates.length >= max) break;
-    }
+    const unique = [...healthy, ...demoted].filter((s) => {
+      const key = `${s.provider}/${s.id}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const envCaps = {
+      perOwner: Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8)),
+      max: Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48)),
+    };
+    // Resolve before capping: unresolvable/unauthenticated lanes must not
+    // consume per-owner slots (historical behaviour, pinned by tests).
+    const resolved = unique
+      .map((spec) => ({ spec, model: ctx.modelRegistry.find(spec.provider, spec.id) }))
+      .filter(
+        (x): x is { spec: typeof unique[number]; model: NonNullable<typeof x.model> } =>
+          !!x.model && ctx.modelRegistry.hasConfiguredAuth(x.model),
+      );
+    cloudCandidates = capCandidates(
+      resolved.map((r) => ({ id: r.spec.id, owner: r.spec.owner, model: r.model })),
+      prefs,
+      envCaps,
+    ).map((c) => c.model);
   };
 
   const pickCloud = (tokens: number, now: number): Model | undefined =>

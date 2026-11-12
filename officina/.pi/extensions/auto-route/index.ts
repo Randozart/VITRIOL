@@ -32,6 +32,7 @@ import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import { getCacheModeState, providerIsLocal } from "../_shared/cache-mode.ts";
+import { readPrefs } from "../_shared/caduceus-prefs.ts";
 import { classifyTurn, recentErrorSignal, scratchpadContextLines, type ClassifyInput } from "./classifier.ts";
 import { resolveMode, resolveThreshold, route } from "./router.ts";
 
@@ -131,7 +132,8 @@ export default function (pi: ExtensionAPI) {
   // policy — hard turns promote to free cloud lanes at the router level
   // instead (OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE). Classification and
   // the suggest status line stay live.
-  const freeOnly = process.env.OFFICINA_OVERFLOW_FREE_ONLY !== "0";
+  // Prefs (caduceus panel) override the env policy; absent prefs keep today.
+  const freeOnly = readPrefs()?.free_only ?? process.env.OFFICINA_OVERFLOW_FREE_ONLY !== "0";
 
   let threshold = resolveThreshold(process.env.OFFICINA_ROUTE_THRESHOLD);
   const touchedFiles = new Set<string>();

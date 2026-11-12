@@ -224,8 +224,23 @@ function pricingKnown(record: JsonRecord): boolean {
   return !!raw && typeof raw === "object" && Object.keys(asRecord(raw)).length > 0;
 }
 
-/** All tool-capable free-ish chat models, in preferred routing order. */
-export function freeToolCandidates(rawModels: unknown[]): FreeCandidate[] {
+export interface ToolCandidateOptions {
+  /** Only admit verified-free models (default true, today's behaviour). */
+  freeOnly?: boolean;
+  /** Owners whose paid models may pass while freeOnly is on (caduceus-prefs
+   *  `allow_paid`). Owners outside FREE_OWNER_RANK are rank 99. */
+  allowPaidOwners?: ReadonlySet<string>;
+}
+
+/** All tool-capable chat models in preferred routing order.
+ *  freeOnly=true reproduces the historical free lane; allowPaidOwners widens
+ *  it to explicitly opted-in owners without changing the default. */
+export function toolCandidates(
+  rawModels: unknown[],
+  opts: ToolCandidateOptions = {},
+): FreeCandidate[] {
+  const freeOnly = opts.freeOnly ?? true;
+  const allowPaid = opts.allowPaidOwners ?? new Set<string>();
   const out: FreeCandidate[] = [];
   const seen = new Set<string>();
   for (const raw of rawModels) {
@@ -236,14 +251,17 @@ export function freeToolCandidates(rawModels: unknown[]): FreeCandidate[] {
 
     const owner = ownerOf(record, id);
     const rank = FREE_OWNER_RANK[owner];
-    if (rank === undefined) continue;
+    const paidAllowed = allowPaid.has(owner);
+    // freeOnly admits ranked owners plus explicit allow_paid owners; with
+    // freeOnly off every tool-capable chat model is fair game.
+    if (freeOnly && rank === undefined && !paidAllowed) continue;
 
     const pricing = pricingKnown(record);
     const cost = costOf(record);
     const free = pricing
       ? cost.input === 0 && cost.output === 0
       : COSTLESS_OWNERS.has(owner);
-    if (!free) continue;
+    if (freeOnly && !free && !paidAllowed) continue;
 
     const contextWindow = Math.max(
       MIN_CONTEXT,
@@ -296,4 +314,9 @@ export function freeToolCandidates(rawModels: unknown[]): FreeCandidate[] {
     return a.id.localeCompare(b.id);
   });
   return deduped;
+}
+
+/** Historical entry point: verified-free tool lanes only (I1 parity). */
+export function freeToolCandidates(rawModels: unknown[]): FreeCandidate[] {
+  return toolCandidates(rawModels, { freeOnly: true });
 }

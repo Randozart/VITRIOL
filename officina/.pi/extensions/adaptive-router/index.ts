@@ -9,7 +9,13 @@ import {
   startEnginePolling,
 } from "../_shared/engine.ts";
 import { classifyTurn } from "../auto-route/classifier.ts";
-import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
+import { extractCatalogModels, toolCandidates } from "../caduceus/catalog.ts";
+import {
+  allowPaidOwners,
+  applyPrefs,
+  capCandidates,
+  readPrefs,
+} from "../_shared/caduceus-prefs.ts";
 import { canSpendCloud } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
 import { getLaneHealth } from "../_shared/lane-health.ts";
@@ -65,7 +71,9 @@ export default function (pi: ExtensionAPI) {
   // Free-only (default ON): every lane must be a verified-free model
   // (zero-priced or costless owner). Explicit OFFICINA_OVERFLOW_CLOUD
   // specs are honoured only when free-only is disabled.
-  const freeOnly = cfg.freeOnly ?? true;
+  // Prefs (caduceus panel, 2026-11-12) override the env policy; absent prefs
+  // keep today's behaviour (I1).
+  const freeOnly = readPrefs()?.free_only ?? cfg.freeOnly ?? true;
   const discoverFree = freeOnly || /^(free|auto)$/i.test(cloudEnv);
   const explicitSpecs = (discoverFree ? "" : cloudEnv)
     .split(",")
@@ -93,11 +101,16 @@ export default function (pi: ExtensionAPI) {
   const discoverFreeModels = (): { provider: string; id: string }[] => {
     if (!discoverFree || !existsSync(catalogPath)) return [];
     try {
+      const prefs = readPrefs();
       const raw = JSON.parse(readFileSync(catalogPath, "utf8"));
-      return freeToolCandidates(extractCatalogModels(raw)).map((c) => ({
-        provider: "caduceus",
-        id: c.id,
-      }));
+      const found = toolCandidates(extractCatalogModels(raw), {
+        freeOnly: prefs?.free_only !== false,
+        allowPaidOwners: allowPaidOwners(prefs),
+      });
+      return applyPrefs(
+        found.map((c) => ({ provider: "caduceus", id: c.id, owner: c.owner, free: c.free })),
+        prefs,
+      ).map((c) => ({ provider: c.provider, id: c.id }));
     } catch {
       return [];
     }
@@ -177,29 +190,22 @@ export default function (pi: ExtensionAPI) {
     }
     if (cloudCandidates.length === 0) {
       const seen = new Set<string>();
+      const prefs = readPrefs();
       const allSpecs = [...discoverFreeModels(), ...(freeOnly ? [] : explicitSpecs), ...fallbackSpecs];
+      // Policy applies to fallbacks too (routing off / deny / rank / pin).
+      const policySpecs = applyPrefs(
+        allSpecs.map((s) => ({ ...s, owner: ownerOf(s), free: false })),
+        prefs,
+      );
       const specs = [
-        ...allSpecs.filter((s0) => !laneHealth.hardDown.has(ownerOf(s0)) && !laneHealth.backoff.has(ownerOf(s0))),
-        ...allSpecs.filter((s0) => laneHealth.backoff.has(ownerOf(s0))),
+        ...policySpecs.filter((s0) => !laneHealth.hardDown.has(s0.owner) && !laneHealth.backoff.has(s0.owner)),
+        ...policySpecs.filter((s0) => laneHealth.backoff.has(s0.owner)),
       ];
-      const maxCandidates = Math.max(
-        1,
-        Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48),
-      );
-      const perOwner = Math.max(
-        1,
-        Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8),
-      );
-      const ownerCounts = new Map<string, number>();
-      const selected: typeof specs = [];
-      for (const spec of specs) {
-        const owner = (spec.id.split("/")[0] ?? "").toLowerCase();
-        const count = ownerCounts.get(owner) ?? 0;
-        if (count >= perOwner) continue;
-        ownerCounts.set(owner, count + 1);
-        selected.push(spec);
-        if (selected.length >= maxCandidates) break;
-      }
+      const envCaps = {
+        perOwner: Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8)),
+        max: Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48)),
+      };
+      const selected = capCandidates(specs, prefs, envCaps);
       cloudCandidates = selected
         .map((spec) => ctx.modelRegistry.find(spec.provider, spec.id) ?? undefined)
         .filter((m): m is Model => !!m)

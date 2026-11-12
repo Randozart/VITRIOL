@@ -103,6 +103,8 @@ describe("resilient-default", () => {
     engine.busy = false;
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model";
+    // Never honour the operator's routing prefs in tests (panel I1).
+    process.env.OFFICINA_CADUCEUS_PREFS_FILE = "/tmp/officina-caduceus-prefs-none.json";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-resilient-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-resilient-ledger-test";
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-resilient-profile-test";

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { budgetStatus } from "../_shared/budget.ts";
 import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
@@ -69,7 +69,7 @@ const VENDOR_CLI = join(
   "omniroute",
 );
 
-function parseJsonLoose(text: string): unknown {
+export function parseJsonLoose(text: string): unknown {
   const cleaned = text.replace(/\x1b\[[0-9;]*m/g, "");
   const obj = cleaned.indexOf("{");
   const arr = cleaned.indexOf("[");
@@ -190,6 +190,70 @@ function readEnvNames(dir: string): Set<string> {
     // cosmetic
   }
   return names;
+}
+
+/** Upsert KEY=VALUE in the officina env file (atomic, 0600). */
+export function writeEnvKey(dir: string, name: string, value: string): void {
+  const path = join(dir, "env");
+  const old = existsSync(path) ? readFileSync(path, "utf8") : "";
+  const lines = old.split(/\r?\n/);
+  const re = new RegExp(`^\\s*${name}\\s*=`);
+  let found = false;
+  const next = lines.map((line) => {
+    if (re.test(line)) {
+      found = true;
+      return `${name}=${value}`;
+    }
+    return line;
+  });
+  if (!found) {
+    if (next.length > 0 && next[next.length - 1] === "") next.splice(next.length - 1, 0, `${name}=${value}`);
+    else next.push(`${name}=${value}`);
+  }
+  mkdirSync(dir, { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, next.join("\n"), { mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+/** Flip accounts.json enabled=true for a provider (atomic). */
+export function enableAccount(dir: string, provider: string): boolean {
+  const path = join(dir, "accounts.json");
+  try {
+    const doc = JSON.parse(readFileSync(path, "utf8")) as { accounts?: Array<Record<string, unknown>> };
+    const list = Array.isArray(doc.accounts) ? doc.accounts : [];
+    const entry = list.find(
+      (a) => String(a?.provider ?? "").toLowerCase() === provider.toLowerCase(),
+    );
+    if (!entry) return false;
+    entry.enabled = true;
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Push the accounts file to the gateway (same CLI the operator would run). */
+function runAccountsSync(): string {
+  try {
+    const script = fileURLToPath(new URL("../../../scripts/caduceus.mjs", import.meta.url));
+    const res = spawnSync(process.execPath, [script, "accounts", "sync", "--json"], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: process.env,
+    });
+    if (res.error) return `sync failed (${res.error.message})`;
+    if (res.status !== 0) {
+      const tail = String(res.stderr ?? "").trim().split("\n").slice(-1)[0] ?? "";
+      return `sync exited ${res.status ?? "?"}${tail ? `: ${tail}` : ""}`;
+    }
+    return "synced";
+  } catch (error) {
+    return `sync failed (${error instanceof Error ? error.message : String(error)})`;
+  }
 }
 
 /** OAuth registry from the pure vendor-independent lib that the CLI uses. */
@@ -541,6 +605,53 @@ export default async function (pi: ExtensionAPI) {
       await ctx.ui.notify?.(
         `providers: ${rows.length} keyed · ${cooling} cooling — ${rows.map((r) => r.provider).join(", ")}`,
         "info",
+      );
+    },
+  });
+
+  // Quick key add (2026-11-12, panel stage 4): invoked by the TUI's `a` key
+  // as `/caduceus-add <provider>`. Writes the env key, enables the account,
+  // pushes it to the gateway, and refreshes the state file. The key is
+  // visible while typing (pi has no password mode) — the wizard
+  // (`vitriol caduceus signup --only <id>`) is the hidden alternative.
+  pi.registerCommand("caduceus-add", {
+    description: "Add a provider API key (env + accounts + sync)",
+    handler: async (args: string, ctx: { ui: any }) => {
+      const provider = String(args ?? "").trim().toLowerCase();
+      if (!provider) {
+        await ctx.ui.notify?.("usage: /caduceus-add <provider>", "warning");
+        return;
+      }
+      const account = readAccountsDoc(officinaDir).accounts.find(
+        (a) => String(a?.provider ?? "").toLowerCase() === provider,
+      );
+      const envName = String(account?.credential_env ?? "").trim();
+      if (!account || !envName) {
+        await ctx.ui.notify?.(
+          `caduceus-add: unknown provider '${provider}' (no accounts.json entry with credential_env)`,
+          "error",
+        );
+        return;
+      }
+      const typed = await ctx.ui.input?.(
+        `API key for ${provider} (${envName}) — visible while typing`,
+        "paste key",
+      );
+      const key = String(typed ?? "").trim();
+      if (!key) {
+        await ctx.ui.notify?.(`caduceus-add ${provider}: cancelled`, "info");
+        return;
+      }
+      writeEnvKey(officinaDir, envName, key);
+      process.env[envName] = key;
+      const enabled = enableAccount(officinaDir, provider);
+      const sync = runAccountsSync();
+      await writeState(true);
+      await ctx.ui.notify?.(
+        `caduceus-add ${provider}: key saved (${envName}) · ${
+          enabled ? "account enabled" : "account row missing"
+        } · ${sync}`,
+        enabled && sync === "synced" ? "info" : "warning",
       );
     },
   });

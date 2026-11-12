@@ -114,8 +114,11 @@ impl CaduceusState {
 #[serde(default)]
 pub struct ProviderPrefs {
     /// "on" | "off"; None = default on.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub routing: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rank: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_paid: Option<bool>,
 }
 
@@ -230,10 +233,6 @@ pub fn load_at(path: &Path) -> Option<CaduceusState> {
 
 /// Load policy. Absent file → defaults, no note. Invalid/unsupported →
 /// defaults + a note the page footer shows (I6 corrupt-safe).
-pub fn load_prefs() -> (CaduceusPrefs, Option<String>) {
-    load_prefs_at(&prefs_path())
-}
-
 pub fn load_prefs_at(path: &Path) -> (CaduceusPrefs, Option<String>) {
     if !path.exists() {
         return (CaduceusPrefs::default(), None);
@@ -270,10 +269,6 @@ pub fn save_prefs_at(path: &Path, prefs: &CaduceusPrefs) -> std::io::Result<()> 
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     fs::write(&tmp, format!("{body}\n"))?;
     fs::rename(&tmp, path)
-}
-
-pub fn save_prefs(prefs: &CaduceusPrefs) -> std::io::Result<()> {
-    save_prefs_at(&prefs_path(), prefs)
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────
@@ -332,6 +327,9 @@ pub enum PolicyRow {
 /// The page state owned by AppState while `/caduceus` is open.
 #[derive(Debug, Clone)]
 pub struct Page {
+    /// Policy file this page reads/writes. Held explicitly so tests never
+    /// touch the operator's HOME file (env-based path resolved once at load).
+    pub prefs_file: PathBuf,
     pub tab: Tab,
     pub sel: usize,
     pub filter: String,
@@ -346,6 +344,7 @@ pub struct Page {
 impl Default for Page {
     fn default() -> Self {
         Self {
+            prefs_file: prefs_path(),
             tab: Tab::Providers,
             sel: 0,
             filter: String::new(),
@@ -360,8 +359,10 @@ impl Default for Page {
 
 impl Page {
     pub fn load() -> Self {
-        let (prefs, note) = load_prefs();
+        let prefs_file = prefs_path();
+        let (prefs, note) = load_prefs_at(&prefs_file);
         Self {
+            prefs_file,
             state: load(),
             prefs,
             note,
@@ -372,7 +373,7 @@ impl Page {
     /// `r` — re-read both files; selection clamps to the new row set.
     pub fn reload(&mut self) {
         self.state = load();
-        let (prefs, note) = load_prefs();
+        let (prefs, note) = load_prefs_at(&self.prefs_file);
         self.prefs = prefs;
         self.note = note;
         self.clamp_sel();
@@ -614,7 +615,7 @@ impl Page {
     }
 
     fn save(&mut self) {
-        self.note = Some(match save_prefs(&self.prefs) {
+        self.note = Some(match save_prefs_at(&self.prefs_file, &self.prefs) {
             Ok(()) => "prefs saved".to_string(),
             Err(e) => format!("prefs save failed: {e}"),
         });
@@ -845,6 +846,7 @@ mod tests {
 
     fn sample_page() -> Page {
         Page {
+            prefs_file: tmp_path("page"),
             state: parse_state(SAMPLE_V2),
             prefs: CaduceusPrefs::default(),
             ..Page::default()
@@ -883,8 +885,8 @@ mod tests {
     #[test]
     fn toggles_change_policy_and_persist() {
         let path = tmp_path("toggle");
-        std::env::set_var("OFFICINA_CADUCEUS_PREFS_FILE", &path);
         let mut page = sample_page();
+        page.prefs_file = path.clone();
         page.set_tab(Tab::Providers);
         assert!(page.toggle());
         assert_eq!(page.prefs.routing("dahl"), "off");
@@ -918,14 +920,13 @@ mod tests {
         page.sel = 2;
         page.adjust(1000);
         assert_eq!(page.prefs.max_candidates, 256);
-        std::env::remove_var("OFFICINA_CADUCEUS_PREFS_FILE");
     }
 
     #[test]
     fn rank_adjust_and_clamps() {
         let path = tmp_path("rank");
-        std::env::set_var("OFFICINA_CADUCEUS_PREFS_FILE", &path);
         let mut page = sample_page();
+        page.prefs_file = path;
         page.set_tab(Tab::Providers);
         page.adjust(1);
         assert_eq!(page.prefs.rank("dahl"), Some(0));
@@ -933,7 +934,6 @@ mod tests {
         assert_eq!(page.prefs.rank("dahl"), Some(1));
         page.adjust(-1000);
         assert_eq!(page.prefs.rank("dahl"), Some(99));
-        std::env::remove_var("OFFICINA_CADUCEUS_PREFS_FILE");
     }
 
     #[test]

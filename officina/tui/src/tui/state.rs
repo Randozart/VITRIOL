@@ -511,6 +511,9 @@ pub struct AppState {
     // policy from the TUI-owned prefs file. The TUI never does HTTP and
     // never sees secrets (I4); it writes caduceus-prefs.json only.
     pub caduceus: Option<crate::tui::caduceus::Page>,
+    /// Deferred external flow (stage 4): argv the loop runs after suspending
+    /// the TUI (none = no suspend). Set by the caduceus page's A/o keys.
+    pub caduceus_suspend: Option<Vec<String>>,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -659,6 +662,7 @@ impl Default for AppState {
             cache_dir: String::new(),
             cache_total: 0,
             caduceus: None,
+            caduceus_suspend: None,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),

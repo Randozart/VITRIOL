@@ -1941,7 +1941,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     // ── footer ──
     let mut footer = vec![Line::from(Span::styled(
-        "  tab switch · space toggle · +/- rank/cap · / filter · enter detail · r reload · esc close",
+        "  tab switch · space toggle · +/- rank/cap · a add key · A wizard · o oauth/site · / filter · r reload · esc close",
         Style::new().fg(theme::MUTED).bg(theme::PANEL),
     ))];
     if page.filtering {

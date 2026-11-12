@@ -88,6 +88,8 @@ describe("adaptive-router wiring", () => {
     engineUp.current = true;
     process.env.OFFICINA_OVERFLOW = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/opencode-go/deepseek-v4.1-flash";
+    // Never honour the operator's routing prefs in tests (panel I1).
+    process.env.OFFICINA_CADUCEUS_PREFS_FILE = "/tmp/officina-caduceus-prefs-none.json";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-adaptive-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-adaptive-ledger-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";

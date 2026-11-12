@@ -4,7 +4,7 @@ pub mod caduceus;
 pub mod layout;
 pub mod state;
 
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::time::Duration;
 
@@ -292,6 +292,41 @@ fn tools_usage(state: &mut state::AppState) {
     ));
 }
 
+/// Hand the terminal to an external interactive flow (signup wizard, OAuth
+/// login), then restore raw mode + alternate screen. Non-TTY refuses: a failed
+/// resume is worse than no suspend, and the page falls back to printing the
+/// command.
+fn suspend_external(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    argv: &[String],
+) -> io::Result<()> {
+    if argv.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty argv"));
+    }
+    if !io::stdout().is_terminal() {
+        return Err(io::Error::new(io::ErrorKind::Other, "not a TTY"));
+    }
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        crossterm::event::DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    )?;
+    let status = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status();
+    enable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
+        crossterm::cursor::Hide
+    )?;
+    terminal.clear()?;
+    status.map(|_| ())
+}
+
 async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     state: &mut AppState,
@@ -334,6 +369,22 @@ async fn run_loop(
                 match maybe_input {
                     Some(Event::Key(key)) => {
                         handle_key(key, state, bridge).await;
+                        if let Some(argv) = state.caduceus_suspend.take() {
+                            match suspend_external(terminal, &argv) {
+                                Ok(()) => {
+                                    if let Some(page) = state.caduceus.as_mut() {
+                                        page.reload();
+                                    }
+                                }
+                                Err(e) => {
+                                    let cmd = argv.join(" ");
+                                    if let Some(page) = state.caduceus.as_mut() {
+                                        page.note = Some(format!("suspend failed ({e}) · run: {cmd}"));
+                                    }
+                                }
+                            }
+                            last_frame = std::time::Instant::now();
+                        }
                         if state.should_quit {
                             terminal.draw(|frame| render(frame, state))?;
                             break;
@@ -433,9 +484,11 @@ async fn run_loop(
     Ok(())
 }
 
-fn handle_caduceus_key(key: KeyEvent, state: &mut AppState) {
+async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
+    use crate::tui::caduceus::Tab;
     let mut close = false;
     let mut reload = false;
+    let mut suspend: Option<Vec<String>> = None;
     {
         let Some(page) = state.caduceus.as_mut() else {
             return;
@@ -509,8 +562,73 @@ fn handle_caduceus_key(key: KeyEvent, state: &mut AppState) {
             KeyCode::Backspace | KeyCode::Delete => {
                 page.clear_model_state();
             }
+            // a — quick key (extension dialog; key visible while typing).
+            KeyCode::Char('a') => {
+                if page.tab == Tab::Providers {
+                    if let Some(p) = page.provider_view().get(page.sel) {
+                        let id = p.id.clone();
+                        let _ = bridge
+                            .request(RpcCommand::Prompt {
+                                id: None,
+                                message: format!("/caduceus-add {id}"),
+                                images: None,
+                                streaming_behavior: None,
+                            })
+                            .await;
+                        page.note = Some(format!("add key · {id} · follow the dialog"));
+                    }
+                }
+            }
+            // A — suspend the TUI and run the hidden-entry signup wizard.
+            KeyCode::Char('A') => {
+                if page.tab == Tab::Providers {
+                    if let Some(p) = page.provider_view().get(page.sel) {
+                        suspend = Some(vec![
+                            "vitriol".to_string(),
+                            "caduceus".to_string(),
+                            "signup".to_string(),
+                            "--only".to_string(),
+                            p.id.clone(),
+                        ]);
+                        page.note = Some(format!("wizard · {}", p.id));
+                    }
+                }
+            }
+            // o — OAuth login (suspend) or open the signup page.
+            KeyCode::Char('o') => {
+                if page.tab == Tab::Providers {
+                    if let Some(p) = page.provider_view().get(page.sel) {
+                        let id = p.id.clone();
+                        let oauth = p.category == "oauth"
+                            || matches!(
+                                p.method.as_str(),
+                                "browser" | "device" | "import" | "social" | "callback" | "oauth"
+                            );
+                        let website = p.website.clone();
+                        if oauth {
+                            suspend = Some(vec![
+                                "vitriol".to_string(),
+                                "caduceus".to_string(),
+                                "accounts".to_string(),
+                                "oauth".to_string(),
+                                "login".to_string(),
+                                id.clone(),
+                            ]);
+                            page.note = Some(format!("oauth login · {id}"));
+                        } else if !website.is_empty() {
+                            let _ = std::process::Command::new("xdg-open").arg(&website).spawn();
+                            page.note = Some(format!("opened {website}"));
+                        } else {
+                            page.note = Some("no website on record".to_string());
+                        }
+                    }
+                }
+            }
             _ => {}
         }
+    }
+    if suspend.is_some() {
+        state.caduceus_suspend = suspend;
     }
     if reload {
         if let Some(page) = state.caduceus.as_mut() {
@@ -707,7 +825,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
     // /caduceus page — tabs, selection, policy edits (esc/q closes). Pending
     // extension dialogs own keys above, so inline key prompts win.
     if state.caduceus.is_some() {
-        handle_caduceus_key(key, state);
+        handle_caduceus_key(key, state, bridge).await;
         return;
     }
 

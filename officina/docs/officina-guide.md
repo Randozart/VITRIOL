@@ -124,6 +124,42 @@ Fixed egress only (no quota-based IP rotation):
 
 See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 
+## Caduceus page
+
+`/caduceus` opens the gateway page (full-screen, four tabs):
+
+- **Providers** — every account plus the OAuth registry: routing on/off,
+  rank, key presence, gateway bucket, free model count, signup method.
+  `space` toggles routing, `+`/`-` rank, `enter` detail, `r` reload.
+- **Models** — tool-capable lanes with derived free/paid flags.
+  `space` cycles pin → deny → neutral, `/` filters.
+- **Health** — gateway reachability, catalog freshness, budget, cooling,
+  connection buckets (read-only).
+- **Policy** — `free_only`, per-owner cap, max candidates, per-provider
+  `allow paid`. `space` toggles, `+`/`-` adjusts.
+
+Facts come from `~/.vitriol/officina/caduceus-state.json` (written by the
+caduceus extension every 60 s). Policy lives in
+`~/.vitriol/officina/caduceus-prefs.json`, written by the TUI and honoured
+by the routers on the next candidate-pool rebuild — no restart needed.
+
+Free-ness is derived from gateway pricing and the costless-owner list; the
+page only ever toggles policy. Removing prefs (or a corrupt file) restores
+the default routing exactly; the page footer says when prefs were ignored.
+
+Adding a provider:
+
+- `a` — quick key: an extension dialog asks for the key (visible while
+  typing), writes the env file, enables the account and syncs the gateway.
+- `A` — hidden-entry signup wizard: the TUI suspends,
+  `vitriol caduceus signup --only <provider>` runs, then the TUI resumes.
+- `o` — OAuth providers: suspend and run
+  `vitriol caduceus accounts oauth login <id>`; API-key providers open
+  their signup page.
+
+Accounts remain gateway state (`vitriol caduceus accounts … --sync`); the
+TUI only changes routing preferences.
+
 ## Running multiple sessions
 
 No flags, no per-launch env — the router adapts per session, per turn

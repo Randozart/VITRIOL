@@ -483,6 +483,8 @@ pub struct AppState {
     pub resume_open: bool,
     pub resume_entries: Vec<crate::rpc::sessions::SessionEntry>,
     pub resume_sel: usize,
+    /// Codex-QoL stage 3: typeable filter over title/path in the picker.
+    pub resume_filter: String,
 
     // /model picker modal (owner request 2026-11-10 — parity with the JS
     // TUI's selector instead of blind cycle).
@@ -652,6 +654,7 @@ impl Default for AppState {
             resume_open: false,
             resume_entries: Vec::new(),
             resume_sel: 0,
+            resume_filter: String::new(),
             models_open: false,
             models: Vec::new(),
             models_sel: 0,
@@ -1140,6 +1143,29 @@ impl AppState {
     pub fn caduceus_open_page(&mut self) {
         self.note_phase(UiEvent::OpenModal);
         self.caduceus = Some(crate::tui::caduceus::Page::load());
+    }
+
+    /// Resume picker rows honour the typeable filter (case-insensitive
+    /// substring over title + path).
+    pub fn filtered_resume_entries(&self) -> Vec<&crate::rpc::sessions::SessionEntry> {
+        if self.resume_filter.is_empty() {
+            return self.resume_entries.iter().collect();
+        }
+        let needle = self.resume_filter.to_lowercase();
+        self.resume_entries
+            .iter()
+            .filter(|e| {
+                e.title.to_lowercase().contains(&needle)
+                    || e.path.to_string_lossy().to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    pub fn clamp_resume_sel(&mut self) {
+        let n = self.filtered_resume_entries().len();
+        if self.resume_sel >= n {
+            self.resume_sel = n.saturating_sub(1);
+        }
     }
 
     /// `/status` — snapshot the session facts once and open the modal.
@@ -3018,6 +3044,41 @@ mod tests {
         assert!(matches!(s.entries[0], ChatEntry::Diag(_)));
         assert!(matches!(s.entries[1], ChatEntry::Diag(_)));
         assert!(s.notice.is_none(), "errors do not use the glance row");
+    }
+
+    #[test]
+    fn resume_filter_narrows_and_clamps() {
+        // codex-qol stage 3
+        use crate::rpc::sessions::SessionEntry;
+        let mut s = AppState::default();
+        let mk = |title: &str, p: &str| SessionEntry {
+            path: std::path::PathBuf::from(p),
+            title: title.to_string(),
+            modified: std::time::SystemTime::UNIX_EPOCH,
+            msg_count: 1,
+        };
+        s.resume_entries = vec![
+            mk("fix the flux capacitor", "/s/a.jsonl"),
+            mk("refactor dashboard", "/s/b.jsonl"),
+            mk("investigate flaky tests", "/s/c.jsonl"),
+        ];
+        assert_eq!(s.filtered_resume_entries().len(), 3);
+        s.resume_filter = "fl".into();
+        let names: Vec<String> = s
+            .filtered_resume_entries()
+            .iter()
+            .map(|e| e.title.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["fix the flux capacitor", "investigate flaky tests"]
+        );
+        s.resume_sel = 9;
+        s.clamp_resume_sel();
+        assert_eq!(s.resume_sel, 1);
+        s.resume_filter = "zzz".into();
+        s.clamp_resume_sel();
+        assert_eq!(s.resume_sel, 0);
     }
 
     #[test]

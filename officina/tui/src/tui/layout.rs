@@ -1272,23 +1272,41 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            " ↑↓ select · enter resume · esc cancel ",
+            if state.resume_filter.is_empty() {
+                " ↑↓ select · enter resume · type to filter · esc cancel ".to_string()
+            } else {
+                format!(" /{} _ · ↑↓ · enter · esc clears ", state.resume_filter)
+            },
             Style::new().fg(theme::MUTED),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
 
     let visible = inner.height as usize;
+    let filtered = state.filtered_resume_entries();
     let sel = state.resume_sel;
     let skip = if sel + 1 > visible {
         sel + 1 - visible
     } else {
         0
     };
-    let entries = &state.resume_entries[skip.min(state.resume_entries.len())..];
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, e) in entries.iter().enumerate() {
+    if filtered.is_empty() {
+        lines.push(Line::from(Span::styled(
+            if state.resume_filter.is_empty() {
+                "  no sessions".to_string()
+            } else {
+                format!("  no sessions match '{}'", state.resume_filter)
+            },
+            Style::new().fg(theme::MUTED),
+        )));
+    }
+    let window: Vec<_> = filtered
+        .into_iter()
+        .skip(skip.min(state.resume_entries.len()))
+        .collect();
+    for (i, e) in window.iter().enumerate() {
         let absolute = skip + i;
         let when = e
             .modified

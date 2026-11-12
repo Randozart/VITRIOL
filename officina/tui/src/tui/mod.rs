@@ -912,17 +912,39 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
     }
 
     // /resume modal captures navigation while open.
+    // /resume picker with typeable filter (codex-qol stage 3): characters
+    // narrow the list, esc clears first and closes second.
     if state.resume_open {
         match key.code {
-            KeyCode::Esc => state.resume_open = false,
+            KeyCode::Esc => {
+                if state.resume_filter.is_empty() {
+                    state.resume_open = false;
+                } else {
+                    state.resume_filter.clear();
+                    state.resume_sel = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                state.resume_filter.pop();
+                state.resume_sel = 0;
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                state.resume_filter.push(c);
+                state.resume_sel = 0;
+            }
             KeyCode::Up => state.resume_sel = state.resume_sel.saturating_sub(1),
             KeyCode::Down => {
-                if state.resume_sel + 1 < state.resume_entries.len() {
+                let n = state.filtered_resume_entries().len();
+                if state.resume_sel + 1 < n {
                     state.resume_sel += 1;
                 }
             }
             KeyCode::Enter => {
-                if let Some(entry) = state.resume_entries.get(state.resume_sel) {
+                let entries = state.filtered_resume_entries();
+                if let Some(entry) = entries.get(state.resume_sel) {
                     let path = entry.path.to_string_lossy().to_string();
                     // Runtime peer fence (I2): a live peer's ACTIVE session
                     // file must not gain a second pi writer.
@@ -1381,6 +1403,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                             Ok(Ok(list)) if !list.is_empty() => {
                                 state.resume_entries = list;
                                 state.resume_sel = 0;
+                                state.resume_filter.clear();
                                 state.note_phase(state::UiEvent::OpenModal);
                                 state.resume_open = true;
                             }

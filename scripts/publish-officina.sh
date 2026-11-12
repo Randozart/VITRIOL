@@ -61,12 +61,19 @@ echo "== gates: cargo test (tui)"
 
 # ── 3. Secrets canary (I3: split carries full path history) ─────────────
 echo "== secrets canary (history of ${SUBTREE}/)"
-# Whole-history scan of the subtree paths for key-shaped material.
+# Whole-history scan of the subtree paths for key/env/pem files.
 if git log --format= --name-only -- "${SUBTREE}" | sort -u | grep -E '\.(env|key|pem)$' >/dev/null 2>&1; then
   fail "key/env/pem files exist in ${SUBTREE} history — remove before publishing"
 fi
-LEAKS="$(git grep -nE 'sk-[A-Za-z0-9_-]{20,}|gho_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}' -- "${SUBTREE}" || true)"
+# Key-shaped strings, working tree AND full path history. The allowlist
+# carries KNOWN test fixtures (obvious dummies, e.g. the alphabet key in
+# the sensitive-prompt routing test); anything else fails the publish.
+ALLOW_FAKE='sk-abcdefghijklmnopqrstuvwxyz0123456789'
+PATTERN='sk-[A-Za-z0-9_-]{20,}|gho_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}'
+LEAKS="$(git grep -nE "$PATTERN" -- "${SUBTREE}" | grep -vF "$ALLOW_FAKE" || true)"
 [[ -z "$LEAKS" ]] || { echo "$LEAKS" | head -5 >&2; fail "secret-shaped strings in ${SUBTREE} working tree"; }
+HIST_LEAKS="$(git log -p --format= -- "${SUBTREE}" | grep -nE "$PATTERN" | grep -vF "$ALLOW_FAKE" | head -5 || true)"
+[[ -z "$HIST_LEAKS" ]] || { echo "$HIST_LEAKS" >&2; fail "secret-shaped strings in ${SUBTREE} history"; }
 
 # ── 4. Version + split + tag ────────────────────────────────────────────
 VERSION="$(node -p "require('./officina/package.json').version")"

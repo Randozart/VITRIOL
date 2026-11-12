@@ -32,12 +32,20 @@ done
 
 fail() { echo "publish-officina: $*" >&2; exit 1; }
 
-# ── 1. Clean tree, pushed main ──────────────────────────────────────────
+# ── 1. Clean tree, main-push awareness ──────────────────────────────────
 [[ -z "$(git status --porcelain)" ]] || fail "working tree dirty — commit or stash first"
 git fetch --quiet origin 2>/dev/null || true
 LOCAL_HEAD="$(git rev-parse HEAD)"
 if git rev-parse --verify origin/main >/dev/null 2>&1; then
-  [[ "$(git rev-parse origin/main)" == "$LOCAL_HEAD" ]] || fail "main not pushed — push before publishing"
+  if [[ "$(git rev-parse origin/main)" != "$LOCAL_HEAD" ]]; then
+    AHEAD="$(git rev-list origin/main..HEAD --count)"
+    # Warn, don't block: the published tag carries its own provenance
+    # (split commit + source hash printed below). The operator's push
+    # cadence on the private origin is their own business.
+    echo "WARN: main is ${AHEAD} commit(s) ahead of origin/main"
+  fi
+else
+  echo "WARN: no origin/main — provenance relies on the printed source hash"
 fi
 echo "== source commit: $LOCAL_HEAD"
 

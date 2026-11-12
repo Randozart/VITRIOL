@@ -559,6 +559,10 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
             KeyCode::Enter => page.detail = true,
             KeyCode::Char('/') => page.filtering = true,
             KeyCode::Char('r') => reload = true,
+            KeyCode::Char('h') => {
+                page.toggle_hidden();
+            }
+            KeyCode::Char('H') => page.toggle_show_hidden(),
             KeyCode::Backspace | KeyCode::Delete => {
                 page.clear_model_state();
             }

@@ -1709,16 +1709,27 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Tab::Models => {
             for (idx, c) in page.candidate_view().iter().enumerate() {
                 let selected = idx == page.sel;
-                let model_state = page.prefs.model_state(&c.id);
+                let state_label = if page.show_hidden && page.prefs.is_hidden(&c.id) {
+                    "hidden"
+                } else {
+                    page.prefs.model_state(&c.id).label()
+                };
                 let text = format!(
                     "  {:<44} {:<14} {:>8} {:<5} {:<7}",
                     trunc(&c.id, 44),
                     trunc(&c.owner, 14),
                     caduceus::fmt_count(c.context_window),
                     if c.free { "✓" } else { "paid" },
-                    model_state.label()
+                    state_label
                 );
-                lines.push(Line::from(Span::styled(text, caduceus_row_style(selected))));
+                let style = if selected {
+                    caduceus_row_style(true)
+                } else if page.prefs.is_hidden(&c.id) {
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL)
+                } else {
+                    caduceus_row_style(false)
+                };
+                lines.push(Line::from(Span::styled(text, style)));
             }
         }
         Tab::Health => match page.state.as_ref() {
@@ -1911,10 +1922,15 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         if c.free { "free" } else { "paid" }
                     ),
                     format!(
-                        "state     {}",
+                        "state     {}{}",
                         match page.prefs.model_state(&c.id) {
                             ModelState::Neutral => "neutral (space: pin → deny → neutral)",
                             other => other.label(),
+                        },
+                        if page.prefs.is_hidden(&c.id) {
+                            " · hidden (h unhides, H reveals)"
+                        } else {
+                            " · visible (h hides)"
                         }
                     ),
                 ]
@@ -1941,7 +1957,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     // ── footer ──
     let mut footer = vec![Line::from(Span::styled(
-        "  tab switch · space toggle · +/- rank/cap · a add key · A wizard · o oauth/site · / filter · r reload · esc close",
+        "  tab switch · space toggle · +/- rank/cap · h hide · H show hidden · a add key · A wizard · o oauth/site · / filter · r reload · esc close",
         Style::new().fg(theme::MUTED).bg(theme::PANEL),
     ))];
     if page.filtering {

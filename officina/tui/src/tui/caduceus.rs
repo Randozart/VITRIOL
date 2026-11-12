@@ -127,6 +127,10 @@ pub struct ProviderPrefs {
 pub struct ModelPrefs {
     pub pinned: Vec<String>,
     pub denied: Vec<String>,
+    /// Display-only (2026-11-12): hidden from the Models tab unless H shows
+    /// hidden rows. Never affects routing — `denied` is the routing control.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hidden: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +174,10 @@ impl CaduceusPrefs {
             .get(id)
             .and_then(|p| p.allow_paid)
             .unwrap_or(false)
+    }
+
+    pub fn is_hidden(&self, id: &str) -> bool {
+        self.models.hidden.iter().any(|m| m == id)
     }
 
     pub fn model_state(&self, id: &str) -> ModelState {
@@ -334,6 +342,8 @@ pub struct Page {
     pub sel: usize,
     pub filter: String,
     pub filtering: bool,
+    /// Show hidden models (H). Hidden rows are display-only, never routing.
+    pub show_hidden: bool,
     pub detail: bool,
     pub state: Option<CaduceusState>,
     pub prefs: CaduceusPrefs,
@@ -349,6 +359,7 @@ impl Default for Page {
             sel: 0,
             filter: String::new(),
             filtering: false,
+            show_hidden: false,
             detail: false,
             state: None,
             prefs: CaduceusPrefs::default(),
@@ -414,6 +425,7 @@ impl Page {
                 s.candidates
                     .iter()
                     .filter(|c| self.matches(&c.id, &c.owner))
+                    .filter(|c| self.show_hidden || !self.prefs.is_hidden(&c.id))
                     .collect()
             })
             .unwrap_or_default()
@@ -614,6 +626,35 @@ impl Page {
         }
     }
 
+    /// `h` — hide/unhide the selected model (display only, no routing effect).
+    pub fn toggle_hidden(&mut self) -> bool {
+        if self.tab != Tab::Models {
+            return false;
+        }
+        let id = self.candidate_view().get(self.sel).map(|c| c.id.clone());
+        match id {
+            Some(id) => {
+                if let Some(pos) = self.prefs.models.hidden.iter().position(|m| *m == id) {
+                    self.prefs.models.hidden.remove(pos);
+                } else {
+                    self.prefs.models.hidden.push(id);
+                }
+                self.clamp_sel();
+                self.save();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `H` — show or hide the hidden rows in the Models tab.
+    pub fn toggle_show_hidden(&mut self) {
+        if self.tab == Tab::Models {
+            self.show_hidden = !self.show_hidden;
+            self.clamp_sel();
+        }
+    }
+
     fn save(&mut self) {
         self.note = Some(match save_prefs_at(&self.prefs_file, &self.prefs) {
             Ok(()) => "prefs saved".to_string(),
@@ -805,6 +846,16 @@ mod tests {
     }
 
     #[test]
+    fn prefs_parse_hidden_list() {
+        let prefs: CaduceusPrefs =
+            serde_json::from_str(r#"{"version":1,"models":{"hidden":["a/b"]}}"#).unwrap();
+        assert!(prefs.is_hidden("a/b"));
+        assert!(!prefs.is_hidden("a/c"));
+        // hidden is not routing: neither denied nor pinned
+        assert_eq!(prefs.model_state("a/b"), ModelState::Neutral);
+    }
+
+    #[test]
     fn prefs_absent_file_is_defaults_without_note() {
         let path = tmp_path("absent");
         let _ = fs::remove_file(&path);
@@ -828,6 +879,7 @@ mod tests {
             },
         );
         prefs.models.pinned.push("glm/glm-4.7-flash".into());
+        prefs.models.hidden.push("cohere/command-r-08-2024".into());
         save_prefs_at(&path, &prefs).expect("save");
         let (back, note) = load_prefs_at(&path);
         assert_eq!(back, prefs);
@@ -934,6 +986,31 @@ mod tests {
         assert_eq!(page.prefs.rank("dahl"), Some(1));
         page.adjust(-1000);
         assert_eq!(page.prefs.rank("dahl"), Some(99));
+    }
+
+    #[test]
+    fn hidden_models_are_display_only() {
+        let mut page = sample_page();
+        page.set_tab(Tab::Models);
+        let id = "glm/glm-4.7-flash";
+        assert_eq!(page.candidate_view().len(), 1);
+        assert!(page.toggle_hidden());
+        assert!(page.prefs.is_hidden(id));
+        assert_eq!(page.candidate_view().len(), 0);
+        // routing lists are untouched: hidden is not denied/pinned
+        assert_eq!(page.prefs.model_state(id), ModelState::Neutral);
+        assert!(page.prefs.models.denied.is_empty());
+        // H reveals hidden rows again
+        page.toggle_show_hidden();
+        assert_eq!(page.candidate_view().len(), 1);
+        assert!(page.candidate_view()[0].id == id);
+        // unhide from the reveal view
+        assert!(page.toggle_hidden());
+        assert!(!page.prefs.is_hidden(id));
+        // H remains a pure view toggle
+        assert!(page.show_hidden);
+        page.toggle_show_hidden();
+        assert!(!page.show_hidden);
     }
 
     #[test]

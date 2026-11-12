@@ -34,6 +34,11 @@ describe("normalizePrefs", () => {
     expect(normalizePrefs({ version: 1, per_owner: "nope" })).toEqual({ version: 1 });
   });
 
+  it("tolerates the display-only hidden list (routing ignores it)", () => {
+    const prefs = normalizePrefs({ version: 1, models: { hidden: ["a/b"] } });
+    expect(prefs).toEqual({ version: 1 });
+  });
+
   it("clamps caps and keeps valid provider rows", () => {
     const prefs = normalizePrefs({
       version: 1,

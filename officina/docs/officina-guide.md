@@ -132,7 +132,8 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   rank, key presence, gateway bucket, free model count, signup method.
   `space` toggles routing, `+`/`-` rank, `enter` detail, `r` reload.
 - **Models** — tool-capable lanes with derived free/paid flags.
-  `space` cycles pin → deny → neutral, `/` filters.
+  `space` cycles pin → deny → neutral, `/` filters, `h` hides the selected
+  model (display only — routing is untouched) and `H` shows hidden rows.
 - **Health** — gateway reachability, catalog freshness, budget, cooling,
   connection buckets (read-only).
 - **Policy** — `free_only`, per-owner cap, max candidates, per-provider

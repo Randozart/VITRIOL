@@ -1,7 +1,7 @@
 # Voice suggestions — ghost-text prompt prefill that learns your voice
 
 - Date: 2026-11-12 17:10
-- Status: in progress (stages 1–3)
+- Status: implemented 2026-11-12 — stages 1–3 landed (352c835, 8402b9c, stage-3 commit). Telemetry verdicts simplified to accepted|dismissed-typed|dismissed-esc (ghost flow can't distinguish edits from accepts). Stage-3 note: safePrompts are session-scoped by design (I4 keeps it simple); cross-session voice memory rides the profile itself.
 - Builds on: composer-predictions (heuristic widget line, 2026-11-12),
   hang-watchdog judge pattern (free-lane micro-completions), auto-route's
   privacy classifier.

@@ -4,7 +4,21 @@
 // kill, heuristic precision, #fg always wins.
 
 import { readFileSync, readdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
+
+
+/** The registry root. Tests override via setJobsRoot (per-instance, so
+ *  jiti isolation across extensions still lands on the real default). */
+let jobsRoot = join(homedir(), ".local", "share", "officina", "longjobs");
+
+export function setJobsRoot(root: string): void {
+  jobsRoot = root;
+}
+
+export function getJobsRoot(): string {
+  return jobsRoot;
+}
 
 /** Command prefixes that legitimately run minutes, not milliseconds. */
 const LONG_RUNNER_RE =

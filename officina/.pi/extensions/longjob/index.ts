@@ -16,6 +16,7 @@ import {
   jobDir,
   jobsToAnnounce,
   rewriteToDispatch,
+  setJobsRoot,
   shellQuote,
   snapshotJob,
 } from "./longjob.ts";
@@ -39,6 +40,7 @@ function announceText(root: string, id: string): string | null {
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_NO_LONGJOB === "1") return;
+  setJobsRoot(JOBS_ROOT);
   mkdirSync(JOBS_ROOT, { recursive: true });
   let ui: any = null;
   let idleTick: ReturnType<typeof setInterval> | null = null;

@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import { parseSnapshot, pathOf, type PermSnapshot } from "./perms.ts";
@@ -11,6 +11,12 @@ import {
   type Verdict,
 } from "./policy.ts";
 import { findBwrap, shouldWrap, wrapBwrap } from "./sandbox.ts";
+import {
+  getJobsRoot,
+  isLongRunner,
+  jobDir,
+  rewriteToDispatch,
+} from "../longjob/longjob.ts";
 
 // permissions-guard — path + shell policy, enforced (gap D1).
 //
@@ -141,6 +147,31 @@ export default function (pi: ExtensionAPI) {
           const net = process.env.OFFICINA_SANDBOX_NET === "1";
           (e.input as Record<string, unknown>).command = wrapBwrap(command, cwd, bwrap, { net });
         }
+        return undefined;
+      }
+      // longjob auto-dispatch (2026-11-12, I4/I6): known long-runners are
+      // dispatched instead of blocking the agent. #fg wins; the sandboxed
+      // mode above already returned (bwrap + detached jobs deferred);
+      // OFFICINA_NO_AUTOBG=1 restores today's foreground behaviour.
+      // I1 fail-open: any registry error falls through to foreground.
+      if (
+        tool === "bash" &&
+        process.env.OFFICINA_NO_AUTOBG !== "1" &&
+        isLongRunner(command)
+      ) {
+        try {
+          const job = `j-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+          const paths = jobDir(getJobsRoot(), job);
+          mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
+          (e.input as Record<string, unknown>).command = rewriteToDispatch(command, paths, job);
+          ctx.ui.notify?.(
+            `longjob ${job}: dispatched (log ${paths.log}) — poll bg_status ${job}, bg_wait ${job} <max_s>, or end your turn; you'll be woken with the result`,
+            "info",
+          );
+        } catch {
+          // I1: registry failure runs the command foreground
+        }
+        return undefined;
       }
       return undefined;
     }

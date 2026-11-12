@@ -219,6 +219,49 @@ describe("permissions-guard wiring", () => {
     h.restore();
   });
 
+  it("auto-dispatch: long-runners are rewritten; #fg/kill-switch/short/sandboxed are not (I4/I6)", async () => {
+    const base = { TRIS_PERMS_FILE: join(dir, "absent.json"), HOME: "/home/u" };
+
+    // auto mode: cargo build → dispatch rewrite + pointer notice
+    const input = { command: "cargo build --release" };
+    const h = harness(null, { ...base, OFFICINA_SANDBOX_BWRAP: "/bin/sh" }, "auto");
+    expect(await h.call("bash", input)).toBeUndefined();
+    expect(String(input.command)).toContain("setsid bash -c");
+    expect(String(input.command)).toContain("longjob");
+    expect(String(input.command)).toContain("cargo build --release");
+    expect(h.notices.some((n) => n.includes("dispatched"))).toBe(true);
+    h.restore();
+
+    // I4: #fg opt-out — byte-identical
+    const input2 = { command: "cargo build --release #fg" };
+    const h2 = harness(null, { ...base }, "auto");
+    await h2.call("bash", input2);
+    expect(input2.command).toBe("cargo build --release #fg");
+    h2.restore();
+
+    // I6: kill switch — byte-identical
+    const input3 = { command: "cargo build --release" };
+    const h3 = harness(null, { ...base, OFFICINA_NO_AUTOBG: "1" }, "auto");
+    await h3.call("bash", input3);
+    expect(input3.command).toBe("cargo build --release");
+    h3.restore();
+
+    // I4 precision: short commands untouched
+    const input4 = { command: "ls -la" };
+    const h4 = harness(null, { ...base }, "auto");
+    await h4.call("bash", input4);
+    expect(input4.command).toBe("ls -la");
+    h4.restore();
+
+    // sandboxed mode skips dispatch, wraps instead (bwrap + detached deferred)
+    const input5 = { command: "cargo build --release" };
+    const h5 = harness(null, { ...base, OFFICINA_SANDBOX_BWRAP: "/bin/sh" }, "sandboxed");
+    await h5.call("bash", input5);
+    expect(String(input5.command)).toContain("/bin/sh");
+    expect(String(input5.command)).not.toContain("setsid");
+    h5.restore();
+  });
+
   it("missing snapshot: mode policy still applies, warned once", async () => {
     const h = harness(null, { TRIS_PERMS_FILE: join(dir, "absent.json"), HOME: "/home/u" });
     expect(await h.call("write", { path: "x.txt" })).toBeUndefined();

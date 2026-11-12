@@ -4,19 +4,31 @@
 // drifting on the gateway cannot silently rewrite prompts.
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { budgetStatus } from "../_shared/budget.ts";
+import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
 import { classifyConnections, type GatewayConnection } from "../_shared/lane-health.ts";
 import {
   extractCatalogModels,
   filterCatalogByProviders,
   mapCatalogModels,
+  toolCandidates,
   type PiModelEntry,
 } from "./catalog.ts";
-import { buildCaduceusState, writeCaduceusState } from "./state.ts";
+import {
+  buildCaduceusState,
+  buildProviderRows,
+  writeCaduceusState,
+  type AccountFact,
+  type CandidateRow,
+  type CatalogProviderFact,
+  type OAuthProviderFact,
+  type ProviderRow,
+} from "./state.ts";
 
 const PROVIDER_ID = "caduceus";
 const PROVIDER_NAME = "Caduceus";
@@ -39,6 +51,157 @@ const PASSTHROUGH_HEADERS = Object.freeze({
   "X-OmniRoute-Compression": "off",
   "x-omniroute-no-memory": "true",
 });
+
+// Provider catalog (2026-11-12, panel stage 2). The authoritative list with
+// hasFree/freeNote/website/authHint lives behind the vendor CLI
+// (`providers available --json`). Cached on disk for 10 minutes; without it
+// the page degrades to accounts.json + the OAuth registry (never lies).
+const OFFICINA_DIR = join(homedir(), ".vitriol", "officina");
+const PROVIDER_CACHE_FILE = join(OFFICINA_DIR, "provider-catalog.json");
+const PROVIDER_CACHE_TTL_MS = 10 * 60_000;
+const VENDOR_CLI = join(
+  homedir(),
+  ".vitriol",
+  "vendor",
+  "omniroute",
+  "node_modules",
+  ".bin",
+  "omniroute",
+);
+
+function parseJsonLoose(text: string): unknown {
+  const cleaned = text.replace(/\x1b\[[0-9;]*m/g, "");
+  const obj = cleaned.indexOf("{");
+  const arr = cleaned.indexOf("[");
+  const start = obj < 0 ? arr : arr < 0 ? obj : Math.min(obj, arr);
+  if (start < 0) return null;
+  const close = cleaned[start] === "{" ? "}" : "]";
+  const end = cleaned.lastIndexOf(close);
+  if (end <= start) return null;
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+}
+
+function readProviderCache(): { fetchedAt: number; rows: CatalogProviderFact[] } | null {
+  try {
+    const parsed = JSON.parse(readFileSync(PROVIDER_CACHE_FILE, "utf8")) as {
+      fetchedAt?: number;
+      rows?: unknown;
+    };
+    if (!Array.isArray(parsed.rows)) return null;
+    return { fetchedAt: Number(parsed.fetchedAt) || 0, rows: parsed.rows as CatalogProviderFact[] };
+  } catch {
+    return null;
+  }
+}
+
+function writeProviderCache(rows: CatalogProviderFact[]): void {
+  try {
+    mkdirSync(dirname(PROVIDER_CACHE_FILE), { recursive: true });
+    const tmp = `${PROVIDER_CACHE_FILE}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify({ fetchedAt: Date.now(), rows }, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    renameSync(tmp, PROVIDER_CACHE_FILE);
+  } catch {
+    // cache is an optimization
+  }
+}
+
+/** Provider catalog rows (id/name/website/category/hasFree/freeNote/authHint). */
+function readProviderCatalog(baseUrl: string): CatalogProviderFact[] {
+  const cached = readProviderCache();
+  if (cached && Date.now() - cached.fetchedAt < PROVIDER_CACHE_TTL_MS) return cached.rows;
+  if (!existsSync(VENDOR_CLI)) return cached?.rows ?? [];
+  try {
+    const res = spawnSync(
+      VENDOR_CLI,
+      ["--base-url", new URL(baseUrl).origin, "providers", "available", "--json"],
+      { encoding: "utf8", timeout: 8_000, env: process.env },
+    );
+    const parsed = parseJsonLoose(String(res.stdout ?? ""));
+    const list = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray((parsed as { providers?: unknown[] })?.providers)
+        ? ((parsed as { providers: unknown[] }).providers as unknown[])
+        : [];
+    const rows: CatalogProviderFact[] = list
+      .filter((item): item is Record<string, unknown> => !!item && typeof item === "object")
+      .map((item) => ({
+        id: String(item.id ?? ""),
+        name: String(item.name ?? item.id ?? ""),
+        website: String(item.website ?? ""),
+        category: String(item.category ?? ""),
+        hasFree: item.hasFree === true,
+        freeNote: String(item.freeNote ?? ""),
+        authHint: String(item.authHint ?? ""),
+      }))
+      .filter((row) => !!row.id);
+    if (rows.length > 0) writeProviderCache(rows);
+    return rows.length > 0 ? rows : cached?.rows ?? [];
+  } catch {
+    return cached?.rows ?? [];
+  }
+}
+
+function readAccountsDoc(dir: string): { accounts: AccountFact[]; oauth: string[] } {
+  try {
+    const doc = JSON.parse(readFileSync(join(dir, "accounts.json"), "utf8")) as {
+      accounts?: AccountFact[];
+      oauth?: unknown[];
+    };
+    return {
+      accounts: Array.isArray(doc.accounts) ? doc.accounts : [],
+      oauth: Array.isArray(doc.oauth)
+        ? doc.oauth.map((id) => String(id ?? "").trim()).filter(Boolean)
+        : [],
+    };
+  } catch {
+    return { accounts: [], oauth: [] };
+  }
+}
+
+function readSignupProgress(dir: string): Record<string, { status?: string } | undefined> {
+  try {
+    const doc = JSON.parse(readFileSync(join(dir, "signup-progress.json"), "utf8")) as {
+      providers?: Record<string, { status?: string } | undefined>;
+    };
+    return doc.providers && typeof doc.providers === "object" ? doc.providers : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Env var names present in the env file or the process environment. */
+function readEnvNames(dir: string): Set<string> {
+  const names = new Set<string>(Object.keys(process.env));
+  try {
+    const path = join(dir, "env");
+    if (existsSync(path)) {
+      for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+        const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+        if (m) names.add(m[1]);
+      }
+    }
+  } catch {
+    // cosmetic
+  }
+  return names;
+}
+
+/** OAuth registry from the pure vendor-independent lib that the CLI uses. */
+async function loadOAuthProviders(): Promise<OAuthProviderFact[]> {
+  try {
+    const url = new URL("../../../scripts/caduceus-oauth-lib.mjs", import.meta.url);
+    const mod = (await import(url.href)) as { OAUTH_PROVIDERS?: OAuthProviderFact[] };
+    return Array.isArray(mod.OAUTH_PROVIDERS) ? mod.OAUTH_PROVIDERS : [];
+  } catch {
+    return [];
+  }
+}
 
 type RawCatalog = { fetchedAt: string; baseUrl: string; data: unknown[] };
 
@@ -223,14 +386,51 @@ export default async function (pi: ExtensionAPI) {
     return rows;
   };
 
-  // State file for the Rust TUI's /caduceus modal (read-only view, I4).
+  // State file for the Rust TUI's /caduceus page (facts only, I4).
   // Written at startup, on every session switch, and every 60 s; failures
-  // are silent (the modal shows its own staleness instead).
-  const writeState = async (): Promise<void> => {
+  // are silent (the page shows its own staleness instead). The provider
+  // catalog spawn is skipped on the startup write so session start never
+  // waits on the vendor CLI (it lands on the first tick / session switch).
+  const oauthProviders = await loadOAuthProviders();
+  const writeState = async (allowCatalogFetch = true): Promise<void> => {
     try {
       const buckets = await fetchConnectionBuckets(baseUrl);
       const cache = readCache(baseUrl);
       const budget = budgetStatus();
+      const prefs = readPrefs();
+      const accountsDoc = readAccountsDoc(officinaDir);
+      const oauthRows: OAuthProviderFact[] =
+        oauthProviders.length > 0
+          ? oauthProviders
+          : accountsDoc.oauth.map((id) => ({ id, name: id, flow: "oauth" }));
+
+      const freeCounts = new Map<string, number>();
+      const candidates: CandidateRow[] = [];
+      if (cache) {
+        for (const c of toolCandidates(extractCatalogModels(cache.data), {
+          freeOnly: prefs?.free_only !== false,
+          allowPaidOwners: allowPaidOwners(prefs),
+        })) {
+          if (c.free) freeCounts.set(c.owner, (freeCounts.get(c.owner) ?? 0) + 1);
+          candidates.push({
+            id: c.id,
+            owner: c.owner,
+            context_window: c.contextWindow,
+            max_tokens: c.maxTokens,
+            free: c.free,
+          });
+        }
+      }
+      const providers: ProviderRow[] = buildProviderRows({
+        catalog: allowCatalogFetch ? readProviderCatalog(baseUrl) : readProviderCache()?.rows ?? [],
+        accounts: accountsDoc.accounts,
+        oauth: oauthRows,
+        envNames: readEnvNames(officinaDir),
+        buckets,
+        freeCounts,
+        signup: readSignupProgress(officinaDir),
+      });
+
       writeCaduceusState(
         STATE_FILE,
         buildCaduceusState({
@@ -250,16 +450,18 @@ export default async function (pi: ExtensionAPI) {
             allowed: budget.allowed,
             paid_allowed: budget.paidAllowed,
           },
+          providers,
+          candidates,
         }),
       );
     } catch {
       // decoration contract: never break the workshop
     }
   };
-  void writeState();
-  const stateTimer = setInterval(() => void writeState(), 60_000);
+  void writeState(false);
+  const stateTimer = setInterval(() => void writeState(true), 60_000);
   stateTimer.unref?.();
-  pi.on("session_start", () => void writeState());
+  pi.on("session_start", () => void writeState(true));
 
   if (!apiKey) {
     console.warn(

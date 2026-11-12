@@ -26,7 +26,14 @@ pub fn lock_path() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    Some(home()?.join(".vitriol").join("officina").join("tui.lock"))
+    lock_path_in(&PathBuf::from(home()?))
+}
+
+/// Test-injected variant (2026-11-12): tests must never touch the real
+/// store — the lock-lifecycle test used to litter ~102 --tmp-guard-lock-*
+/// dirs into ~/.pi/agent/sessions.
+pub(crate) fn lock_path_in(home: &Path) -> Option<PathBuf> {
+    Some(home.join(".vitriol").join("officina").join("tui.lock"))
 }
 
 // ---- Cross-process session-store lock (flock, kernel-held) ----
@@ -49,12 +56,20 @@ fn lock_dir() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    Some(home()?.join(".vitriol").join("officina").join("locks"))
+    lock_dir_in(&PathBuf::from(home()?))
+}
+
+fn lock_dir_in(home: &Path) -> Option<PathBuf> {
+    Some(home.join(".vitriol").join("officina").join("locks"))
 }
 
 fn store_lock_path(store: &Path) -> Option<PathBuf> {
+    store_lock_path_in(&PathBuf::from(home()?), store)
+}
+
+fn store_lock_path_in(home: &Path, store: &Path) -> Option<PathBuf> {
     let name = store.file_name()?.to_string_lossy().to_string();
-    Some(lock_dir()?.join(format!("{name}.lock")))
+    Some(lock_dir_in(home)?.join(format!("{name}.lock")))
 }
 
 /// The process-lifetime session-store lock. The `File` must stay open for
@@ -97,10 +112,14 @@ impl Drop for SessionLock {
 /// lock with `locked_store() == None` when a live peer already holds the
 /// store (the caller must then not resume or mutate that store's files).
 pub fn acquire_session_lock(cwd: &Path) -> SessionLock {
-    let store = session_dir_for(cwd);
+    acquire_session_lock_in(&PathBuf::from(home().unwrap_or_default()), cwd)
+}
+
+pub(crate) fn acquire_session_lock_in(home: &Path, cwd: &Path) -> SessionLock {
+    let store = session_dir_for_in(home, cwd);
     let mut file = None;
     if let Some(store) = &store {
-        if let Some(path) = store_lock_path(store) {
+        if let Some(path) = store_lock_path_in(home, store) {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -126,7 +145,7 @@ pub fn acquire_session_lock(cwd: &Path) -> SessionLock {
     // Diagnostics mirror for the offline doctor (reads the pid and probes
     // it with kill(pid, 0) — caduceus.mjs tuiRunning).
     if file.is_some() {
-        if let Some(path) = lock_path() {
+        if let Some(path) = lock_path_in(home) {
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -147,10 +166,14 @@ pub fn acquire_session_lock(cwd: &Path) -> SessionLock {
 /// This process's own lock never counts as busy. Best-effort: an unreadable
 /// lock path counts as free (degraded, not wedged).
 fn store_lock_busy(store: &Path, own_store: Option<&Path>) -> bool {
+    store_lock_busy_in(&PathBuf::from(home().unwrap_or_default()), store, own_store)
+}
+
+fn store_lock_busy_in(home: &Path, store: &Path, own_store: Option<&Path>) -> bool {
     if own_store.map(|p| p == store).unwrap_or(false) {
         return false;
     }
-    let Some(path) = store_lock_path(store) else {
+    let Some(path) = store_lock_path_in(home, store) else {
         return false;
     };
     let Ok(f) = OpenOptions::new().write(true).open(&path) else {
@@ -161,8 +184,12 @@ fn store_lock_busy(store: &Path, own_store: Option<&Path>) -> bool {
 
 /// Refusal note when a live peer holds the store that `path` lives in.
 fn peer_holds_store(path: &Path, own: &SessionLock) -> Option<String> {
+    peer_holds_store_in(&PathBuf::from(home().unwrap_or_default()), path, own)
+}
+
+fn peer_holds_store_in(home: &Path, path: &Path, own: &SessionLock) -> Option<String> {
     let store = path.parent()?;
-    if store_lock_busy(store, own.locked_store()) {
+    if store_lock_busy_in(home, store, own.locked_store()) {
         Some(format!(
             "another officina TUI is live on this session store ({}) — starting a fresh session (use /resume to switch later)",
             store.display()
@@ -292,7 +319,11 @@ pub fn peer_fenced_notice(path: &Path) -> Option<String> {
 }
 
 pub fn session_dir_for(cwd: &Path) -> Option<PathBuf> {
-    let home = home()?;
+    session_dir_for_in(&PathBuf::from(home()?), cwd)
+}
+
+/// Test-injected variant: encodes the store under the GIVEN home.
+pub(crate) fn session_dir_for_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
     let text = cwd.to_string_lossy();
     let encoded = format!("--{}--", text.trim_start_matches('/').replace('/', "-"));
     Some(
@@ -312,7 +343,11 @@ fn is_session_file(name: &str) -> bool {
 }
 
 pub fn latest_session(cwd: &Path) -> Option<PathBuf> {
-    let dir = session_dir_for(cwd)?;
+    latest_session_in(&PathBuf::from(home()?), cwd)
+}
+
+pub(crate) fn latest_session_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
+    let dir = session_dir_for_in(home, cwd)?;
     let mut best: Option<(SystemTime, PathBuf)> = None;
     for ent in fs::read_dir(&dir).ok()?.flatten() {
         let name = ent.file_name().to_string_lossy().to_string();
@@ -752,6 +787,24 @@ pub fn prepare_session_args(
     fork: Option<&str>,
     own_lock: &SessionLock,
 ) -> (Vec<String>, Option<String>) {
+    prepare_session_args_in(
+        &PathBuf::from(home().unwrap_or_default()),
+        cwd,
+        explicit_session,
+        new_session,
+        fork,
+        own_lock,
+    )
+}
+
+pub(crate) fn prepare_session_args_in(
+    home: &Path,
+    cwd: &Path,
+    explicit_session: Option<&str>,
+    new_session: bool,
+    fork: Option<&str>,
+    own_lock: &SessionLock,
+) -> (Vec<String>, Option<String>) {
     let mut args = Vec::new();
     if new_session || fork.is_some() {
         return (args, None);
@@ -759,7 +812,7 @@ pub fn prepare_session_args(
     if let Some(session) = explicit_session {
         let path = PathBuf::from(session);
         if path.is_file() {
-            if let Some(note) = peer_holds_store(&path, own_lock) {
+            if let Some(note) = peer_holds_store_in(home, &path, own_lock) {
                 return fresh_session_args(note);
             }
             let health = validate_session(&path);
@@ -810,10 +863,10 @@ pub fn prepare_session_args(
         return (args, None);
     }
 
-    let Some(latest) = latest_session(cwd) else {
+    let Some(latest) = latest_session_in(home, cwd) else {
         return (args, None);
     };
-    if let Some(note) = peer_holds_store(&latest, own_lock) {
+    if let Some(note) = peer_holds_store_in(home, &latest, own_lock) {
         return fresh_session_args(note);
     }
     let health = validate_session(&latest);
@@ -1043,10 +1096,9 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("guard-lock-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
-        let lock_dir = tmp.join("locks");
-        let mirror = tmp.join("tui.lock");
-        std::env::set_var("OFFICINA_LOCK_DIR", &lock_dir);
-        std::env::set_var("OFFICINA_TUI_LOCK", &mirror);
+        // Injected home (2026-11-12): the pre-_in test set OFFICINA_LOCK_DIR/
+        // OFFICINA_TUI_LOCK and let session_dir_for encode stores under the
+        // REAL ~/.pi/agent/sessions — 102 --tmp-guard-lock-* litter dirs.
 
         let cwd_a = tmp.join("proj-a");
         let cwd_b = tmp.join("proj-b");
@@ -1056,30 +1108,30 @@ mod tests {
         // 1. Same store contends (second fd in the SAME process conflicts,
         //    which is exactly what a second TUI would hit), a different
         //    store does not, and drop releases.
-        let l1 = acquire_session_lock(&cwd_a);
+        let l1 = acquire_session_lock_in(&tmp, &cwd_a);
         assert!(
             l1.locked_store().is_some(),
             "first acquire must own the store"
         );
-        let l2 = acquire_session_lock(&cwd_a);
+        let l2 = acquire_session_lock_in(&tmp, &cwd_a);
         assert!(
             l2.locked_store().is_none(),
             "peer acquire must find the store held"
         );
-        let l3 = acquire_session_lock(&cwd_b);
+        let l3 = acquire_session_lock_in(&tmp, &cwd_b);
         assert!(
             l3.locked_store().is_some(),
             "a different store must not contend"
         );
         drop(l1);
-        let l4 = acquire_session_lock(&cwd_a);
+        let l4 = acquire_session_lock_in(&tmp, &cwd_a);
         assert!(l4.locked_store().is_some(), "release must free the store");
         drop(l4);
         drop(l3);
 
         // 2. A live peer on the store blocks resume AND mutation of the
         //    session file: prepare refuses, starts fresh, leaves the file.
-        let store_a = session_dir_for(&cwd_a).unwrap();
+        let store_a = session_dir_for_in(&tmp, &cwd_a).unwrap();
         fs::create_dir_all(&store_a).unwrap();
         let session = write_session(
             &store_a,
@@ -1090,7 +1142,7 @@ mod tests {
                 serde_json::json!({"type":"message","id":"a","parentId":"u","message":{"role":"assistant","content":[{"type":"toolCall","id":"call","name":"bash","arguments":{}}]}}),
             ],
         );
-        let peer_path = store_lock_path(&store_a).unwrap();
+        let peer_path = store_lock_path_in(&tmp, &store_a).unwrap();
         let mut peer = OpenOptions::new()
             .create(true)
             .truncate(false)
@@ -1099,8 +1151,9 @@ mod tests {
             .unwrap();
         peer.try_lock().expect("simulate live peer");
 
-        let outsider = acquire_session_lock(&cwd_b); // holds a DIFFERENT store
-        let (args, notice) = prepare_session_args(
+        let outsider = acquire_session_lock_in(&tmp, &cwd_b); // holds a DIFFERENT store
+        let (args, notice) = prepare_session_args_in(
+            &tmp,
             &cwd_a,
             Some(session.to_str().unwrap()),
             false,
@@ -1124,7 +1177,8 @@ mod tests {
         );
 
         // 3. An invalid session in a peer-held store is likewise untouched.
-        let (args, notice) = prepare_session_args(
+        let (args, notice) = prepare_session_args_in(
+            &tmp,
             &cwd_a,
             Some(session.to_str().unwrap()),
             false,
@@ -1136,7 +1190,7 @@ mod tests {
         assert!(session.is_file());
 
         // 4. A store the peer does NOT hold resumes normally.
-        let store_b = session_dir_for(&cwd_b).unwrap();
+        let store_b = session_dir_for_in(&tmp, &cwd_b).unwrap();
         fs::create_dir_all(&store_b).unwrap();
         let ok_session = write_session(
             &store_b,
@@ -1146,7 +1200,8 @@ mod tests {
                 serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}),
             ],
         );
-        let (args, notice) = prepare_session_args(
+        let (args, notice) = prepare_session_args_in(
+            &tmp,
             &cwd_b,
             Some(ok_session.to_str().unwrap()),
             false,
@@ -1167,6 +1222,7 @@ mod tests {
 
         peer.unlock().unwrap();
         drop(peer);
+        let _ = fs::remove_dir_all(&tmp);
         drop(outsider);
         std::env::remove_var("OFFICINA_LOCK_DIR");
         std::env::remove_var("OFFICINA_TUI_LOCK");

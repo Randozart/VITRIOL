@@ -285,6 +285,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
+    if state.caduceus_open {
+        render_chat_and_editor(frame, state, area);
+        render_caduceus_modal(frame, state, area);
+        return;
+    }
     if state.tools_modal_open {
         render_chat_and_editor(frame, state, area);
         render_tools_modal(frame, state, area);
@@ -1565,6 +1570,194 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         inner,
     );
+}
+
+/// /caduceus gateway snapshot — read-only rendering of the state file the
+/// caduceus extension writes (QoL batch stage 2, 2026-11-12). I4: no HTTP
+/// from the TUI; a missing file gets an honest setup hint instead.
+fn render_caduceus_modal(frame: &mut Frame, state: &AppState, area: Rect) {
+    let h = 10u16;
+    let w = area.width.min(92);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+
+    let (title, title_style) = match state.caduceus_state.as_ref() {
+        Some(s) => {
+            let age = crate::tui::caduceus::fmt_age_ms(s.age_ms(crate::tui::caduceus::now_ms()));
+            let gw = if s.gateway_up {
+                "gateway up"
+            } else {
+                "gateway DOWN"
+            };
+            let stale = if s.age_ms(crate::tui::caduceus::now_ms()) > 180_000 {
+                " STALE"
+            } else {
+                ""
+            };
+            (
+                format!(" {gw} · state {age}{stale} "),
+                if s.gateway_up && stale.is_empty() {
+                    theme::GREEN
+                } else {
+                    theme::ORANGE
+                },
+            )
+        }
+        None => (" no state ".to_string(), theme::ORANGE),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            format!("{} caduceus · ", theme::GLYPH_HERM) + title.as_str(),
+            Style::new().fg(title_style).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            " /nimbus lanes · /keys · /providers · esc ",
+            Style::new().fg(theme::MUTED),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let gold_label = Style::new().fg(theme::GOLD).bg(theme::PANEL);
+    let text = Style::new().fg(theme::TEXT).bg(theme::PANEL);
+    let muted = Style::new().fg(theme::MUTED).bg(theme::PANEL);
+    let mut lines: Vec<Line> = Vec::new();
+
+    let Some(s) = state.caduceus_state.as_ref() else {
+        lines.push(Line::from(vec![Span::styled(
+            " no ~/.vitriol/officina/caduceus-state.json yet — the caduceus",
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            " extension writes it at session start + every 60s (OFFICINA_CADUCEUS on)",
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+        )]));
+        lines.push(Line::from(vec![Span::styled(
+            " run `vitriol caduceus setup` if the inference key is missing",
+            muted,
+        )]));
+        frame.render_widget(Paragraph::new(lines), inner);
+        return;
+    };
+
+    // gateway + connections
+    let gw_span = if s.gateway_up {
+        Span::styled("up  ", Style::new().fg(theme::GREEN).bg(theme::PANEL))
+    } else {
+        Span::styled("DOWN", Style::new().fg(theme::RED).bg(theme::PANEL))
+    };
+    let total =
+        s.connections.active.len() + s.connections.backoff.len() + s.connections.hard_down.len();
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<9}", "gateway"), gold_label),
+        gw_span,
+        Span::styled(
+            format!(
+                " · {} connections ({} active · {} backoff · {} down)",
+                total,
+                s.connections.active.len(),
+                s.connections.backoff.len(),
+                s.connections.hard_down.len()
+            ),
+            text,
+        ),
+    ]));
+
+    // catalog
+    let fetched = if s.catalog_fetched_at.len() >= 16 {
+        s.catalog_fetched_at[..16].to_string()
+    } else {
+        s.catalog_fetched_at.clone()
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<9}", "catalog"), gold_label),
+        Span::styled(format!("{} models", s.catalog_count), text),
+        Span::styled(
+            if fetched.is_empty() {
+                String::new()
+            } else {
+                format!(" · fetched {fetched}")
+            },
+            muted,
+        ),
+    ]));
+
+    // budget
+    let b = &s.budget;
+    let budget_state = if !b.allowed {
+        Span::styled("CAP REACHED", Style::new().fg(theme::RED).bg(theme::PANEL))
+    } else if b.paid_allowed {
+        Span::styled(
+            "within cap · paid allowed (manual)",
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+        )
+    } else {
+        Span::styled(
+            "within cap · paid never",
+            Style::new().fg(theme::GREEN).bg(theme::PANEL),
+        )
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("{:<9}", "budget"), gold_label),
+        Span::styled(
+            format!(
+                "day {}/{} · month {}/{} · ",
+                crate::tui::caduceus::fmt_count(b.daily_tokens),
+                crate::tui::caduceus::fmt_count(b.daily_cap),
+                crate::tui::caduceus::fmt_count(b.monthly_tokens),
+                crate::tui::caduceus::fmt_count(b.monthly_cap),
+            ),
+            text,
+        ),
+        budget_state,
+    ]));
+
+    // keys + cooling
+    let inf = if s.inference_key.is_empty() {
+        Span::styled(
+            "MISSING (vitriol caduceus setup)",
+            Style::new().fg(theme::RED).bg(theme::PANEL),
+        )
+    } else {
+        Span::styled(s.inference_key.clone(), text)
+    };
+    let mut key_line = vec![
+        Span::styled(format!("{:<9}", "keys"), gold_label),
+        Span::styled("inference ", muted),
+        inf,
+        Span::styled(format!(" · {} provider keys", s.keys.len()), text),
+    ];
+    if s.cooling > 0 {
+        key_line.push(Span::styled(
+            format!(" · {} cooling", s.cooling),
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+        ));
+    }
+    lines.push(Line::from(key_line));
+
+    // account rows (masked), a few visible
+    for k in s.keys.iter().take(3) {
+        lines.push(Line::from(vec![
+            Span::styled(format!("   {} · {}", k.provider, k.value), muted),
+            Span::styled(format!(" · {} · {}", k.env, k.source), muted),
+        ]));
+    }
+    if s.keys.len() > 3 {
+        lines.push(Line::from(vec![Span::styled(
+            format!("   … +{} more", s.keys.len() - 3),
+            muted,
+        )]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// /cache manager — engine KV disk cache entries, newest first, with age and

@@ -1,5 +1,6 @@
 pub mod ansi;
 pub mod cache;
+pub mod caduceus;
 pub mod layout;
 pub mod state;
 
@@ -614,6 +615,18 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /caduceus gateway snapshot: read-only, esc/q closes.
+    if state.caduceus_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.note_phase(state::UiEvent::CloseModal);
+                state.caduceus_open = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // /model picker captures typing while open: characters filter the list,
     // arrows move, enter switches, esc clears the filter then closes.
     if state.models_open {
@@ -980,6 +993,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /caduceus — gateway snapshot modal (never RPC; file-backed).
+            if msg == "/caduceus" {
+                state.caduceus_open_modal();
                 return;
             }
             // /rename, /export, /clone — RPC session controls.

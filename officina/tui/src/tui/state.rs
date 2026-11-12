@@ -502,6 +502,12 @@ pub struct AppState {
     pub cache_dir: String,
     pub cache_total: u64,
 
+    // /caduceus gateway modal (QoL batch stage 2, 2026-11-12): read-only
+    // snapshot rendered from ~/.vitriol/officina/caduceus-state.json (the
+    // caduceus extension writes it; the TUI never does HTTP itself — I4).
+    pub caduceus_open: bool,
+    pub caduceus_state: Option<crate::tui::caduceus::CaduceusState>,
+
     // Diagnostics overlay (F9)
     pub show_diag: bool,
     /// Snapshot of the bridge stderr ring, refreshed each frame by run_loop.
@@ -648,6 +654,8 @@ impl Default for AppState {
             cache_sel: 0,
             cache_dir: String::new(),
             cache_total: 0,
+            caduceus_open: false,
+            caduceus_state: None,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1111,6 +1119,14 @@ impl AppState {
         self.cache_refresh();
         self.cache_sel = 0;
         self.cache_open = true;
+    }
+
+    /// `/caduceus` — reload the extension-written gateway snapshot and open
+    /// the read-only modal. A missing file opens an honest "no state" view.
+    pub fn caduceus_open_modal(&mut self) {
+        self.note_phase(UiEvent::OpenModal);
+        self.caduceus_state = crate::tui::caduceus::load();
+        self.caduceus_open = true;
     }
 
     pub fn cache_delete_selected(&mut self) {
@@ -1947,6 +1963,7 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("caduceus", "gateway overview", "/caduceus — gateway snapshot: connections, catalog size, free budget, keys (read-only; written by the caduceus extension)"),
         ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),
         ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
         ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),

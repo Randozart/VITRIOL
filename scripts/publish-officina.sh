@@ -91,16 +91,22 @@ echo "== snapshot (tracked files of ${SUBTREE}/ only)"
 SNAP_IDX="$(mktemp)"
 prev=""
 git rev-parse --verify "${BRANCH}" >/dev/null 2>&1 && prev="$(git rev-parse "${BRANCH}")"
+# Enumerate from HEAD:officina (ls-FILES reads the temp index — empty by
+# construction — so the working-tree enumeration footgun is off the
+# table). Files are named from the TREE and added from the worktree, so
+# untracked worktree junk cannot leak.
 TREE="$(
   GIT_INDEX_FILE="$SNAP_IDX" bash -c '
     set -euo pipefail
     cd '"${SUBTREE}"'
     git read-tree --empty
-    git ls-files -z | xargs -0 git add -- 2>/dev/null
+    git ls-tree -rz --name-only HEAD:officina | xargs -0 git add --
     git write-tree
   '
 )"
 rm -f "$SNAP_IDX"
+EXPECTED_TREE="$(git rev-parse HEAD:officina)"
+[[ "$TREE" == "$EXPECTED_TREE" ]] || fail "snapshot tree ${TREE} != tracked officina tree ${EXPECTED_TREE}"
 SNAP_MSG="officina snapshot v${VERSION}
 
 Published from the VITRIOL monorepo.

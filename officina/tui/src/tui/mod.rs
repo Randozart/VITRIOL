@@ -433,6 +433,95 @@ async fn run_loop(
     Ok(())
 }
 
+fn handle_caduceus_key(key: KeyEvent, state: &mut AppState) {
+    let mut close = false;
+    let mut reload = false;
+    {
+        let Some(page) = state.caduceus.as_mut() else {
+            return;
+        };
+        if page.filtering {
+            match key.code {
+                KeyCode::Esc => {
+                    page.filtering = false;
+                    page.filter.clear();
+                    page.sel = 0;
+                }
+                KeyCode::Enter => {
+                    page.filtering = false;
+                    page.clamp_sel();
+                }
+                KeyCode::Backspace => {
+                    page.filter.pop();
+                    page.sel = 0;
+                }
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    page.filter.push(c);
+                    page.sel = 0;
+                }
+                _ => {}
+            }
+            return;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                if page.detail {
+                    page.detail = false;
+                } else if !page.filter.is_empty() {
+                    page.filter.clear();
+                    page.sel = 0;
+                } else {
+                    close = true;
+                }
+            }
+            KeyCode::Char('q') => close = true,
+            KeyCode::Tab => page.set_tab(page.tab.next()),
+            KeyCode::BackTab => page.set_tab(page.tab.prev()),
+            KeyCode::Char(c @ '1'..='4') => {
+                if let Some(tab) = crate::tui::caduceus::Tab::from_number((c as u8 - b'0') as usize)
+                {
+                    page.set_tab(tab);
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => page.move_sel(-1),
+            KeyCode::Down | KeyCode::Char('j') => page.move_sel(1),
+            KeyCode::PageUp => page.move_sel(-10),
+            KeyCode::PageDown => page.move_sel(10),
+            KeyCode::Home | KeyCode::Char('g') => page.sel = 0,
+            KeyCode::End | KeyCode::Char('G') => {
+                page.sel = page.row_count().saturating_sub(1);
+            }
+            KeyCode::Char(' ') => {
+                page.toggle();
+            }
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                page.adjust(1);
+            }
+            KeyCode::Char('-') => {
+                page.adjust(-1);
+            }
+            KeyCode::Enter => page.detail = true,
+            KeyCode::Char('/') => page.filtering = true,
+            KeyCode::Char('r') => reload = true,
+            KeyCode::Backspace | KeyCode::Delete => {
+                page.clear_model_state();
+            }
+            _ => {}
+        }
+    }
+    if reload {
+        if let Some(page) = state.caduceus.as_mut() {
+            page.reload();
+        }
+    }
+    if close {
+        state.caduceus_close();
+    }
+}
+
 async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
     // Enhanced keyboard protocols report Press AND Release. Only Press/Repeat
     // are actions; a stray Esc key-release used to look like a second abort
@@ -615,15 +704,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
-    // /caduceus gateway snapshot: read-only, esc/q closes.
-    if state.caduceus_open {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                state.note_phase(state::UiEvent::CloseModal);
-                state.caduceus_open = false;
-            }
-            _ => {}
-        }
+    // /caduceus page — tabs, selection, policy edits (esc/q closes). Pending
+    // extension dialogs own keys above, so inline key prompts win.
+    if state.caduceus.is_some() {
+        handle_caduceus_key(key, state);
         return;
     }
 
@@ -995,9 +1079,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.cache_command(args);
                 return;
             }
-            // /caduceus — gateway snapshot modal (never RPC; file-backed).
+            // /caduceus — gateway page (never RPC; file-backed facts +
+            // TUI-owned policy).
             if msg == "/caduceus" {
-                state.caduceus_open_modal();
+                state.caduceus_open_page();
                 return;
             }
             // /rename, /export, /clone — RPC session controls.

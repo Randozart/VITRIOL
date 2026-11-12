@@ -507,11 +507,10 @@ pub struct AppState {
     pub cache_dir: String,
     pub cache_total: u64,
 
-    // /caduceus gateway modal (QoL batch stage 2, 2026-11-12): read-only
-    // snapshot rendered from ~/.vitriol/officina/caduceus-state.json (the
-    // caduceus extension writes it; the TUI never does HTTP itself — I4).
-    pub caduceus_open: bool,
-    pub caduceus_state: Option<crate::tui::caduceus::CaduceusState>,
+    // /caduceus page (2026-11-12): facts from the extension's state file,
+    // policy from the TUI-owned prefs file. The TUI never does HTTP and
+    // never sees secrets (I4); it writes caduceus-prefs.json only.
+    pub caduceus: Option<crate::tui::caduceus::Page>,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -659,8 +658,7 @@ impl Default for AppState {
             cache_sel: 0,
             cache_dir: String::new(),
             cache_total: 0,
-            caduceus_open: false,
-            caduceus_state: None,
+            caduceus: None,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1126,12 +1124,19 @@ impl AppState {
         self.cache_open = true;
     }
 
-    /// `/caduceus` — reload the extension-written gateway snapshot and open
-    /// the read-only modal. A missing file opens an honest "no state" view.
-    pub fn caduceus_open_modal(&mut self) {
+    /// `/caduceus` — load the facts snapshot + policy and open the page.
+    /// A missing state file renders an honest "no state" hint; corrupt
+    /// prefs fall back to defaults and say so in the footer (I6).
+    pub fn caduceus_open_page(&mut self) {
         self.note_phase(UiEvent::OpenModal);
-        self.caduceus_state = crate::tui::caduceus::load();
-        self.caduceus_open = true;
+        self.caduceus = Some(crate::tui::caduceus::Page::load());
+    }
+
+    pub fn caduceus_close(&mut self) {
+        if self.caduceus.is_some() {
+            self.note_phase(UiEvent::CloseModal);
+            self.caduceus = None;
+        }
     }
 
     /// Extension notify (stage 3, 2026-11-12): errors/warnings land in the
@@ -2003,7 +2008,7 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
-        ("caduceus", "gateway overview", "/caduceus — gateway snapshot: connections, catalog size, free budget, keys (read-only; written by the caduceus extension)"),
+        ("caduceus", "gateway + routing", "/caduceus — providers/models/health/policy page: routing on-off, ranks, pins, free-only, caps (facts by the caduceus extension; policy file written by the TUI)"),
         ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),
         ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
         ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),

@@ -285,9 +285,8 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
-    if state.caduceus_open {
-        render_chat_and_editor(frame, state, area);
-        render_caduceus_modal(frame, state, area);
+    if state.caduceus.is_some() {
+        render_caduceus_page(frame, state, area);
         return;
     }
     if state.tools_modal_open {
@@ -1572,197 +1571,415 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     );
 }
 
-/// /caduceus gateway snapshot — read-only rendering of the state file the
-/// caduceus extension writes (QoL batch stage 2, 2026-11-12). I4: no HTTP
-/// from the TUI; a missing file gets an honest setup hint instead.
-fn render_caduceus_modal(frame: &mut Frame, state: &AppState, area: Rect) {
-    let h = 10u16;
-    let w = area.width.min(92);
-    let modal = Rect {
-        y: area.y + area.height.saturating_sub(h + 1),
-        x: area.x,
-        width: w,
-        height: h,
-    };
-    frame.render_widget(Clear, modal);
+/// /caduceus page (2026-11-12) — full-bleed, four tabs. Facts come from the
+/// extension's caduceus-state.json; policy from the TUI-owned
+/// caduceus-prefs.json. I4: no HTTP from the TUI, no secrets in it either.
+fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    use crate::tui::caduceus::{self, ModelState, PolicyRow, Tab};
 
-    let (title, title_style) = match state.caduceus_state.as_ref() {
-        Some(s) => {
-            let age = crate::tui::caduceus::fmt_age_ms(s.age_ms(crate::tui::caduceus::now_ms()));
-            let gw = if s.gateway_up {
-                "gateway up"
-            } else {
-                "gateway DOWN"
-            };
-            let stale = if s.age_ms(crate::tui::caduceus::now_ms()) > 180_000 {
-                " STALE"
-            } else {
-                ""
-            };
-            (
-                format!(" {gw} · state {age}{stale} "),
-                if s.gateway_up && stale.is_empty() {
-                    theme::GREEN
-                } else {
-                    theme::ORANGE
-                },
-            )
-        }
-        None => (" no state ".to_string(), theme::ORANGE),
+    let Some(page) = state.caduceus.as_ref() else {
+        return;
     };
+    let now = caduceus::now_ms();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
-        .title(Span::styled(
-            format!("{} caduceus · ", theme::GLYPH_HERM) + title.as_str(),
-            Style::new().fg(title_style).add_modifier(Modifier::BOLD),
-        ))
-        .title_bottom(Span::styled(
-            " /nimbus lanes · /keys · /providers · esc ",
-            Style::new().fg(theme::MUTED),
-        ));
-    let inner = block.inner(modal);
-    frame.render_widget(block, modal);
-
-    let gold_label = Style::new().fg(theme::GOLD).bg(theme::PANEL);
-    let text = Style::new().fg(theme::TEXT).bg(theme::PANEL);
-    let muted = Style::new().fg(theme::MUTED).bg(theme::PANEL);
-    let mut lines: Vec<Line> = Vec::new();
-
-    let Some(s) = state.caduceus_state.as_ref() else {
-        lines.push(Line::from(vec![Span::styled(
-            " no ~/.vitriol/officina/caduceus-state.json yet — the caduceus",
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            " extension writes it at session start + every 60s (OFFICINA_CADUCEUS on)",
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
-        )]));
-        lines.push(Line::from(vec![Span::styled(
-            " run `vitriol caduceus setup` if the inference key is missing",
-            muted,
-        )]));
-        frame.render_widget(Paragraph::new(lines), inner);
+        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height < 6 || inner.width < 40 {
         return;
-    };
+    }
 
-    // gateway + connections
-    let gw_span = if s.gateway_up {
-        Span::styled("up  ", Style::new().fg(theme::GREEN).bg(theme::PANEL))
+    let detail_h = if page.detail {
+        match page.tab {
+            Tab::Providers => 6,
+            Tab::Models => 4,
+            _ => 0,
+        }
     } else {
-        Span::styled("DOWN", Style::new().fg(theme::RED).bg(theme::PANEL))
+        0
     };
-    let total =
-        s.connections.active.len() + s.connections.backoff.len() + s.connections.hard_down.len();
-    lines.push(Line::from(vec![
-        Span::styled(format!("{:<9}", "gateway"), gold_label),
-        gw_span,
-        Span::styled(
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(detail_h),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    // ── tab bar ──
+    let mut spans: Vec<Span> = vec![Span::styled(
+        format!(" {} caduceus  ", theme::GLYPH_HERM),
+        Style::new()
+            .fg(theme::GOLD)
+            .bg(theme::PANEL)
+            .add_modifier(Modifier::BOLD),
+    )];
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let style = if *tab == page.tab {
+            Style::new()
+                .fg(theme::BG)
+                .bg(theme::GOLD)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+        };
+        spans.push(Span::styled(format!(" {} {} ", i + 1, tab.label()), style));
+        spans.push(Span::raw(" "));
+    }
+    let stamp = match page.state.as_ref() {
+        Some(s) => {
+            let stale = if s.is_stale(now) { " · STALE" } else { "" };
             format!(
-                " · {} connections ({} active · {} backoff · {} down)",
-                total,
-                s.connections.active.len(),
-                s.connections.backoff.len(),
-                s.connections.hard_down.len()
-            ),
-            text,
-        ),
-    ]));
-
-    // catalog
-    let fetched = if s.catalog_fetched_at.len() >= 16 {
-        s.catalog_fetched_at[..16].to_string()
-    } else {
-        s.catalog_fetched_at.clone()
+                "{} free lanes · state {}{stale}",
+                s.free_candidate_count(),
+                caduceus::fmt_age_ms(s.age_ms(now))
+            )
+        }
+        None => "no state file yet".to_string(),
     };
-    lines.push(Line::from(vec![
-        Span::styled(format!("{:<9}", "catalog"), gold_label),
-        Span::styled(format!("{} models", s.catalog_count), text),
-        Span::styled(
-            if fetched.is_empty() {
-                String::new()
-            } else {
-                format!(" · fetched {fetched}")
-            },
-            muted,
+    spans.push(Span::styled(
+        format!("  {stamp}"),
+        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+    ));
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::PANEL)),
+        chunks[0],
+    );
+
+    // ── header row ──
+    let header = match page.tab {
+        Tab::Providers => format!(
+            "{:<22} {:<4} {:<5} {:<4} {:<8} {:>5} {:<8}",
+            "provider", "use", "rank", "key", "gateway", "free", "method"
         ),
-    ]));
-
-    // budget
-    let b = &s.budget;
-    let budget_state = if !b.allowed {
-        Span::styled("CAP REACHED", Style::new().fg(theme::RED).bg(theme::PANEL))
-    } else if b.paid_allowed {
-        Span::styled(
-            "within cap · paid allowed (manual)",
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
-        )
-    } else {
-        Span::styled(
-            "within cap · paid never",
-            Style::new().fg(theme::GREEN).bg(theme::PANEL),
-        )
-    };
-    lines.push(Line::from(vec![
-        Span::styled(format!("{:<9}", "budget"), gold_label),
-        Span::styled(
-            format!(
-                "day {}/{} · month {}/{} · ",
-                crate::tui::caduceus::fmt_count(b.daily_tokens),
-                crate::tui::caduceus::fmt_count(b.daily_cap),
-                crate::tui::caduceus::fmt_count(b.monthly_tokens),
-                crate::tui::caduceus::fmt_count(b.monthly_cap),
-            ),
-            text,
+        Tab::Models => format!(
+            "{:<44} {:<14} {:>8} {:<5} {:<7}",
+            "model", "owner", "ctx", "free", "state"
         ),
-        budget_state,
-    ]));
-
-    // keys + cooling
-    let inf = if s.inference_key.is_empty() {
-        Span::styled(
-            "MISSING (vitriol caduceus setup)",
-            Style::new().fg(theme::RED).bg(theme::PANEL),
-        )
-    } else {
-        Span::styled(s.inference_key.clone(), text)
+        Tab::Health => "gateway · catalog · budget · connections".to_string(),
+        Tab::Policy => "policy — space toggles · +/- adjusts".to_string(),
     };
-    let mut key_line = vec![
-        Span::styled(format!("{:<9}", "keys"), gold_label),
-        Span::styled("inference ", muted),
-        inf,
-        Span::styled(format!(" · {} provider keys", s.keys.len()), text),
-    ];
-    if s.cooling > 0 {
-        key_line.push(Span::styled(
-            format!(" · {} cooling", s.cooling),
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
-        ));
-    }
-    lines.push(Line::from(key_line));
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {header}"),
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        ))),
+        chunks[1],
+    );
 
-    // account rows (masked), a few visible
-    for k in s.keys.iter().take(3) {
-        lines.push(Line::from(vec![
-            Span::styled(format!("   {} · {}", k.provider, k.value), muted),
-            Span::styled(format!(" · {} · {}", k.env, k.source), muted),
-        ]));
+    // ── body ──
+    let mut lines: Vec<Line> = Vec::new();
+    match page.tab {
+        Tab::Providers => {
+            for (idx, p) in page.provider_view().iter().enumerate() {
+                let selected = idx == page.sel;
+                let use_ = if page.prefs.routing(&p.id) == "off" {
+                    "off"
+                } else {
+                    "on"
+                };
+                let rank = page
+                    .prefs
+                    .rank(&p.id)
+                    .map(|r| r.to_string())
+                    .unwrap_or_else(|| "—".to_string());
+                let key = if p.key_present { "✓" } else { "—" };
+                let method = if p.method.is_empty() {
+                    p.category.as_str()
+                } else {
+                    p.method.as_str()
+                };
+                let text = format!(
+                    "  {:<22} {:<4} {:<5} {:<4} {:<8} {:>5} {:<8}",
+                    trunc(&p.id, 22),
+                    use_,
+                    rank,
+                    key,
+                    p.gateway,
+                    p.free_models,
+                    method
+                );
+                lines.push(Line::from(Span::styled(text, caduceus_row_style(selected))));
+            }
+        }
+        Tab::Models => {
+            for (idx, c) in page.candidate_view().iter().enumerate() {
+                let selected = idx == page.sel;
+                let model_state = page.prefs.model_state(&c.id);
+                let text = format!(
+                    "  {:<44} {:<14} {:>8} {:<5} {:<7}",
+                    trunc(&c.id, 44),
+                    trunc(&c.owner, 14),
+                    caduceus::fmt_count(c.context_window),
+                    if c.free { "✓" } else { "paid" },
+                    model_state.label()
+                );
+                lines.push(Line::from(Span::styled(text, caduceus_row_style(selected))));
+            }
+        }
+        Tab::Health => match page.state.as_ref() {
+            Some(s) => {
+                let b = &s.budget;
+                let pct = |used: u64, cap: u64| {
+                    if cap == 0 {
+                        "—".to_string()
+                    } else {
+                        format!("{:.0}%", used as f64 * 100.0 / cap as f64)
+                    }
+                };
+                let rows = [
+                    format!("gateway      {}", if s.gateway_up { "Up" } else { "DOWN" }),
+                    format!("base url     {}", trunc(&s.base_url, 64)),
+                    format!(
+                        "catalog      {} models · fetched {}",
+                        s.catalog_count,
+                        if s.catalog_fetched_at.is_empty() {
+                            "—".to_string()
+                        } else {
+                            trunc(&s.catalog_fetched_at, 24)
+                        }
+                    ),
+                    format!(
+                        "budget       day {} / {} ({}) · month {} / {} ({})",
+                        caduceus::fmt_count(b.daily_tokens),
+                        caduceus::fmt_count(b.daily_cap),
+                        pct(b.daily_tokens, b.daily_cap),
+                        caduceus::fmt_count(b.monthly_tokens),
+                        caduceus::fmt_count(b.monthly_cap),
+                        pct(b.monthly_tokens, b.monthly_cap)
+                    ),
+                    format!(
+                        "cap state    {} · paid {}",
+                        if b.allowed {
+                            "within cap"
+                        } else {
+                            "CAP REACHED"
+                        },
+                        if b.paid_allowed { "allowed" } else { "never" }
+                    ),
+                    format!("cooling      {} models", s.cooling),
+                    format!(
+                        "connections  {} active · {} backoff · {} hard-down",
+                        s.connections.active.len(),
+                        s.connections.backoff.len(),
+                        s.connections.hard_down.len()
+                    ),
+                    format!(
+                        "active       {}",
+                        trunc(&s.connections.active.join(", "), 92)
+                    ),
+                    format!(
+                        "backoff      {}",
+                        trunc(&s.connections.backoff.join(", "), 92)
+                    ),
+                    format!(
+                        "hard-down    {}",
+                        trunc(&s.connections.hard_down.join(", "), 92)
+                    ),
+                    format!(
+                        "keys         {} readable rows · inference {}",
+                        s.keys.len(),
+                        if s.inference_key.is_empty() {
+                            "MISSING"
+                        } else {
+                            "set"
+                        }
+                    ),
+                ];
+                for row in rows {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {row}"),
+                        Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                    )));
+                }
+            }
+            None => {
+                lines.push(Line::from(Span::styled(
+                    "  no ~/.vitriol/officina/caduceus-state.json yet — the caduceus extension writes it at session start + every 60s",
+                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "  run `vitriol caduceus setup` if the gateway is not installed",
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                )));
+            }
+        },
+        Tab::Policy => {
+            for (idx, row) in page.policy_rows().iter().enumerate() {
+                let selected = idx == page.sel;
+                let text = match row {
+                    PolicyRow::FreeOnly => format!(
+                        "  {:<24} {}",
+                        "free only",
+                        if page.prefs.free_only { "on" } else { "off" }
+                    ),
+                    PolicyRow::PerOwner => {
+                        format!("  {:<24} {} (1–32)", "per-owner cap", page.prefs.per_owner)
+                    }
+                    PolicyRow::MaxCandidates => format!(
+                        "  {:<24} {} (1–256)",
+                        "max candidates", page.prefs.max_candidates
+                    ),
+                    PolicyRow::AllowPaid { provider, allow } => format!(
+                        "  {:<24} {}",
+                        format!("allow paid · {provider}"),
+                        if *allow { "yes" } else { "no" }
+                    ),
+                };
+                lines.push(Line::from(Span::styled(text, caduceus_row_style(selected))));
+            }
+        }
     }
-    if s.keys.len() > 3 {
-        lines.push(Line::from(vec![Span::styled(
-            format!("   … +{} more", s.keys.len() - 3),
-            muted,
-        )]));
+    let visible = chunks[2].height as usize;
+    let start = if visible == 0 {
+        0
+    } else if page.sel < visible {
+        0
+    } else {
+        (page.sel + 1).saturating_sub(visible)
+    };
+    let body_lines: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
+    frame.render_widget(
+        Paragraph::new(body_lines).style(Style::new().bg(theme::PANEL)),
+        chunks[2],
+    );
+
+    // ── detail pane ──
+    if page.detail && detail_h > 0 {
+        let detail = match page.tab {
+            Tab::Providers => page.provider_view().get(page.sel).map(|p| {
+                vec![
+                    format!("{} — {}", p.id, p.name),
+                    format!(
+                        "website   {}",
+                        if p.website.is_empty() {
+                            "—"
+                        } else {
+                            p.website.as_str()
+                        }
+                    ),
+                    format!(
+                        "env       {} · key {}",
+                        if p.credential_env.is_empty() {
+                            "—"
+                        } else {
+                            p.credential_env.as_str()
+                        },
+                        if p.key_present { "present" } else { "missing" }
+                    ),
+                    format!(
+                        "free      {} · {} free models",
+                        if p.has_free { "yes" } else { "no" },
+                        p.free_models
+                    ),
+                    format!(
+                        "signup    {} · status {}",
+                        if p.method.is_empty() {
+                            "—"
+                        } else {
+                            p.method.as_str()
+                        },
+                        if p.signup_status.is_empty() {
+                            "pending"
+                        } else {
+                            p.signup_status.as_str()
+                        }
+                    ),
+                    format!(
+                        "notes     {}{}",
+                        trunc(&p.free_note, 48),
+                        if p.auth_hint.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {}", trunc(&p.auth_hint, 40))
+                        }
+                    ),
+                ]
+            }),
+            Tab::Models => page.candidate_view().get(page.sel).map(|c| {
+                vec![
+                    c.id.clone(),
+                    format!(
+                        "owner     {} · ctx {} · max {} · {}",
+                        c.owner,
+                        caduceus::fmt_count(c.context_window),
+                        caduceus::fmt_count(c.max_tokens),
+                        if c.free { "free" } else { "paid" }
+                    ),
+                    format!(
+                        "state     {}",
+                        match page.prefs.model_state(&c.id) {
+                            ModelState::Neutral => "neutral (space: pin → deny → neutral)",
+                            other => other.label(),
+                        }
+                    ),
+                ]
+            }),
+            _ => None,
+        };
+        if let Some(rows) = detail {
+            let detail_lines: Vec<Line> = rows
+                .into_iter()
+                .take(chunks[3].height as usize)
+                .map(|r| {
+                    Line::from(Span::styled(
+                        format!("  {r}"),
+                        Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                    ))
+                })
+                .collect();
+            frame.render_widget(
+                Paragraph::new(detail_lines).style(Style::new().bg(theme::PANEL)),
+                chunks[3],
+            );
+        }
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    // ── footer ──
+    let mut footer = vec![Line::from(Span::styled(
+        "  tab switch · space toggle · +/- rank/cap · / filter · enter detail · r reload · esc close",
+        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+    ))];
+    if page.filtering {
+        footer.push(Line::from(Span::styled(
+            format!("  /{}_", page.filter),
+            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+        )));
+    } else if let Some(note) = page.note.as_ref() {
+        let style = if note.contains("ignored") || note.contains("failed") {
+            theme::ORANGE
+        } else {
+            theme::GREEN
+        };
+        footer.push(Line::from(Span::styled(
+            format!("  {note} · {}", page.policy_summary()),
+            Style::new().fg(style).bg(theme::PANEL),
+        )));
+    } else {
+        footer.push(Line::from(Span::styled(
+            format!("  {}", page.policy_summary()),
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        )));
+    }
+    footer.truncate(chunks[4].height as usize);
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::new().bg(theme::PANEL)),
+        chunks[4],
+    );
 }
 
-/// /cache manager — engine KV disk cache entries, newest first, with age and
-/// size. `d` deletes the highlighted entry, `w` wipes every non-protected
-/// entry, `r` re-scans. slot0.bin (warm-boot restore) is protected.
+fn caduceus_row_style(selected: bool) -> Style {
+    if selected {
+        Style::new().fg(theme::BG).bg(theme::GOLD)
+    } else {
+        Style::new().fg(theme::TEXT).bg(theme::PANEL)
+    }
+}
+
 fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     use crate::tui::cache as c;
     let h = area

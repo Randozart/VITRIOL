@@ -55,10 +55,50 @@ function notify(title: string, body: string): void {
 	}
 }
 
+// Codex-infra stage 2 (2026-11-12): when the TUI is not focused, the OSC
+// ping lands in an unseen terminal. A desktop notification (notify-send)
+// covers that; threshold-gated so quick turns stay silent. Env:
+//   OFFICINA_NO_DESKTOP_NOTIFY=1  kill switch
+//   OFFICINA_DESKTOP_NOTIFY_MIN_S threshold (default 20)
+
+/** Track the run start so agent_end can compute the turn duration. */
+let runStartedAt = 0;
+
+export function desktopNotifyEligible(
+	env: NodeJS.ProcessEnv,
+	durationS: number,
+): boolean {
+	if (env.OFFICINA_NO_DESKTOP_NOTIFY === "1") return false;
+	if (!env.WAYLAND_DISPLAY && !env.DISPLAY) return false;
+	const min = Number(env.OFFICINA_DESKTOP_NOTIFY_MIN_S ?? "20");
+	return durationS >= (Number.isFinite(min) ? min : 20);
+}
+
+function notifyDesktop(body: string): void {
+	try {
+		execFile("notify-send", ["-a", "officina", "officina", body], { timeout: 5_000 });
+	} catch {
+		// cosmetic
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	if (process.env.OFFICINA_NO_NOTIFY === "1") return; // Rule 15
 
+	pi.on("before_agent_start", () => {
+		runStartedAt = Date.now();
+	});
+
 	pi.on("agent_end", async () => {
 		notify("officina", "Ready for input");
+		const durationS = runStartedAt > 0 ? (Date.now() - runStartedAt) / 1000 : 0;
+		runStartedAt = 0;
+		if (desktopNotifyEligible(process.env, durationS)) {
+			notifyDesktop(
+				durationS >= 90
+					? `turn done (${Math.round(durationS / 60)} min)`
+					: `turn done (${Math.round(durationS)} s)`,
+			);
+		}
 	});
 }

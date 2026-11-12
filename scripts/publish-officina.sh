@@ -89,22 +89,25 @@ echo "== snapshot (tracked files of ${SUBTREE}/ only)"
 # build a TREE from the tracked file list under a temp index — untracked
 # worktree junk can never leak — and commit it onto the snapshot line.
 SNAP_IDX="$(mktemp)"
+SNAP_FILES="$(mktemp)"
 prev=""
 git rev-parse --verify "${BRANCH}" >/dev/null 2>&1 && prev="$(git rev-parse "${BRANCH}")"
-# Enumerate from HEAD:officina (ls-FILES reads the temp index — empty by
-# construction — so the working-tree enumeration footgun is off the
-# table). Files are named from the TREE and added from the worktree, so
-# untracked worktree junk cannot leak.
-TREE="$(
-  GIT_INDEX_FILE="$SNAP_IDX" bash -c '
-    set -euo pipefail
-    cd '"${SUBTREE}"'
-    git read-tree --empty
-    git ls-tree -rz --name-only HEAD:officina | xargs -0 git add --
-    git write-tree
-  '
-)"
-rm -f "$SNAP_IDX"
+# Enumeration must run from the REPO ROOT (git's `HEAD:<path>` applies
+# cwd-relative path magic inside a subdir and silently returns nothing —
+# twice-bitten), while `git add` runs from officina/ so index paths are
+# subtree-relative. Files are NAMED from the HEAD tree (index-independent)
+# and read from the worktree: untracked worktree junk cannot leak.
+(
+  set -euo pipefail
+  git ls-tree -rz --name-only HEAD:officina > "$SNAP_FILES"
+  export GIT_INDEX_FILE="$SNAP_IDX"
+  git read-tree --empty
+  cd officina
+  xargs -0 git add -- < "$SNAP_FILES"
+  git write-tree
+) > /tmp/opencode/publish-tree.txt 2>/tmp/opencode/publish-add.log || fail "snapshot index build failed — see /tmp/opencode/publish-add.log"
+TREE="$(cat /tmp/opencode/publish-tree.txt)"
+rm -f "$SNAP_IDX" "$SNAP_FILES"
 EXPECTED_TREE="$(git rev-parse HEAD:officina)"
 [[ "$TREE" == "$EXPECTED_TREE" ]] || fail "snapshot tree ${TREE} != tracked officina tree ${EXPECTED_TREE}"
 SNAP_MSG="officina snapshot v${VERSION}

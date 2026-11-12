@@ -292,6 +292,42 @@ fn tools_usage(state: &mut state::AppState) {
     ));
 }
 
+/// Alt+E (codex-qol stage 4): stage the composer draft for $VISUAL/$EDITOR.
+/// The original draft is kept in the request, so a failed spawn/reload
+/// restores it verbatim (I4).
+fn request_editor(state: &mut AppState) {
+    if state.editor_suspend.is_some() {
+        return;
+    }
+    let editor = std::env::var("VISUAL")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .or_else(|| {
+            std::env::var("EDITOR")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+        })
+        .unwrap_or_else(|| "vi".to_string());
+    let mut argv: Vec<String> = editor.split_whitespace().map(String::from).collect();
+    if argv.is_empty() {
+        state.notice = Some((
+            "editor: empty $VISUAL/$EDITOR — draft kept".into(),
+            "warning".into(),
+        ));
+        return;
+    }
+    let tmp = std::env::temp_dir().join(format!("officina-compose-{}.md", std::process::id()));
+    if let Err(e) = std::fs::write(&tmp, &state.input) {
+        state.notice = Some((
+            format!("editor: temp write failed ({e}) — draft kept"),
+            "warning".into(),
+        ));
+        return;
+    }
+    argv.push(tmp.to_string_lossy().to_string());
+    state.editor_suspend = Some((argv, tmp, state.input.clone()));
+}
+
 /// Hand the terminal to an external interactive flow (signup wizard, OAuth
 /// login), then restore raw mode + alternate screen. Non-TTY refuses: a failed
 /// resume is worse than no suspend, and the page falls back to printing the
@@ -382,6 +418,43 @@ async fn run_loop(
                                         page.note = Some(format!("suspend failed ({e}) · run: {cmd}"));
                                     }
                                 }
+                            }
+                            last_frame = std::time::Instant::now();
+                        }
+                        if let Some((argv, tmp, original)) = state.editor_suspend.take() {
+                            let spawn_ok = suspend_external(terminal, &argv).is_ok();
+                            let mut note: Option<(String, String)> = None;
+                            match std::fs::read_to_string(&tmp) {
+                                Ok(text) => {
+                                    let edited =
+                                        text.strip_suffix('\n').unwrap_or(&text).to_string();
+                                    if !spawn_ok {
+                                        note = Some((
+                                            "editor failed — draft kept".into(),
+                                            "warning".into(),
+                                        ));
+                                    } else if edited == original {
+                                        note = Some(("editor: no change".into(), "info".into()));
+                                    } else {
+                                        state.cursor = edited.chars().count();
+                                        let n = state.cursor;
+                                        state.input = edited;
+                                        note = Some((
+                                            format!("editor: draft loaded ({n} chars)"),
+                                            "info".into(),
+                                        ));
+                                    }
+                                }
+                                Err(e) => {
+                                    note = Some((
+                                        format!("editor: reload failed ({e}) — draft kept"),
+                                        "warning".into(),
+                                    ));
+                                }
+                            }
+                            let _ = std::fs::remove_file(&tmp);
+                            if let Some(n) = note {
+                                state.notice = Some(n);
                             }
                             last_frame = std::time::Instant::now();
                         }
@@ -1499,6 +1572,9 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             } else {
                 state.cursor = state.input.chars().count();
             }
+        }
+        KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::ALT) => {
+            request_editor(state);
         }
         _ => {
             if let KeyCode::Char(c) = key.code {

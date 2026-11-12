@@ -223,6 +223,7 @@ pub const HELP_KEYS: &[(&str, &str)] = &[
     ("^v", "cycle tool verbosity (line/block/full)"),
     ("^t", "tool verbosity picker"),
     ("F9", "stderr diagnostics overlay"),
+    ("alt+e", "edit the draft in $VISUAL/$EDITOR"),
     ("F1", "this help"),
 ];
 
@@ -520,6 +521,9 @@ pub struct AppState {
     /// once at open (file reads must not happen per frame).
     pub status_open: bool,
     pub status_lines: Vec<(&'static str, String)>,
+    /// Deferred $EDITOR hand-off (codex-qol stage 4): argv + tmp file + the
+    /// composer draft as it was, so a failed edit never loses text (I4).
+    pub editor_suspend: Option<(Vec<String>, std::path::PathBuf, String)>,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -672,6 +676,7 @@ impl Default for AppState {
             caduceus_suspend: None,
             status_open: false,
             status_lines: Vec::new(),
+            editor_suspend: None,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1166,6 +1171,41 @@ impl AppState {
         if self.resume_sel >= n {
             self.resume_sel = n.saturating_sub(1);
         }
+    }
+
+    /// Stage the composer draft for an external $EDITOR run (codex-qol
+    /// stage 4). Testable core: `editor` is the raw $VISUAL/$EDITOR string.
+    /// The draft is written to a temp file and kept verbatim in the request,
+    /// so a failed spawn/reload never loses text (I4).
+    pub fn stage_editor(&mut self, editor: &str) {
+        if self.editor_suspend.is_some() {
+            return;
+        }
+        let mut argv: Vec<String> = editor.split_whitespace().map(String::from).collect();
+        if argv.is_empty() {
+            self.notice = Some((
+                "editor: empty $VISUAL/$EDITOR — draft kept".into(),
+                "warning".into(),
+            ));
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!(
+            "officina-compose-{}-{}.md",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        if let Err(e) = std::fs::write(&tmp, &self.input) {
+            self.notice = Some((
+                format!("editor: temp write failed ({e}) — draft kept"),
+                "warning".into(),
+            ));
+            return;
+        }
+        argv.push(tmp.to_string_lossy().to_string());
+        self.editor_suspend = Some((argv, tmp, self.input.clone()));
     }
 
     /// `/status` — snapshot the session facts once and open the modal.
@@ -3044,6 +3084,25 @@ mod tests {
         assert!(matches!(s.entries[0], ChatEntry::Diag(_)));
         assert!(matches!(s.entries[1], ChatEntry::Diag(_)));
         assert!(s.notice.is_none(), "errors do not use the glance row");
+    }
+
+    #[test]
+    fn editor_staging_preserves_the_draft() {
+        // codex-qol stage 4 (I4): staging never loses the draft
+        let mut s = AppState::default();
+        s.input = "refactor the flux capacitor\nsecond line".into();
+        s.stage_editor("nvim -f");
+        let (argv, tmp, original) = s.editor_suspend.take().expect("staged");
+        assert_eq!(argv[0], "nvim");
+        assert_eq!(argv[1], "-f");
+        assert!(argv[2].ends_with(".md"));
+        assert_eq!(std::fs::read_to_string(&tmp).unwrap(), original);
+        assert_eq!(original, "refactor the flux capacitor\nsecond line");
+        let _ = std::fs::remove_file(&tmp);
+        // empty editor string refuses without staging
+        s.stage_editor("   ");
+        assert!(s.editor_suspend.is_none());
+        assert!(s.notice.is_some());
     }
 
     #[test]

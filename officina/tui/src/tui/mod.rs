@@ -826,6 +826,15 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /status — read-only snapshot; esc/q closes.
+    if state.status_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => state.status_close(),
+            _ => {}
+        }
+        return;
+    }
+
     // /caduceus page — tabs, selection, policy edits (esc/q closes). Pending
     // extension dialogs own keys above, so inline key prompts win.
     if state.caduceus.is_some() {
@@ -1199,6 +1208,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /status — session snapshot modal (local, read-only).
+            if msg == "/status" {
+                state.status_open_modal();
                 return;
             }
             // /caduceus — gateway page (never RPC; file-backed facts +

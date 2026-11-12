@@ -514,6 +514,10 @@ pub struct AppState {
     /// Deferred external flow (stage 4): argv the loop runs after suspending
     /// the TUI (none = no suspend). Set by the caduceus page's A/o keys.
     pub caduceus_suspend: Option<Vec<String>>,
+    /// /status modal (codex-qol stage 2): read-only session snapshot, built
+    /// once at open (file reads must not happen per frame).
+    pub status_open: bool,
+    pub status_lines: Vec<(&'static str, String)>,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -663,6 +667,8 @@ impl Default for AppState {
             cache_total: 0,
             caduceus: None,
             caduceus_suspend: None,
+            status_open: false,
+            status_lines: Vec::new(),
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1134,6 +1140,112 @@ impl AppState {
     pub fn caduceus_open_page(&mut self) {
         self.note_phase(UiEvent::OpenModal);
         self.caduceus = Some(crate::tui::caduceus::Page::load());
+    }
+
+    /// `/status` — snapshot the session facts once and open the modal.
+    pub fn status_open_modal(&mut self) {
+        self.note_phase(UiEvent::OpenModal);
+        self.status_lines = self.build_status_lines();
+        self.status_open = true;
+    }
+
+    pub fn status_close(&mut self) {
+        if self.status_open {
+            self.note_phase(UiEvent::CloseModal);
+            self.status_open = false;
+        }
+    }
+
+    /// Pure builder so tests pin the content without touching $HOME files.
+    /// `gateway`/`policy_note` come from the caduceus state + prefs files.
+    fn status_rows(
+        &self,
+        gateway: Option<(crate::tui::caduceus::CaduceusState, bool)>,
+        policy_line: Option<String>,
+        profile: Option<String>,
+    ) -> Vec<(&'static str, String)> {
+        let mut rows: Vec<(&'static str, String)> = Vec::new();
+        rows.push(("cwd", shorten_home_for_status(&self.cwd)));
+        rows.push((
+            "session",
+            self.session_name.clone().unwrap_or_else(|| {
+                format!("{}…", &self.session_id[..self.session_id.len().min(10)])
+            }),
+        ));
+        rows.push((
+            "model",
+            match &self.model {
+                Some(m) => match &m.name {
+                    Some(name) => format!("{} / {} · {}", m.provider, m.id, name),
+                    None => format!("{} / {}", m.provider, m.id),
+                },
+                None => "(none)".to_string(),
+            },
+        ));
+        rows.push((
+            "agent",
+            self.agent_mode_label
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+        ));
+        rows.push((
+            "profile",
+            profile.unwrap_or_else(|| "auto (default)".to_string()),
+        ));
+        rows.push((
+            "context",
+            self.ctx_bar_label()
+                .unwrap_or_else(|| "— (no report yet)".to_string()),
+        ));
+        rows.push(("permissions", self.perm_mode.clone()));
+        rows.push((
+            "gateway",
+            match gateway {
+                Some((s, up)) => {
+                    let stale = if s.is_stale(crate::tui::caduceus::now_ms()) {
+                        " · STALE"
+                    } else {
+                        ""
+                    };
+                    if up {
+                        format!(
+                            "up · {} free lanes · cooling {}{stale}",
+                            s.free_candidate_count(),
+                            s.cooling
+                        )
+                    } else {
+                        format!("DOWN{stale}")
+                    }
+                }
+                None => "no state file (caduceus extension idle?)".to_string(),
+            },
+        ));
+        rows.push((
+            "policy",
+            policy_line.unwrap_or_else(|| "prefs ignored".to_string()),
+        ));
+        rows
+    }
+
+    fn build_status_lines(&self) -> Vec<(&'static str, String)> {
+        let gateway = crate::tui::caduceus::load().map(|s| {
+            let up = s.gateway_up;
+            (s, up)
+        });
+        let (prefs, note) = crate::tui::caduceus::load_prefs();
+        let policy_line = match note {
+            Some(note) => format!("prefs ignored: {note}"),
+            None => format!(
+                "free_only={} · per_owner={} · max={}",
+                if prefs.free_only { "on" } else { "off" },
+                prefs.per_owner,
+                prefs.max_candidates
+            ),
+        };
+        let profile = std::fs::read_to_string(profile_path())
+            .ok()
+            .map(|p| p.trim().to_string());
+        self.status_rows(gateway, Some(policy_line), profile)
     }
 
     pub fn caduceus_close(&mut self) {
@@ -2012,6 +2124,7 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("status", "session snapshot", "/status — model, agent, profile, context fill, cwd, session, permissions, gateway lanes, routing policy (read-only)"),
         ("caduceus", "gateway + routing", "/caduceus — providers/models/health/policy page: routing on-off, ranks, pins, free-only, caps (facts by the caduceus extension; policy file written by the TUI)"),
         ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),
         ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
@@ -2908,6 +3021,65 @@ mod tests {
     }
 
     #[test]
+    fn status_rows_cover_session_facts() {
+        // codex-qol stage 2: read-only snapshot content
+        let mut s = AppState::default();
+        s.cwd = std::path::PathBuf::from("/tmp");
+        s.model = Some(crate::rpc::protocol::Model {
+            id: "deepseek-v4.1-flash".into(),
+            name: Some("DeepSeek V4.1 Flash".into()),
+            provider: "caduceus".into(),
+            context_window: Some(1_000_000),
+            max_tokens: None,
+            reasoning: None,
+        });
+        s.perm_mode = "yolo".into();
+        let rows = s.status_rows(
+            None,
+            Some("free_only=on · per_owner=8 · max=48".into()),
+            None,
+        );
+        let get = |k: &str| {
+            rows.iter()
+                .find(|(label, _)| *label == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert!(get("model").contains("caduceus / deepseek-v4.1-flash"));
+        assert!(get("model").contains("DeepSeek V4.1 Flash"));
+        assert_eq!(get("permissions"), "yolo");
+        assert_eq!(get("profile"), "auto (default)");
+        assert!(get("context").contains("no report yet"));
+        assert!(get("gateway").contains("no state file"));
+        assert!(get("policy").contains("per_owner=8"));
+    }
+
+    #[test]
+    fn status_rows_report_gateway_and_policy_notes() {
+        let s = AppState::default();
+        let gw = crate::tui::caduceus::parse_state(
+            r#"{"ts":0,"gateway_up":true,"cooling":3,
+                "candidates":[{"id":"a/b","owner":"a","context_window":1,"max_tokens":1,"free":true}]}"#,
+        )
+        .unwrap();
+        let rows = s.status_rows(
+            Some((gw, true)),
+            Some("prefs ignored: invalid JSON".into()),
+            Some("fast".into()),
+        );
+        let get = |k: &str| {
+            rows.iter()
+                .find(|(label, _)| *label == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert!(get("gateway").contains("up · 1 free lanes · cooling 3"));
+        assert!(get("gateway").contains("STALE")); // ts 0 → ancient snapshot
+        assert_eq!(get("profile"), "fast");
+        assert!(get("policy").contains("prefs ignored"));
+    }
+
+    #[test]
     fn ctx_bar_label_hidden_until_first_report() {
         let s = AppState::default();
         assert_eq!(s.ctx_bar_label(), None);
@@ -3790,6 +3962,26 @@ mod kani_proofs {
             }
         }
     }
+}
+
+fn profile_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("OFFICINA_ROUTING_PROFILE_FILE") {
+        return std::path::PathBuf::from(p);
+    }
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("routing-profile");
+    p
+}
+
+fn shorten_home_for_status(path: &std::path::Path) -> String {
+    if let Ok(home) = std::env::var("HOME") {
+        if let Ok(rest) = path.strip_prefix(&home) {
+            return format!("~{}", rest.display());
+        }
+    }
+    path.display().to_string()
 }
 
 /// Pure oracle for the phase priority (kept out of AppState so the Kani

@@ -227,7 +227,7 @@ pub fn prefs_path() -> PathBuf {
     p
 }
 
-fn parse_state(json: &str) -> Option<CaduceusState> {
+pub fn parse_state(json: &str) -> Option<CaduceusState> {
     serde_json::from_str(json).ok()
 }
 
@@ -241,6 +241,11 @@ pub fn load_at(path: &Path) -> Option<CaduceusState> {
 
 /// Load policy. Absent file → defaults, no note. Invalid/unsupported →
 /// defaults + a note the page footer shows (I6 corrupt-safe).
+/// HOME-path convenience wrapper (used by the /status snapshot).
+pub fn load_prefs() -> (CaduceusPrefs, Option<String>) {
+    load_prefs_at(&prefs_path())
+}
+
 pub fn load_prefs_at(path: &Path) -> (CaduceusPrefs, Option<String>) {
     if !path.exists() {
         return (CaduceusPrefs::default(), None);

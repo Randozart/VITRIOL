@@ -285,6 +285,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
+    if state.status_open {
+        render_chat_and_editor(frame, state, area);
+        render_status_modal(frame, state, area);
+        return;
+    }
     if state.caduceus.is_some() {
         render_caduceus_page(frame, state, area);
         return;
@@ -1565,6 +1570,54 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Style::new().fg(theme::MUTED).bg(theme::PANEL),
         )));
     }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        inner,
+    );
+}
+
+/// /status (codex-qol stage 2) — read-only session snapshot, help-modal
+/// geometry. Rows were snapshotted at open (no per-frame file reads).
+fn render_status_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let h = (state.status_lines.len() as u16 + 4)
+        .min(area.height.saturating_sub(2))
+        .max(6);
+    let w = area.width.min(80);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" {} status ", theme::GLYPH_HERM),
+            Style::new()
+                .fg(theme::GOLD)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    let lines: Vec<Line> = state
+        .status_lines
+        .iter()
+        .take(inner.height as usize)
+        .map(|(label, value)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  {label:<12}"),
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                ),
+                Span::styled(value.clone(), Style::new().fg(theme::TEXT).bg(theme::PANEL)),
+            ])
+        })
+        .collect();
     frame.render_widget(
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         inner,

@@ -56,16 +56,19 @@ export function jobDir(root: string, id: string): JobPaths {
 }
 
 /** The dispatch wrapper: forks the payload detached, everything lands in
- *  the job dir. The OUTER command returns in ~50 ms with a pointer line. */
+ *  the job dir. The OUTER command returns in ~50 ms with a pointer line.
+ *  NOTE: the background job uses a brace group (`{ setsid … & }`) so `$!`
+ *  is set by the detached job — a bare `& ;` sequence is a bash syntax
+ *  error and the whole dispatch fails to parse (caught live 2026-11-12). */
 export function rewriteToDispatch(command: string, paths: JobPaths, id: string): string {
   const inner = `cd "$PWD"; ${command}`;
-  return [
-    `mkdir -p '${paths.dir}'`,
-    `printf '%s' ${shellQuote(command)} > '${paths.cmd}'`,
-    `setsid bash -c ${shellQuote(inner)} > '${paths.log}' 2>&1 &`,
-    `echo $! > '${paths.pid}'`,
-    `echo "longjob ${id} dispatched · log: ${paths.log} (poll bg_status ${id}, or bg_wait ${id} <max_s>; it will be announced on completion)"`,
-  ].join("; ");
+  return (
+    `mkdir -p ${shellQuote(paths.dir)}` +
+    ` && printf '%s' ${shellQuote(command)} > ${shellQuote(paths.cmd)}` +
+    ` && { setsid bash -c ${shellQuote(inner)} > ${shellQuote(paths.log)} 2>&1 & }` +
+    ` && echo $! > ${shellQuote(paths.pid)}` +
+    ` && echo "longjob ${id} dispatched · log: ${paths.log} (poll bg_status ${id}, or bg_wait ${id} <max_s>; it will be announced on completion)"`
+  );
 }
 
 /** POSIX single-quote (same contract as permissions-guard/sandbox). */

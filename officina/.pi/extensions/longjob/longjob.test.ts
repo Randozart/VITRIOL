@@ -1,5 +1,8 @@
 // longjob rules (2026-11-12, I1-I7).
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   hasFgOptOut,
   isLongRunner,
@@ -59,6 +62,34 @@ describe("rewriteToDispatch", () => {
     expect(out).toContain("echo $! > '/tmp/lj/j-1/pid'");
     expect(out).toContain("longjob j-1 dispatched");
     expect(out).toContain("bg_status j-1");
+    // no `&;` / `& ;` — a bash syntax error killed the whole dispatch live
+    expect(out).not.toMatch(/&\s*;/);
+  });
+
+  it("EXECUTES as real shell: log+pid written, job detaches (would have caught the &; bug)", () => {
+    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const { mkdtempSync } = require("node:fs") as typeof import("node:fs");
+    const { tmpdir } = require("node:os") as typeof import("node:os");
+    const root = mkdtempSync(join(tmpdir(), "longjob-exec-"));
+    const paths = jobDir(root, "j-exec");
+    const out = rewriteToDispatch("echo dispatched-payload && sleep 0.2 && echo done", paths, "j-exec");
+    const run = spawnSync("bash", ["-c", out], { encoding: "utf8", timeout: 10_000 });
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain("longjob j-exec dispatched");
+    // pid file written and the detached job alive right after dispatch
+    const pid = readFileSync(paths.pid, "utf8").trim();
+    expect(Number(pid)).toBeGreaterThan(1);
+    // log eventually carries the payload
+    const deadline = Date.now() + 3_000;
+    let log = "";
+    while (Date.now() < deadline && !log.includes("dispatched-payload")) {
+      try {
+        log = readFileSync(paths.log, "utf8");
+      } catch {
+        /* not yet */
+      }
+    }
+    expect(log).toContain("dispatched-payload");
   });
 
   it("quotes payloads with quotes, dollars and newlines", () => {

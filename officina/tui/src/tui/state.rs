@@ -2729,6 +2729,50 @@ fn shell_args_lines(
 /// Block shows a one-line args summary and a preview slice of the output;
 /// Full shows the complete pretty-printed args JSON and (near-)all output,
 /// with a live tail while the tool is running. `width` is the box budget.
+/// Codex-QoL stage 5: does this output look like a unified diff? Header
+/// markers win outright; otherwise a strong +/- majority over >=2 lines.
+fn looks_like_diff(lines: &[String]) -> bool {
+    let header = lines.iter().take(8).any(|l| {
+        let t = l.trim_start();
+        t.starts_with("diff --git")
+            || t.starts_with("+++")
+            || (t.starts_with("--- ") && t.len() > 4)
+            || t.starts_with("@@")
+            || t.starts_with("index ")
+    });
+    if header {
+        return true;
+    }
+    if lines.len() < 2 {
+        return false;
+    }
+    let pm = lines
+        .iter()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with('+') || t.starts_with('-')
+        })
+        .count();
+    pm * 2 > lines.len()
+}
+
+/// Style one diff line: @@ hunks gold, +++/--- file headers muted,
+/// additions green, deletions red, context default.
+fn diff_line_style(line: &str, default: Style) -> Style {
+    let t = line.trim_start();
+    if t.starts_with("@@") {
+        Style::default().fg(theme::GOLD).bg(theme::BG)
+    } else if t.starts_with("+++") || t.starts_with("---") {
+        Style::default().fg(theme::MUTED).bg(theme::BG)
+    } else if t.starts_with('+') {
+        Style::default().fg(theme::GREEN).bg(theme::BG)
+    } else if t.starts_with('-') {
+        Style::default().fg(theme::RED).bg(theme::BG)
+    } else {
+        default
+    }
+}
+
 fn render_tool_block(
     mode: ToolVerbosity,
     name: &str,
@@ -2851,7 +2895,15 @@ fn render_tool_block(
         } else {
             output
         };
+        // Codex-QoL stage 5: diff-shaped output (git diff, edit/write
+        // results) gets +/-/@@ line coloring; everything else unchanged.
+        let is_diff = looks_like_diff(slice);
         for ol in slice {
+            let line_st = if is_diff {
+                diff_line_style(ol, text_st)
+            } else {
+                text_st
+            };
             for (i, seg) in wrap_text(ol, width.saturating_sub(5))
                 .into_iter()
                 .enumerate()
@@ -2859,7 +2911,7 @@ fn render_tool_block(
                 let prefix = if i == 0 { "│   " } else { "│   " };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, border),
-                    Span::styled(seg, text_st),
+                    Span::styled(seg, line_st),
                 ]));
             }
         }
@@ -3084,6 +3136,37 @@ mod tests {
         assert!(matches!(s.entries[0], ChatEntry::Diag(_)));
         assert!(matches!(s.entries[1], ChatEntry::Diag(_)));
         assert!(s.notice.is_none(), "errors do not use the glance row");
+    }
+
+    #[test]
+    fn diff_detection_and_line_styles() {
+        // codex-qol stage 5
+        let diff: Vec<String> = vec![
+            "diff --git a/x.rs b/x.rs".into(),
+            "--- a/x.rs".into(),
+            "+++ b/x.rs".into(),
+            "@@ -1,3 +1,4 @@".into(),
+            " context line".into(),
+            "-old line".into(),
+            "+new line".into(),
+        ];
+        assert!(looks_like_diff(&diff));
+        let bash: Vec<String> = vec![
+            "cargo build --release -p officina".into(),
+            "   Compiling x".into(),
+        ];
+        assert!(!looks_like_diff(&bash));
+        let lone: Vec<String> = vec!["-x".into()];
+        assert!(!looks_like_diff(&lone));
+        let majority: Vec<String> = vec!["+a".into(), "-b".into(), "+c".into(), "ctx".into()];
+        assert!(looks_like_diff(&majority));
+
+        let base = Style::default().fg(theme::TEXT);
+        assert_eq!(diff_line_style("+add", base).fg, Some(theme::GREEN));
+        assert_eq!(diff_line_style("-del", base).fg, Some(theme::RED));
+        assert_eq!(diff_line_style("@@ hunk", base).fg, Some(theme::GOLD));
+        assert_eq!(diff_line_style("+++ b/x", base).fg, Some(theme::MUTED));
+        assert_eq!(diff_line_style("context", base), base);
     }
 
     #[test]

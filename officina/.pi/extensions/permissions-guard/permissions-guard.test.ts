@@ -166,6 +166,59 @@ describe("permissions-guard wiring", () => {
     h.restore();
   });
 
+  it("sandboxed mode wraps bash; other modes never do (I1/I6)", async () => {
+    const input = { command: "echo hi" };
+    const h = harness(null, {
+      TRIS_PERMS_FILE: join(dir, "absent.json"),
+      HOME: "/home/u",
+      OFFICINA_SANDBOX_BWRAP: "/bin/sh",
+    }, "sandboxed");
+    expect(await h.call("bash", input)).toBeUndefined();
+    // OFFICINA_SANDBOX_BWRAP=/bin/sh override → the binary path is /bin/sh
+    expect(String(input.command)).toContain("/bin/sh");
+    expect(String(input.command)).toContain("--ro-bind");
+    expect(String(input.command)).toContain("--unshare-net");
+    expect(String(input.command)).toContain("echo hi");
+
+    // yolo: byte-identical command
+    const input2 = { command: "echo hi" };
+    const h2 = harness(null, {
+      TRIS_PERMS_FILE: join(dir, "absent.json"),
+      HOME: "/home/u",
+      OFFICINA_SANDBOX_BWRAP: "/bin/sh",
+    }, "yolo");
+    await h2.call("bash", input2);
+    expect(input2.command).toBe("echo hi");
+    h2.restore();
+
+    // missing bwrap: one warning, command untouched
+    const input3 = { command: "echo hi" };
+    const h3 = harness(null, {
+      TRIS_PERMS_FILE: join(dir, "absent.json"),
+      HOME: "/home/u",
+      OFFICINA_SANDBOX_BWRAP: "/definitely/not/here",
+    }, "sandboxed");
+    await h3.call("bash", input3);
+    expect(input3.command).toBe("echo hi");
+    expect(h3.notices.filter((n) => n.includes("bwrap")).length).toBe(1);
+    await h3.call("bash", { command: "echo again" });
+    expect(h3.notices.filter((n) => n.includes("bwrap")).length).toBe(1);
+    h3.restore();
+
+    // network opt-in drops --unshare-net
+    const input4 = { command: "echo hi" };
+    const h4 = harness(null, {
+      TRIS_PERMS_FILE: join(dir, "absent.json"),
+      HOME: "/home/u",
+      OFFICINA_SANDBOX_BWRAP: "/bin/sh",
+      OFFICINA_SANDBOX_NET: "1",
+    }, "sandboxed");
+    await h4.call("bash", input4);
+    expect(String(input4.command)).not.toContain("--unshare-net");
+    h4.restore();
+    h.restore();
+  });
+
   it("missing snapshot: mode policy still applies, warned once", async () => {
     const h = harness(null, { TRIS_PERMS_FILE: join(dir, "absent.json"), HOME: "/home/u" });
     expect(await h.call("write", { path: "x.txt" })).toBeUndefined();

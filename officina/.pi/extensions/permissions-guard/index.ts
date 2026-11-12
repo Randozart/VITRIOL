@@ -10,6 +10,7 @@ import {
   type PermMode,
   type Verdict,
 } from "./policy.ts";
+import { findBwrap, shouldWrap, wrapBwrap } from "./sandbox.ts";
 
 // permissions-guard — path + shell policy, enforced (gap D1).
 //
@@ -53,6 +54,7 @@ export default function (pi: ExtensionAPI) {
 
   let cache: { mtime: number; snap: PermSnapshot } | null = null;
   let warned = false;
+  let sandboxWarned = false;
 
   function load(): PermSnapshot | null {
     try {
@@ -124,7 +126,23 @@ export default function (pi: ExtensionAPI) {
       const command = String(input.command ?? "");
       if (!command.trim()) return undefined;
       const verdict = commandVerdict(command, cwd, home, mode);
-      return decideAndEnforce(tool, verdict, shortCommand(command), ctx as any);
+      const enforced = await decideAndEnforce(tool, verdict, shortCommand(command), ctx as any);
+      if (enforced) return enforced;
+      // Codex-qol stage 10 (I6): only sandboxed mode wraps; bwrap missing
+      // degrades to unwrapped with exactly one warning per session.
+      if (tool === "bash" && shouldWrap(mode)) {
+        const bwrap = findBwrap();
+        if (!bwrap) {
+          if (!sandboxWarned) {
+            sandboxWarned = true;
+            ctx.ui.notify?.("sandbox: bwrap not found — commands run unwrapped", "warning");
+          }
+        } else {
+          const net = process.env.OFFICINA_SANDBOX_NET === "1";
+          (e.input as Record<string, unknown>).command = wrapBwrap(command, cwd, bwrap, { net });
+        }
+      }
+      return undefined;
     }
 
     if (tool !== "edit" && tool !== "write" && tool !== "read") return undefined;

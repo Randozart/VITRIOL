@@ -12,11 +12,11 @@ import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { matches, type PermAction, type PermSnapshot, decide } from "./perms.ts";
 
-export type PermMode = "ask" | "auto" | "yolo";
+export type PermMode = "ask" | "auto" | "yolo" | "sandboxed";
 
 export function parseMode(raw: unknown): PermMode {
   const v = String(raw ?? "").trim().toLowerCase();
-  return v === "auto" || v === "yolo" ? v : "ask";
+  return v === "auto" || v === "yolo" || v === "sandboxed" ? v : "ask";
 }
 
 /** Absolute-form globs. `~` is expanded by the caller into `home`. */

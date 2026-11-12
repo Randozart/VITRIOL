@@ -1106,6 +1106,10 @@ impl AppState {
         ),
         ("auto", "allow risky shell; sensitive paths still prompt"),
         ("yolo", "allow everything EXCEPT sensitive roots/secrets"),
+        (
+            "sandboxed",
+            "bash runs in a bwrap box: ro filesystem, rw cwd+/tmp, no net unless OFFICINA_SANDBOX_NET=1",
+        ),
     ];
 
     pub fn permissions_mode_index(&self) -> usize {

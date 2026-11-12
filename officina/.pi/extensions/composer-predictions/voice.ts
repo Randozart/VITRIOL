@@ -12,6 +12,7 @@ export interface VoiceProfile {
 }
 
 export const DISTILL_EVERY_PROMPTS = 40;
+export const IDLE_MS_DEFAULT = 5 * 60_000;
 export const MAX_PROFILE_WORDS = 200;
 const MAX_SAFE_PROMPTS = 30;
 const MAX_ACCEPTED = 20;
@@ -43,6 +44,27 @@ export function readProfile(path: string): VoiceProfile | null {
   } catch {
     return null;
   }
+}
+
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-REDACTED"],
+  [/\bgh[pousr]_[A-Za-z0-9]{16,}/g, "gh_TOKEN"],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, "gh_pat_REDACTED"],
+  [/\bAKIA[0-9A-Z]{16}/g, "AKIA_REDACTED"],
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, "xox-REDACTED"],
+  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer REDACTED"],
+  [/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}/g, "JWT_REDACTED"],
+  [/\b[0-9a-fA-F]{32,}\b/g, "HEX_REDACTED"],
+];
+
+/** Defense-in-depth (Codex-parity): scrub key-shaped strings from
+ *  GENERATED text before it is persisted or shown (I4). */
+export function redactSecrets(text: string): string {
+  let out = String(text ?? "");
+  for (const [rx, replacement] of SECRET_PATTERNS) {
+    out = out.replace(rx, replacement);
+  }
+  return out;
 }
 
 /** Acceptance events → compact stats block (ids and verdicts only, I4). */

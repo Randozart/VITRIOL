@@ -1394,6 +1394,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         KeyCode::Tab => {
             if state.cand_sel_logic_open() {
                 state.complete_command();
+            } else if state.prompt_ghost.is_some() && state.input.is_empty() {
+                // Codex parity (stage 4): Tab accepts the ghost as an
+                // editable draft when no completions are open. The agent-mode
+                // cycle stays reachable once the ghost is dismissed.
+                state.accept_ghost();
             } else if let Some(next) = state.next_agent_mode() {
                 let m = format!("/agent {}", next);
                 let _ = bridge

@@ -26,10 +26,13 @@ import { classifyTurn } from "../auto-route/classifier.ts";
 import {
   acceptanceBlock,
   buildDistillPrompt,
+  IDLE_MS_DEFAULT,
   parseProfile,
   readProfile,
+  redactSecrets,
   shouldDistill,
 } from "./voice.ts";
+import { budgetStatus } from "../_shared/budget.ts";
 import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
 
 const WIDGET_KEY = "composer-prediction";
@@ -116,6 +119,7 @@ export default function (pi: ExtensionAPI) {
   // at distill time. Session-scoped; never persisted raw.
   const safePrompts: string[] = [];
   const acceptedSuggestions: string[] = [];
+  let distillTimer: ReturnType<typeof setTimeout> | null = null;
 
   const setPrediction = (text: string | null): void => {
     const line = text ?? "";
@@ -142,11 +146,26 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
+  /** Stage-4 idle gate (Codex parity): distillation never fires while a run
+   *  is in flight; agent_end arms it IDLE_MS out, any new run cancels it. */
+  const armDistill = (): void => {
+    if (process.env.OFFICINA_NO_VOICE_LEARN === "1") return;
+    const idleMs = Number(process.env.OFFICINA_VOICE_IDLE_MS) || IDLE_MS_DEFAULT;
+    if (distillTimer) clearTimeout(distillTimer);
+    distillTimer = setTimeout(() => {
+      distillTimer = null;
+      if (!inRun) void maybeDistill();
+    }, idleMs);
+    distillTimer.unref?.();
+  };
+
   /** Slow-cadence voice distillation (stage 3). Free lane, day-capped by
-   *  shouldDistill; failures are silent — suggestions keep working from the
-   *  last profile. */
+   *  shouldDistill, idle-gated, budget-gated (stage 4); failures are
+   *  silent — suggestions keep working from the last profile. */
   const maybeDistill = async (): Promise<void> => {
     if (process.env.OFFICINA_NO_VOICE_LEARN === "1") return;
+    if (inRun) return;
+    if (!budgetStatus().allowed) return; // budget gate: no spend near the cap
     try {
       const profile = readProfile(PROFILE_PATH);
       const gate = shouldDistill(profile, safePrompts.length);
@@ -176,7 +195,7 @@ export default function (pi: ExtensionAPI) {
       const doc = {
         version: 1 as const,
         updatedAt: new Date().toISOString(),
-        profile: updated,
+        profile: redactSecrets(updated),
         samples: safePrompts.length,
         acceptance: acceptanceBlock(events),
       };
@@ -195,6 +214,10 @@ export default function (pi: ExtensionAPI) {
     lastLine = "§";
     setPrediction(null);
     lastAssistantTail = "";
+    if (distillTimer) {
+      clearTimeout(distillTimer);
+      distillTimer = null;
+    }
     clearSuggestion(OFFICINA_DIR); // stale ghost from a dead session must not haunt
   });
 
@@ -243,6 +266,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("before_agent_start", () => {
     inRun = true;
+    // Activity cancels a pending idle distillation (stage-4 idle gate).
+    if (distillTimer) {
+      clearTimeout(distillTimer);
+      distillTimer = null;
+    }
   });
 
   pi.on("agent_end", () => {
@@ -260,7 +288,9 @@ export default function (pi: ExtensionAPI) {
           verifyOk: verify?.ok,
           dirtyFiles: dirty >= 0 ? dirty : undefined,
         };
-        const model = bestFreeLane();
+        // Budget gate (stage 4): when the cloud budget is exhausted the LLM
+        // draft is skipped — heuristic suggestions are local and still stage.
+        const model = budgetStatus().allowed ? bestFreeLane() : null;
         const draft = model
           ? await generateDraft(model, buildGenPrompt(signals, readVoiceProfile()))
           : null;
@@ -269,7 +299,7 @@ export default function (pi: ExtensionAPI) {
         writeSuggestion(OFFICINA_DIR, {
           version: 1,
           id: makeSuggestionId(),
-          text: resolved.text,
+          text: redactSecrets(resolved.text),
           source: resolved.source,
           created: new Date().toISOString(),
           expires: Date.now() + SUGGESTION_TTL_MS,
@@ -279,7 +309,7 @@ export default function (pi: ExtensionAPI) {
         if (resolved.source === "llm" && acceptedSuggestions.length < 100) {
           acceptedSuggestions.push(resolved.text);
         }
-        await maybeDistill();
+        armDistill();
       } catch {
         // decoration contract
       }

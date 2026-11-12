@@ -6,6 +6,7 @@ import {
   DISTILL_EVERY_PROMPTS,
   parseProfile,
   readProfile,
+  redactSecrets,
   shouldDistill,
   type VoiceProfile,
 } from "./voice.ts";
@@ -89,5 +90,33 @@ describe("readProfile", () => {
   it("rejects wrong versions and garbage", () => {
     expect(readProfile("/definitely/not/here.json")).toBeNull();
     expect(readProfile("/definitely/not/here.json")).toBeNull();
+  });
+});
+
+describe("redactSecrets (stage 4, defense-in-depth)", () => {
+  it("scrubs key-shaped strings from generated text", () => {
+    const dirty = [
+      "use sk-live-abcdef1234567890xyz for billing",
+      "token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234 in env",
+      "fine-grain github_pat_A1b2C3d4E5f6G7h8I9j0K1l2M3n",
+      "aws AKIAIOSFODNN7EXAMPLE key",
+      "slack xoxb-123456789012-abcdef",
+      "send Authorization: Bearer eyJa9.8sKm7 secret",
+      "jwt eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.signature",
+      "digest deadbeefdeadbeefdeadbeefdeadbeef",
+    ].join("\n");
+    const clean = redactSecrets(dirty);
+    expect(clean).not.toContain("sk-live-abcdef");
+    expect(clean).not.toContain("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ");
+    expect(clean).not.toContain("github_pat_A1b2C3");
+    expect(clean).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(clean).not.toContain("xoxb-123456789012");
+    expect(clean).not.toContain("Bearer eyJa9");
+    expect(clean).not.toContain("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9");
+    expect(clean).not.toContain("deadbeefdeadbeefdeadbeefdeadbeef");
+    expect(clean).toContain("use sk-REDACTED for billing");
+    expect(redactSecrets("normal prose with the word sky and skunk")).toBe(
+      "normal prose with the word sky and skunk",
+    );
   });
 });

@@ -2,6 +2,7 @@ pub mod ansi;
 pub mod cache;
 pub mod caduceus;
 pub mod layout;
+pub mod paste;
 pub mod review;
 pub mod state;
 
@@ -24,6 +25,7 @@ use crate::rpc::protocol::{RpcCommand, SlashCommand};
 use crate::session_guard;
 
 use self::layout::render;
+use self::paste as tui_paste;
 use self::state::AppState;
 
 pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> {
@@ -291,6 +293,84 @@ fn tools_usage(state: &mut state::AppState) {
     state.entries.push(state::ChatEntry::Diag(
         "modes: line | block | full · strictness: ! pinned, + at-least, - at-most".to_string(),
     ));
+}
+
+/// ^o (codex-qol stage 9): pull the clipboard image into the composer.
+/// Probes wl-paste (Wayland) or xclip (X11), validates magic bytes, enforces
+/// the caps; every failure is a notice (I5).
+fn attach_clipboard_image(state: &mut AppState) {
+    if state.pending_images.len() >= tui_paste::MAX_IMAGES {
+        state.notice = Some((
+            format!("images: cap is {} — alt+o clears", tui_paste::MAX_IMAGES),
+            "warning".into(),
+        ));
+        return;
+    }
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+    for (cmd, args, mime) in tui_paste::clipboard_candidates(wayland) {
+        let out = std::process::Command::new(&cmd).args(&args).output();
+        let Ok(out) = out else { continue };
+        if !out.status.success() || out.stdout.is_empty() {
+            continue;
+        }
+        if !tui_paste::magic_ok(&out.stdout, &mime) {
+            continue;
+        }
+        if out.stdout.len() > tui_paste::MAX_IMAGE_BYTES {
+            state.notice = Some((
+                format!("image too large ({} KiB > cap)", out.stdout.len() / 1024),
+                "warning".into(),
+            ));
+            return;
+        }
+        match tui_paste::save_temp(&out.stdout, &mime) {
+            Ok(path) => {
+                let kb = out.stdout.len() / 1024;
+                let n = state.pending_images.len() + 1;
+                state.attach_image(path, mime.clone());
+                state.notice = Some((
+                    format!(
+                        "attached image {n}/{} · {} · {} KiB",
+                        tui_paste::MAX_IMAGES,
+                        mime,
+                        kb
+                    ),
+                    "info".into(),
+                ));
+            }
+            Err(e) => {
+                state.notice = Some((format!("image save failed ({e})"), "warning".into()));
+            }
+        }
+        return;
+    }
+    state.notice = Some((
+        "no image in the clipboard (text paste works as usual)".into(),
+        "info".into(),
+    ));
+}
+
+/// Encode + drop the pending images for a send (I5: failures are notices;
+/// the pending set is cleared either way so a bad image cannot stick).
+fn images_for_send(state: &mut AppState) -> Option<Vec<crate::rpc::protocol::ImageContent>> {
+    if state.pending_images.is_empty() {
+        return None;
+    }
+    let mut images = Vec::new();
+    for img in &state.pending_images {
+        match tui_paste::encode_image(&img.path, &img.mime) {
+            Ok(content) => images.push(content),
+            Err(e) => {
+                state.notice = Some((format!("image dropped ({e})"), "warning".into()));
+            }
+        }
+    }
+    state.clear_images();
+    if images.is_empty() {
+        None
+    } else {
+        Some(images)
+    }
 }
 
 /// Alt+E (codex-qol stage 4): stage the composer draft for $VISUAL/$EDITOR.
@@ -1105,6 +1185,21 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         }
         // ctrl+v — cycle global tool verbosity (owner request 2026-09-03:
         // V for verbose). Line → Block → Full → Line. Persisted.
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            attach_clipboard_image(state);
+        }
+        KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::ALT) => {
+            let n = state.pending_images.len();
+            state.clear_images();
+            state.notice = Some((
+                if n == 0 {
+                    "no images attached".into()
+                } else {
+                    format!("cleared {n} image(s)")
+                },
+                "info".into(),
+            ));
+        }
         KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.tool_default = state.tool_default.next();
             state.tools_gen += 1;
@@ -1204,9 +1299,14 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             let msg = std::mem::take(&mut state.input);
             state.cursor = 0;
             state.cand_sel = 0;
-            if msg.trim().is_empty() {
-                return;
-            }
+            let msg = if msg.trim().is_empty() {
+                if state.pending_images.is_empty() {
+                    return;
+                }
+                "(screenshot)".to_string()
+            } else {
+                msg
+            };
             if !msg.starts_with('/') {
                 state.push_user(msg.clone());
             }
@@ -1215,7 +1315,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     .request(RpcCommand::FollowUp {
                         id: None,
                         message: msg,
-                        images: None,
+                        images: images_for_send(state),
                     })
                     .await;
                 state.notice = Some(("queued follow-up".to_string(), "info".to_string()));
@@ -1238,9 +1338,15 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             let msg = std::mem::take(&mut state.input);
             state.cursor = 0;
             state.cand_sel = 0;
-            if msg.is_empty() {
-                return;
-            }
+            let msg = if msg.is_empty() {
+                // Image-only send (I5): the staged clipboard images carry it.
+                if state.pending_images.is_empty() {
+                    return;
+                }
+                "(screenshot)".to_string()
+            } else {
+                msg
+            };
             // /fire — pure-local UI state (composer flames); never RPC.
             if msg == "/fire" || msg.starts_with("/fire ") {
                 let args = msg["/fire".len()..].trim();
@@ -1531,18 +1637,24 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     // Do not steer behind a tool that may be stuck: pi queues
                     // the message in memory and never persists it. Deliver it
                     // as a fresh Prompt once this turn settles (watchdog or
-                    // normal completion).
+                    // normal completion). Images stay staged (I5).
                     state.queued_prompts.push(msg);
+                    let img_note = if state.pending_images.is_empty() {
+                        String::new()
+                    } else {
+                        " · images kept staged".to_string()
+                    };
                     state.notice = Some((
-                        "queued — delivered when the running tool settles".to_string(),
+                        format!("queued — delivered when the running tool settles{img_note}"),
                         "info".to_string(),
                     ));
                 } else {
+                    let images = images_for_send(state);
                     let _ = bridge
                         .request(RpcCommand::Steer {
                             id: None,
                             message: msg,
-                            images: None,
+                            images,
                         })
                         .await;
                 }
@@ -1550,13 +1662,14 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 if echo {
                     state.push_user(msg.clone());
                 }
+                let images = images_for_send(state);
                 // is_streaming flips on the agent_start event (Prompt path);
                 // extension commands return without one — flag must not stick.
                 let _ = bridge
                     .request(RpcCommand::Prompt {
                         id: None,
                         message: msg,
-                        images: None,
+                        images,
                         streaming_behavior: None,
                     })
                     .await;

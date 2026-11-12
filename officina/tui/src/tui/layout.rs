@@ -75,21 +75,35 @@ fn mode_spans(
 /// the chip lives above the prompt box, not in the header). None until the
 /// agent-mode widget reports in → titleless border.
 fn composer_title(state: &AppState) -> Option<Vec<Span<'static>>> {
-    let label = state.agent_mode_label.as_deref()?;
-    if label.is_empty() {
-        return None;
+    let mut pending_chip: Option<Vec<Span<'static>>> = None;
+    if !state.pending_images.is_empty() {
+        pending_chip = Some(vec![Span::styled(
+            format!(" ⎙{}", state.pending_images.len()),
+            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+        )]);
     }
-    match mode_chip(label) {
-        Some((symbol, color)) => Some(mode_spans(symbol, label, color, theme::PANEL)),
+    let Some(label) = state.agent_mode_label.as_deref() else {
+        // No agent chip yet — the image chip alone still deserves the title.
+        return pending_chip;
+    };
+    if label.is_empty() {
+        return pending_chip;
+    }
+    let mut spans = match mode_chip(label) {
+        Some((symbol, color)) => mode_spans(symbol, label, color, theme::PANEL),
         // Custom mode: the widget's own badge glyph, gold chip.
         None => {
             let glyph = state
                 .agent_mode_glyph
                 .clone()
                 .unwrap_or_else(|| theme::GLYPH_VITRIOL.to_string());
-            Some(mode_spans(&glyph, label, theme::GOLD, theme::PANEL))
+            mode_spans(&glyph, label, theme::GOLD, theme::PANEL)
         }
+    };
+    if let Some(mut chip) = pending_chip {
+        spans.append(&mut chip);
     }
+    Some(spans)
 }
 
 /// `/home/<user>/…` → `~/…` (the sidebar's old convention, moved to the

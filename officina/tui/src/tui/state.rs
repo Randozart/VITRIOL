@@ -224,6 +224,7 @@ pub const HELP_KEYS: &[(&str, &str)] = &[
     ("^t", "tool verbosity picker"),
     ("F9", "stderr diagnostics overlay"),
     ("alt+e", "edit the draft in $VISUAL/$EDITOR"),
+    ("^o", "attach the clipboard image (alt+o clears)"),
     ("F1", "this help"),
 ];
 
@@ -333,6 +334,13 @@ pub enum DialogKind {
     Select,
     Input,
     Editor,
+}
+
+/// One staged clipboard image (codex-qol stage 9).
+#[derive(Debug, Clone)]
+pub struct PendingImage {
+    pub path: std::path::PathBuf,
+    pub mime: String,
 }
 
 #[derive(Debug, Clone)]
@@ -529,6 +537,9 @@ pub struct AppState {
     pub review_open: bool,
     pub review: Option<crate::tui::review::ReviewFindings>,
     pub review_sel: usize,
+    /// Clipboard image attachments (codex-qol stage 9, I5): capped, temp
+    /// files encoded to base64 at send, cleared after a successful submit.
+    pub pending_images: Vec<PendingImage>,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -685,6 +696,7 @@ impl Default for AppState {
             review_open: false,
             review: None,
             review_sel: 0,
+            pending_images: Vec::new(),
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1223,6 +1235,20 @@ impl AppState {
         self.review = crate::tui::review::load(&self.cwd);
         self.review_sel = 0;
         self.review_open = true;
+    }
+
+    /// ^o — stage a clipboard image (cap 4, I5).
+    pub fn attach_image(&mut self, path: std::path::PathBuf, mime: String) {
+        if self.pending_images.len() >= crate::tui::paste::MAX_IMAGES {
+            return;
+        }
+        self.pending_images.push(PendingImage { path, mime });
+    }
+
+    pub fn clear_images(&mut self) {
+        for img in self.pending_images.drain(..) {
+            let _ = std::fs::remove_file(&img.path);
+        }
     }
 
     pub fn review_close(&mut self) {

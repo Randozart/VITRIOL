@@ -5,14 +5,13 @@ Usage:
     tris up [profile]        start engine via supervisor (verified)
     tris down                stop engine (verified dead)
     tris smoke [model-id]    two-stage chain test
-    tris code [args...]      little-coder TUI, environment guaranteed
+    tris code [args...]      retired — pointer to the officina TUI
     tris chat [args...]      Hermes CLI on the vitriol provider
     tris go "<task>" [dir]   gated sub-coder dispatch + ledger record
     tris budget              §R2.8 allocation vs measured ledger
-    tris watch               ratatui cockpit (tris-watch binary)
     tris ledger-ingest <f> [label]  append a consumer usage report to the ledger
     tris perms-sync          mirror safety.permissions -> permissions.json
-    tris validate|status     config contract gate (static / +probe)
+    tris validate|status     config contract gate (static/ +probe)
     tris lanes [--json]      GPU lane report — read-only (M8 MVP)
 
 Exit 1 on FAIL. Interpreter: venv shebang (no system PyYAML); Nix devShell
@@ -68,81 +67,15 @@ def cmd_smoke(arg: str) -> int:
     return _dev_server("smoke", arg)
 
 
-def cmd_watch(_arg: str) -> int:
-    exe = os.environ.get("TRIS_WATCH_BIN", str(Path.home() / ".local/bin/tris-watch"))
-    if not Path(exe).exists():
-        print(f"tris-watch not built yet: {exe} (cargo build --release -p tris-watch in {REPO}/tui)", file=sys.stderr)
-        return 1
-    os.execv(exe, [exe] + rest)
-
-
 # ── exec-through commands (TTY belongs to the tool) ────────────────────────
 
-def _guarantees(cfg: dict) -> dict[str, str]:
-    env = dict(os.environ)
-    env.setdefault("VITRIOL_BASE_URL", _endpoint(cfg))
-    env.setdefault("LLAMACPP_API_KEY", "none")
-    if not shutil_which(env.get("PATH", ""), "node"):
-        node = resolve_node(env)
-        if node:
-            env["PATH"] = str(Path(node).parent) + os.pathsep + env.get("PATH", "")
-    return env
-
-
-def shutil_which(path_str: str, prog: str) -> str | None:
-    for d in path_str.split(os.pathsep):
-        f = Path(d) / prog
-        if f.exists() and os.access(f, os.X_OK):
-            return str(f)
-    return None
-
-
-def resolve_node(env: dict[str, str]) -> str | None:
-    """PATH -> fnm newest -> system (same order as trismegistus bridge)."""
-    found = shutil_which(env.get("PATH", ""), "node")
-    if found:
-        return found
-    import glob
-
-    def ver(p: str) -> tuple[int, int, int]:
-        import re
-
-        m = re.search(r"v(\d+)\.(\d+)\.(\d+)", p)
-        return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
-
-    home = env.get("HOME", str(Path.home()))
-    for pat in (home + "/.local/share/fnm/node-versions/v*/installation/bin/node",
-                home + "/.fnm/node-versions/v*/installation/bin/node"):
-        hits = sorted(glob.glob(pat), key=ver, reverse=True)
-        if hits:
-            return hits[0]
-    for c in ("/usr/bin/node", "/usr/local/bin/node"):
-        if Path(c).exists():
-            return c
-    return None
-
-
-def cmd_code(extra: list[str]) -> int:
-    cfg = _cfg_dict()
-    mode = str(dig(cfg, "scaffold.mode") or "officina")
-    if mode == "officina":
-        print(
-            "tris code: DEPRECATED — the JS frontend is legacy; use the Rust TUI binary `officina`.",
-            file=sys.stderr,
-        )
-        entry = Path.home() / "Desktop/Projects/VITRIOL/officina/officina.mjs"  # officina moved into VITRIOL (2026-08-31)
-        if entry.exists():
-            env = _guarantees(cfg)
-            node = resolve_node(env) or "node"
-            argv = [node, str(entry)] + extra
-            os.execvpe(argv[0], argv, env)  # never returns
-        print("tris code: officina deps missing (officina/node_modules) — falling back to little-coder", file=sys.stderr)
-    print(
-        "tris code: officina workshop not installed.\n"
-        "  cd ~/Desktop/Projects/VITRIOL/officina && npm install\n"
-        "  (or run: vitriol officina)",
-        file=sys.stderr,
-    )
+def cmd_code(_extra: list[str]) -> int:
+    # Heritage retirement (QoL batch stage 4, 2026-11-12): the JS frontend
+    # (officina.mjs) is deprecated and the node-guarantee launch path went
+    # with it. The canonical surface is the Rust TUI — pointer only, same
+    # pattern as cmd_chat.
+    print("tris code: retired — the workshop is the Rust TUI:", file=sys.stderr)
+    print("  officina            (or: vitriol officina)", file=sys.stderr)
     return 1
 
 
@@ -335,7 +268,7 @@ def cmd_lanes(args: list[str]) -> int:
 def main(argv: list[str]) -> int:
     cmd = argv[1] if len(argv) > 1 else "help"
     rest = argv[2:]
-    simple = {"up": cmd_up, "down": cmd_down, "smoke": cmd_smoke, "watch": cmd_watch, "budget": cmd_budget}
+    simple = {"up": cmd_up, "down": cmd_down, "smoke": cmd_smoke, "budget": cmd_budget}
     if cmd in simple:
         return simple[cmd](" ".join(rest) if cmd == "budget" else (rest[0] if rest else ""))
     if cmd == "code":

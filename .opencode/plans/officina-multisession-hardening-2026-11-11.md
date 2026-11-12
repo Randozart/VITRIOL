@@ -237,3 +237,22 @@ the operator hits quit.
 Side finding: guard tests encoded tmp stores under the REAL sessions root
 (102 litter dirs; /sessions showed them). Fixed with _in(home, …) variants
 (commit above); litter + 17 old --tmp-* probe stores purged.
+
+## Addendum (2026-11-12 20:15): the lld SIGBUS wave — tmpfs pressure, moved to /scratch
+
+Four rust-lld SIGBUS crashes today (11:30–19:36, all BUS_ADRERR in
+StringTableBuilder::write while linking briev builds) plus two
+/tmp/spk*/build/daemon SIGSEGVs. Root cause: /tmp is 20G RAM-backed tmpfs
+and the briev sessions kept multi-GB build trees there (c4-target 6.7G,
+dest-model-port 1G, spikes/pkg/sc ~3.4G — 13G of 20G with 17G swap
+already in use). The linker's output mmap hit tmpfs page-allocation
+failure → SIGBUS. Not a VITRIOL defect.
+
+Remediation (operator-approved, XFS = /scratch on nvme0n1p2, 126G free):
+- Moved 15 build trees (~11.7G) to /scratch/briev-builds/ with
+  /tmp/<name> symlinks so the briev agent's absolute-path commands keep
+  working through them.
+- /tmp now 2.7G/20G (14%).
+- Boot persistence: user unit `briev-builds-links.service` recreates the
+  symlinks after tmpfs wipes at boot.
+- The live briev-intel-xpu build (writes /tmp/dims*) was untouched.

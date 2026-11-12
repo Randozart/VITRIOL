@@ -1,7 +1,7 @@
 # Voice suggestions — ghost-text prompt prefill that learns your voice
 
 - Date: 2026-11-12 17:10
-- Status: implemented 2026-11-12 — stages 1–3 landed (352c835, 8402b9c, stage-3 commit). Telemetry verdicts simplified to accepted|dismissed-typed|dismissed-esc (ghost flow can't distinguish edits from accepts). Stage-3 note: safePrompts are session-scoped by design (I4 keeps it simple); cross-session voice memory rides the profile itself.
+- Status: stages 1–3 landed 2026-11-12 (352c835, 8402b9c, stage-3 commit). Telemetry verdicts simplified to accepted|dismissed-typed|dismissed-esc (ghost flow can't distinguish edits from accepts). Stage-3 note: safePrompts are session-scoped by design (I4 keeps it simple); cross-session voice memory rides the profile itself.
 - Builds on: composer-predictions (heuristic widget line, 2026-11-12),
   hang-watchdog judge pattern (free-lane micro-completions), auto-route's
   privacy classifier.
@@ -76,3 +76,30 @@ recent prompts.
 - Stage 1/3: `npm test` + `npm run typecheck` + free-lane smoke.
 - Stage 2: `cargo test` + `cargo fmt --check` + `cargo build --release`
   + install to `~/.local/bin/officina`.
+
+
+## Stage 4 — hardening from Codex research (2026-11-12 20:00)
+
+Research: developers.openai.com/codex/features/composer-predictions +
+/codex/customization/memories. Codex's predictions are ghost-in-box with
+Tab accepting as an editable draft, current-thread context only, never
+consulting memories directly — our v2 matches except the accept key.
+Their MEMORY system is the voice learner: local files, generated in the
+background with deliberate brakes Codex has and we lacked:
+
+1. **Idle gate** — they wait until a chat is idle long enough; we distilled
+   at agent_end. → distillation now arms 5 min after the last activity
+   (`OFFICINA_VOICE_IDLE_MS`) and is cancelled by any new run (inRun
+   double-checked at fire time).
+2. **Budget gate** — they skip generation when rate-limit headroom is
+   low; we now skip BOTH the LLM suggestion draft and distillation when
+   `_shared/budget` reports the cloud budget exhausted (heuristic
+   suggestions keep working — they're local).
+3. **Secret redaction** — they redact secrets from generated memory
+   fields; we now scrub the generated profile AND the staged suggestion
+   text (`redactSecrets`: sk-/gho_/ghp_/AKIA/xox/bearer/hex32+/PEM).
+4. **Tab parity** — Tab accepts the ghost when the composer is empty and
+   no completion candidates are open (→ still works; agent-mode cycling
+   keeps working when no ghost is shown).
+
+Invariants unchanged (I1–I6); redaction adds defense-in-depth to I4.

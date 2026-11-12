@@ -1,7 +1,7 @@
 # Caduceus Panel — provider/model preference + onboarding UI
 
 - Date: 2026-11-12 12:20
-- Status: in progress (stages 1–4)
+- Status: implemented 2026-11-12 — stages 1–4 landed (`d94b2d0`, `ad0ac0d`, `7db6f67`, `b1be976`); TUI rebuilt + installed. Extension changes take effect on the next TUI session (jiti loads extensions at session start).
 - Supersedes: the read-only `/caduceus` modal (QoL batch stage 2, commit `a7f9e19`)
 
 ## Context

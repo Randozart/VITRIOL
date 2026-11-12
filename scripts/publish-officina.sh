@@ -86,6 +86,7 @@ echo "== subtree split"
 # Fresh deterministic split of the current commit every run.
 git branch -D "${BRANCH}" >/dev/null 2>&1 || true
 SPLIT="$(git subtree split -P "${SUBTREE}")"
+git branch "${BRANCH}" "${SPLIT}"
 echo "== split commit: $SPLIT (tree of ${LOCAL_HEAD})"
 
 if [[ "$DRY_RUN" == "1" ]]; then

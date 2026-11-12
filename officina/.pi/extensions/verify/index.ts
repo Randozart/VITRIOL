@@ -1,3 +1,5 @@
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
@@ -6,6 +8,30 @@ import { renderReport, type GateObs, type VerifyResult } from "./baseline.ts";
 import { detectGates, type Gate, type VerifyConfig } from "./gates.ts";
 import { AUTO_BUDGET_MS, normalizeTouched, parseVerifyArgs, runVerify, type ExecFn } from "./runner.ts";
 import { renderWidgetLines } from "./widget.ts";
+
+  /** .officina/verify-last.json — last verify run summary for cross-extension
+ *  consumers (composer predictions). Atomic; failures silent. */
+export function writeVerifyLast(
+  dir: string,
+  doc: {
+    version: 1;
+    ts: number;
+    tier: string;
+    ok: boolean;
+    regressions: string[];
+    in_progress: string[];
+  },
+): void {
+  try {
+    mkdirSync(join(dir, ".officina"), { recursive: true });
+    const path = join(dir, ".officina", "verify-last.json");
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(doc)}\n`);
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+}
 
 // verify — the standards tool (plan: officina-qol-batch, stage 1).
 //
@@ -32,7 +58,7 @@ export default function (pi: ExtensionAPI, deps?: { exec?: ExecFn }) {
   let running: string[] = []; // gate IDs currently executing
   let runSeq = 0;
 
-  const runningLabels = (): string[] =>
+const runningLabels = (): string[] =>
     running.map((id) => gates.find((g) => g.id === id)?.label ?? id);
   const getLines = () => renderWidgetLines(last, runningLabels());
   const fallback = createBelowEditorFallback("verify", getLines);
@@ -79,6 +105,16 @@ export default function (pi: ExtensionAPI, deps?: { exec?: ExecFn }) {
       running = [];
       last = result;
       render();
+      // Codex-QoL stage 8: composer predictions reads this (jiti-isolated
+      // extensions cannot share module state — file is the contract).
+      writeVerifyLast(cwd, {
+        version: 1,
+        ts: result.at,
+        tier: result.tier,
+        ok: result.regressions.length === 0 && result.inProgress.length === 0,
+        regressions: result.regressions.map((c) => c.gateId),
+        in_progress: result.inProgress.map((c) => c.gateId),
+      });
       emitHarnessEvent(
         harnessEvent("lc-verify", tier, {
           detail: `gates=${result.outcomes.length} regs=${result.regressions.length} prog=${result.inProgress.length} pre=${result.preExisting.length} tookMs=${result.tookMs}`,

@@ -491,6 +491,131 @@ pub fn quarantine(path: &Path) -> Option<PathBuf> {
     Some(dst)
 }
 
+/// Surgical, append-only repair (2026-11-12): the only defect a restart can
+/// introduce is tool calls on the active path without results (pi killed
+/// mid-turn by a TUI restart). Appending one synthetic toolResult per
+/// dangling call fixes the tree while dropping NOTHING — so compaction-
+/// bearing and large sessions (which rewrite-based repair refuses) keep
+/// their context instead of being quarantined. Returns the patched file.
+pub fn patch_dangling_session(path: &Path) -> Option<PathBuf> {
+    let health = validate_session(path);
+    if health.valid || health.dangling_tool_calls == 0 || health.duplicate_ids > 0 {
+        return None;
+    }
+    let text = fs::read_to_string(path).ok()?;
+    let mut entries: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    let header = entries.first()?.clone();
+    if header.get("type").and_then(Value::as_str) != Some("session") {
+        return None;
+    }
+    // Recompute the active path and the dangling call ids (validate_session's
+    // reason string is coarse; we need the ids themselves, in path order).
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    for (i, e) in entries.iter().enumerate() {
+        if let Some(id) = e.get("id").and_then(Value::as_str) {
+            by_id.insert(id.to_string(), i);
+        }
+    }
+    let leaf = entries
+        .last()?
+        .get("id")
+        .and_then(Value::as_str)?
+        .to_string();
+    let mut results: HashSet<String> = HashSet::new();
+    let mut dangling: Vec<String> = Vec::new();
+    {
+        let mut path_idx: Vec<usize> = Vec::new();
+        let mut cursor = Some(leaf.clone());
+        let mut seen = HashSet::new();
+        while let Some(id) = cursor {
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            let Some(&idx) = by_id.get(&id) else {
+                return None; // missing parent: the rewriter handles this one
+            };
+            path_idx.push(idx);
+            cursor = entries[idx]
+                .get("parentId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        for &idx in &path_idx {
+            let msg = entries[idx].get("message");
+            if msg.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("toolResult") {
+                if let Some(id) = msg
+                    .and_then(|m| m.get("toolCallId"))
+                    .and_then(Value::as_str)
+                {
+                    results.insert(id.to_string());
+                }
+            }
+        }
+        for &idx in &path_idx {
+            let Some(msg) = entries[idx].get("message") else {
+                continue;
+            };
+            if msg.get("role").and_then(Value::as_str) != Some("assistant") {
+                continue;
+            }
+            if let Some(content) = msg.get("content").and_then(Value::as_array) {
+                for part in content {
+                    if part.get("type").and_then(Value::as_str) != Some("toolCall") {
+                        continue;
+                    }
+                    if let Some(id) = part.get("id").and_then(Value::as_str) {
+                        let owned = id.to_string();
+                        if !results.contains(&owned) && !dangling.contains(&owned) {
+                            dangling.push(owned);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if dangling.is_empty() {
+        return None; // the defect is something else — not ours to patch
+    }
+    let mut now = stamp();
+    let mut tail = leaf;
+    for call_id in &dangling {
+        let rid = format!("repair-{}-{}", now, &call_id[..call_id.len().min(8)]);
+        now += 1;
+        entries.push(serde_json::json!({
+            "type": "message",
+            "id": rid,
+            "parentId": tail,
+            "timestamp": "1970-01-01T00:00:00.000Z",
+            "message": {
+                "role": "toolResult",
+                "toolCallId": call_id,
+                "toolName": "tool",
+                "content": [{"type":"text","text":"[interrupted] Tool call was interrupted before execution and was not run."}],
+                "isError": true,
+                "timestamp": 0
+            }
+        }));
+        tail = rid;
+    }
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let out = path.with_file_name(format!("{name}.patched-{}.jsonl", stamp()));
+    let body: Vec<String> = entries
+        .iter()
+        .map(|v| serde_json::to_string(v).unwrap_or_default())
+        .collect();
+    fs::write(&out, format!("{}\n", body.join("\n"))).ok()?;
+    if validate_session(&out).valid {
+        Some(out)
+    } else {
+        let _ = fs::remove_file(&out);
+        None
+    }
+}
+
 /// Conservative offline repair for small sessions whose only defect is a
 /// dangling tool call (the usual result of aborting a turn). Complex
 /// sessions (compactions, synthetic recovery entries, thousands of rows) are
@@ -643,6 +768,19 @@ pub fn prepare_session_args(
                 args.push(session.to_string());
                 return (args, None);
             }
+            if let Some(patched) = patch_dangling_session(&path) {
+                args.push("--session".to_string());
+                args.push(patched.to_string_lossy().to_string());
+                return (
+                    args,
+                    Some(format!(
+                        "session patched (append-only, context kept): {} ({}) -> {}",
+                        path.display(),
+                        health.reason,
+                        patched.display()
+                    )),
+                );
+            }
             if let Some(repaired) = repair_simple_session(&path) {
                 args.push("--session".to_string());
                 args.push(repaired.to_string_lossy().to_string());
@@ -683,6 +821,19 @@ pub fn prepare_session_args(
         args.push("--session".to_string());
         args.push(latest.to_string_lossy().to_string());
         return (args, None);
+    }
+    if let Some(patched) = patch_dangling_session(&latest) {
+        args.push("--session".to_string());
+        args.push(patched.to_string_lossy().to_string());
+        return (
+            args,
+            Some(format!(
+                "session patched (append-only, context kept): {} ({}) -> {}",
+                latest.display(),
+                health.reason,
+                patched.display()
+            )),
+        );
     }
     if let Some(repaired) = repair_simple_session(&latest) {
         args.push("--session".to_string());
@@ -725,6 +876,67 @@ mod tests {
 
     fn header() -> serde_json::Value {
         serde_json::json!({"type":"session","version":3,"id":"s","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp"})
+    }
+
+    #[test]
+    fn patch_dangling_keeps_compaction_context() {
+        // 2026-11-12: the briev-TUI restart quarantined 5.6 MB because the
+        // rewriter refuses compactions; the append-only patch must keep them.
+        let dir = std::env::temp_dir().join(format!("guard-patch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = write_session(
+            &dir,
+            "s.jsonl",
+            &[
+                header(),
+                serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}),
+                serde_json::json!({"type":"message","id":"a","parentId":"u","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_1","name":"bash","arguments":{}}]}}),
+                serde_json::json!({"type":"compaction","id":"c","parentId":"a","firstKeptEntryId":"u","summary":"kept going"}),
+            ],
+        );
+        let health = validate_session(&path);
+        assert!(!health.valid);
+        assert_eq!(health.dangling_tool_calls, 1);
+        let patched = patch_dangling_session(&path).expect("patched");
+        let out = validate_session(&patched);
+        assert!(out.valid, "patched session must validate: {}", out.reason);
+        let text = fs::read_to_string(&patched).unwrap();
+        assert!(text.contains("\"compaction\""), "compaction entry kept");
+        assert!(text.contains("[interrupted]"));
+        assert!(text.contains("call_1"));
+        let _ = fs::remove_file(&patched);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn patch_refuses_duplicate_ids_and_valid_sessions() {
+        let dir = std::env::temp_dir().join(format!("guard-patch2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // duplicate ids: not appendable, rewriter territory
+        let dup = write_session(
+            &dir,
+            "dup.jsonl",
+            &[
+                header(),
+                serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}),
+                serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi again"}]}}),
+            ],
+        );
+        assert!(patch_dangling_session(&dup).is_none());
+        // fully valid session: nothing to patch
+        let ok = write_session(
+            &dir,
+            "ok.jsonl",
+            &[
+                header(),
+                serde_json::json!({"type":"message","id":"u","parentId":null,"message":{"role":"user","content":[{"type":"text","text":"hi"}]}}),
+            ],
+        );
+        assert!(validate_session(&ok).valid);
+        assert!(patch_dangling_session(&ok).is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

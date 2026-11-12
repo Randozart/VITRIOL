@@ -299,6 +299,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
+    if state.xsessions_open {
+        render_chat_and_editor(frame, state, area);
+        render_xsessions_modal(frame, state, area);
+        return;
+    }
     if state.review_open {
         render_chat_and_editor(frame, state, area);
         render_review_modal(frame, state, area);
@@ -1611,6 +1616,109 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         inner,
     );
+}
+
+/// /sessions (exec-infra stage 4) — every project store, newest first.
+/// Foreign projects render READ-ONLY: enter prints the launch hint (I4).
+fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let view = state.xsessions_view();
+    let h = area.height.min((view.len() as u16 + 3).clamp(8, 26));
+    let w = area.width.min(104);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD))
+        .style(Style::new().bg(theme::PANEL))
+        .title(Span::styled(
+            " sessions · all projects ",
+            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            if state.xsessions_filter.is_empty() {
+                " ↑↓ select · enter resume/local · type to filter · esc cancel ".to_string()
+            } else {
+                format!(" /{} _ · ↑↓ · enter · esc clears ", state.xsessions_filter)
+            },
+            Style::new().fg(theme::MUTED),
+        ));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+
+    let visible = inner.height as usize;
+    let sel = state.xsessions_sel;
+    let skip = if sel + 1 > visible {
+        sel + 1 - visible
+    } else {
+        0
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    if view.is_empty() {
+        lines.push(Line::from(Span::styled(
+            if state.xsessions_filter.is_empty() {
+                "  no sessions in any store".to_string()
+            } else {
+                format!("  nothing matches '{}'", state.xsessions_filter)
+            },
+            Style::new().fg(theme::MUTED),
+        )));
+    }
+    let cwd_str = state.cwd.to_string_lossy().to_string();
+    let window: Vec<_> = view.into_iter().skip(skip).collect();
+    for (i, a) in window.iter().enumerate() {
+        let selected = skip + i == sel;
+        let marker = if selected { "▸" } else { " " };
+        let project = if a.project == cwd_str {
+            "this project".to_string()
+        } else {
+            shorten_home(std::path::Path::new(&a.project))
+        };
+        let age = caduceus_age(
+            std::time::SystemTime::now()
+                .duration_since(a.entry.modified)
+                .unwrap_or_default(),
+        );
+        let foreign = if a.project == cwd_str { "" } else { " · ro" };
+        let text = format!(
+            " {} {:<28} {:<44} {:>5}msg {:>7}{foreign}",
+            marker,
+            trunc(&project, 28),
+            trunc(&a.entry.title, 44),
+            a.entry.msg_count,
+            age
+        );
+        let style = if selected {
+            Style::new().fg(theme::BG).bg(theme::GOLD)
+        } else if a.project == cwd_str {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        } else {
+            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+        };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    let body: Vec<Line> = lines.into_iter().skip(0).take(visible).collect();
+    frame.render_widget(
+        Paragraph::new(body).style(Style::new().bg(theme::PANEL)),
+        inner,
+    );
+}
+
+fn caduceus_age(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3_600 {
+        format!("{}m", s / 60)
+    } else if s < 86_400 {
+        format!("{}h", s / 3_600)
+    } else {
+        format!("{}d", s / 86_400)
+    }
 }
 
 /// /review-findings (codex-qol stage 7) — severity-colored findings from

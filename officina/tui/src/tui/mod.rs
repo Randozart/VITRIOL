@@ -980,6 +980,77 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /sessions — cross-project picker: type-to-filter, enter resumes
+    // current-project rows; foreign rows print a launch hint (I4).
+    if state.xsessions_open {
+        match key.code {
+            KeyCode::Esc => {
+                if state.xsessions_filter.is_empty() {
+                    state.xsessions_close();
+                } else {
+                    state.xsessions_filter.clear();
+                    state.xsessions_sel = 0;
+                }
+            }
+            KeyCode::Backspace => {
+                state.xsessions_filter.pop();
+                state.xsessions_sel = 0;
+            }
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                state.xsessions_filter.push(c);
+                state.xsessions_sel = 0;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.xsessions_sel = state.xsessions_sel.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => state.xsessions_sel += 1,
+            KeyCode::PageUp => state.xsessions_sel = state.xsessions_sel.saturating_sub(10),
+            KeyCode::PageDown => state.xsessions_sel += 10,
+            KeyCode::Enter => {
+                let view = state.xsessions_view();
+                if let Some(a) = view.get(state.xsessions_sel) {
+                    let project = a.project.clone();
+                    let own = project == state.cwd.to_string_lossy();
+                    if !own {
+                        let path = a.entry.path.display().to_string();
+                        state.xsessions_close();
+                        state.entries.push(state::ChatEntry::Diag(format!(
+                            "foreign project — read-only (I4). Resume it with: cd {project} && officina   [session: {path}]"
+                        )));
+                        return;
+                    }
+                    let path = a.entry.path.to_string_lossy().to_string();
+                    if let Some(note) = session_guard::peer_fenced_notice(&a.entry.path) {
+                        state.entries.push(state::ChatEntry::Diag(note));
+                        return;
+                    }
+                    state.note_phase(state::UiEvent::CloseModal);
+                    state.xsessions_open = false;
+                    if state.is_streaming {
+                        state.entries.push(state::ChatEntry::Diag(
+                            "dissolve first — session not switched".into(),
+                        ));
+                        return;
+                    }
+                    let _ = bridge
+                        .request(RpcCommand::SwitchSession {
+                            id: None,
+                            session_path: path,
+                        })
+                        .await;
+                } else {
+                    state.xsessions_close();
+                }
+            }
+            _ => {}
+        }
+        state.clamp_xsessions_sel();
+        return;
+    }
+
     // /review-findings — severity-sorted list, enter toggles detail.
     if state.review_open {
         match key.code {
@@ -1430,6 +1501,22 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /sessions — cross-project picker (scan is blocking; defer).
+            if msg == "/sessions" {
+                state.notice = Some(("scanning all project stores…".into(), "info".into()));
+                let scan = tokio::task::spawn_blocking(crate::rpc::sessions::list_all).await;
+                match scan {
+                    Ok(list) if list.is_empty() => {
+                        state.notice =
+                            Some(("no sessions found in any store".into(), "info".into()));
+                    }
+                    Ok(list) => state.xsessions_open_with(list),
+                    Err(e) => state
+                        .entries
+                        .push(state::ChatEntry::Diag(format!("session scan failed: {e}"))),
+                }
                 return;
             }
             // /review-findings — last /review results (read-only modal).

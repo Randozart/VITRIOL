@@ -532,6 +532,12 @@ pub struct AppState {
     /// Deferred $EDITOR hand-off (codex-qol stage 4): argv + tmp file + the
     /// composer draft as it was, so a failed edit never loses text (I4).
     pub editor_suspend: Option<(Vec<String>, std::path::PathBuf, String)>,
+    /// /sessions cross-project picker (exec-infra stage 4): every store,
+    /// newest first. Foreign projects render READ-ONLY (I4).
+    pub xsessions_open: bool,
+    pub xsessions: Vec<crate::rpc::sessions::AllSessionEntry>,
+    pub xsessions_sel: usize,
+    pub xsessions_filter: String,
     /// /review-findings modal (codex-qol stage 7): severity-sorted findings
     /// from .officina/review.json, written by the review extension.
     pub review_open: bool,
@@ -696,6 +702,10 @@ impl Default for AppState {
             review_open: false,
             review: None,
             review_sel: 0,
+            xsessions_open: false,
+            xsessions: Vec::new(),
+            xsessions_sel: 0,
+            xsessions_filter: String::new(),
             pending_images: Vec::new(),
             show_diag: false,
             diag_view: Vec::new(),
@@ -1230,6 +1240,43 @@ impl AppState {
         }
         argv.push(tmp.to_string_lossy().to_string());
         self.editor_suspend = Some((argv, tmp, self.input.clone()));
+    }
+
+    /// `/sessions` — open the cross-project picker over a completed scan.
+    pub fn xsessions_open_with(&mut self, entries: Vec<crate::rpc::sessions::AllSessionEntry>) {
+        self.note_phase(UiEvent::OpenModal);
+        self.xsessions = entries;
+        self.xsessions_sel = 0;
+        self.xsessions_filter.clear();
+        self.xsessions_open = true;
+    }
+
+    pub fn xsessions_close(&mut self) {
+        if self.xsessions_open {
+            self.note_phase(UiEvent::CloseModal);
+            self.xsessions_open = false;
+        }
+    }
+
+    pub fn xsessions_view(&self) -> Vec<&crate::rpc::sessions::AllSessionEntry> {
+        if self.xsessions_filter.is_empty() {
+            return self.xsessions.iter().collect();
+        }
+        let needle = self.xsessions_filter.to_lowercase();
+        self.xsessions
+            .iter()
+            .filter(|a| {
+                a.entry.title.to_lowercase().contains(&needle)
+                    || a.project.to_lowercase().contains(&needle)
+            })
+            .collect()
+    }
+
+    pub fn clamp_xsessions_sel(&mut self) {
+        let n = self.xsessions_view().len();
+        if self.xsessions_sel >= n {
+            self.xsessions_sel = n.saturating_sub(1);
+        }
     }
 
     /// `/review-findings` — load the last review's findings and open the
@@ -2257,6 +2304,7 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
         ("status", "session snapshot", "/status — model, agent, profile, context fill, cwd, session, permissions, gateway lanes, routing policy (read-only)"),
         ("caduceus", "gateway + routing", "/caduceus — providers/models/health/policy page: routing on-off, ranks, pins, free-only, caps (facts by the caduceus extension; policy file written by the TUI)"),

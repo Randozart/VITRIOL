@@ -66,6 +66,104 @@ pub fn list(cwd: &Path) -> Result<Vec<SessionEntry>> {
     Ok(out)
 }
 
+/// One session from ANY project store (codex-infra stage 4).
+#[derive(Debug, Clone)]
+pub struct AllSessionEntry {
+    pub entry: SessionEntry,
+    /// The session header's cwd — the project it belongs to.
+    pub project: String,
+}
+
+/// Cross-project scan: every store, every session, newest first.
+/// Read-only by contract (I4): the picker resumes current-project entries
+/// and only DISPLAYS foreign ones.
+pub fn list_all() -> Vec<AllSessionEntry> {
+    let mut out: Vec<AllSessionEntry> = Vec::new();
+    let root = match sessions_root() {
+        Ok(r) => r,
+        Err(_) => return out,
+    };
+    let dirs = match fs::read_dir(&root) {
+        Ok(d) => d,
+        Err(_) => return out,
+    };
+    for dir in dirs.flatten() {
+        if !dir.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let files = match fs::read_dir(dir.path()) {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            if path.extension().map(|e| e != "jsonl").unwrap_or(true) {
+                continue;
+            }
+            if let Some((entry, project)) = parse_session_file_any(&path) {
+                out.push(AllSessionEntry { entry, project });
+            }
+        }
+    }
+    out.sort_by(|a, b| b.entry.modified.cmp(&a.entry.modified));
+    out.truncate(300);
+    out
+}
+
+/// Parse one session file without a cwd filter; returns header cwd.
+fn parse_session_file_any(path: &Path) -> Option<(SessionEntry, String)> {
+    let content = fs::read_to_string(path).ok()?;
+    let mut header_cwd: Option<String> = None;
+    let mut title = String::new();
+    let mut msg_count = 0usize;
+
+    for line in content.lines().take(400) {
+        if header_cwd.is_none() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                if v.get("type").and_then(|t| t.as_str()) == Some("session") {
+                    header_cwd = v.get("cwd").and_then(|c| c.as_str()).map(String::from);
+                    continue;
+                }
+            }
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            if v.get("type").and_then(|t| t.as_str()) == Some("message") {
+                msg_count += 1;
+                if title.is_empty() {
+                    if let Some(msg) = v.get("message") {
+                        if msg.get("role").and_then(|r| r.as_str()) == Some("user") {
+                            title = extract_text(
+                                msg.get("content").unwrap_or(&serde_json::Value::Null),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        if msg_count > 400 {
+            break;
+        }
+    }
+
+    let project = header_cwd?;
+    let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    if title.is_empty() {
+        title = "(empty session)".to_string();
+    }
+    let title: String = title.chars().take(70).collect();
+
+    Some((
+        SessionEntry {
+            path: path.to_path_buf(),
+            title,
+            modified,
+            msg_count,
+        },
+        project,
+    ))
+}
+
 /// Parse one session file: header cwd must match; extract title + count.
 fn parse_session_file(path: &Path, cwd: &str) -> Option<SessionEntry> {
     let content = fs::read_to_string(path).ok()?;

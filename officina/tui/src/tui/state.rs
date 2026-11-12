@@ -532,6 +532,9 @@ pub struct AppState {
     /// Deferred $EDITOR hand-off (codex-qol stage 4): argv + tmp file + the
     /// composer draft as it was, so a failed edit never loses text (I4).
     pub editor_suspend: Option<(Vec<String>, std::path::PathBuf, String)>,
+    /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
+    pub cost_open: bool,
+    pub cost: Option<crate::tui::cost::CostReport>,
     /// /sessions cross-project picker (exec-infra stage 4): every store,
     /// newest first. Foreign projects render READ-ONLY (I4).
     pub xsessions_open: bool,
@@ -702,6 +705,8 @@ impl Default for AppState {
             review_open: false,
             review: None,
             review_sel: 0,
+            cost_open: false,
+            cost: None,
             xsessions_open: false,
             xsessions: Vec::new(),
             xsessions_sel: 0,
@@ -2304,6 +2309,7 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("cost", "routing ledger", "/cost — today's route ledger: requests, tokens in/out, failures per provider/model + budget bars (read-only)"),
         ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
         ("status", "session snapshot", "/status — model, agent, profile, context fill, cwd, session, permissions, gateway lanes, routing policy (read-only)"),

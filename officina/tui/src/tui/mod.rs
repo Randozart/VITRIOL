@@ -1,6 +1,7 @@
 pub mod ansi;
 pub mod cache;
 pub mod caduceus;
+pub mod cost;
 pub mod layout;
 pub mod paste;
 pub mod review;
@@ -407,6 +408,49 @@ fn request_editor(state: &mut AppState) {
     }
     argv.push(tmp.to_string_lossy().to_string());
     state.editor_suspend = Some((argv, tmp, state.input.clone()));
+}
+
+/// Local date as YYYY-MM-DD without chrono: UTC day math (ledger stamps are
+/// UTC, so the modal matches the ledger's own day grouping).
+fn chrono_day() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let mut y = 1970i64;
+    let mut d = days;
+    loop {
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let len = if leap { 366 } else { 365 };
+        if d < len {
+            break;
+        }
+        d -= len;
+        y += 1;
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let ml = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut m = 0usize;
+    let mut dd = d;
+    while dd >= ml[m] {
+        dd -= ml[m];
+        m += 1;
+    }
+    format!("{y}-{m:02}-{:02}", dd + 1)
 }
 
 /// Hand the terminal to an external interactive flow (signup wizard, OAuth
@@ -1051,6 +1095,18 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /cost — read-only rows; esc/q closes.
+    if state.cost_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.note_phase(state::UiEvent::CloseModal);
+                state.cost_open = false;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // /review-findings — severity-sorted list, enter toggles detail.
     if state.review_open {
         match key.code {
@@ -1501,6 +1557,14 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /cost — today's routing ledger + budget bars (read-only).
+            if msg == "/cost" {
+                let day = chrono_day();
+                state.cost = Some(crate::tui::cost::load(&day));
+                state.note_phase(state::UiEvent::OpenModal);
+                state.cost_open = true;
                 return;
             }
             // /sessions — cross-project picker (scan is blocking; defer).

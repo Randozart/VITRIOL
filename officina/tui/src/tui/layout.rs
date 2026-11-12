@@ -299,6 +299,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
+    if state.cost_open {
+        render_chat_and_editor(frame, state, area);
+        render_cost_modal(frame, state, area);
+        return;
+    }
     if state.xsessions_open {
         render_chat_and_editor(frame, state, area);
         render_xsessions_modal(frame, state, area);
@@ -1612,6 +1617,165 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Style::new().fg(theme::MUTED).bg(theme::PANEL),
         )));
     }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        inner,
+    );
+}
+
+/// /cost (exec-infra stage 5) — today's route ledger + budget bars.
+/// Euro appears only when the ledger itself carried costEstimate (I5).
+fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let h = area.height.min(30);
+    let w = area.width.min(96);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let day = state
+        .cost
+        .as_ref()
+        .map(|r| r.day.clone())
+        .unwrap_or_else(|| "—".to_string());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" {} cost · route ledger {day} ", theme::GLYPH_HERM),
+            Style::new()
+                .fg(theme::GOLD)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.width < 50 || inner.height < 4 {
+        return;
+    }
+    let Some(report) = state.cost.as_ref() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  no ledger data",
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ))),
+            inner,
+        );
+        return;
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    if report.budget_present {
+        let bar = |frac: f32| {
+            let filled = (frac * 20.0).round() as usize;
+            let mut s = String::from("[");
+            for i in 0..20 {
+                s.push(if i < filled { '#' } else { '.' });
+            }
+            s.push(']');
+            s
+        };
+        let style = |frac: f32| {
+            if frac >= 1.0 {
+                Style::new().fg(theme::RED).bg(theme::PANEL)
+            } else if frac >= 0.8 {
+                Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+            } else {
+                Style::new().fg(theme::GREEN).bg(theme::PANEL)
+            }
+        };
+        let df = report.daily_fraction();
+        let mf = report.monthly_fraction();
+        lines.push(Line::from(vec![
+            Span::styled("  day    ", Style::new().fg(theme::MUTED).bg(theme::PANEL)),
+            Span::styled(bar(df), style(df)),
+            Span::styled(
+                format!(
+                    " {} / {} ({})",
+                    crate::tui::caduceus::fmt_count(report.budget_daily_tokens),
+                    crate::tui::caduceus::fmt_count(report.budget_daily_cap),
+                    if report.budget_allowed {
+                        "open"
+                    } else {
+                        "EXHAUSTED"
+                    }
+                ),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  month  ", Style::new().fg(theme::MUTED).bg(theme::PANEL)),
+            Span::styled(bar(mf), style(mf)),
+            Span::styled(
+                format!(
+                    " {} / {}",
+                    crate::tui::caduceus::fmt_count(report.budget_monthly_tokens),
+                    crate::tui::caduceus::fmt_count(report.budget_monthly_cap)
+                ),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  {:<44} {:>8} {:>6} {:>10} {:>10}",
+            "provider/model", "reqs", "fails", "tok in", "tok out"
+        ),
+        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+    )));
+    let budget_h: usize = if report.budget_present { 3 } else { 1 };
+    let visible = (inner.height - (budget_h as u16 + 1)) as usize;
+    for row in report.rows.iter().take(visible) {
+        let fail_style = if row.failures > 0 {
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:<44} {:>8}", trunc(&row.key, 44), row.requests),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+            Span::styled(format!(" {:>6}", row.failures), fail_style),
+            Span::styled(
+                format!(
+                    " {:>10} {:>10}",
+                    crate::tui::caduceus::fmt_count(row.tokens_in),
+                    crate::tui::caduceus::fmt_count(row.tokens_out)
+                ),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+        ]));
+    }
+    if report.rows.len() > visible {
+        lines.push(Line::from(Span::styled(
+            format!("  … {} more models", report.rows.len() - visible),
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        )));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(
+                "  total: {} in · {} out",
+                crate::tui::caduceus::fmt_count(report.total_in),
+                crate::tui::caduceus::fmt_count(report.total_out)
+            ),
+            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+        ),
+        Span::styled(
+            if report.total_cost > 0.0 {
+                format!(" · €{:.4}", report.total_cost)
+            } else {
+                String::new()
+            },
+            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+        ),
+    ]));
+    lines.truncate(inner.height as usize);
     frame.render_widget(
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         inner,

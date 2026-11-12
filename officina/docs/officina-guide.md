@@ -124,6 +124,30 @@ Fixed egress only (no quota-based IP rotation):
 
 See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 
+## Codex-inspired QoL
+
+- **/status** — session snapshot: model, agent mode, routing profile, ctx
+  fill, cwd, session, permissions, gateway lanes, routing policy.
+- **/review** — read-only review of `uncommitted` / `commit [ref]` /
+  `base [branch]` / a custom focus. The review turn cannot edit (write
+  tools are blocked); findings land in `.officina/review.json` and open in
+  **/review-findings** (severity-sorted, j/k, detail pane).
+- **Alt+E** — edit the composer draft in `$VISUAL`/`$EDITOR` (the TUI
+  suspends and restores; the draft is never lost).
+- **^o** — attach the clipboard image (Wayland `wl-paste` / X11 `xclip`,
+  magic-byte validated, 8 MiB / 4 images); ⎙N chip in the composer title;
+  **alt+o** clears. Images ride the next send as attachments.
+- **Resume filter** — type in `/resume` to narrow sessions by title/path.
+- **Composer predictions** — one muted "next step" line after a turn
+  (failing gates → fix; dirty tree → commit). `OFFICINA_NO_PREDICTIONS=1`
+  disables.
+- **Sandboxed mode** — a fourth permissions mode: bash runs in a bwrap box
+  (read-only filesystem, writable cwd + /tmp, no network unless
+  `OFFICINA_SANDBOX_NET=1`). bwrap missing → runs unwrapped with one
+  warning. ask/auto/yolo are untouched.
+- **/mode is gone** — the old alias shadowed typing `/model`; agent modes
+  live at `/agent` (the legacy `/mode plan` widget format still parses).
+
 ## Caduceus page
 
 `/caduceus` opens the gateway page (full-screen, four tabs):

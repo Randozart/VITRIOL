@@ -150,6 +150,14 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 
 ## Headless, cost, and automation
 
+- **Voice suggestions** — after a turn, the empty composer shows a dimmed
+  **ghost text** of your likely next prompt in your own phrasing. **→**
+  accepts it into the draft; typing or Esc dismisses; nothing is ever
+  pre-sent. It learns: accepted suggestions and privacy-screened recent
+  prompts are distilled into a voice profile (`voice-profile.json`) that
+  shapes future suggestions. Sensitive prompts never leave the box.
+  `OFFICINA_NO_PROMPT_SUGGEST=1` stops staging; `OFFICINA_NO_VOICE_LEARN=1`
+  freezes the profile.
 - **Hang watchdog** — long bash calls that stop producing output get a
   notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
   (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge

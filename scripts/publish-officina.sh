@@ -75,30 +75,51 @@ LEAKS="$(git grep -nE "$PATTERN" -- "${SUBTREE}" | grep -vF "$ALLOW_FAKE" || tru
 HIST_LEAKS="$(git log -p --format= -- "${SUBTREE}" | grep -nE "$PATTERN" | grep -vF "$ALLOW_FAKE" | head -5 || true)"
 [[ -z "$HIST_LEAKS" ]] || { echo "$HIST_LEAKS" >&2; fail "secret-shaped strings in ${SUBTREE} history"; }
 
-# ── 4. Version + split + tag ────────────────────────────────────────────
+# ── 4. Version + snapshot commit ────────────────────────────────────────
 VERSION="$(node -p "require('./officina/package.json').version")"
 TAG="officina-v${VERSION}"
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   fail "tag ${TAG} exists — bump officina/package.json version"
 fi
 
-echo "== subtree split"
-# Fresh deterministic split of the current commit every run.
-git branch -D "${BRANCH}" >/dev/null 2>&1 || true
-SPLIT="$(git subtree split -P "${SUBTREE}")"
-git branch "${BRANCH}" "${SPLIT}"
-echo "== split commit: $SPLIT (tree of ${LOCAL_HEAD})"
+echo "== snapshot (tracked files of ${SUBTREE}/ only)"
+# git-subtree split is unsafe here: the officina path spans two eras
+# (an old standalone Officina was folded in and reorganized) and the
+# split cache resurrects old-era files into the published tree. Instead:
+# build a TREE from the tracked file list under a temp index — untracked
+# worktree junk can never leak — and commit it onto the snapshot line.
+SNAP_IDX="$(mktemp)"
+prev=""
+git rev-parse --verify "${BRANCH}" >/dev/null 2>&1 && prev="$(git rev-parse "${BRANCH}")"
+TREE="$(
+  GIT_INDEX_FILE="$SNAP_IDX" bash -c '
+    set -euo pipefail
+    cd '"${SUBTREE}"'
+    git read-tree --empty
+    git ls-files -z | xargs -0 git add -- 2>/dev/null
+    git write-tree
+  '
+)"
+rm -f "$SNAP_IDX"
+SNAP_MSG="officina snapshot v${VERSION}
+
+Published from the VITRIOL monorepo.
+Source commit: ${LOCAL_HEAD}
+"
+SNAP="$(git commit-tree "$TREE" ${prev:+-p "$prev"} -m "$SNAP_MSG")"
+git branch -f "${BRANCH}" "$SNAP"
+echo "== snapshot commit: $SNAP (tree of ${LOCAL_HEAD}, parent: ${prev:-none})"
 
 if [[ "$DRY_RUN" == "1" ]]; then
-  echo "== DRY RUN: would tag ${TAG} at ${SPLIT} and push to remote '${REMOTE}'"
+  echo "== DRY RUN: would tag ${TAG} at ${SNAP} and push to remote '${REMOTE}'"
   exit 0
 fi
 
-git tag "$TAG" "$SPLIT"
-git push "$REMOTE" "refs/heads/${BRANCH}:refs/heads/main" "refs/tags/${TAG}"
+git tag "$TAG" "$SNAP"
+git push --force "$REMOTE" "refs/heads/${BRANCH}:refs/heads/main" "refs/tags/${TAG}"
 
 # ── 5. Provenance (fingerprint discipline) ──────────────────────────────
 cat <<EOF
-PUBLISHED-OFFICINA: tag=${TAG} split=${SPLIT} source=${LOCAL_HEAD} remote=${REMOTE}
+PUBLISHED-OFFICINA: tag=${TAG} snapshot=${SNAP} source=${LOCAL_HEAD} remote=${REMOTE}
 gates: npm+tsc+canaries+cargo OK · secrets canary OK
 EOF

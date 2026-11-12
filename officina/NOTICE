@@ -1,0 +1,19 @@
+VITRIOL stack
+Copyright 2026 the VITRIOL authors
+
+This product includes software developed by the llama.cpp and ggml
+projects (https://github.com/ggml-org/llama.cpp), licensed under the MIT
+License. The modified engine is vendored in-tree under engine/; the
+unmodified upstream remains available at the URL above. See
+engine/LICENSE for the upstream MIT license text and
+docs/ENGINE_PROVENANCE.md for the import record.
+
+VITRIOL's own code is dual-licensed under Apache-2.0 OR MIT (SPDX:
+Apache-2.0 OR MIT; see LICENSE and LICENSE-MIT).
+
+This product includes the OmniRoute local AI gateway
+(https://github.com/diegosouzapw/OmniRoute), Copyright (c) 2026
+diegosouzapw, licensed under the MIT License. Officina's "Caduceus"
+integration installs OmniRoute as a separate vendor package under
+~/.vitriol/vendor/omniroute; the upstream license text is retained there and
+summarized in officina/THIRD_PARTY_NOTICES.md.

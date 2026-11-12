@@ -1,6 +1,6 @@
 [package]
 name = "officina-tui"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Ratatui TUI for Officina — replaces pi-tui, communicates with pi-coding-agent via JSONL RPC"
 

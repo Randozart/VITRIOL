@@ -95,6 +95,20 @@ must stay OUT of the ggml-cuda source GLOB.
   telemetry, bash titles, etc. still live there and are load-bearing for both.
   /3rd-party pi TUI patches are legacy-only.
 
+- **Officina publishing (2026-11-11) — snapshots, not a split**: the
+  monorepo is CANONICAL; github.com/Randozart/officina receives exact
+  snapshot tags for the "Officina without VITRIOL" audience. Release
+  ONLY via `scripts/publish-officina.sh` (gates + secrets canary +
+  tracked-tree snapshot; tag = `officina-v<officina/package.json
+  version>`, bump both package.json and tui/Cargo.toml in lockstep).
+  NEVER hand-edit or force-push the public repo outside the script; the
+  snapshot tree is `HEAD:officina` — anything committed under `officina/`
+  WILL ship publicly (the secrets canary is the last line, not the
+  first). Subtree `split` is retired: the path spans two eras and the
+  split cache resurrects old-era files. Officina-specific docs live in
+  `officina/docs/`; assets the TUI compiles in live in `officina/assets/`
+  (nothing under `officina/` may reference paths above the subtree).
+
 ## Vendor Patch Rule (2026-09-01 incident — do not repeat)
 
 `officina/runtime/patched/*` are GENERATED or vendor-pinned copies. **A patch that exists only in a generated file is a patch waiting to be lost.**

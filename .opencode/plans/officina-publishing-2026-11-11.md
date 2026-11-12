@@ -82,6 +82,52 @@ Decisions (operator, this session):
 - **I4**: published tree is self-licensing (LICENSE, LICENSE-MIT,
   NOTICE, THIRD_PARTY_NOTICES.md at `officina/` root).
 
+## Verification (2026-11-12 09:40–09:55)
+
+**LIVE: https://github.com/Randozart/officina — tag `officina-v0.1.1`
+(snapshot `f23a73f`, monorepo source `ea7647a`). Fresh clone: tree
+complete ✓, npm install ✓, cargo build ✓, TUI binary runs ✓.**
+
+| stage | commits | notes |
+|---|---|---|
+| 0 | `c08d489`, link fix, `docs/officina.md` pointer | README + LICENSE/LICENSE-MIT + guide move |
+| 1 | `ba0c8ff`…`5cef2aa` | publish script; see corrections below |
+| 2 | repo created (`gh`, authenticated) + first publishes | v0.1.0/v0.1.1 |
+| 3 | AGENTS.md doctrine block (this commit) | |
+
+Corrections made en route (each caught by a gate or the acceptance
+test — this is why the script refuses on anything less):
+
+1. **Subtree `split` is WRONG for this path — retired.** `officina/`
+   spans two eras (an old standalone Officina was folded in at
+   `42b908a` and reorganized). The split cache resurrected old-era
+   files (`cli/`, `officina.mjs`, `models.json`, `.officina/`) into the
+   published tree. Replaced by a direct snapshot: the published tree IS
+   `HEAD:officina` — the tracked subtree tree, verbatim (I2 at tree
+   granularity: snapshot tree hash must equal `git rev-parse
+   HEAD:officina`, asserted in-script).
+2. **`NOTICE` was only at the monorepo root** → copied into `officina/`
+   (I4 gap; acceptance found it).
+3. **`assets/braille-logo*.txt` lived at the monorepo root** — the TUI
+   `include_str!`d three levels ABOVE the subtree → published tree
+   could not compile (acceptance found it). Copied to
+   `officina/assets/`, includes repointed. Doctrine: nothing under
+   `officina/` may reference paths above the subtree.
+4. **`.officina/SCRATCHPAD.md` (operator session notes, Sep-03) was
+   TRACKED** — scrubbed from the subtree + ignored. (The old-era files
+   `cli/`, `officina.mjs`, `theme/`, `skills/`, `native/`, `models.json`
+   STAY: live legacy surface wired into `scripts/vitriol` + the JS
+   frontend.)
+5. Three script bugs caught by their own gates: unparseable shards of
+   the secrets canary allowlist, `git subtree` branch never created
+   before push, empty-snapshot footgun (`git ls-files` on a fresh
+   empty index) — the final script is 20 lines shorter than the
+   intermediate versions and asserts tree equality.
+
+Untracked worktree junk in `officina/` (`benchmarks/` + others) is
+harmless to publishing now (snapshots come from the commit graph) but
+is flagged for operator cleanup.
+
 ## Explicitly deferred
 
 - Env-var aliasing / brand divergence (only if the public product gets

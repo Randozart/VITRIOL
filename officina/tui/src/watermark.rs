@@ -20,8 +20,8 @@ use ratatui::Frame;
 
 use crate::theme;
 
-const LOGO_RAW: &str = include_str!("../../../assets/braille-logo-80c.txt");
-const LOGO_MOTTO_RAW: &str = include_str!("../../../assets/braille-logo-80c-motto.txt");
+const LOGO_RAW: &str = include_str!("../../assets/braille-logo-80c.txt");
+const LOGO_MOTTO_RAW: &str = include_str!("../../assets/braille-logo-80c-motto.txt");
 
 // ── Glimmer engine (owner request 2026-09-02) ────────────────────────────
 // Three animation modes + off, cycled by the /glimmer local command and

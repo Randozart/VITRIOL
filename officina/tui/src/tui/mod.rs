@@ -2,6 +2,7 @@ pub mod ansi;
 pub mod cache;
 pub mod caduceus;
 pub mod layout;
+pub mod review;
 pub mod state;
 
 use std::io::{self, IsTerminal};
@@ -899,6 +900,26 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /review-findings — severity-sorted list, enter toggles detail.
+    if state.review_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => state.review_close(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.review_sel = state.review_sel.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => state.review_sel += 1,
+            KeyCode::PageUp => state.review_sel = state.review_sel.saturating_sub(10),
+            KeyCode::PageDown => state.review_sel += 10,
+            KeyCode::Home | KeyCode::Char('g') => state.review_sel = 0,
+            KeyCode::End | KeyCode::Char('G') => {
+                state.review_sel = usize::MAX;
+            }
+            _ => {}
+        }
+        state.clamp_review_sel();
+        return;
+    }
+
     // /status — read-only snapshot; esc/q closes.
     if state.status_open {
         match key.code {
@@ -1303,6 +1324,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /review-findings — last /review results (read-only modal).
+            if msg == "/review-findings" {
+                state.review_open_modal();
                 return;
             }
             // /status — session snapshot modal (local, read-only).

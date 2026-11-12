@@ -524,6 +524,11 @@ pub struct AppState {
     /// Deferred $EDITOR hand-off (codex-qol stage 4): argv + tmp file + the
     /// composer draft as it was, so a failed edit never loses text (I4).
     pub editor_suspend: Option<(Vec<String>, std::path::PathBuf, String)>,
+    /// /review-findings modal (codex-qol stage 7): severity-sorted findings
+    /// from .officina/review.json, written by the review extension.
+    pub review_open: bool,
+    pub review: Option<crate::tui::review::ReviewFindings>,
+    pub review_sel: usize,
 
     // Diagnostics overlay (F9)
     pub show_diag: bool,
@@ -677,6 +682,9 @@ impl Default for AppState {
             status_open: false,
             status_lines: Vec::new(),
             editor_suspend: None,
+            review_open: false,
+            review: None,
+            review_sel: 0,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1206,6 +1214,35 @@ impl AppState {
         }
         argv.push(tmp.to_string_lossy().to_string());
         self.editor_suspend = Some((argv, tmp, self.input.clone()));
+    }
+
+    /// `/review-findings` — load the last review's findings and open the
+    /// modal. A missing file opens an honest hint (I3).
+    pub fn review_open_modal(&mut self) {
+        self.note_phase(UiEvent::OpenModal);
+        self.review = crate::tui::review::load(&self.cwd);
+        self.review_sel = 0;
+        self.review_open = true;
+    }
+
+    pub fn review_close(&mut self) {
+        if self.review_open {
+            self.note_phase(UiEvent::CloseModal);
+            self.review_open = false;
+        }
+    }
+
+    pub fn review_rows(&self) -> Vec<&crate::tui::review::Finding> {
+        self.review.as_ref().map(|f| f.sorted()).unwrap_or_default()
+    }
+
+    pub fn clamp_review_sel(&mut self) {
+        let n = self.review_rows().len();
+        if n == 0 {
+            self.review_sel = 0;
+        } else if self.review_sel >= n {
+            self.review_sel = n - 1;
+        }
     }
 
     /// `/status` — snapshot the session facts once and open the modal.
@@ -2190,6 +2227,7 @@ impl AppState {
     /// (name, short — menu row, long — popup detail line + /help).
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
+        ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
         ("status", "session snapshot", "/status — model, agent, profile, context fill, cwd, session, permissions, gateway lanes, routing policy (read-only)"),
         ("caduceus", "gateway + routing", "/caduceus — providers/models/health/policy page: routing on-off, ranks, pins, free-only, caps (facts by the caduceus extension; policy file written by the TUI)"),
         ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),

@@ -285,6 +285,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
+    if state.review_open {
+        render_chat_and_editor(frame, state, area);
+        render_review_modal(frame, state, area);
+        return;
+    }
     if state.status_open {
         render_chat_and_editor(frame, state, area);
         render_status_modal(frame, state, area);
@@ -1591,6 +1596,174 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         inner,
+    );
+}
+
+/// /review-findings (codex-qol stage 7) — severity-colored findings from
+/// .officina/review.json. Read-only; honest hint when nothing was reviewed.
+fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    use crate::tui::review::Finding;
+    let rows = state.review_rows();
+    let detail_h = if rows.is_empty() { 0 } else { 5 };
+    let h = area
+        .height
+        .min((rows.len() as u16 + 7 + detail_h).clamp(8, 30));
+    let w = area.width.min(92);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let (title_st, title) = match state.review.as_ref() {
+        Some(f) => (
+            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+            format!(
+                " {} review findings · {} · {} high / {} med / {} low ",
+                theme::GLYPH_HERM,
+                if f.preset.is_empty() { "?" } else { &f.preset },
+                f.count_by("high"),
+                f.count_by("medium"),
+                f.count_by("low")
+            ),
+        ),
+        None => (
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            " review findings ".to_string(),
+        ),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .title(Span::styled(title, title_st.add_modifier(Modifier::BOLD)))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 2 || inner.width < 40 {
+        return;
+    }
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(3),
+        Constraint::Length(detail_h),
+        Constraint::Length(1),
+    ])
+    .split(inner);
+
+    let Some(f) = state.review.as_ref() else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "  no review findings yet — run /review (uncommitted | commit | base | custom)",
+                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                )),
+                Line::from(Span::styled(
+                    "  findings land in .officina/review.json after the review turn",
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                )),
+            ]),
+            chunks[1],
+        );
+        return;
+    };
+
+    // summary line
+    let summary = if f.summary.is_empty() {
+        "(no summary)".to_string()
+    } else {
+        f.summary.clone()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!(
+                "  {}",
+                trunc(&summary, inner.width.saturating_sub(4) as usize)
+            ),
+            Style::new().fg(theme::TEXT).bg(theme::PANEL),
+        ))),
+        chunks[0],
+    );
+
+    let visible = chunks[1].height as usize;
+    let start = if state.review_sel < visible {
+        0
+    } else {
+        (state.review_sel + 1).saturating_sub(visible)
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    let sev_style = |sev: &str| match sev {
+        "high" => Style::new().fg(theme::RED).bg(theme::PANEL),
+        "medium" => Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+        "low" => Style::new().fg(theme::GOLD).bg(theme::PANEL),
+        _ => Style::new().fg(theme::MUTED).bg(theme::PANEL),
+    };
+    for (idx, finding) in rows.iter().enumerate() {
+        let selected = idx == state.review_sel;
+        let marker = if selected { "▸" } else { " " };
+        let badge = format!("{:<6}", finding.severity);
+        let loc = trunc(&finding.locator(), 34);
+        let text = format!(
+            " {} {:<6} {:<34} {}",
+            marker,
+            badge,
+            loc,
+            trunc(&finding.title, inner.width.saturating_sub(48) as usize)
+        );
+        let style = if selected {
+            Style::new().fg(theme::BG).bg(theme::GOLD)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(text, style),
+            Span::styled("", sev_style(&finding.severity)),
+        ]));
+    }
+    let body: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
+    frame.render_widget(
+        Paragraph::new(body).style(Style::new().bg(theme::PANEL)),
+        chunks[1],
+    );
+
+    // detail pane
+    if detail_h > 0 {
+        if let Some(finding) = rows.get(state.review_sel) {
+            let d: &Finding = finding;
+            let detail_lines = vec![
+                Line::from(Span::styled(
+                    format!(
+                        "  {} · {}",
+                        d.title,
+                        trunc(&d.locator(), inner.width.saturating_sub(6) as usize)
+                    ),
+                    Style::new().fg(theme::GOLD).bg(theme::PANEL),
+                )),
+                Line::from(Span::styled(
+                    format!(
+                        "  {}",
+                        trunc(&d.detail, inner.width.saturating_sub(4) as usize)
+                    ),
+                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                )),
+                Line::from(Span::styled(
+                    "  esc close · ↑↓ navigate",
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                )),
+            ];
+            frame.render_widget(
+                Paragraph::new(detail_lines).style(Style::new().bg(theme::PANEL)),
+                chunks[2],
+            );
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " ↑↓ select · esc close",
+            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        ))),
+        chunks[3],
     );
 }
 

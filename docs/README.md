@@ -32,7 +32,7 @@ see [`archive/`](archive/) for the full excavation record.
 |---|---|
 | [hermetis.md](hermetis.md) | Hermetis — memory system |
 | [REBIS.md](REBIS.md) / [REBIS_FLAGS.md](REBIS_FLAGS.md) | Rebis — dual-model cognitive architecture |
-| [officina-guide.md](officina-guide.md) | Officina — interactive workshop |
+| [officina guide](../officina/docs/officina-guide.md) | Officina — interactive workshop |
 | [copula.md](copula.md) | Copula — opencode integration |
 | [spagyric-autotuner.md](spagyric-autotuner.md), [spagyric-profile-schema.md](spagyric-profile-schema.md) | Spagyric — autotuner |
 

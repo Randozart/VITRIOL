@@ -307,6 +307,11 @@ pub enum ChatEntry {
     },
     /// Diagnostic notice (extension errors, retries, stderr surfacing).
     Diag(String),
+    /// Long info-notify captured into the transcript (QoL batch stage 3,
+    /// 2026-11-12): multi-line tables (/free, /nimbus, /phase-models) were
+    /// invisible beyond the 40-char glance row. Neutral violet — NOT an
+    /// error (Diag renders with theme::crit, which is red).
+    Notice(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1129,6 +1134,22 @@ impl AppState {
         self.caduceus_open = true;
     }
 
+    /// Extension notify (stage 3, 2026-11-12): errors/warnings land in the
+    /// transcript as Diag; info keeps the 40-char glance row, and anything
+    /// the truncation would mangle (multi-line tables or >100-char payloads)
+    /// is ALSO captured as a Notice entry so /free, /nimbus, /phase-models
+    /// output is actually readable.
+    pub fn apply_notify(&mut self, msg: &str, ntype: &str) {
+        if ntype == "error" || ntype == "warning" {
+            self.entries.push(ChatEntry::Diag(msg.to_string()));
+        } else {
+            self.notice = Some((msg.to_string(), ntype.to_string()));
+            if msg.contains('\n') || msg.len() > 100 {
+                self.entries.push(ChatEntry::Notice(msg.to_string()));
+            }
+        }
+    }
+
     pub fn cache_delete_selected(&mut self) {
         let Some(entry) = self.cache_entries.get(self.cache_sel).cloned() else {
             return;
@@ -1931,6 +1952,25 @@ impl AppState {
                         if i == 0 {
                             lines.push(Line::from(vec![
                                 Span::styled(format!("  {} ", theme::GLYPH_SULFUR), st),
+                                Span::styled(seg, st),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("        "),
+                                Span::styled(seg, st),
+                            ]));
+                        }
+                    }
+                }
+                ChatEntry::Notice(text) => {
+                    let st = Style::new().fg(theme::VIOLET).bg(theme::BG);
+                    for (i, seg) in wrap_text(text, width.saturating_sub(8))
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if i == 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled(format!("  {} ", theme::GLYPH_HERM), st),
                                 Span::styled(seg, st),
                             ]));
                         } else {
@@ -2817,6 +2857,46 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notify_info_long_or_multiline_captures_notice_entry() {
+        // stage 3 (2026-11-12): tables were invisible past the 40-char row
+        let mut s = AppState::default();
+        let table = "lane-a · 32k\nlane-b · 128k\nlane-c · 8k";
+        s.apply_notify(table, "info");
+        assert!(s.notice.is_some(), "glance row still set");
+        assert_eq!(s.entries.len(), 1);
+        let ChatEntry::Notice(t) = &s.entries[0] else {
+            panic!("expected Notice entry, got {:?}", s.entries[0]);
+        };
+        assert!(t.contains("lane-b · 128k"));
+
+        let long = "x".repeat(101);
+        s.apply_notify(&long, "info");
+        assert!(matches!(s.entries.last(), Some(ChatEntry::Notice(_))));
+    }
+
+    #[test]
+    fn notify_info_short_stays_transient() {
+        let mut s = AppState::default();
+        s.apply_notify("coupled: Lapis Occultus", "info");
+        assert_eq!(s.entries.len(), 0, "short info must not spam transcript");
+        assert_eq!(
+            s.notice.as_ref().map(|(m, _)| m.as_str()),
+            Some("coupled: Lapis Occultus")
+        );
+    }
+
+    #[test]
+    fn notify_warning_and_error_land_as_diag() {
+        let mut s = AppState::default();
+        s.apply_notify("engine down", "warning");
+        s.apply_notify("checkpoint failed", "error");
+        assert_eq!(s.entries.len(), 2);
+        assert!(matches!(s.entries[0], ChatEntry::Diag(_)));
+        assert!(matches!(s.entries[1], ChatEntry::Diag(_)));
+        assert!(s.notice.is_none(), "errors do not use the glance row");
+    }
 
     #[test]
     fn ctx_bar_label_hidden_until_first_report() {

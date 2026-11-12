@@ -2393,11 +2393,7 @@ async fn handle_ui_request(
                 .get("notifyType")
                 .and_then(|v| v.as_str())
                 .unwrap_or("info");
-            if ntype == "error" || ntype == "warning" {
-                state.entries.push(state::ChatEntry::Diag(msg.to_string()));
-            } else {
-                state.notice = Some((msg.to_string(), ntype.to_string()));
-            }
+            state.apply_notify(msg, ntype);
         }
         "setStatus" => {
             let key = fields

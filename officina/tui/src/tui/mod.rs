@@ -1842,6 +1842,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         KeyCode::Left => {
             state.cursor = state.cursor.saturating_sub(1);
         }
+        KeyCode::Right
+            if state.prompt_ghost.is_some() && state.cursor >= state.input.chars().count() =>
+        {
+            state.accept_ghost();
+        }
         KeyCode::Right => {
             if state.cursor < state.input.chars().count() {
                 state.cursor += 1;
@@ -1872,6 +1877,9 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                 {
+                    // Any typed character belongs to the operator — the
+                    // ghost yields first (I2).
+                    state.dismiss_ghost("dismissed-typed");
                     insert_char_at(&mut state.input, state.cursor, c);
                     state.cursor += 1;
                     state.cand_sel = 0;
@@ -2716,6 +2724,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         "agent_end" | "agent_settled" => {
             state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
+            state.refresh_ghost();
             state.abort_deadline = None;
             let expected = state.expected_tool_calls.len();
             state.expected_tool_calls.clear();

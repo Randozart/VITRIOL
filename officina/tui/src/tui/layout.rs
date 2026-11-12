@@ -719,7 +719,34 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(input_block, input_area);
 
     let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
-    let line = if state.input.is_empty() {
+    let line = if state.input.is_empty() && state.prompt_ghost.is_some() {
+        // Voice-suggestion ghost (stage 2): dimmed gold, cursor block on the
+        // first glyph — same shape as the motto, but a suggestion you can
+        // accept with →. Render-only; nothing is ever pre-sent (I1).
+        let ghost = state.prompt_ghost.as_ref().unwrap();
+        let budget = (inner.width as usize).saturating_sub(2);
+        let text: String = ghost.text.chars().take(budget).collect();
+        let mut chars = text.chars();
+        let first = chars.next().unwrap_or(' ');
+        let rest: String = chars.collect();
+        Line::from(vec![
+            prompt,
+            Span::styled(
+                first.to_string(),
+                Style::default()
+                    .fg(theme::GOLD)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::REVERSED | Modifier::DIM),
+            ),
+            Span::styled(
+                rest,
+                Style::default()
+                    .fg(theme::GOLD)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::DIM),
+            ),
+        ])
+    } else if state.input.is_empty() {
         // Carved motto placeholder (owner request 2026-09-03) — the cursor
         // block sits ON the first letter, the rest fades into the panel.
         let budget = (inner.width as usize).saturating_sub(2); // "> " prompt

@@ -336,6 +336,36 @@ pub enum DialogKind {
     Editor,
 }
 
+/// A staged next-prompt suggestion (voice-suggestions stage 1).
+#[derive(Debug, Clone)]
+pub struct GhostSuggestion {
+    pub id: String,
+    pub text: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
+struct SuggestionFile {
+    version: u32,
+    id: String,
+    text: String,
+    source: String,
+    expires: u64,
+}
+
+impl Default for SuggestionFile {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            id: String::new(),
+            text: String::new(),
+            source: String::new(),
+            expires: 0,
+        }
+    }
+}
+
 /// One staged clipboard image (codex-qol stage 9).
 #[derive(Debug, Clone)]
 pub struct PendingImage {
@@ -535,6 +565,13 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Voice-suggestion ghost text (stage 2, 2026-11-12): rendered dimmed
+    /// in the empty composer; → accepts, typing/Esc dismisses. Never sent.
+    pub prompt_ghost: Option<GhostSuggestion>,
+    pub ghost_dismissed_for: Option<String>,
+    /// Injectable paths so tests never touch the operator's files.
+    pub prompt_suggestion_file: Option<std::path::PathBuf>,
+    pub ghost_events_file: Option<std::path::PathBuf>,
     /// /sessions cross-project picker (exec-infra stage 4): every store,
     /// newest first. Foreign projects render READ-ONLY (I4).
     pub xsessions_open: bool,
@@ -707,6 +744,10 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            prompt_ghost: None,
+            ghost_dismissed_for: None,
+            prompt_suggestion_file: None,
+            ghost_events_file: None,
             xsessions_open: false,
             xsessions: Vec::new(),
             xsessions_sel: 0,
@@ -1324,6 +1365,93 @@ impl AppState {
             self.review_sel = 0;
         } else if self.review_sel >= n {
             self.review_sel = n - 1;
+        }
+    }
+
+    /// Voice ghost (stage 2): read the staged suggestion; show it only when
+    /// the composer is empty, idle, and this id wasn't already dismissed.
+    /// Corrupt/expired files = silently off (I5).
+    pub fn refresh_ghost(&mut self) {
+        if !self.input.is_empty() || self.is_streaming || self.has_running_tool() {
+            self.prompt_ghost = None;
+            return;
+        }
+        let path = self
+            .prompt_suggestion_file
+            .clone()
+            .unwrap_or_else(prompt_suggestion_path);
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            self.prompt_ghost = None;
+            return;
+        };
+        let Ok(doc) = serde_json::from_str::<SuggestionFile>(&raw) else {
+            self.prompt_ghost = None;
+            return;
+        };
+        if doc.version != 1 || doc.text.trim().is_empty() {
+            self.prompt_ghost = None;
+            return;
+        }
+        if doc.expires > 0 && doc.expires <= crate::tui::caduceus::now_ms() {
+            self.prompt_ghost = None;
+            return;
+        }
+        if self.ghost_dismissed_for.as_deref() == Some(doc.id.as_str()) {
+            return;
+        }
+        self.prompt_ghost = Some(GhostSuggestion {
+            id: doc.id,
+            text: doc.text,
+            source: doc.source,
+        });
+    }
+
+    /// → — fold the ghost into the real draft (I1: the operator pressed a
+    /// key; nothing was ever pre-sent).
+    pub fn accept_ghost(&mut self) -> bool {
+        let Some(g) = self.prompt_ghost.take() else {
+            return false;
+        };
+        self.cursor = g.text.chars().count();
+        self.input = g.text;
+        self.ghost_dismissed_for = None;
+        self.log_ghost_event(&g.id, &g.source, "accepted");
+        true
+    }
+
+    /// Typing or Esc — the ghost yields to the operator's own words.
+    pub fn dismiss_ghost(&mut self, verdict: &str) {
+        if let Some(g) = self.prompt_ghost.take() {
+            self.ghost_dismissed_for = Some(g.id.clone());
+            self.log_ghost_event(&g.id, &g.source, verdict);
+        }
+    }
+
+    fn log_ghost_event(&self, id: &str, source: &str, verdict: &str) {
+        use std::io::Write;
+        let path = self
+            .ghost_events_file
+            .clone()
+            .unwrap_or_else(ghost_events_path);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        // I4: ids + verdicts only — never the prompt text.
+        let line = serde_json::json!({
+            "ts": crate::tui::caduceus::now_ms(),
+            "id": id,
+            "source": source,
+            "verdict": verdict,
+        });
+        if let Ok(mut f) = {
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)
+        } {
+            let _ = writeln!(f, "{line}");
         }
     }
 
@@ -3346,6 +3474,91 @@ mod tests {
     }
 
     #[test]
+    fn ghost_lifecycle_accept_dismiss_telemetry() {
+        use std::io::Read;
+        let dir = std::env::temp_dir().join(format!("ghost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sug = dir.join("prompt-suggestion.json");
+        let events = dir.join("prompt-suggest-events.jsonl");
+        std::fs::write(
+            &sug,
+            r#"{"version":1,"id":"sug-1","text":"run the full verify suite","source":"llm","expires":0}"#,
+        )
+        .unwrap();
+        let mut s = AppState::default();
+        s.prompt_suggestion_file = Some(sug.clone());
+        s.ghost_events_file = Some(events.clone());
+        s.refresh_ghost();
+        assert_eq!(
+            s.prompt_ghost.as_ref().unwrap().text,
+            "run the full verify suite"
+        );
+        // dismissed id does not come back on refresh
+        s.input = String::new();
+        s.dismiss_ghost("dismissed-typed");
+        assert!(s.prompt_ghost.is_none());
+        s.refresh_ghost();
+        assert!(s.prompt_ghost.is_none());
+        s.ghost_dismissed_for = None;
+        s.refresh_ghost();
+        assert!(s.prompt_ghost.is_some());
+        // accept folds it into the draft and logs both verdicts
+        s.accept_ghost();
+        assert_eq!(s.input, "run the full verify suite");
+        assert_eq!(s.cursor, s.input.chars().count());
+        assert!(s.prompt_ghost.is_none());
+        let mut text = String::new();
+        std::fs::File::open(&events)
+            .unwrap()
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(text.contains("\"verdict\":\"dismissed-typed\""));
+        assert!(text.contains("\"verdict\":\"accepted\""));
+        assert!(
+            !text.contains("verify suite"),
+            "I4: no prompt text in telemetry"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ghost_ignores_expired_corrupt_and_busy_states() {
+        let dir = std::env::temp_dir().join(format!("ghost2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sug = dir.join("prompt-suggestion.json");
+        let mut s = AppState::default();
+        s.prompt_suggestion_file = Some(sug.clone());
+        // corrupt
+        std::fs::write(&sug, "{nope").unwrap();
+        s.refresh_ghost();
+        assert!(s.prompt_ghost.is_none());
+        // expired
+        std::fs::write(
+            &sug,
+            format!(r#"{{"version":1,"id":"e","text":"x","source":"llm","expires":1}}"#),
+        )
+        .unwrap();
+        s.refresh_ghost();
+        assert!(s.prompt_ghost.is_none());
+        // busy composer never shows one
+        std::fs::write(
+            &sug,
+            r#"{"version":1,"id":"ok","text":"y","source":"llm","expires":0}"#,
+        )
+        .unwrap();
+        s.input = "operator text".into();
+        s.refresh_ghost();
+        assert!(s.prompt_ghost.is_none());
+        s.is_streaming = true;
+        s.input = String::new();
+        s.refresh_ghost();
+        assert!(s.prompt_ghost.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn status_rows_cover_session_facts() {
         // codex-qol stage 2: read-only snapshot content
         let mut s = AppState::default();
@@ -4287,6 +4500,22 @@ mod kani_proofs {
             }
         }
     }
+}
+
+fn prompt_suggestion_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("prompt-suggestion.json");
+    p
+}
+
+fn ghost_events_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("prompt-suggest-events.jsonl");
+    p
 }
 
 fn profile_path() -> std::path::PathBuf {

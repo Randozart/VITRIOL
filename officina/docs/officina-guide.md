@@ -148,6 +148,33 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 - **/mode is gone** — the old alias shadowed typing `/model`; agent modes
   live at `/agent` (the legacy `/mode plan` widget format still parses).
 
+## Headless, cost, and automation
+
+- **`vitriol officina exec "task"`** — one-shot run through the full
+  harness (same extensions, lanes, prefs, permissions as the TUI).
+  `--lane auto|lapis|nimbus`, `--max-minutes N` (default 30, hard kill),
+  `--json`, `--tools csv`, `--no-trust`. `--detach` runs it in the
+  background with a log under `~/.local/share/officina/exec/` and a
+  desktop ping on completion; `--list` shows every run. Exec always uses
+  a FRESH session — it can never touch your store's sessions.
+- **/sessions** — search sessions across EVERY project store. Enter
+  resumes only this project's rows; foreign rows print `cd <proj> &&
+  officina` (read-only by contract).
+- **/cost** — today's route ledger: requests, tokens in/out, failures per
+  provider/model, day/month budget bars. Euro only when the ledger itself
+  priced the route.
+- **/fix-loop [N]** — verify → fix → re-verify, up to N rounds (default 3,
+  max 10, 6/day). Any manual input disarms it. With
+  `OFFICINA_FIXLOOP_AUTOCOMMIT=1` it commits the green tree automatically.
+- **Backups** — `scripts/officina-backup.sh` snapshots the session store
+  nightly (systemd user timer 04:00, 14-day retention); restore = manual
+  rsync from `~/.local/share/officina-backups/sessions/<date>/`.
+- **Desktop notifications** — long turns (≥20 s) ping via notify-send;
+  `OFFICINA_NO_DESKTOP_NOTIFY=1` disables.
+- **GitHub tools** — when origin is a GitHub remote, `gh_pr_list`,
+  `gh_pr_view`, `gh_pr_diff`, `gh_issue_list`, `gh_ci_status` give the
+  model structured read-only repo access (auth via your gh keyring).
+
 ## Caduceus page
 
 `/caduceus` opens the gateway page (full-screen, four tabs):

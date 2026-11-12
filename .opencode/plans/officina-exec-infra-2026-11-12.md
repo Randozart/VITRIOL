@@ -1,7 +1,7 @@
 # Officina exec & infrastructure batch
 
 - Date: 2026-11-12 15:40
-- Status: in progress (stages 1–7)
+- Status: implemented 2026-11-12 — stages 1–7 landed (ced6d7e, cf81b74, 01ebf19, 4ebfd44, ef1db25, 4f55f97+12f270b, 20b32b3). OFFICINA_FIXLOOP_AUTOCOMMIT=1 enabled in ~/.vitriol/officina/env. Note: exec found the engine DOWN (clean stop 13:46, lares-move window) and the cloud budget EXHAUSTED (15.8M/2M daily) — lapis's failure message now names the real gate.
 - Origin: post-Codex-batch gap analysis (8 items selected); GitHub via
   gh-CLI tools; fix-loop auto-commit default-off, enabled for this operator.
 

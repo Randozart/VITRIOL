@@ -204,3 +204,22 @@ Follow-ups (not in scope here):
   + `cp target/release/officina ~/.local/bin/officina` (feature is DONE
   only when the installed binary shows it).
 - Commit after every stage (AGENTS.md workflow rule).
+
+## Addendum (2026-11-12 15:30): restart-with-in-flight-turn quarantines context
+
+Third corruption event, same driver: the operator restarted the TUI while a
+bash tool call was in flight (pi killed mid-turn → dangling call on the
+active path). repair_simple_session refused the file (2141 entries + a
+compaction on the path) and quarantined 5.6 MB; the fallback repaired the
+original and the session survived (validated before the fix: latest session
+VALID, pi appending).
+
+Fix (commit `2f3eefc`): `patch_dangling_session` — append one synthetic
+`[interrupted]` toolResult per dangling call, chained from the leaf. Drops
+nothing; works with compactions and any size; tried before the rewrite-based
+repair in both `prepare_session_args` branches. Duplicate-id files still fall
+through to the rewriter/quarantine.
+
+Lesson: a TUI restart is only crash-safe for the session when no tool call is
+in flight — and now, even then, the guard heals in place instead of
+quarantining.

@@ -565,6 +565,15 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Liveness evidence (2026-11-12): CPU seconds of pi's bash subtree,
+    /// sampled from /proc and shown in the running tool row — proof the
+    /// work is real even when output is silent (redirected to logs).
+    pub liveness_cpu_total: f64,
+    pub liveness_prev_total: f64,
+    pub liveness_delta: f64,
+    pub liveness_flat_secs: u64,
+    pub liveness_sampled_at: Option<std::time::Instant>,
+    pub liveness_unavailable: bool,
     /// Voice-suggestion ghost text (stage 2, 2026-11-12): rendered dimmed
     /// in the empty composer; → accepts, typing/Esc dismisses. Never sent.
     pub prompt_ghost: Option<GhostSuggestion>,
@@ -744,6 +753,12 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            liveness_cpu_total: 0.0,
+            liveness_prev_total: 0.0,
+            liveness_delta: 0.0,
+            liveness_flat_secs: 0,
+            liveness_sampled_at: None,
+            liveness_unavailable: false,
             prompt_ghost: None,
             ghost_dismissed_for: None,
             prompt_suggestion_file: None,
@@ -1452,6 +1467,57 @@ impl AppState {
                 .open(&path)
         } {
             let _ = writeln!(f, "{line}");
+        }
+    }
+
+    /// Liveness probe (2026-11-12): sample the CPU of pi's whole subprocess
+    /// tree at most every 2 s while a tool runs; flat samples accumulate
+    /// `liveness_flat_secs`. No-op when nothing runs.
+    pub fn probe_liveness(&mut self, pi_pid: Option<u32>) {
+        if !self.has_running_tool() {
+            self.liveness_cpu_total = 0.0;
+            self.liveness_prev_total = 0.0;
+            self.liveness_delta = 0.0;
+            self.liveness_flat_secs = 0;
+            self.liveness_sampled_at = None;
+            return;
+        }
+        let now = std::time::Instant::now();
+        if let Some(t) = self.liveness_sampled_at {
+            if (now - t).as_secs_f64() < 2.0 {
+                return; // throttle: /proc walks are not free
+            }
+        }
+        let Some(total) = pi_pid.and_then(subtree_cpu_secs) else {
+            self.liveness_unavailable = true;
+            return;
+        };
+        self.liveness_delta = if self.liveness_sampled_at.is_some() {
+            (total - self.liveness_prev_total).max(0.0)
+        } else {
+            0.0
+        };
+        self.liveness_prev_total = total;
+        self.liveness_cpu_total = total;
+        self.liveness_sampled_at = Some(now);
+        if self.liveness_delta > 0.05 {
+            self.liveness_flat_secs = 0;
+        } else {
+            self.liveness_flat_secs += 2; // sample window
+        }
+        self.liveness_unavailable = false;
+    }
+
+    /// `(text, is_alive)` suffix for the running tool header. Empty when no
+    /// sample exists yet.
+    pub fn liveness_suffix(&self) -> Option<(String, bool)> {
+        if self.liveness_unavailable || self.liveness_sampled_at.is_none() {
+            return None;
+        }
+        if self.liveness_flat_secs == 0 {
+            Some((format!("cpu +{:.1}s", self.liveness_delta), true))
+        } else {
+            Some((format!("cpu flat {}s", self.liveness_flat_secs), false))
         }
     }
 
@@ -2190,6 +2256,7 @@ impl AppState {
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
         let total = self.entries.len();
+        let liveness = self.liveness_suffix();
         for (idx, entry) in self.entries.iter_mut().enumerate() {
             let before = lines.len();
             match entry {
@@ -2363,6 +2430,7 @@ impl AppState {
                                 elapsed,
                                 *timeout_s,
                                 no_output_hint,
+                                liveness.clone(),
                             );
                             *render_cache = Some((body_w, gen, olen, tick, block));
                         }
@@ -3036,6 +3104,7 @@ fn render_tool_block(
     elapsed: Option<u64>,
     timeout_s: Option<u64>,
     no_output_hint: bool,
+    liveness: Option<(String, bool)>,
 ) -> Vec<Line<'static>> {
     let full = mode == ToolVerbosity::Full;
     // The panel is an OPAQUE PLATE (owner request 2026-09-03: fire must
@@ -3191,6 +3260,18 @@ fn render_tool_block(
                 format!(" {}", fmt_elapsed(secs)),
                 Style::default().fg(theme::ORANGE).bg(surf),
             ));
+        }
+        // Liveness evidence (2026-11-12): real CPU from pi's subprocess
+        // tree — proof the work is alive even with output redirected to
+        // logs. Green when the tree burned CPU in the last window, amber
+        // when it has been flat.
+        if let Some((text, alive)) = liveness {
+            let st = if alive {
+                Style::default().fg(theme::GREEN).bg(surf)
+            } else {
+                Style::default().fg(theme::ORANGE).bg(surf)
+            };
+            spans.push(Span::styled(format!(" · {text}"), st));
         }
         lines.push(Line::from(spans));
         if no_output_hint {
@@ -3471,6 +3552,46 @@ mod tests {
         s.resume_filter = "zzz".into();
         s.clamp_resume_sel();
         assert_eq!(s.resume_sel, 0);
+    }
+
+    #[test]
+    fn stat_cpu_ticks_parses_after_comm_parens() {
+        // comm with spaces/parens must not break field indexing
+        let raw = "12345 (brievc buil) S 1 1 1 0 -1 4194560 0 0 0 0 4200 800 0 0 20 0 1 0 12345 1 1 18446744073709551615 1 1 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0";
+        let t = stat_cpu_ticks(raw).expect("parses");
+        assert_eq!(t, 4200 + 800);
+        // 4200+800 ticks = 50.0 CPU-seconds at 100 Hz
+        let secs = t as f64 / CLK_TCK;
+        assert!((secs - 50.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn liveness_suffix_reports_live_and_flat() {
+        let mut s = AppState::default();
+        assert!(s.liveness_suffix().is_none()); // no sample yet
+        s.liveness_sampled_at = Some(std::time::Instant::now());
+        s.liveness_delta = 3.2;
+        s.liveness_flat_secs = 0;
+        let (text, alive) = s.liveness_suffix().unwrap();
+        assert_eq!(text, "cpu +3.2s");
+        assert!(alive);
+        s.liveness_delta = 0.0;
+        s.liveness_flat_secs = 120;
+        let (text, alive) = s.liveness_suffix().unwrap();
+        assert_eq!(text, "cpu flat 120s");
+        assert!(!alive);
+        s.liveness_unavailable = true;
+        assert!(s.liveness_suffix().is_none());
+    }
+
+    #[test]
+    fn probe_resets_when_no_tool_runs() {
+        let mut s = AppState::default();
+        s.liveness_cpu_total = 42.0;
+        s.liveness_sampled_at = Some(std::time::Instant::now());
+        s.probe_liveness(None); // nothing running → reset
+        assert_eq!(s.liveness_cpu_total, 0.0);
+        assert!(s.liveness_sampled_at.is_none());
     }
 
     #[test]
@@ -4235,6 +4356,7 @@ mod panel_tests {
             Some(7),
             Some(30),
             false,
+            None,
         );
         assert!(
             lines.len() >= 4,
@@ -4265,6 +4387,7 @@ mod panel_tests {
             Some(90),
             Some(1800),
             true,
+            None,
         );
         for l in &lines {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
@@ -4291,6 +4414,7 @@ mod panel_tests {
             Some(93),
             Some(1800),
             true,
+            None,
         );
         let text = lines
             .iter()
@@ -4500,6 +4624,47 @@ mod kani_proofs {
             }
         }
     }
+}
+
+const CLK_TCK: f64 = 100.0; // Linux userspace jiffies-per-second (essentially universal)
+
+/// utime+stime (seconds) of one pid from /proc/<pid>/stat.
+fn stat_cpu_secs(pid: u32) -> Option<f64> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let ticks = stat_cpu_ticks(&raw)?;
+    Some(ticks as f64 / CLK_TCK)
+}
+
+fn stat_cpu_ticks(raw: &str) -> Option<u64> {
+    // comm may contain spaces/parens — cut after the closing parenthesis.
+    let after = &raw[raw.rfind(')')? + 1..];
+    let f: Vec<&str> = after.split_whitespace().collect();
+    // fields 14/15 overall → indices 11/12 after comm.
+    let utime: u64 = f.get(11)?.parse().ok()?;
+    let stime: u64 = f.get(12)?.parse().ok()?;
+    Some(utime + stime)
+}
+
+fn child_pids(pid: u32) -> Vec<u32> {
+    let raw =
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")).unwrap_or_default();
+    raw.split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
+/// Total CPU seconds of the whole live subtree rooted at `root` (pi).
+/// Any unreadable node is skipped (a process exiting mid-walk is normal).
+fn subtree_cpu_secs(root: u32) -> Option<f64> {
+    let mut total = stat_cpu_secs(root)?;
+    let mut queue = child_pids(root);
+    while let Some(pid) = queue.pop() {
+        if let Some(c) = stat_cpu_secs(pid) {
+            total += c;
+        }
+        queue.extend(child_pids(pid));
+    }
+    Some(total)
 }
 
 fn prompt_suggestion_path() -> std::path::PathBuf {

@@ -127,6 +127,12 @@ pub struct RpcBridge {
 }
 
 impl RpcBridge {
+    /// pi's OS pid — the root of the subprocess tree a running bash tool
+    /// lives in (liveness probing reads /proc under it).
+    pub fn pi_pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
     /// Spawn `node <cli_path> --mode rpc -a` and return a connected bridge.
     ///
     /// Project trust is no longer blanket-approved: the dialog subsystem in

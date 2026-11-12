@@ -674,6 +674,7 @@ async fn run_loop(
             _ = tokio::time::sleep(delay) => {
                 // heartbeat redraw — keeps streaming indicator/gauges alive
                 // (90 ms on fresh screens so the watermark glimmer animates)
+                state.probe_liveness(bridge.pi_pid());
                 maybe_tool_watchdog(state, bridge).await;
             }
         }

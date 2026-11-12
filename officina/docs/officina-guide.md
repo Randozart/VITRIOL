@@ -158,6 +158,10 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   shapes future suggestions. Sensitive prompts never leave the box.
   `OFFICINA_NO_PROMPT_SUGGEST=1` stops staging; `OFFICINA_NO_VOICE_LEARN=1`
   freezes the profile.
+- **Liveness evidence** — the running-tool row shows `· cpu +3.2s`
+  (green): real CPU seconds burned by the tool's process tree in the last
+  sample window, straight from /proc. `cpu flat 120s` (amber) means the
+  subtree has consumed nothing — that's a true hang, not a quiet compile.
 - **Hang watchdog** — long bash calls that stop producing output get a
   notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
   (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge

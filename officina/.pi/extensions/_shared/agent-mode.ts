@@ -46,6 +46,15 @@ export const DEFAULT_MODES: ModeDef[] = [
 Plan mode has ended — you are allowed to modify files and run state-changing commands again, effective immediately. Apply the plan (or the current request) with normal write/edit tools.`,
   },
   {
+    name: "steer",
+    label: "STEER",
+    glyph: "↝",
+    color: "antidote", // copper/orange: course corrections
+    hint: "redirect the work in flight · keep going after the correction · TAB / /agent build",
+    directive: `AGENT MODE: STEER (course correction, keep working).
+The user is steering the work in progress. Apply the correction to what you are ALREADY doing — adjust the approach, the target, or the emphasis — and then continue the task; do not stop to re-plan and do not start unrelated work. If the "correction" is really a question, answer it in one or two sentences and resume.`,
+  },
+  {
     name: "inquire",
     label: "INQUIRE",
     glyph: "?",

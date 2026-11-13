@@ -11,10 +11,11 @@
 - **Prompt history**: **↑/↓** step through earlier prompts (persisted at
   `~/.vitriol/officina/input-history.jsonl`); stepping past the newest
   entry restores your in-progress draft.
-- **Agent modes**: TAB cycles **BUILD → INQUIRE → PLAN**. INQUIRE answers
-  and steers without stopping the work — its replies land in `/answers`
-  (scrollable panel, also pinged after each turn). PLAN is research-only
-  (`*.md` writes); BUILD unlocks writes.
+- **Agent modes**: TAB cycles **BUILD → STEER → INQUIRE → PLAN**. STEER
+  (copper) applies a course correction to the work in flight and keeps
+  going. INQUIRE (green) answers and steers without acting — its replies
+  land in `/answers` (scrollable panel, also pinged after each turn).
+  PLAN is research-only (`*.md` writes); BUILD unlocks writes.
 - **Clarifying questions**: the model's question tool opens a real modal
   (options + "Type something." free text) in every agent mode.
 - **Model lanes** (`/model`): `officina/lapis` ("Lapis Occultus") is the

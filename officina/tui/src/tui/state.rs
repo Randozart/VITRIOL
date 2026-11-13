@@ -599,6 +599,9 @@ pub struct AppState {
     pub cost: Option<crate::tui::cost::CostReport>,
     /// Latest structured watchdog facts (card + countdown).
     pub watchdog: Option<WatchdogDoc>,
+    /// Injectable watchdog facts path (tests must never read the
+    /// operator's live file).
+    pub watchdog_file: Option<std::path::PathBuf>,
     /// /fx modal (2026-11-13): fire + glimmer controls with a live preview.
     pub fx_open: bool,
     pub fx_sel: usize,
@@ -806,6 +809,7 @@ impl Default for AppState {
             cost_open: false,
             cost: None,
             watchdog: None,
+            watchdog_file: None,
             fx_open: false,
             fx_sel: 0,
             answers_open: false,
@@ -1796,7 +1800,8 @@ impl AppState {
     pub fn apply_notify(&mut self, msg: &str, ntype: &str) {
         // Watchdog observations are not errors — give them their own block.
         if msg.starts_with("hang-watchdog") {
-            self.watchdog = load_watchdog_doc();
+            let path = self.watchdog_file.clone().unwrap_or_else(watchdog_path);
+            self.watchdog = load_watchdog_doc_at(&path);
             self.entries.push(ChatEntry::Watchdog(msg.to_string()));
             return;
         }
@@ -3938,6 +3943,7 @@ mod tests {
     fn watchdog_notifies_get_their_own_block() {
         // 2026-11-13: warnings from the watchdog are observations, not diags
         let mut s = AppState::default();
+        s.watchdog_file = Some(std::path::PathBuf::from("/nonexistent/watchdog.json"));
         s.apply_notify(
             "hang-watchdog: \"brievc build\" — no output for 61s (61s total)",
             "warning",
@@ -3993,6 +3999,7 @@ mod tests {
         assert!(s.watchdog_countdown().is_none());
         // the card renders fields, not prose
         let mut s2 = AppState::default();
+        s2.watchdog_file = Some(std::path::PathBuf::from("/nonexistent/watchdog.json"));
         s2.apply_notify("hang-watchdog verdict: HUNG", "warning");
         // apply_notify reloads facts from disk (absent in tests) — inject
         // the parsed doc after, which is the same state production reaches
@@ -5256,7 +5263,11 @@ fn watchdog_path() -> std::path::PathBuf {
 /// Facts are only trusted while fresh (2 min) — a stale card would claim
 /// a countdown for a watchdog that no longer watches.
 pub fn load_watchdog_doc() -> Option<WatchdogDoc> {
-    let raw = std::fs::read_to_string(watchdog_path()).ok()?;
+    load_watchdog_doc_at(&watchdog_path())
+}
+
+pub fn load_watchdog_doc_at(path: &std::path::Path) -> Option<WatchdogDoc> {
+    let raw = std::fs::read_to_string(path).ok()?;
     let doc: WatchdogDoc = serde_json::from_str(&raw).ok()?;
     let now = crate::tui::caduceus::now_ms();
     if doc.version != 1 || now.saturating_sub(doc.ts) > 120_000 {

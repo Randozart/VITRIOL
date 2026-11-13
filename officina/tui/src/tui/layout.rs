@@ -48,6 +48,7 @@ fn mode_chip(label: &str) -> Option<(&'static str, ratatui::style::Color)> {
         "PLAN" => Some(("☽", theme::SILVER)),
         "BUILD" => Some(("☉", theme::GOLD)),
         "INQUIRE" => Some(("?", theme::GREEN)),
+        "STEER" => Some(("↝", theme::ORANGE)),
         _ => None,
     }
 }
@@ -3523,5 +3524,138 @@ mod composer_wrap_tests {
             "all 40 chars must remain visible after wrapping: {:?}",
             rows
         );
+    }
+}
+
+#[cfg(test)]
+mod render_smoke {
+    //! Every surface at several terminal sizes (2026-11-13 crash hunt):
+    //! a panic here reproduces an "Officina crashed" render path.
+
+    use super::*;
+
+    fn draw_at(state: &mut AppState, w: u16, h: u16) {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|f| render(f, state))
+            .expect("draw must not panic");
+    }
+
+    fn base_state() -> AppState {
+        let mut s = AppState::default();
+        s.mark_activity();
+        s.cwd = std::path::PathBuf::from("/tmp/proj");
+        s.tool_start(
+            Some("c1"),
+            "bash",
+            &serde_json::json!({"command": "brievc build c4probe.bv --verify-bodies", "timeout": 240}),
+        );
+        s.tool_update(Some("c1"), "bash", "compiling…\n");
+        s.apply_notify(
+            "hang-watchdog: \"brievc build\" — no output for 61s",
+            "warning",
+        );
+        s.apply_notify(
+            "note with a longer body that will wrap across the modal width",
+            "info",
+        );
+        s.entries.push(crate::tui::state::ChatEntry::Notice(
+            "multi-line table\nrow one\nrow two".into(),
+        ));
+        s
+    }
+
+    #[test]
+    fn all_modals_render_at_common_sizes() {
+        for (w, h) in [(40u16, 12u16), (80, 24), (120, 40)] {
+            // fx modal
+            let mut s = base_state();
+            s.fx_open = true;
+            for sel in 0..4 {
+                s.fx_sel = sel;
+                draw_at(&mut s, w, h);
+            }
+            // answers modal (with a doc)
+            let mut s = base_state();
+            s.answers_open = true;
+            s.answers = Some(super::super::state::AnswerDoc {
+                version: 1,
+                ts: 1,
+                question: "how does the cache layer work?".into(),
+                answer: "It stores prompt KV per slot.\n".repeat(30),
+            });
+            draw_at(&mut s, w, h);
+            // cost modal
+            let mut s = base_state();
+            s.cost_open = true;
+            s.cost = Some(crate::tui::cost::CostReport::default());
+            draw_at(&mut s, w, h);
+            // review findings
+            let mut s = base_state();
+            s.review_open = true;
+            s.review = crate::tui::review::parse(
+                r#"{"version":1,"preset":"uncommitted","summary":"s",
+                    "findings":[{"severity":"high","file":"a.rs","line":"3","title":"t","detail":"d"}]}"#,
+            );
+            draw_at(&mut s, w, h);
+            // cross-project sessions
+            let mut s = base_state();
+            s.xsessions_open = true;
+            s.xsessions_open_with(Vec::new());
+            draw_at(&mut s, w, h);
+            // status
+            let mut s = base_state();
+            s.status_open_modal();
+            draw_at(&mut s, w, h);
+            // caduceus page, every tab (config rows injected)
+            let mut s = base_state();
+            if let Some(page) = s.caduceus.as_mut() {
+                page.tab = crate::tui::caduceus::Tab::Vitriol;
+                page.engine = Some(crate::tui::caduceus::probe_engine());
+                page.config = Some(crate::tui::engine_config::parse_rows(
+                    "[gpu]\ntensor_split = 27,21\n[model]\nmmproj =\n",
+                ));
+            } else {
+                s.caduceus = Some(crate::tui::caduceus::Page::default());
+                let page = s.caduceus.as_mut().unwrap();
+                page.tab = crate::tui::caduceus::Tab::Vitriol;
+                page.config = Some(crate::tui::engine_config::parse_rows(
+                    "[gpu]\ntensor_split = 27,21\n[model]\nmmproj =\n",
+                ));
+            }
+            for tab in crate::tui::caduceus::Tab::ALL {
+                if let Some(page) = s.caduceus.as_mut() {
+                    page.set_tab(tab);
+                }
+                draw_at(&mut s, w, h);
+            }
+        }
+    }
+
+    #[test]
+    fn watchdog_card_and_fire_render_with_facts() {
+        let mut s = base_state();
+        let now = crate::tui::caduceus::now_ms();
+        s.watchdog = crate::tui::state::load_watchdog_doc().or_else(|| {
+            Some(crate::tui::state::WatchdogDoc {
+                version: 1,
+                ts: now,
+                kind: "verdict".into(),
+                command: "brievc build c4probe.bv".into(),
+                elapsed_s: 252,
+                stalled_s: 189,
+                verdict: "HUNG".into(),
+                reason: "waiting on stdin".into(),
+                next_check_at: now + 21_000,
+                phase: "rejudge".into(),
+            })
+        });
+        s.fire_on = true;
+        s.fire_target = 0.8;
+        s.fire_level = 0.8;
+        for (w, h) in [(40u16, 12u16), (100, 30)] {
+            draw_at(&mut s, w, h);
+        }
     }
 }

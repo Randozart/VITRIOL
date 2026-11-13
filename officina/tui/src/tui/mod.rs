@@ -3,6 +3,7 @@ pub mod cache;
 pub mod caduceus;
 pub mod cost;
 pub mod engine_config;
+pub mod janitor;
 pub mod layout;
 pub mod paste;
 pub mod review;
@@ -51,6 +52,15 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     load_glimmer(&mut state);
     load_fire(&mut state);
     load_tools_config(&mut state);
+    if let Some((count, bytes)) = crate::tui::janitor::auto_run() {
+        state.notice = Some((
+            format!(
+                "janitor: removed {count} stale item(s) · {}",
+                crate::tui::cache::fmt_bytes(bytes)
+            ),
+            "info".into(),
+        ));
+    }
     let mut rx = bridge.start_reader();
 
     // Dedicated input task: crossterm EventStream → channel. Never poll
@@ -1810,6 +1820,16 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 return;
             }
             // /cache — local KV disk cache manager (never RPC).
+            if msg == "/thinking-view" || msg.starts_with("/thinking-view ") {
+                let args = msg.strip_prefix("/thinking-view").unwrap_or("").trim();
+                state.thinking_view_command(args);
+                return;
+            }
+            if msg == "/janitor" || msg.starts_with("/janitor ") {
+                let dry = msg.starts_with("/janitor dry") || msg.starts_with("/janitor --dry");
+                state.janitor_command(dry);
+                return;
+            }
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);

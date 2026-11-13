@@ -597,6 +597,9 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Thinking display (2026-11-13): hide thinking blocks behind a collapsed
+    /// marker line; persisted at ~/.vitriol/officina/tui-thinking.
+    pub hide_thinking: bool,
     /// Latest structured watchdog facts (card + countdown).
     pub watchdog: Option<WatchdogDoc>,
     /// Injectable watchdog facts path (tests must never read the
@@ -808,6 +811,7 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            hide_thinking: load_hide_thinking(),
             watchdog: None,
             watchdog_file: None,
             fx_open: false,
@@ -1870,6 +1874,78 @@ impl AppState {
     }
 
     /// `/cache` command surface. Bare opens the manager modal.
+    /// `/thinking-view [hide|show]` — display-only toggle (the model's
+    /// thinking LEVEL stays with pi's /thinking). Bare = status.
+    pub fn thinking_view_command(&mut self, args: &str) {
+        match args.trim() {
+            "" => self.entries.push(ChatEntry::Diag(format!(
+                "thinking display: {} — /thinking-view hide|show",
+                if self.hide_thinking {
+                    "hidden"
+                } else {
+                    "shown"
+                }
+            ))),
+            "hide" | "hidden" | "off" => {
+                self.hide_thinking = true;
+                persist_hide_thinking(self);
+                self.entries.push(ChatEntry::Diag(
+                    "thinking display: hidden (collapsed markers; /thinking-view show)".into(),
+                ));
+            }
+            "show" | "shown" | "on" => {
+                self.hide_thinking = false;
+                persist_hide_thinking(self);
+                self.entries
+                    .push(ChatEntry::Diag("thinking display: shown".into()));
+            }
+            other => self.entries.push(ChatEntry::Diag(format!(
+                "thinking-view: unknown '{other}' — use hide | show"
+            ))),
+        }
+    }
+
+    /// `/janitor [dry]` — plan (and by default apply) stale-artifact cleanup.
+    /// Dry mode lists what WOULD go; never touches protected paths.
+    pub fn janitor_command(&mut self, dry: bool) {
+        let plan = crate::tui::janitor::plan(
+            &crate::tui::janitor::Roots::live(),
+            std::time::SystemTime::now(),
+        );
+        if plan.items.is_empty() {
+            self.entries
+                .push(ChatEntry::Diag("janitor: nothing stale — all clean".into()));
+            return;
+        }
+        if dry {
+            self.entries.push(ChatEntry::Diag(format!(
+                "janitor (dry): {} item(s) · {} would be removed",
+                plan.items.len(),
+                crate::tui::cache::fmt_bytes(plan.bytes())
+            )));
+            for item in plan.items.iter().take(12) {
+                self.entries.push(ChatEntry::Diag(format!(
+                    "  {} · {} · {}",
+                    item.reason,
+                    crate::tui::cache::fmt_bytes(item.bytes),
+                    item.path.display()
+                )));
+            }
+            if plan.items.len() > 12 {
+                self.entries.push(ChatEntry::Diag(format!(
+                    "  … {} more",
+                    plan.items.len() - 12
+                )));
+            }
+            return;
+        }
+        let (count, bytes) = crate::tui::janitor::apply(&plan.items);
+        self.entries.push(ChatEntry::Diag(format!(
+            "janitor: removed {count} item(s) · {}",
+            crate::tui::cache::fmt_bytes(bytes)
+        )));
+    }
+
     pub fn cache_command(&mut self, args: &str) {
         let args = args.trim();
         if args.is_empty() {
@@ -2529,6 +2605,21 @@ impl AppState {
                     }
                 }
                 ChatEntry::Thinking(text) => {
+                    if self.hide_thinking {
+                        let n = text.chars().count();
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "  ·    thinking hidden ({}) — /thinking-view show",
+                                if n >= 1000 {
+                                    format!("{:.1}k chars", n as f64 / 1000.0)
+                                } else {
+                                    format!("{n} chars")
+                                }
+                            ),
+                            Style::default().fg(theme::MUTED),
+                        )));
+                        continue;
+                    }
                     for seg in wrap_text(text, width.saturating_sub(8)) {
                         lines.push(Line::from(vec![
                             Span::styled("  ·    ", Style::default().fg(theme::MUTED)),
@@ -2829,6 +2920,8 @@ impl AppState {
         ("cost", "routing ledger", "/cost — today's route ledger: requests, tokens in/out, failures per provider/model + budget bars (read-only)"),
         ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
+        ("janitor", "stale cache cleanup", "/janitor [dry] — remove stale prompt/watchdog/longjob/probe/KV/session-chain artifacts (protected: newest store file, slot0.bin, corrupt quarantines, ledgers); auto-runs daily"),
+        ("thinking-view", "hide thinking blocks", "/thinking-view [hide|show] — collapse thinking blocks to a marker line (display only; the model's thinking level stays at /thinking)"),
         ("fx", "fire + glimmer", "/fx — fire/glimmer panel with live preview (fire only animates while the session is actually working)"),
         ("answers", "last inquiry answer", "/answers — the last INQUIRE-mode question + answer (scrollable; written by the agent-mode extension)"),
         ("engine", "engine control", "/engine [start|stop|restart|status] — control the vitriol-server systemd unit (no sudo: polkit scopes you to the two vitriol units; your daily-driver config is untouched)"),
@@ -5297,6 +5390,41 @@ fn answer_mtime() -> Option<std::time::SystemTime> {
     std::fs::metadata(answer_path())
         .and_then(|m| m.modified())
         .ok()
+}
+
+fn hide_thinking_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("tui-thinking");
+    p
+}
+
+fn load_hide_thinking() -> bool {
+    if std::env::var("OFFICINA_THINKING_HIDE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    std::fs::read_to_string(hide_thinking_path())
+        .map(|s| matches!(s.trim(), "hide" | "hidden" | "off" | "1"))
+        .unwrap_or(false)
+}
+
+pub fn persist_hide_thinking(state: &AppState) {
+    let path = hide_thinking_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        path,
+        format!(
+            "{}
+",
+            if state.hide_thinking { "hide" } else { "show" }
+        ),
+    );
 }
 
 fn prompt_history_path() -> std::path::PathBuf {

@@ -18,6 +18,17 @@
   PLAN is research-only (`*.md` writes); BUILD unlocks writes.
 - **Clarifying questions**: the model's question tool opens a real modal
   (options + "Type something." free text) in every agent mode.
+- **Thinking display**: `/thinking-view hide|show` collapses thinking
+  blocks to a one-line marker (char count) or shows them again. Display
+  only — the model's thinking *level* remains pi's `/thinking`.
+- **Janitor**: `/janitor [dry]` removes stale runtime artifacts —
+  expired prompt suggestions, watchdog facts older than a day, finished
+  longjob logs (7 days / cap 50), probe reports (30 days), KV slot
+  mirrors (14 days, `slot0.bin` protected), and superseded session-chain
+  snapshots (7 days). Protections: the newest file of every session
+  store, base sessions, corrupt quarantines, ledgers, prefs, history.
+  Auto-runs once a day with a notice only when it removed something;
+  `OFFICINA_NO_JANITOR=1` disables.
 - **Model lanes** (`/model`): `officina/lapis` ("Lapis Occultus") is the
   local-first resilient default; `officina/nimbus` is the **cloud-only**
   lane — every turn routes to the best verified-FREE cloud model, the

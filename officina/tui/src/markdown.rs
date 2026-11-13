@@ -439,7 +439,22 @@ impl Renderer {
         let sep_style = theme::muted();
 
         for (ri, row) in rows.iter().enumerate() {
-            let style = if ri < header { head_style } else { body_style };
+            let base_style = if ri < header { head_style } else { body_style };
+            // Zebra striping (owner request 2026-11-13): alternate body rows
+            // get the panel tint so cells read as alternating bands.
+            let row_bg = if ri >= header && (ri - header) % 2 == 1 {
+                Some(theme::PANEL)
+            } else {
+                None
+            };
+            let style = match row_bg {
+                Some(bg) => base_style.bg(bg),
+                None => base_style,
+            };
+            let row_sep_style = match row_bg {
+                Some(bg) => sep_style.bg(bg),
+                None => sep_style,
+            };
             let cells: Vec<Vec<String>> = (0..ncols)
                 .map(|ci| {
                     let raw = row.get(ci).map(String::as_str).unwrap_or("");
@@ -451,7 +466,7 @@ impl Renderer {
                 let mut spans: Vec<Span<'static>> = Vec::new();
                 for ci in 0..ncols {
                     if ci > 0 {
-                        spans.push(Span::styled(" │ ", sep_style));
+                        spans.push(Span::styled(" │ ", row_sep_style));
                     }
                     let chunk = cells[ci].get(li).map(String::as_str).unwrap_or("");
                     let pad = widths[ci].saturating_sub(chunk.chars().count());
@@ -810,6 +825,43 @@ mod tests {
         let text = text_lines(&lines).join("\n");
         assert!(text.contains("Title"));
         assert!(text.contains("body text"));
+    }
+
+    #[test]
+    fn tables_zebra_stripe_alternate_body_rows() {
+        // owner request 2026-11-13: alternating row backgrounds
+        let md = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\n";
+        let lines = render(md, 40);
+        // Body rows are the lines carrying the " │ " column separator;
+        // header + separator line come first.
+        let body: Vec<&Line> = lines
+            .iter()
+            .filter(|l| l.to_string().contains(" │ "))
+            .collect();
+        assert!(
+            body.len() >= 3,
+            "expected header + 3 body rows, got {}",
+            body.len()
+        );
+        let sep_bg = |l: &Line| {
+            l.spans
+                .iter()
+                .find(|sp| sp.content.contains('│'))
+                .and_then(|sp| sp.style.bg)
+        };
+        // header row plain, then body rows alternate: plain / panel / plain
+        assert_eq!(sep_bg(body[0]), Some(theme::BG), "header on chat bg");
+        assert_eq!(sep_bg(body[1]), Some(theme::BG), "first body row plain");
+        assert_eq!(
+            sep_bg(body[2]),
+            Some(theme::PANEL),
+            "second body row striped"
+        );
+        assert_eq!(
+            sep_bg(body[3]),
+            Some(theme::BG),
+            "third body row plain again"
+        );
     }
 
     #[test]

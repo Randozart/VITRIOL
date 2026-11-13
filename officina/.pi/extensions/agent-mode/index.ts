@@ -19,6 +19,9 @@
 //
 // Kill switch: OFFICINA_AGENT_MODE=0. Indicator widget key: "agent-mode".
 
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   allModes,
@@ -39,6 +42,27 @@ export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_AGENT_MODE === "0") return; // Rule 15
 
   let ui: any = null;
+  // INQUIRE answer capture (2026-11-13): the last user question + the
+  // assistant's answer land in a facts file the TUI's /answers panel reads.
+  let lastQuestion = "";
+  const ANSWERS_FILE = join(homedir(), ".vitriol", "officina", "inquire-answer.json");
+
+  const writeAnswer = (question: string, answer: string): void => {
+    try {
+      mkdirSync(join(homedir(), ".vitriol", "officina"), { recursive: true });
+      const doc = {
+        version: 1,
+        ts: Date.now(),
+        question: question.slice(0, 2000),
+        answer: answer.slice(0, 20000),
+      };
+      const tmp = `${ANSWERS_FILE}.tmp-${process.pid}`;
+      writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`);
+      renameSync(tmp, ANSWERS_FILE);
+    } catch {
+      // decoration contract
+    }
+  };
 
   // Owner-configurable modes: same-name overrides, new names append.
   loadModesFromConfigFile(modesPath());
@@ -139,6 +163,31 @@ export default function (pi: ExtensionAPI) {
       console.error("[officina] applyModeTheme failed:", err instanceof Error ? err.message : err);
     }
   };
+
+  pi.on("message_end", (event) => {
+    const message = (event as { message?: { role?: string; content?: unknown } }).message;
+    if (!message) return;
+    const textOf = (content: unknown): string => {
+      if (typeof content === "string") return content;
+      if (Array.isArray(content)) {
+        let t = "";
+        for (const b of content as Array<{ type?: string; text?: unknown }>) {
+          if (b?.type === "text" && typeof b.text === "string") t += b.text;
+        }
+        return t;
+      }
+      return "";
+    };
+    const text = textOf(message.content).trim();
+    if (!text) return;
+    if (message.role === "user") {
+      lastQuestion = text;
+      return;
+    }
+    if (message.role === "assistant" && getModeDef().name === "inquire") {
+      writeAnswer(lastQuestion, text);
+    }
+  });
 
   pi.on("session_start", (_event, ctx) => {
     ui = ctx.ui;

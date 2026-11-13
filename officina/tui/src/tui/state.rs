@@ -336,6 +336,17 @@ pub enum DialogKind {
     Editor,
 }
 
+/// INQUIRE answer (2026-11-13): versioned facts file written by the
+/// agent-mode extension; rendered by /answers.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct AnswerDoc {
+    pub version: u32,
+    pub ts: u64,
+    pub question: String,
+    pub answer: String,
+}
+
 /// A staged next-prompt suggestion (voice-suggestions stage 1).
 #[derive(Debug, Clone)]
 pub struct GhostSuggestion {
@@ -565,6 +576,12 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// /answers panel (2026-11-13): the last INQUIRE-mode question + answer,
+    /// written by the agent-mode extension as a facts file.
+    pub answers_open: bool,
+    pub answers: Option<AnswerDoc>,
+    pub answers_scroll: u16,
+    pub answers_mtime_seen: Option<std::time::SystemTime>,
     /// Prompt history (2026-11-13, owner request): Up/Down through earlier
     /// prompts, persisted to ~/.vitriol/officina/input-history.jsonl.
     pub prompt_history: Vec<String>,
@@ -758,6 +775,10 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            answers_open: false,
+            answers: None,
+            answers_scroll: 0,
+            answers_mtime_seen: None,
             prompt_history: load_prompt_history(),
             history_idx: None,
             history_draft: String::new(),
@@ -1475,6 +1496,31 @@ impl AppState {
                 .open(&path)
         } {
             let _ = writeln!(f, "{line}");
+        }
+    }
+
+    /// `/answers` — load the last INQUIRE answer and open the panel.
+    pub fn answers_open_modal(&mut self) {
+        self.note_phase(UiEvent::OpenModal);
+        self.answers = load_answer_doc();
+        self.answers_scroll = 0;
+        self.answers_mtime_seen = answer_mtime();
+        self.answers_open = true;
+    }
+
+    pub fn answers_close(&mut self) {
+        if self.answers_open {
+            self.note_phase(UiEvent::CloseModal);
+            self.answers_open = false;
+        }
+    }
+
+    /// After each turn: if the answer file changed, ping the operator.
+    pub fn refresh_answers_notice(&mut self) {
+        let mtime = answer_mtime();
+        if mtime.is_some() && mtime != self.answers_mtime_seen {
+            self.answers_mtime_seen = mtime;
+            self.notice = Some(("answer ready — /answers".into(), "info".into()));
         }
     }
 
@@ -2581,6 +2627,7 @@ impl AppState {
         ("cost", "routing ledger", "/cost — today's route ledger: requests, tokens in/out, failures per provider/model + budget bars (read-only)"),
         ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
+        ("answers", "last inquiry answer", "/answers — the last INQUIRE-mode question + answer (scrollable; written by the agent-mode extension)"),
         ("engine", "engine control", "/engine [start|stop|restart|status] — control the vitriol-server systemd unit (no sudo: polkit scopes you to the two vitriol units; your daily-driver config is untouched)"),
         ("status", "session snapshot", "/status — model, agent, profile, context fill, cwd, session, permissions, gateway lanes, routing policy (read-only)"),
         ("caduceus", "gateway + routing", "/caduceus — providers/models/health/policy page: routing on-off, ranks, pins, free-only, caps (facts by the caduceus extension; policy file written by the TUI)"),
@@ -3519,7 +3566,7 @@ fn trunc_str(s: &str, w: usize) -> String {
 }
 
 /// Greedy word wrap returning owned strings.
-fn wrap_text(s: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_text(s: &str, width: usize) -> Vec<String> {
     let width = width.max(10);
     if s.is_empty() {
         return vec![String::new()];
@@ -4877,6 +4924,29 @@ fn subtree_cpu_secs(root: u32) -> Option<f64> {
         queue.extend(child_pids(pid));
     }
     Some(total)
+}
+
+fn answer_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("inquire-answer.json");
+    p
+}
+
+fn load_answer_doc() -> Option<AnswerDoc> {
+    let raw = std::fs::read_to_string(answer_path()).ok()?;
+    let doc: AnswerDoc = serde_json::from_str(&raw).ok()?;
+    if doc.version != 1 || doc.answer.trim().is_empty() {
+        return None;
+    }
+    Some(doc)
+}
+
+fn answer_mtime() -> Option<std::time::SystemTime> {
+    std::fs::metadata(answer_path())
+        .and_then(|m| m.modified())
+        .ok()
 }
 
 fn prompt_history_path() -> std::path::PathBuf {

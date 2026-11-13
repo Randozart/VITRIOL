@@ -1275,6 +1275,22 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /answers — scrollable panel; esc/q closes, r reloads.
+    if state.answers_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => state.answers_close(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.answers_scroll = state.answers_scroll.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => state.answers_scroll += 1,
+            KeyCode::PageUp => state.answers_scroll = state.answers_scroll.saturating_sub(10),
+            KeyCode::PageDown => state.answers_scroll += 10,
+            KeyCode::Char('r') => state.answers_open_modal(),
+            _ => {}
+        }
+        return;
+    }
+
     // /cost — read-only rows; esc/q closes.
     if state.cost_open {
         match key.code {
@@ -1753,6 +1769,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /answers — last INQUIRE answer panel (facts file, read-only).
+            if msg == "/answers" {
+                state.answers_open_modal();
                 return;
             }
             // /cost — today's routing ledger + budget bars (read-only).
@@ -2926,6 +2947,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
             state.refresh_ghost();
+            state.refresh_answers_notice();
             state.abort_deadline = None;
             let expected = state.expected_tool_calls.len();
             state.expected_tool_calls.clear();

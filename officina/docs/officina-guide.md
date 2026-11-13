@@ -16,8 +16,11 @@
   going. INQUIRE (green) answers and steers without acting — its replies
   land in `/answers` (scrollable panel, also pinged after each turn).
   PLAN is research-only (`*.md` writes); BUILD unlocks writes.
-- **Clarifying questions**: the model's question tool opens a real modal
-  (options + "Type something." free text) in every agent mode.
+- **Clarifying questions**: the model's question tool opens a menu
+  directly on top of the prompt (options list; the RPC path stages it as
+  a facts file, so it works on every lane and can never hang the wire).
+  No response in 10 minutes fail-opens; esc cancels.
+- **Thinking display**: `/thinking-view hide|show` collapses thinking
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
   blocks to a one-line marker (char count) or shows them again. Display
   only — the model's thinking *level* remains pi's `/thinking`.

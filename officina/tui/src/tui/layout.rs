@@ -540,6 +540,71 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Vec::new()
     };
 
+    // Question panel (2026-11-13): the ask extension stages question.json;
+    // the TUI renders the operator's menu ON TOP OF THE PROMPT — exactly
+    // where their eyes already are. Enter answers, esc cancels, digits
+    // quick-pick. Disappears the moment the answer is written.
+    if state.question.is_some() {
+        let q = state.question.as_ref().unwrap();
+        let panel_w = area.width.min(72);
+        let opt_h = q.options.len() as u16;
+        let panel_h = (opt_h + 5).min(area.height.saturating_sub(4));
+        let panel = Rect {
+            x: area.x + area.width.saturating_sub(panel_w) / 2,
+            y: input_area.y.saturating_sub(panel_h + 1),
+            width: panel_w,
+            height: panel_h,
+        };
+        frame.render_widget(ratatui::widgets::Clear, panel);
+        let edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(theme::GREEN).bg(theme::PANEL))
+            .title(Span::styled(
+                format!(" {} question ", theme::GLYPH_AI),
+                Style::new()
+                    .fg(theme::GREEN)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::BOLD),
+            ))
+            .style(Style::new().bg(theme::PANEL));
+        let inner = block.inner(panel);
+        frame.render_widget(block, panel);
+        if inner.height >= 1 && inner.width >= 20 {
+            let mut qlines: Vec<Line> = Vec::new();
+            let qw = inner.width.saturating_sub(2) as usize;
+            for seg in crate::tui::state::wrap_text(&q.question, qw) {
+                qlines.push(Line::from(Span::styled(
+                    format!(" {seg}"),
+                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                )));
+            }
+            let visible_opts = inner
+                .height
+                .saturating_sub(qlines.len() as u16)
+                .min(opt_h.max(1));
+            for (i, opt) in q.options.iter().enumerate() {
+                let sel = i == state.question_sel;
+                let marker = if sel { "▸" } else { " " };
+                let st = if sel {
+                    Style::new().fg(theme::BG).bg(theme::GREEN)
+                } else {
+                    Style::new().fg(theme::TEXT).bg(theme::PANEL)
+                };
+                qlines.push(Line::from(Span::styled(
+                    format!(" {marker}{} {opt}", i + 1),
+                    st,
+                )));
+            }
+            qlines.truncate(inner.height as usize);
+            frame.render_widget(
+                Paragraph::new(qlines).style(Style::new().bg(theme::PANEL)),
+                inner,
+            );
+        }
+    }
+
     // Gap row: explicit BG paint, ALWAYS (owner request 2026-09-03 — the
     // terminal background must never peek through below the panels). It now
     // carries the DIVIDER (owner request 2026-11-11): a 1px dim rule in the

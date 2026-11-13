@@ -18,6 +18,9 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, renameSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { Type } from "@sinclair/typebox";
 
 interface OptionWithDesc {
@@ -42,6 +45,92 @@ const QuestionParams = Type.Object({
 	question: Type.String({ description: "The question to ask the user" }),
 	options: Type.Array(OptionSchema, { description: "Options for the user to choose from" }),
 });
+
+// ── Facts-file flow (2026-11-13) ─────────────────────────────────────────
+// The RPC dialog bridging hung live (tool-context select awaited a
+// response that never crossed the wire — counsel session, 2026-11-13
+// 21:22, two question calls, no results). In RPC mode the question is
+// staged as ~/.vitriol/officina/question.json and the Rust TUI renders it
+// as a panel ON TOP OF THE PROMPT, writing question-response.json. The
+// extension polls with a hard timeout — fail-open, never hangs.
+// [officina P-ask2]
+
+const QUESTION_FILE = join(homedir(), ".vitriol", "officina", "question.json");
+const RESPONSE_FILE = join(homedir(), ".vitriol", "officina", "question-response.json");
+const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
+
+interface StagedQuestion {
+  version: number;
+  id: string;
+  question: string;
+  options: string[];
+  ts: number;
+}
+
+interface QuestionResponse {
+  id: string;
+  answer: string | null;
+  cancelled: boolean;
+}
+
+function stageQuestion(doc: StagedQuestion): void {
+  mkdirSync(dirname(QUESTION_FILE), { recursive: true });
+  // a stale response from a previous question must never answer this one
+  try {
+    rmSync(RESPONSE_FILE);
+  } catch { /* absent is fine */ }
+  const tmp = `${QUESTION_FILE}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`);
+  renameSync(tmp, QUESTION_FILE);
+}
+
+function readResponse(id: string): QuestionResponse | null {
+  try {
+    const doc = JSON.parse(readFileSync(RESPONSE_FILE, "utf8")) as QuestionResponse;
+    if (doc.id !== id) return null;
+    return doc;
+  } catch {
+    return null;
+  }
+}
+
+function cleanupQuestionFiles(): void {
+  try {
+    rmSync(QUESTION_FILE);
+  } catch { /* absent is fine */ }
+  try {
+    rmSync(RESPONSE_FILE);
+  } catch { /* absent is fine */ }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** RPC-mode question via the facts files. Returns null on timeout. */
+async function askViaFacts(
+  question: string,
+  labels: string[],
+): Promise<{ answer: string; cancelled: boolean } | null> {
+  const id = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  stageQuestion({
+    version: 1,
+    id,
+    question,
+    options: labels,
+    ts: Date.now(),
+  });
+  const deadline = Date.now() + QUESTION_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await sleep(400);
+    const resp = readResponse(id);
+    if (resp) {
+      cleanupQuestionFiles();
+      if (resp.cancelled || resp.answer === null) return null;
+      return { answer: resp.answer, cancelled: false };
+    }
+  }
+  cleanupQuestionFiles();
+  return null;
+}
 
 export default function question(pi: ExtensionAPI) {
 	pi.registerTool({
@@ -71,7 +160,29 @@ export default function question(pi: ExtensionAPI) {
 			}
 
 			const OTHER = "Type something.";
-			const labels = [...params.options.map((o: { label: string }) => o.label), OTHER];
+			const optionLabels = params.options.map((o: { label: string }) => o.label);
+
+			// RPC mode (the Rust TUI): stage via the facts files — the
+			// tool-context dialog bridging hung live (P-ask2). The TUI
+			// renders the question on top of the prompt and writes the
+			// response; 10 min timeout, fail-open. NOTE: the free-text
+			// "Type something." escape is TUI-mode only — facts files
+			// carry the real options only.
+			if (ctx.mode === "rpc") {
+				const factResult = await askViaFacts(params.question, optionLabels);
+				if (!factResult) {
+					return {
+						content: [{ type: "text", text: "No answer within 10 minutes — re-ask if still needed." }],
+						details: { ...base, answer: null } as QuestionDetails,
+					};
+				}
+				return {
+					content: [{ type: "text", text: `User answered: ${factResult.answer}` }],
+					details: { ...base, answer: factResult.answer, wasCustom: factResult.cancelled } as QuestionDetails,
+				};
+			}
+
+			const labels = [...optionLabels, OTHER];
 			const picked = await ctx.ui.select(params.question, labels);
 			if (picked === null || picked === undefined) {
 				return {

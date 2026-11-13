@@ -600,6 +600,11 @@ pub struct AppState {
     /// Turn clock (2026-11-13): stamped when streaming starts, cleared when
     /// it settles — drives the "working… Ns" readouts.
     pub turn_started_at: Option<std::time::Instant>,
+    /// Question panel (2026-11-13): the ask extension stages question.json;
+    /// the TUI renders it on top of the prompt and writes the response.
+    pub question: Option<crate::tui::question::QuestionDoc>,
+    pub question_sel: usize,
+    pub question_checked_at: Option<std::time::Instant>,
     /// Safe-quit arm (2026-11-13): when a turn/tool is in flight, the first
     /// quit press arms a 5 s confirm window instead of killing the work.
     pub quit_armed_at: Option<std::time::Instant>,
@@ -824,6 +829,9 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            question: None,
+            question_sel: 0,
+            question_checked_at: None,
             turn_started_at: None,
             quit_armed_at: None,
             hide_thinking: load_hide_thinking(),
@@ -2436,6 +2444,76 @@ impl AppState {
     }
 
     /// Seconds since the last real signal (0 when none ever, for display).
+    /// Question panel poll (throttled to 500 ms). Loads a fresh staged
+    /// question; clears the panel when the file is consumed or expires.
+    pub fn question_poll(&mut self) {
+        let now = crate::tui::caduceus::now_ms();
+        if let Some(t) = self.question_checked_at {
+            if t.elapsed().as_millis() < 500 {
+                return;
+            }
+        }
+        self.question_checked_at = Some(std::time::Instant::now());
+        match crate::tui::question::load_fresh(now) {
+            Some(doc) => {
+                if self
+                    .question
+                    .as_ref()
+                    .map(|q| q.id != doc.id)
+                    .unwrap_or(true)
+                {
+                    self.question_sel = 0;
+                }
+                self.question = Some(doc);
+            }
+            None => self.question = None,
+        }
+    }
+
+    /// Enter on the question panel: answer the staged question.
+    pub fn question_answer(&mut self) {
+        let Some(doc) = self.question.as_ref() else {
+            return;
+        };
+        let Some(opt) = doc.options.get(self.question_sel) else {
+            return;
+        };
+        let id = doc.id.clone();
+        let answer = opt.clone();
+        if let Err(e) = crate::tui::question::write_response(&id, Some(answer)) {
+            self.entries.push(ChatEntry::Diag(format!(
+                "question: response write failed ({e})"
+            )));
+            return;
+        }
+        self.question = None;
+        self.question_sel = 0;
+    }
+
+    /// Esc on the question panel: cancel (the extension fail-opens).
+    pub fn question_cancel(&mut self) {
+        let Some(doc) = self.question.as_ref() else {
+            return;
+        };
+        let id = doc.id.clone();
+        if let Err(e) = crate::tui::question::write_response(&id, None) {
+            self.entries.push(ChatEntry::Diag(format!(
+                "question: response write failed ({e})"
+            )));
+        }
+        self.question = None;
+        self.question_sel = 0;
+    }
+
+    /// Digits 1-9 on the question panel: direct option pick.
+    pub fn question_pick(&mut self, n: usize) {
+        if self.question.is_none() {
+            return;
+        }
+        self.question_sel = n.saturating_sub(1);
+        self.question_answer();
+    }
+
     /// Seconds since the turn began (stamped when streaming starts).
     pub fn turn_elapsed_secs(&self) -> u64 {
         self.turn_started_at

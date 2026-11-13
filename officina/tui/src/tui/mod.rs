@@ -7,6 +7,7 @@ pub mod engine_config;
 pub mod janitor;
 pub mod layout;
 pub mod paste;
+pub mod question;
 pub mod review;
 pub mod state;
 
@@ -536,6 +537,7 @@ async fn run_loop(
         let dt = now.duration_since(last_frame).as_secs_f64();
         last_frame = now;
         state.apply_liveliness_gate();
+        state.question_poll();
         state.step_fire(dt);
         terminal.draw(|frame| render(frame, state))?;
 
@@ -1552,6 +1554,29 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // Question panel (2026-11-13): top priority when visible — the
+    // operator's answer goes to the staged question, nothing else.
+    if state.question.is_some() {
+        match key.code {
+            KeyCode::Esc => state.question_cancel(),
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.question_sel = state.question_sel.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => state.question_sel += 1,
+            KeyCode::Enter => state.question_answer(),
+            KeyCode::Char(c @ '1'..='9') => state.question_pick((c as u8 - b'0') as usize),
+            _ => {}
+        }
+        let n = state
+            .question
+            .as_ref()
+            .map(|q| q.options.len())
+            .unwrap_or(0);
+        if state.question_sel >= n {
+            state.question_sel = n.saturating_sub(1);
+        }
+        return;
+    }
     match key.code {
         // ^esc — quit. The only physical quit chord (owner-approved; some
         // desktops reserve it, /quit always works). MUST precede the plain

@@ -597,6 +597,9 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Turn clock (2026-11-13): stamped when streaming starts, cleared when
+    /// it settles — drives the "working… Ns" readouts.
+    pub turn_started_at: Option<std::time::Instant>,
     /// Safe-quit arm (2026-11-13): when a turn/tool is in flight, the first
     /// quit press arms a 5 s confirm window instead of killing the work.
     pub quit_armed_at: Option<std::time::Instant>,
@@ -821,6 +824,7 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            turn_started_at: None,
             quit_armed_at: None,
             hide_thinking: load_hide_thinking(),
             watchdog: None,
@@ -2023,6 +2027,11 @@ impl AppState {
             self.model = Some(m);
         }
         self.thinking_level = thinking_level;
+        if is_streaming && !self.is_streaming {
+            self.turn_started_at = Some(std::time::Instant::now());
+        } else if !is_streaming {
+            self.turn_started_at = None;
+        }
         self.is_streaming = is_streaming;
         self.is_compacting = is_compacting;
         self.session_id = session_id.unwrap_or_default();
@@ -2427,6 +2436,13 @@ impl AppState {
     }
 
     /// Seconds since the last real signal (0 when none ever, for display).
+    /// Seconds since the turn began (stamped when streaming starts).
+    pub fn turn_elapsed_secs(&self) -> u64 {
+        self.turn_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0)
+    }
+
     pub fn stalled_secs(&self) -> u64 {
         self.last_activity
             .map(|t| t.elapsed().as_secs())

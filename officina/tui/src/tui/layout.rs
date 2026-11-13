@@ -176,12 +176,33 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut left = vec![Span::styled("🜖 VITRIOL·OFFICINA", theme::banner())];
     if state.is_streaming {
         // Light yellow, the informational voice (owner request 2026-09-02):
-        // same tint the engine TUI uses for "prompt-eval …" — the process
-        // is moving. Orange stays reserved for genuine warnings.
-        left.push(Span::styled(
-            format!("  {} working", theme::GLYPH_FIRE),
-            theme::info(),
-        ));
+        // same tint the engine TUI uses for "prompt-eval …". Animated with
+        // a braille spinner on real activity (any lane — local or cloud);
+        // when evidence goes quiet the label says so instead of lying.
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
+        if state.liveliness_active() {
+            left.push(Span::styled(
+                format!("  {} {} working {}", theme::GLYPH_FIRE, frames[f], {
+                    let secs = state.turn_elapsed_secs();
+                    if secs > 0 {
+                        format!("{secs}s")
+                    } else {
+                        String::new()
+                    }
+                }),
+                theme::info(),
+            ));
+        } else {
+            left.push(Span::styled(
+                format!(
+                    "  {} working · stalled {}s",
+                    theme::GLYPH_FIRE,
+                    state.stalled_secs()
+                ),
+                Style::new().fg(theme::MUTED),
+            ));
+        }
     }
 
     let model = state
@@ -435,14 +456,35 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut lines = state.chat_lines(chat_width);
 
     if state.is_streaming {
+        // Animated spinner + elapsed seconds (2026-11-13): works on ANY
+        // lane — the spinner runs on stream evidence, so cloud turns
+        // animate exactly like local ones. Stalled → muted, says so.
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
+        let (style, suffix) = if state.liveliness_active() {
+            let secs = state.turn_elapsed_secs();
+            (
+                theme::info(),
+                if secs > 0 {
+                    format!(" {secs}s")
+                } else {
+                    String::new()
+                },
+            )
+        } else {
+            (
+                Style::new().fg(theme::MUTED),
+                format!(" · stalled {}s", state.stalled_secs()),
+            )
+        };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{} ", theme::GLYPH_AI),
+                format!("{} {} ", theme::GLYPH_AI, frames[f]),
                 Style::default().fg(theme::GOLD).bg(theme::BG),
             ),
             // Light yellow to match the header (owner request 2026-09-02 —
             // the informational voice, like the engine TUI's prompt-eval).
-            Span::styled("working…", theme::info()),
+            Span::styled(format!("working…{suffix}"), style),
         ]));
     }
     if state.is_compacting {

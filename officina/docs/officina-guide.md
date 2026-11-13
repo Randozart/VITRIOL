@@ -183,6 +183,11 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   (green): real CPU seconds burned by the tool's process tree in the last
   sample window, straight from /proc. `cpu flat 120s` (amber) means the
   subtree has consumed nothing — that's a true hang, not a quiet compile.
+- **Working indicator** — the header and transcript tail show an animated
+  braille spinner + elapsed seconds while a turn runs, on any lane
+  (local, cloud, hybrid — the spinner runs on stream evidence). When
+  activity goes quiet mid-turn it switches to muted `working… · stalled
+  Ns` instead of pretending. Quitting mid-turn arms a 5 s confirm.
 - **No-hang bash (longjob)** — known long-runner commands (cargo, make,
   brievc, npm, pytest, go, …) are **auto-dispatched** instead of blocking:
   the tool returns a job id + log path in ~50 ms; the agent polls

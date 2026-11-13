@@ -1,7 +1,17 @@
 # Release + docs sweep (no GPU needed)
 
 - Date: 2026-11-13
-- Status: stage 1 (docs sweep) done — guide was already current from the rename pass (the only /fire /glimmer mentions are the 'removed' notes; CLI `vitriol caduceus keys` is a different surface, kept).
+- Status: IMPLEMENTED 2026-11-13.
+  - Stage 1: docs sweep — guide already current from the rename pass.
+  - Stage 2: v0.1.2 published, then the fresh-clone acceptance caught a
+    REAL bug (vitriolum parity test read a legacy monorepo-only path) —
+    fixed, republished as **v0.1.3** (f3647e3..387b99c lineage; palette
+    watermark drift #1c2634→#2a3a52 fixed; canary allowlist extended for
+    retired test fixtures; release gate gained testTimeout headroom for
+    loaded hosts).
+  - Fresh-clone acceptance v0.1.3: version ✓, 57 extensions, uniqueness
+    + parity tests green, no legacy-path references.
+  - Stage 3 (backup restore drill): PENDING — next session.
 - Context: ~30 commits of operator-visible behavior since
   `officina-v0.1.1` (renames, /fx, watchdog card, voice suggestions,
   longjob, crash black-box, STEER, evidence batch). The public snapshot

@@ -3456,6 +3456,33 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         fi
         ;;
 
+    probe)
+        # Settings-codex/probe subsystem (2026-11-13): model-load-light
+        # hardware + load probing. Never loads real model weights.
+        #   vitriol probe hardware [--model PATH]
+        #   vitriol probe load [--model PATH] [--also PATH] [--ubatch 64,128,256]
+        #   vitriol probe recommend [--model PATH] [--write-profile NAME]
+        #   vitriol probe synth --model PATH --scale tiny|mid --out PATH
+        shift
+        calibrate_use_rust || { echo "[vitriol] probe: build libvitriol first (cargo build --release in libvitriol/)" >&2; exit 1; }
+        probe_cmd="${1:-hardware}"; shift || true
+        probe_model=""
+        probe_args=()
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --model|-m) probe_model="$2"; probe_args+=(--model "$2"); shift 2 ;;
+                *) probe_args+=("$1"); shift ;;
+            esac
+        done
+        case "$probe_cmd" in
+            hardware) exec "$CALIBRATE_BINARY" probe-hw "${probe_model:+--model "$probe_model"}";;
+            load)     exec "$CALIBRATE_BINARY" probe-load "${probe_model:+--model "$probe_model"}" "${probe_args[@]}";;
+            recommend) exec "$CALIBRATE_BINARY" probe-recommend "${probe_model:+--model "$probe_model"}" "${probe_args[@]}";;
+            synth)    exec "$CALIBRATE_BINARY" synth "${probe_args[@]}";;
+            *) echo "usage: vitriol probe hardware|load|recommend|synth ..." >&2; exit 2;;
+        esac
+        ;;
+
     setup)
         BUILD_DIR="${LLAMA_DIR}/build/bin"
         # 2026-08-06: fix RUNPATH FIRST. patchelf rewrites the ELF and clears file

@@ -1,7 +1,18 @@
 # Evidence batch — E1 ubatch A/B + synth-GGUF loadability
 
 - Date: 2026-11-13
-- Status: in progress
+- Status: implemented 2026-11-13.
+  - Stage 1: depth_cert repaired (engine path + --spec-n + fingerprint).
+  - Stage 2: 6 arms run. **ub128 wins: 42K +5.1% (all paired rounds),
+    13K +0.9%, shallow noise. Verdict: keep 128; no live change.**
+  - Stage 3: synth fix — the loader mismatch was `nextn_predict_layers=1`
+    inherited from the MTP source header (the llama arch then expected an
+    extra 9-tensor MTP layer). Dropped nextn/expert keys; llama-bench now
+    loads the synth (pp ~15-16k, tg ~317 t/s).
+  - Stage 4: adoption rule evaluated → ub64 did NOT win → live config
+    untouched (already 128). Rollback profile irrelevant.
+  - Stage 5: E1 table + verdict in docs/engine-settings.md; drift table
+    entry marked RESOLVED.
 - Decisions: run E1 now · depth points 13.1K **and** 42K · adopt in the
   live config if ub64 wins.
 - Operator weighting (2026-11-13): "I work at depth far more than

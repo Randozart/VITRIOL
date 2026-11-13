@@ -1592,10 +1592,18 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             }
         }
         KeyCode::Up => {
-            state.cycle_candidate(false);
+            if state.cand_sel_logic_open() {
+                state.cycle_candidate(false);
+            } else {
+                state.history_prev();
+            }
         }
         KeyCode::Down => {
-            state.cycle_candidate(true);
+            if state.cand_sel_logic_open() {
+                state.cycle_candidate(true);
+            } else {
+                state.history_next();
+            }
         }
         // Scrollback (owner request 2026-09-02): PgUp/PgDn page through
         // session history.
@@ -1619,6 +1627,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             } else {
                 msg
             };
+            state.record_prompt_history(&msg);
             if !msg.starts_with('/') {
                 state.push_user(msg.clone());
             }
@@ -1659,6 +1668,8 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             } else {
                 msg
             };
+            // Prompt history (2026-11-13): recallable via Up/Down.
+            state.record_prompt_history(&msg);
             // /fire — pure-local UI state (composer flames); never RPC.
             if msg == "/fire" || msg.starts_with("/fire ") {
                 let args = msg["/fire".len()..].trim();

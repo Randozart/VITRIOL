@@ -565,6 +565,11 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Prompt history (2026-11-13, owner request): Up/Down through earlier
+    /// prompts, persisted to ~/.vitriol/officina/input-history.jsonl.
+    pub prompt_history: Vec<String>,
+    pub history_idx: Option<usize>,
+    pub history_draft: String,
     /// Liveness evidence (2026-11-12): CPU seconds of pi's bash subtree,
     /// sampled from /proc and shown in the running tool row — proof the
     /// work is real even when output is silent (redirected to logs).
@@ -753,6 +758,9 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            prompt_history: load_prompt_history(),
+            history_idx: None,
+            history_draft: String::new(),
             liveness_cpu_total: 0.0,
             liveness_prev_total: 0.0,
             liveness_delta: 0.0,
@@ -1467,6 +1475,71 @@ impl AppState {
                 .open(&path)
         } {
             let _ = writeln!(f, "{line}");
+        }
+    }
+
+    /// Record a sent prompt (dedupe consecutive, cap 200) + persist.
+    pub fn record_prompt_history(&mut self, msg: &str) {
+        let msg = msg.trim();
+        if msg.is_empty() {
+            return;
+        }
+        if self
+            .prompt_history
+            .last()
+            .map(|m| m == msg)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.prompt_history.push(msg.to_string());
+        if self.prompt_history.len() > 200 {
+            let drop = self.prompt_history.len() - 200;
+            self.prompt_history.drain(..drop);
+        }
+        append_prompt_history(msg);
+        self.history_idx = None;
+        self.history_draft.clear();
+    }
+
+    /// Up — step back through history; the in-progress draft is preserved
+    /// and restored when you step past the newest entry.
+    pub fn history_prev(&mut self) -> bool {
+        if self.prompt_history.is_empty() {
+            return false;
+        }
+        match self.history_idx {
+            None => {
+                self.history_draft = self.input.clone();
+                self.history_idx = Some(self.prompt_history.len() - 1);
+            }
+            Some(0) => {}
+            Some(i) => self.history_idx = Some(i - 1),
+        }
+        if let Some(i) = self.history_idx {
+            self.input = self.prompt_history[i].clone();
+            self.cursor = self.input.chars().count();
+            self.dismiss_ghost("dismissed-history");
+        }
+        true
+    }
+
+    /// Down — step forward; past the newest entry restores the draft.
+    pub fn history_next(&mut self) -> bool {
+        match self.history_idx {
+            None => false,
+            Some(i) if i + 1 < self.prompt_history.len() => {
+                self.history_idx = Some(i + 1);
+                self.input = self.prompt_history[i + 1].clone();
+                self.cursor = self.input.chars().count();
+                true
+            }
+            Some(_) => {
+                self.history_idx = None;
+                self.input = std::mem::take(&mut self.history_draft);
+                self.cursor = self.input.chars().count();
+                true
+            }
         }
     }
 
@@ -3092,6 +3165,77 @@ fn diff_line_style(line: &str, default: Style) -> Style {
     }
 }
 
+/// Human-readable args for tools without a purpose-built renderer: one
+/// line per key, values unquoted/shortened; objects fall back to compact
+/// JSON, arrays collapse to a comma list or "[N items]". Max 6 rows.
+fn generic_args_lines(
+    args: &serde_json::Value,
+    width: usize,
+    surf: ratatui::style::Color,
+    muted_st: Style,
+    text_st: Style,
+) -> Vec<Line<'static>> {
+    let border = Style::default().fg(theme::MUTED).bg(surf);
+    let mut lines = Vec::new();
+    let Some(obj) = args.as_object() else {
+        let one = serde_json::to_string(args).unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled(trunc_str(&one, width.saturating_sub(4)), text_st),
+        ]));
+        return lines;
+    };
+    let budget = width.saturating_sub(18);
+    let mut shown = 0usize;
+    for (k, v) in obj {
+        if v.is_null() || (v.as_str().map(|s| s.trim().is_empty()).unwrap_or(false)) {
+            continue;
+        }
+        if shown >= 6 {
+            let rest = obj.len().saturating_sub(shown);
+            if rest > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", border),
+                    Span::styled(format!("… {rest} more"), muted_st),
+                ]));
+            }
+            break;
+        }
+        let value = match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Array(items) => {
+                let parts: Vec<String> = items
+                    .iter()
+                    .take(6)
+                    .map(|i| match i {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                let joined = parts.join(", ");
+                if items.len() > 6 {
+                    format!("{joined}, … (+{} more)", items.len() - 6)
+                } else {
+                    joined
+                }
+            }
+            other => serde_json::to_string(other).unwrap_or_default(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled("│ ", border),
+            Span::styled(
+                format!("{:<14}", trunc_str(&trunc_str(k, 14), 14)),
+                muted_st,
+            ),
+            Span::styled(trunc_str(value.trim(), budget), text_st),
+        ]));
+        shown += 1;
+    }
+    lines
+}
+
 fn render_tool_block(
     mode: ToolVerbosity,
     name: &str,
@@ -3180,17 +3324,9 @@ fn render_tool_block(
                 }
             }
         } else {
-            let one = serde_json::to_string(a).unwrap_or_default();
-            let compact = if summary.is_empty() {
-                one
-            } else {
-                format!("{} {}", summary, one)
-            };
-            lines.push(Line::from(vec![
-                Span::styled("│ ", border),
-                Span::styled("args  ", muted_st),
-                Span::styled(trunc_str(compact.trim(), width.saturating_sub(9)), text_st),
-            ]));
+            // Generic tools: key/value lines instead of a raw JSON blob
+            // (owner request 2026-11-13).
+            lines.extend(generic_args_lines(a, width, surf, muted_st, text_st));
         }
     }
 
@@ -3553,6 +3689,75 @@ mod tests {
         s.resume_filter = "zzz".into();
         s.clamp_resume_sel();
         assert_eq!(s.resume_sel, 0);
+    }
+
+    #[test]
+    fn prompt_history_navigation_and_draft_restore() {
+        // 2026-11-13: Up/Down through earlier prompts, draft preserved
+        let mut s = AppState::default();
+        s.prompt_history = vec!["first".into(), "second".into(), "third".into()];
+        s.input = "draft in progress".into();
+        assert!(s.history_prev());
+        assert_eq!(s.input, "third");
+        assert!(s.history_prev());
+        assert_eq!(s.input, "second");
+        assert!(s.history_prev());
+        assert_eq!(s.input, "first");
+        assert!(s.history_prev()); // clamp at oldest
+        assert_eq!(s.input, "first");
+        assert!(s.history_next());
+        assert_eq!(s.input, "second");
+        s.history_next();
+        s.history_next(); // past newest → draft restored
+        assert_eq!(s.input, "draft in progress");
+        assert!(s.history_idx.is_none());
+        assert!(!s.history_next());
+    }
+
+    #[test]
+    fn prompt_history_records_dedupes_and_caps() {
+        let mut s = AppState::default();
+        s.prompt_history.clear();
+        s.record_prompt_history("same");
+        s.record_prompt_history("same"); // consecutive dupe ignored
+        assert_eq!(s.prompt_history.len(), 1);
+        s.record_prompt_history("different");
+        assert_eq!(s.prompt_history.len(), 2);
+        for i in 0..250 {
+            s.record_prompt_history(&format!("p{i}"));
+        }
+        assert_eq!(s.prompt_history.len(), 200);
+        assert_eq!(s.prompt_history.last().unwrap(), "p249");
+    }
+
+    #[test]
+    fn generic_args_render_key_value_not_json() {
+        let base = Style::default().fg(theme::TEXT);
+        let muted = Style::default().fg(theme::MUTED);
+        let args = serde_json::json!({
+            "path": "src/main.rs",
+            "limit": 40,
+            "tags": ["a", "b"],
+            "nested": {"k": 1},
+            "empty": null,
+            "blank": ""
+        });
+        let lines = generic_args_lines(&args, 80, theme::PANEL, muted, base);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        assert!(text.contains("path"));
+        assert!(text.contains("src/main.rs"));
+        assert!(text.contains("40"));
+        assert!(text.contains("a, b"));
+        assert!(text.contains(r#"{"k":1}"#));
+        assert!(!text.contains("null"), "nulls skipped: {text}");
+        assert!(!text.contains(r#""path":"#), "no JSON key quoting: {text}");
     }
 
     #[test]
@@ -4164,7 +4369,13 @@ mod tests {
             .join("\n");
         assert!(text.contains('╭'), "block header present: {}", text);
         assert!(text.contains('╰'), "block footer present: {}", text);
-        assert!(text.contains("args"), "args section present: {}", text);
+        // Generic tools render key/value lines (no raw JSON blob, 2026-11-13)
+        assert!(text.contains("path"), "generic args key present: {}", text);
+        assert!(
+            text.contains("src/main.rs"),
+            "generic args value present: {}",
+            text
+        );
         assert!(text.contains("out line"), "output present: {}", text);
     }
 
@@ -4666,6 +4877,50 @@ fn subtree_cpu_secs(root: u32) -> Option<f64> {
         queue.extend(child_pids(pid));
     }
     Some(total)
+}
+
+fn prompt_history_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("input-history.jsonl");
+    p
+}
+
+fn load_prompt_history() -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(prompt_history_path()) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<String>(l).ok())
+        .filter(|m| !m.trim().is_empty())
+        .collect();
+    if out.len() > 200 {
+        out.drain(..out.len() - 200);
+    }
+    out
+}
+
+fn append_prompt_history(msg: &str) {
+    use std::io::Write;
+    let path = prompt_history_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Ok(line) = serde_json::to_string(msg) else {
+        return;
+    };
+    if let Ok(mut f) = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)
+    } {
+        let _ = writeln!(f, "{line}");
+    }
 }
 
 fn prompt_suggestion_path() -> std::path::PathBuf {

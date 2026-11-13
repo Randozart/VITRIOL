@@ -1,7 +1,7 @@
 # Release + docs sweep (no GPU needed)
 
 - Date: 2026-11-13
-- Status: in progress
+- Status: stage 1 (docs sweep) done — guide was already current from the rename pass (the only /fire /glimmer mentions are the 'removed' notes; CLI `vitriol caduceus keys` is a different surface, kept).
 - Context: ~30 commits of operator-visible behavior since
   `officina-v0.1.1` (renames, /fx, watchdog card, voice suggestions,
   longjob, crash black-box, STEER, evidence batch). The public snapshot

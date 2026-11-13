@@ -1,7 +1,7 @@
 # Command renames (clean break) + /fx, liveliness contract, watchdog card
 
 - Date: 2026-11-13
-- Status: in progress
+- Status: implemented 2026-11-13 — Batch A renames landed (ca81ee6: route/model/provider/import families, duplicates deleted, uniqueness guard test), Batch B landed (f3647e3: /fx + liveliness contract + watchdog card/countdown; /fire + /glimmer removed). /fire + /glimmer deletion note: superseded by /fx per operator decision; /plan and /deep-research unchanged per operator decision.
 - Decisions: clean break, NO aliases, old names deleted; /plan and
   /deep-research unchanged; glimmer stays decorative; /fx only (kill
   /fire + /glimmer); watchdog fields via a facts file.

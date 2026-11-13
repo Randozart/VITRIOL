@@ -3,7 +3,12 @@
 - Date: 2026-11-13
 - Status: in progress
 - Decisions: run E1 now · depth points 13.1K **and** 42K · adopt in the
-  live config if ub64 wins (≥3% at 13.1K and not >1% slower at 42K).
+  live config if ub64 wins.
+- Operator weighting (2026-11-13): "I work at depth far more than
+  shallow, so I prefer performance gains at depth." → **shallow arms are
+  informational only; adoption is decided on the DEPTH arms.** Adopt ub64
+  if it wins ≥3% at 13.1K OR at 42K and is not >2% slower at the other
+  depth point.
 
 ## Stage 1 — harness repair (`scripts/depth_cert.py`)
 

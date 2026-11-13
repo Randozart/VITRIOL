@@ -28,7 +28,7 @@ export const VITRIOLUM = {
   lightYellow: "#ffe066", // capacity ramp stop
   deepRed: "#8a1515", // capacity ramp end
   darkTeal: "#0b5e4c", // activity ramp start
-  watermark: "#1c2634", // braille logo tint on bg
+  watermark: "#2a3a52", // braille logo tint on bg (brightened 2026-11: faint-stone)
 } as const;
 
 export type VitriolumName = keyof typeof VITRIOLUM;

@@ -9,11 +9,13 @@ import { describe, expect, it } from "vitest";
 import { VITRIOLUM } from "./vitriolum.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repo = join(here, "..", "..", "..", "..");
+// The TUI sources live INSIDE the officina tree (tui/src/…) — the same
+// relative path works in the monorepo and in the standalone snapshot.
+const tuiRoot = join(here, "..", "..", "..");
 
-const themeRs = readFileSync(join(repo, "vitriol-tui", "src", "theme.rs"), "utf-8");
-const watermarkRs = readFileSync(join(repo, "vitriol-tui", "src", "watermark.rs"), "utf-8");
-const officinaJson = readFileSync(join(repo, "officina", "theme", "officina.json"), "utf-8");
+const themeRs = readFileSync(join(tuiRoot, "tui", "src", "theme.rs"), "utf-8");
+const watermarkRs = readFileSync(join(tuiRoot, "tui", "src", "watermark.rs"), "utf-8");
+const officinaJson = readFileSync(join(tuiRoot, "theme", "officina.json"), "utf-8");
 
 // theme.rs encodes colors as Color::Rgb(0xRR, 0xGG, 0xBB) triplets.
 function themeRsHexes(): Set<string> {
@@ -30,7 +32,11 @@ describe("Vitriolum palette parity", () => {
     const rs = themeRsHexes();
     for (const [name, hex] of Object.entries(VITRIOLUM)) {
       // officina-only extensions (officina.json vars / watermark.rs), not in theme.rs:
-      if (name === "violet" || name === "dimGray" || name === "watermark") continue;
+      if (name === "violet" || name === "dimGray") continue;
+      if (name === "watermark") {
+        expect(rs.has(hex.toLowerCase()), `watermark ${hex} missing from theme.rs`).toBe(true);
+        continue;
+      }
       expect(rs.has(hex.toLowerCase()), `${name} ${hex} missing from theme.rs`).toBe(true);
     }
   });
@@ -62,7 +68,8 @@ describe("Vitriolum palette parity", () => {
 
   it("background and watermark tint match the TUI", () => {
     expect(VITRIOLUM.bg).toBe("#0d1117");
-    // watermark tint lives in watermark.rs (theme.rs-adjacent constant)
-    expect(watermarkRs.toLowerCase()).toContain(VITRIOLUM.watermark.slice(1));
+    // watermark tint: theme.rs declares WATERMARK; watermark.rs mirrors it
+    expect(themeRsHexes().has(VITRIOLUM.watermark.toLowerCase())).toBe(true);
+    expect(watermarkRs.toLowerCase()).toContain("theme::watermark");
   });
 });

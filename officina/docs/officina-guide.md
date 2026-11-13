@@ -187,10 +187,16 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 - **Hang watchdog** — long bash calls that stop producing output get a
   notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
   (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge
-  liveliness — "ALIVE (compiling)" or "HUNG (waiting on stdin)" — with the
-  output tail as evidence. It NEVER kills or aborts; Esc remains the only
-  abort. Re-judges every 5 min, max 3 per call.
-  `OFFICINA_NO_HANG_WATCHDOG=1` disables.
+  liveliness. Verdicts render as a structured card (cmd / elapsed /
+  stalled / reason, verdict chip) and the running-tool row carries a
+  `watch Ns` countdown to the next check — silence with visible feedback.
+  It NEVER kills or aborts; Esc remains the only abort. Re-judges every
+  5 min, max 3 per call. `OFFICINA_NO_HANG_WATCHDOG=1` disables.
+- **/fx** — fire + glimmer panel with a live preview. `/fire` and
+  `/glimmer` are gone. Fire obeys the liveliness contract: it only burns
+  while the session is actually working (streaming text or live tool
+  CPU); when stalled the flames die and the preview says so. Glimmer
+  stays decorative on a fresh screen.
 ## Headless, cost, and automation
 
 - **`vitriol officina exec "task"`** — one-shot run through the full

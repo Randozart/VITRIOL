@@ -300,6 +300,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cache_modal(frame, state, area);
         return;
     }
+    if state.fx_open {
+        render_chat_and_editor(frame, state, area);
+        render_fx_modal(frame, state, area);
+        return;
+    }
     if state.answers_open {
         render_chat_and_editor(frame, state, area);
         render_answers_modal(frame, state, area);
@@ -1653,6 +1658,163 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
         inner,
+    );
+}
+
+/// /fx (2026-11-13) — fire + glimmer controls with a LIVE preview. The
+/// preview obeys the liveliness contract: when the session is stalled the
+/// fire preview disappears and says so (no decorative lie).
+fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let w = area.width.min(76);
+    let h = 16u16.min(area.height);
+    let modal = Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let active = state.liveliness_active();
+    let chip = if active {
+        format!(" ACTIVE · streaming {}s ", state.stalled_secs())
+    } else {
+        format!(" STALLED · {}s ", state.stalled_secs())
+    };
+    let chip_style = if active {
+        Style::new().fg(theme::GREEN).bg(theme::PANEL)
+    } else {
+        Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" {} fx ", theme::GLYPH_SULFUR),
+            Style::new()
+                .fg(theme::GOLD)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(chip, chip_style))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.height < 8 || inner.width < 40 {
+        return;
+    }
+    let chunks = Layout::vertical([
+        Constraint::Length(5), // rows
+        Constraint::Length(2), // preview
+        Constraint::Length(2), // status/help
+    ])
+    .split(inner);
+
+    let rows = [
+        ("fire", if state.fire_on { "on" } else { "off" }.to_string()),
+        ("voice", state.fire_style.label().to_string()),
+        (
+            "tint",
+            if state.fire_tint { "on" } else { "off" }.to_string(),
+        ),
+        ("glimmer", state.glimmer.label().to_string()),
+    ];
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (label, value)) in rows.iter().enumerate() {
+        let sel = i == state.fx_sel;
+        let marker = if sel { "▸" } else { " " };
+        let text = format!(
+            " {marker} {label:<10} {value}",
+            label = label,
+            value = value
+        );
+        let style = if sel {
+            Style::new().fg(theme::BG).bg(theme::GOLD)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        chunks[0],
+    );
+
+    // Live preview: animated fire strip (only when armed AND active) plus a
+    // shimmer sample for the selected glimmer mode.
+    let phase = state.started.elapsed().as_millis();
+    let preview = chunks[1];
+    if state.fire_on && active && preview.height >= 1 {
+        let level = 0.55 + 0.25 * ((phase as f64 / 900.0).sin().abs());
+        crate::fire::render(
+            frame,
+            Rect {
+                x: preview.x + 1,
+                y: preview.y,
+                width: preview.width.saturating_sub(2),
+                height: preview.height.min(2),
+            },
+            phase,
+            level,
+            state.fire_style,
+        );
+    } else {
+        let msg = if state.fire_on {
+            format!(
+                " fire preview hidden — stalled {}s (no stream, no tool CPU)",
+                state.stalled_secs()
+            )
+        } else {
+            " fire off".to_string()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                msg,
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ))),
+            Rect {
+                height: 1,
+                ..preview
+            },
+        );
+    }
+    // Glimmer sample: phase-driven shimmer glyphs (decorative by design).
+    if state.glimmer != crate::watermark::GlimmerMode::Off {
+        let t = (phase as f64 / 500.0).sin() * 0.5 + 0.5;
+        let pulse = Style::new()
+            .fg(theme::GOLD)
+            .bg(theme::PANEL)
+            .add_modifier(if t > 0.6 {
+                Modifier::BOLD
+            } else {
+                Modifier::DIM
+            });
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ⌁ ", Style::new().fg(theme::MUTED).bg(theme::PANEL)),
+                Span::styled(format!("{} ⣀⣤⣶⣿⣶⣤⣀", state.glimmer.label()), pulse),
+            ])),
+            Rect {
+                height: 1,
+                y: preview.y + preview.height.saturating_sub(1),
+                ..preview
+            },
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                " ↑↓ row · space/←→ cycle · esc close",
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            )),
+            Line::from(Span::styled(
+                " fire follows the liveliness contract: no evidence → no flames",
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            )),
+        ])
+        .style(Style::new().bg(theme::PANEL)),
+        chunks[2],
     );
 }
 

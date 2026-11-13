@@ -5,12 +5,14 @@
 // the turn — the operator reads the verdict and presses Esc themselves.
 // Kill switch: OFFICINA_NO_HANG_WATCHDOG=1.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   buildJudgePrompt,
+  MAX_JUDGMENTS_PER_CALL,
+  REJUDGE_EVERY_S,
   JUDGE_S_DEFAULT,
   parseVerdict,
   pickJudgeModel,
@@ -97,6 +99,36 @@ function bestFreeLane(): string | null {
   }
 }
 
+/** Structured watchdog facts for the TUI card + countdown (2026-11-13).
+ *  Written beside every notify; the TUI renders fields, not prose, and
+ *  shows "watchdog in Ns" until next_check_at. */
+const WATCHDOG_FILE = join(homedir(), ".vitriol", "officina", "watchdog.json");
+
+interface WatchdogDoc {
+  version: 1;
+  ts: number;
+  kind: "notice" | "judge" | "verdict" | "unavailable";
+  command: string;
+  elapsed_s: number;
+  stalled_s: number;
+  verdict: "JUDGING" | "ALIVE" | "HUNG" | "";
+  reason: string;
+  next_check_at: number;
+  phase: "soft" | "judge" | "rejudge" | "done";
+}
+
+function writeWatchdog(doc: Omit<WatchdogDoc, "version" | "ts">): void {
+  try {
+    mkdirSync(join(homedir(), ".vitriol", "officina"), { recursive: true });
+    const full: WatchdogDoc = { version: 1, ts: Date.now(), ...doc };
+    const tmp = `${WATCHDOG_FILE}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(full, null, 2)}\n`);
+    renameSync(tmp, WATCHDOG_FILE);
+  } catch {
+    // decoration contract
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_NO_HANG_WATCHDOG === "1") return;
 
@@ -116,14 +148,46 @@ export default function (pi: ExtensionAPI) {
 
   const handleTick = async (call: WatchedCall, action: TickAction): Promise<void> => {
     if (action.kind === "none" || action.kind === "alive") return;
+    const elapsedS = Math.floor((Date.now() - call.startedAt) / 1000);
+    const stalledS = Math.floor((Date.now() - (call.stalledSince ?? Date.now())) / 1000);
     if (action.kind === "notice") {
+      writeWatchdog({
+        kind: "notice",
+        command: call.command,
+        elapsed_s: elapsedS,
+        stalled_s: stalledS,
+        verdict: "",
+        reason: "",
+        next_check_at: Date.now() + Math.max(0, judgeS - stalledS) * 1000,
+        phase: "soft",
+      });
       surface(action.message, "warning");
       return;
     }
     // judge — never the busy agent loop: a separate tiny completion on a
     // free lane. Fail-open: an unavailable judge changes nothing.
+    writeWatchdog({
+      kind: "judge",
+      command: call.command,
+      elapsed_s: elapsedS,
+      stalled_s: stalledS,
+      verdict: "JUDGING",
+      reason: "",
+      next_check_at: Date.now() + 30_000,
+      phase: "judge",
+    });
     const model = bestFreeLane();
     if (!model) {
+      writeWatchdog({
+        kind: "unavailable",
+        command: call.command,
+        elapsed_s: elapsedS,
+        stalled_s: stalledS,
+        verdict: "",
+        reason: "no free lane in catalog cache",
+        next_check_at: 0,
+        phase: "done",
+      });
       surface(`${action.message} · (judge unavailable — no free lane in catalog cache)`, "warning");
       return;
     }
@@ -135,11 +199,32 @@ export default function (pi: ExtensionAPI) {
     );
     const reply = await judgeWithLane(model, prompt);
     if (reply === null) {
+      writeWatchdog({
+        kind: "unavailable",
+        command: call.command,
+        elapsed_s: elapsedS,
+        stalled_s: stalledS,
+        verdict: "",
+        reason: "judge unreachable (assuming alive)",
+        next_check_at: 0,
+        phase: "done",
+      });
       surface(`${action.message} · (judge unreachable — assuming alive)`, "warning");
       return;
     }
     const verdict = parseVerdict(reply);
     call.lastVerdict = verdict.alive ? "ALIVE" : "HUNG";
+    writeWatchdog({
+      kind: "verdict",
+      command: call.command,
+      elapsed_s: Math.floor((Date.now() - call.startedAt) / 1000),
+      stalled_s: Math.floor((Date.now() - (call.stalledSince ?? Date.now())) / 1000),
+      verdict: verdict.alive ? "ALIVE" : "HUNG",
+      reason: verdict.reason,
+      next_check_at:
+        call.judgments >= MAX_JUDGMENTS_PER_CALL ? 0 : Date.now() + REJUDGE_EVERY_S * 1000,
+      phase: call.judgments >= MAX_JUDGMENTS_PER_CALL ? "done" : "rejudge",
+    });
     surface(
       `hang-watchdog verdict for "${call.command.slice(0, 60)}": ${verdict.alive ? "ALIVE" : "HUNG"} — ${verdict.reason} ` +
         "(no auto-kill; Esc aborts if you agree)",

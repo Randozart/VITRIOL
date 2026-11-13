@@ -515,16 +515,20 @@ async fn run_loop(
         let now = std::time::Instant::now();
         let dt = now.duration_since(last_frame).as_secs_f64();
         last_frame = now;
+        state.apply_liveliness_gate();
         state.step_fire(dt);
         terminal.draw(|frame| render(frame, state))?;
 
         // Dynamic redraw cadence: fresh screens (glimmer) and live fires
         // animate at ~11 fps; busy screens ride the 500 ms heartbeat.
-        let delay = if state.entries.is_empty() || state.fire_level > 0.0 {
-            Duration::from_millis(90)
-        } else {
-            Duration::from_millis(500)
-        };
+        // Animate only when there is something to animate: real activity,
+        // the decorative glimmer on a fresh screen, or a burning fire.
+        let delay =
+            if state.liveliness_active() || state.entries.is_empty() || state.fire_level > 0.0 {
+                Duration::from_millis(90)
+            } else {
+                Duration::from_millis(500)
+            };
 
         tokio::select! {
             maybe_input = input_rx.recv() => {
@@ -1275,6 +1279,61 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /fx — fire/glimmer controls; every change persists immediately.
+    if state.fx_open {
+        let mut changed = false;
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.note_phase(state::UiEvent::CloseModal);
+                state.fx_open = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => state.fx_sel = state.fx_sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => state.fx_sel = (state.fx_sel + 1).min(3),
+            KeyCode::Char(' ') | KeyCode::Right | KeyCode::Char('l') => {
+                match state.fx_sel {
+                    0 => {
+                        state.set_fire("");
+                    }
+                    1 => {
+                        state.set_fire("style");
+                    }
+                    2 => {
+                        state.set_fire("tint");
+                    }
+                    _ => {
+                        state.cycle_glimmer();
+                    }
+                }
+                changed = true;
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                // Left cycles the same rows (fire/style are one-way cycles;
+                // glimmer cycles too — direction is cosmetic here).
+                match state.fx_sel {
+                    0 => {
+                        state.set_fire("");
+                    }
+                    1 => {
+                        state.set_fire("style");
+                    }
+                    2 => {
+                        state.set_fire("tint");
+                    }
+                    _ => {
+                        state.cycle_glimmer();
+                    }
+                }
+                changed = true;
+            }
+            _ => {}
+        }
+        if changed {
+            persist_fire(state);
+            persist_glimmer(state);
+        }
+        return;
+    }
+
     // /answers — scrollable panel; esc/q closes, r reloads.
     if state.answers_open {
         match key.code {
@@ -1754,6 +1813,13 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/cache" || msg.starts_with("/cache ") {
                 let args = msg.strip_prefix("/cache").unwrap_or("").trim();
                 state.cache_command(args);
+                return;
+            }
+            // /fx — fire + glimmer panel (local UI state only).
+            if msg == "/fx" {
+                state.note_phase(state::UiEvent::OpenModal);
+                state.fx_sel = 0;
+                state.fx_open = true;
                 return;
             }
             // /answers — last INQUIRE answer panel (facts file, read-only).
@@ -2929,6 +2995,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.expected_tool_calls.clear();
         }
         "agent_end" | "agent_settled" => {
+            state.mark_activity();
             state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
             state.refresh_ghost();
@@ -2949,6 +3016,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             }
         }
         "message_update" => {
+            state.mark_activity();
             if let Some(ae) = fields.get("assistantMessageEvent") {
                 let et = ae.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 match et {
@@ -2987,6 +3055,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             }
         }
         "tool_execution_start" => {
+            state.mark_activity();
             let name = fields
                 .get("toolName")
                 .and_then(|v| v.as_str())
@@ -3000,6 +3069,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.tool_start(tool_call_id, name, &args);
         }
         "tool_execution_update" => {
+            state.mark_activity();
             let name = fields
                 .get("toolName")
                 .and_then(|v| v.as_str())

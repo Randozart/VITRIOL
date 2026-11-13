@@ -350,6 +350,24 @@ pub struct AnswerDoc {
     pub answer: String,
 }
 
+/// Structured watchdog facts (2026-11-13): written by the hang-watchdog
+/// extension; the transcript renders fields and the tool row shows a
+/// countdown, instead of dumping prose.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct WatchdogDoc {
+    pub version: u32,
+    pub ts: u64,
+    pub kind: String,
+    pub command: String,
+    pub elapsed_s: u64,
+    pub stalled_s: u64,
+    pub verdict: String,
+    pub reason: String,
+    pub next_check_at: u64,
+    pub phase: String,
+}
+
 /// A staged next-prompt suggestion (voice-suggestions stage 1).
 #[derive(Debug, Clone)]
 pub struct GhostSuggestion {
@@ -579,6 +597,11 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Latest structured watchdog facts (card + countdown).
+    pub watchdog: Option<WatchdogDoc>,
+    /// /fx modal (2026-11-13): fire + glimmer controls with a live preview.
+    pub fx_open: bool,
+    pub fx_sel: usize,
     /// /answers panel (2026-11-13): the last INQUIRE-mode question + answer,
     /// written by the agent-mode extension as a facts file.
     pub answers_open: bool,
@@ -590,6 +613,10 @@ pub struct AppState {
     pub prompt_history: Vec<String>,
     pub history_idx: Option<usize>,
     pub history_draft: String,
+    /// Liveliness contract (2026-11-13): wall-clock of the last REAL
+    /// signal (streamed text, tool events, agent start/end, prompt submit).
+    /// Fire only burns while this is fresh — animations never lie.
+    pub last_activity: Option<std::time::Instant>,
     /// Liveness evidence (2026-11-12): CPU seconds of pi's bash subtree,
     /// sampled from /proc and shown in the running tool row — proof the
     /// work is real even when output is silent (redirected to logs).
@@ -778,6 +805,9 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            watchdog: None,
+            fx_open: false,
+            fx_sel: 0,
             answers_open: false,
             answers: None,
             answers_scroll: 0,
@@ -785,6 +815,7 @@ impl Default for AppState {
             prompt_history: load_prompt_history(),
             history_idx: None,
             history_draft: String::new(),
+            last_activity: None,
             liveness_cpu_total: 0.0,
             liveness_prev_total: 0.0,
             liveness_delta: 0.0,
@@ -1529,6 +1560,7 @@ impl AppState {
 
     /// Record a sent prompt (dedupe consecutive, cap 200) + persist.
     pub fn record_prompt_history(&mut self, msg: &str) {
+        self.mark_activity();
         let msg = msg.trim();
         if msg.is_empty() {
             return;
@@ -1764,6 +1796,7 @@ impl AppState {
     pub fn apply_notify(&mut self, msg: &str, ntype: &str) {
         // Watchdog observations are not errors — give them their own block.
         if msg.starts_with("hang-watchdog") {
+            self.watchdog = load_watchdog_doc();
             self.entries.push(ChatEntry::Watchdog(msg.to_string()));
             return;
         }
@@ -2249,6 +2282,56 @@ impl AppState {
     /// Advance the fire's low-pass — exponential smoothing with a ≈0.33 s
     /// time constant, so the flame breathes at the same tempo regardless of
     /// frame rate.
+    /// Record real activity (call on any streamed text, tool event, agent
+    /// transition, or prompt submit).
+    pub fn mark_activity(&mut self) {
+        self.last_activity = Some(std::time::Instant::now());
+    }
+
+    /// Is the session actually doing something? Fresh activity (≤10 s) OR
+    /// a running tool whose CPU burned in the last sample window.
+    pub fn liveliness_active(&self) -> bool {
+        if self.has_running_tool()
+            && self.liveness_sampled_at.is_some()
+            && self.liveness_flat_secs == 0
+        {
+            return true;
+        }
+        match self.last_activity {
+            Some(t) => t.elapsed().as_secs() < 10,
+            None => false,
+        }
+    }
+
+    /// Seconds since the last real signal (0 when none ever, for display).
+    pub fn stalled_secs(&self) -> u64 {
+        self.last_activity
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0)
+    }
+
+    /// Seconds until the next watchdog check (None when no watch is armed
+    /// or the facts are stale/consumed).
+    pub fn watchdog_countdown(&self) -> Option<u64> {
+        let doc = self.watchdog.as_ref()?;
+        let now = crate::tui::caduceus::now_ms();
+        if now.saturating_sub(doc.ts) > 120_000 || doc.next_check_at == 0 {
+            return None;
+        }
+        if doc.next_check_at <= now {
+            return Some(0);
+        }
+        Some((doc.next_check_at - now) / 1000)
+    }
+
+    /// Fire gate (I1): no evidence → flames are dying/dead. Called from the
+    /// run loop before stepping the animation.
+    pub fn apply_liveliness_gate(&mut self) {
+        if !self.liveliness_active() {
+            self.fire_target = 0.0;
+        }
+    }
+
     pub fn step_fire(&mut self, dt_secs: f64) {
         if !self.fire_on {
             self.fire_target = 0.0;
@@ -2383,7 +2466,14 @@ impl AppState {
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
         let total = self.entries.len();
-        let liveness = self.liveness_suffix();
+        let mut liveness = self.liveness_suffix();
+        if let Some(secs) = self.watchdog_countdown() {
+            liveness = Some(match liveness {
+                Some((text, alive)) => (format!("{text} \u{00b7} watch {secs}s"), alive),
+                None => (format!("watch {secs}s"), true),
+            });
+        }
+        let wd = self.watchdog.clone();
         for (idx, entry) in self.entries.iter_mut().enumerate() {
             let before = lines.len();
             match entry {
@@ -2611,14 +2701,46 @@ impl AppState {
                     }
                 }
                 ChatEntry::Watchdog(text) => {
-                    // Compact amber block: observation, not an error.
+                    // Structured card when the facts file is fresh; raw text
+                    // fallback so a message is never lost (I3).
                     let edge = Style::new().fg(theme::ORANGE).bg(theme::BG);
                     let body = Style::new().fg(theme::TEXT).bg(theme::BG);
-                    let label = " ⏱ watch ";
+                    let muted = Style::new().fg(theme::MUTED).bg(theme::BG);
                     let span_w = width.saturating_sub(4) as usize;
-                    let dashes = span_w.saturating_sub(label.chars().count() + 2);
+                    let (chip, chip_style) = match wd.as_ref().map(|d| d.verdict.as_str()) {
+                        Some("ALIVE") => (
+                            " ALIVE ",
+                            Style::new()
+                                .fg(theme::GREEN)
+                                .bg(theme::BG)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Some("HUNG") => (
+                            " HUNG ",
+                            Style::new()
+                                .fg(theme::ORANGE)
+                                .bg(theme::BG)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Some("JUDGING") => (
+                            " JUDGING ",
+                            Style::new()
+                                .fg(theme::GOLD)
+                                .bg(theme::BG)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        _ => ("", muted),
+                    };
+                    let label = " \u{23f1} watch ";
+                    let right = if chip.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {chip}")
+                    };
+                    let dashes =
+                        span_w.saturating_sub(label.chars().count() + right.chars().count() + 1);
                     lines.push(Line::from(vec![
-                        Span::styled("  ╭─", edge),
+                        Span::styled("  \u{256d}\u{2500}", edge),
                         Span::styled(
                             label,
                             Style::new()
@@ -2626,18 +2748,55 @@ impl AppState {
                                 .bg(theme::BG)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{}╮", "─".repeat(dashes)), edge),
+                        Span::styled("\u{2500}".repeat(dashes.min(60)), edge),
+                        Span::styled(right, chip_style),
+                        Span::styled("\u{2500}\u{256e}", edge),
                     ]));
-                    for seg in wrap_text(text, width.saturating_sub(7)) {
-                        lines.push(Line::from(vec![
-                            Span::styled("  │ ", edge),
-                            Span::styled(seg, body),
-                        ]));
+                    match wd.as_ref() {
+                        Some(doc) if !doc.command.is_empty() => {
+                            let field = |k: &str, v: String| {
+                                Line::from(vec![
+                                    Span::styled("  \u{2502} ", edge),
+                                    Span::styled(format!("{k:<9}"), muted),
+                                    Span::styled(trunc_str(&v, width.saturating_sub(13)), body),
+                                ])
+                            };
+                            lines.push(field("cmd", doc.command.clone()));
+                            lines.push(field(
+                                "elapsed",
+                                format!(
+                                    "{}m {:02}s \u{00b7} stalled {}s",
+                                    doc.elapsed_s / 60,
+                                    doc.elapsed_s % 60,
+                                    doc.stalled_s
+                                ),
+                            ));
+                            if !doc.reason.is_empty() {
+                                lines.push(field("reason", doc.reason.clone()));
+                            }
+                            let hint = match doc.verdict.as_str() {
+                                "ALIVE" => "compiling/working \u{2014} no action needed",
+                                "HUNG" => "esc aborts if you agree \u{00b7} no auto-kill",
+                                _ => "judging on a free lane \u{00b7} no auto-kill",
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled("  \u{2502} ", edge),
+                                Span::styled(hint.to_string(), muted),
+                            ]));
+                        }
+                        _ => {
+                            for seg in wrap_text(text, width.saturating_sub(7)) {
+                                lines.push(Line::from(vec![
+                                    Span::styled("  \u{2502} ", edge),
+                                    Span::styled(seg, body),
+                                ]));
+                            }
+                        }
                     }
                     lines.push(Line::from(vec![
-                        Span::styled("  ╰", edge),
-                        Span::styled("─".repeat(span_w.saturating_sub(1)), edge),
-                        Span::styled("╯", edge),
+                        Span::styled("  \u{2570}", edge),
+                        Span::styled("\u{2500}".repeat(span_w.saturating_sub(1)), edge),
+                        Span::styled("\u{256f}", edge),
                     ]));
                 }
             }
@@ -2665,6 +2824,7 @@ impl AppState {
         ("cost", "routing ledger", "/cost — today's route ledger: requests, tokens in/out, failures per provider/model + budget bars (read-only)"),
         ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
+        ("fx", "fire + glimmer", "/fx — fire/glimmer panel with live preview (fire only animates while the session is actually working)"),
         ("answers", "last inquiry answer", "/answers — the last INQUIRE-mode question + answer (scrollable; written by the agent-mode extension)"),
         ("engine", "engine control", "/engine [start|stop|restart|status] — control the vitriol-server systemd unit (no sudo: polkit scopes you to the two vitriol units; your daily-driver config is untouched)"),
         ("status", "session snapshot", "/status — model, agent, profile, context fill, cwd, session, permissions, gateway lanes, routing policy (read-only)"),
@@ -3801,6 +3961,100 @@ mod tests {
             .join("\n");
         assert!(text.contains("watch"), "watchdog label: {text}");
         assert!(text.contains("no output for 61s"));
+    }
+
+    #[test]
+    fn watchdog_card_parses_and_counts_down() {
+        // 2026-11-13: structured fields + "watch Ns" countdown
+        let now = crate::tui::caduceus::now_ms();
+        let doc: WatchdogDoc = serde_json::from_str(&format!(
+            r#"{{"version":1,"ts":{},"kind":"verdict","command":"brievc build c4probe.bv",
+                 "elapsed_s":252,"stalled_s":189,"verdict":"HUNG","reason":"waiting on stdin",
+                 "next_check_at":{},"phase":"rejudge"}}"#,
+            now,
+            now + 21_000
+        ))
+        .expect("parses");
+        let mut s = AppState::default();
+        s.watchdog = Some(doc.clone());
+        let secs = s.watchdog_countdown().expect("countdown armed");
+        assert!((20..=21).contains(&secs), "countdown ~21s, got {secs}");
+        // facts older than 2 min are ignored
+        s.watchdog = Some(WatchdogDoc {
+            ts: now.saturating_sub(180_000),
+            ..doc.clone()
+        });
+        assert!(s.watchdog_countdown().is_none());
+        // consumed watch (next_check_at 0) has no countdown
+        s.watchdog = Some(WatchdogDoc {
+            next_check_at: 0,
+            ..doc
+        });
+        assert!(s.watchdog_countdown().is_none());
+        // the card renders fields, not prose
+        let mut s2 = AppState::default();
+        s2.apply_notify("hang-watchdog verdict: HUNG", "warning");
+        // apply_notify reloads facts from disk (absent in tests) — inject
+        // the parsed doc after, which is the same state production reaches
+        // when the file is fresh.
+        s2.watchdog = Some(
+            serde_json::from_str(&format!(
+                r#"{{"version":1,"ts":{now},"kind":"verdict","command":"brievc build c4probe.bv",
+                 "elapsed_s":252,"stalled_s":189,"verdict":"HUNG","reason":"waiting on stdin",
+                 "next_check_at":0,"phase":"done"}}"#
+            ))
+            .unwrap(),
+        );
+        let text = s2
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("HUNG"), "verdict chip: {text}");
+        assert!(text.contains("brievc build"), "cmd field: {text}");
+        assert!(text.contains("4m 12s"), "elapsed field: {text}");
+        assert!(text.contains("waiting on stdin"), "reason field: {text}");
+        assert!(text.contains("esc aborts"), "hint: {text}");
+    }
+
+    #[test]
+    fn liveliness_gate_fire_by_evidence() {
+        // 2026-11-13: animations never run without a real signal
+        let mut s = AppState::default();
+        assert!(!s.liveliness_active(), "fresh state has no evidence");
+        s.fire_target = 0.9;
+        s.apply_liveliness_gate();
+        assert_eq!(s.fire_target, 0.0, "stalled → flames die");
+
+        s.mark_activity();
+        assert!(s.liveliness_active(), "fresh signal is active");
+        s.fire_target = 0.7;
+        s.apply_liveliness_gate();
+        assert_eq!(s.fire_target, 0.7, "active → flames allowed");
+
+        // stale signal (11 s old) is stalled again
+        s.last_activity = Some(std::time::Instant::now() - std::time::Duration::from_secs(11));
+        assert!(!s.liveliness_active());
+        s.apply_liveliness_gate();
+        assert_eq!(s.fire_target, 0.0);
+    }
+
+    #[test]
+    fn liveliness_active_via_tool_cpu() {
+        let mut s = AppState::default();
+        s.tool_start(
+            Some("c"),
+            "bash",
+            &serde_json::json!({"command": "brievc build"}),
+        );
+        s.liveness_sampled_at = Some(std::time::Instant::now());
+        s.liveness_flat_secs = 0;
+        s.liveness_delta = 1.2;
+        s.last_activity = None;
+        assert!(s.liveliness_active(), "live tool CPU counts as evidence");
+        s.liveness_flat_secs = 120;
+        assert!(!s.liveliness_active(), "flat CPU for 120 s is a stall");
     }
 
     #[test]
@@ -4989,6 +5243,26 @@ fn subtree_cpu_secs(root: u32) -> Option<f64> {
         queue.extend(child_pids(pid));
     }
     Some(total)
+}
+
+fn watchdog_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("watchdog.json");
+    p
+}
+
+/// Facts are only trusted while fresh (2 min) — a stale card would claim
+/// a countdown for a watchdog that no longer watches.
+pub fn load_watchdog_doc() -> Option<WatchdogDoc> {
+    let raw = std::fs::read_to_string(watchdog_path()).ok()?;
+    let doc: WatchdogDoc = serde_json::from_str(&raw).ok()?;
+    let now = crate::tui::caduceus::now_ms();
+    if doc.version != 1 || now.saturating_sub(doc.ts) > 120_000 {
+        return None;
+    }
+    Some(doc)
 }
 
 fn answer_path() -> std::path::PathBuf {

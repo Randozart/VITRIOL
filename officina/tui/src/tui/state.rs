@@ -622,6 +622,13 @@ pub struct AppState {
     pub prompt_history: Vec<String>,
     pub history_idx: Option<usize>,
     pub history_draft: String,
+    /// Engine telemetry freshness: when the `engine-fire` widget stops
+    /// reporting (engine down / cloud lane), the flames derive from STREAM
+    /// deltas instead — so cloud-model turns animate too (2026-11-13).
+    pub engine_fire_seen: Option<std::time::Instant>,
+    /// Delta-driven heat accumulator (bumped per streamed delta, decayed
+    /// per animation step).
+    pub stream_heat: f64,
     /// Liveliness contract (2026-11-13): wall-clock of the last REAL
     /// signal (streamed text, tool events, agent start/end, prompt submit).
     /// Fire only burns while this is fresh — animations never lie.
@@ -827,6 +834,8 @@ impl Default for AppState {
             prompt_history: load_prompt_history(),
             history_idx: None,
             history_draft: String::new(),
+            engine_fire_seen: None,
+            stream_heat: 0.0,
             last_activity: None,
             liveness_cpu_total: 0.0,
             liveness_prev_total: 0.0,
@@ -2023,6 +2032,7 @@ impl AppState {
 
     /// Append a text delta to the last assistant entry (or open a new one).
     pub fn push_text_delta(&mut self, delta: &str) {
+        self.stream_heat = (self.stream_heat + 0.4).min(1.6);
         match self.entries.last_mut() {
             Some(ChatEntry::Assistant(t)) => t.push_str(delta),
             _ => self.entries.push(ChatEntry::Assistant(delta.to_string())),
@@ -2031,6 +2041,7 @@ impl AppState {
 
     /// Append a thinking delta to the last thinking entry (or open a new one).
     pub fn push_thinking_delta(&mut self, delta: &str) {
+        self.stream_heat = (self.stream_heat + 0.4).min(1.6);
         match self.entries.last_mut() {
             Some(ChatEntry::Thinking(t)) => t.push_str(delta),
             _ => self.entries.push(ChatEntry::Thinking(delta.to_string())),
@@ -2252,6 +2263,7 @@ impl AppState {
         if key == "engine-fire" {
             // Machine-readable load line from vitriol-decode: "FIRE 0.731".
             // Not sidebar content — the flames are the display.
+            self.engine_fire_seen = Some(std::time::Instant::now());
             for line in &lines {
                 let plain = strip_ansi(line);
                 if let Some(rest) = plain.strip_prefix("FIRE ") {
@@ -2446,6 +2458,18 @@ impl AppState {
     pub fn step_fire(&mut self, dt_secs: f64) {
         if !self.fire_on {
             self.fire_target = 0.0;
+        }
+        // Cloud/stream fallback (2026-11-13): when the engine-fire telemetry
+        // is stale or absent (engine down, cloud lane), the flames derive
+        // from STREAM deltas — they genuinely reflect token flow and decay
+        // when the stream stalls. Fresh engine telemetry always wins.
+        let engine_telemetry_fresh = self
+            .engine_fire_seen
+            .map(|t| t.elapsed().as_secs() < 15)
+            .unwrap_or(false);
+        if !engine_telemetry_fresh && self.is_streaming {
+            self.stream_heat *= (-dt_secs / 1.5).exp();
+            self.fire_target = (0.35 + 0.55 * self.stream_heat.min(1.0)).clamp(0.0, 1.0);
         }
         let k = 1.0 - (-dt_secs / 0.33).exp();
         self.fire_level += (self.fire_target - self.fire_level) * k;
@@ -4170,6 +4194,36 @@ mod tests {
         assert!(text.contains("4m 12s"), "elapsed field: {text}");
         assert!(text.contains("waiting on stdin"), "reason field: {text}");
         assert!(text.contains("esc aborts"), "hint: {text}");
+    }
+
+    #[test]
+    fn flames_derive_from_stream_when_engine_telemetry_absent() {
+        // 2026-11-13: cloud-lane turns (engine down) get honest flames from
+        // token flow — deltas burn, a stalled stream decays to nothing.
+        let mut s = AppState::default();
+        s.fire_on = true;
+        s.is_streaming = true;
+        s.mark_activity();
+        // no engine-fire telemetry ever seen → stream-derived
+        s.push_text_delta("token ");
+        s.step_fire(0.1);
+        assert!(s.fire_target > 0.3, "stream deltas burn: {}", s.fire_target);
+        // deltas stop → heat decays, target falls to the quiet floor
+        for _ in 0..12 {
+            s.step_fire(0.5);
+        }
+        assert!(
+            s.fire_target < 0.5,
+            "decayed after silence: {}",
+            s.fire_target
+        );
+        // fresh engine telemetry takes precedence over the stream fallback:
+        // step_fire must not touch the telemetry-driven target
+        s.set_widget("engine-fire", vec!["FIRE 0.9".to_string()]);
+        s.stream_heat = 1.5;
+        s.fire_target = 0.9;
+        s.step_fire(0.1);
+        assert_eq!(s.fire_target, 0.9, "telemetry wins when fresh");
     }
 
     #[test]

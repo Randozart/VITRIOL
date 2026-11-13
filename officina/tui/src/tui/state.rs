@@ -2661,16 +2661,39 @@ impl AppState {
                 ChatEntry::Thinking(text) => {
                     if self.hide_thinking {
                         let n = text.chars().count();
+                        // Liveliness (2026-11-13): while this block is the
+                        // live tail and the session is streaming, the marker
+                        // animates — visible proof the model is thinking,
+                        // even with the text hidden and on any lane.
+                        let growing = self.is_streaming && idx + 1 == total;
+                        let spinner = if growing {
+                            let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+                            let f =
+                                (self.started.elapsed().as_millis() / 120) as usize % frames.len();
+                            format!("{} ", frames[f])
+                        } else {
+                            String::new()
+                        };
+                        let count_style = if growing {
+                            Style::default().fg(theme::GOLD)
+                        } else {
+                            Style::default().fg(theme::MUTED)
+                        };
+                        let label = if growing {
+                            "thinking…"
+                        } else {
+                            "thinking hidden"
+                        };
                         lines.push(Line::from(Span::styled(
                             format!(
-                                "  ·    thinking hidden ({}) — /thinking-view show",
+                                "  ·    {spinner}{label} ({}) — /thinking-view show",
                                 if n >= 1000 {
                                     format!("{:.1}k chars", n as f64 / 1000.0)
                                 } else {
                                     format!("{n} chars")
                                 }
                             ),
-                            Style::default().fg(theme::MUTED),
+                            count_style,
                         )));
                         continue;
                     }

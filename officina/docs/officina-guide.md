@@ -8,6 +8,15 @@
 
 - **The prompt**: `┌──(☿ ALKA)-[model: …]-[context: …]-[drift: …]` then
   `└───> `. Telemetry blocks are toggled in `~/.vitriol/officina.toml`.
+- **Prompt history**: **↑/↓** step through earlier prompts (persisted at
+  `~/.vitriol/officina/input-history.jsonl`); stepping past the newest
+  entry restores your in-progress draft.
+- **Agent modes**: TAB cycles **BUILD → INQUIRE → PLAN**. INQUIRE answers
+  and steers without stopping the work — its replies land in `/answers`
+  (scrollable panel, also pinged after each turn). PLAN is research-only
+  (`*.md` writes); BUILD unlocks writes.
+- **Clarifying questions**: the model's question tool opens a real modal
+  (options + "Type something." free text) in every agent mode.
 - **Model lanes** (`/model`): `officina/lapis` ("Lapis Occultus") is the
   local-first resilient default; `officina/nimbus` is the **cloud-only**
   lane — every turn routes to the best verified-FREE cloud model, the

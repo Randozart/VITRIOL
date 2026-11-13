@@ -2,6 +2,7 @@ pub mod ansi;
 pub mod cache;
 pub mod caduceus;
 pub mod cost;
+pub mod crashlog;
 pub mod engine_config;
 pub mod janitor;
 pub mod layout;
@@ -52,6 +53,15 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     load_glimmer(&mut state);
     load_fire(&mut state);
     load_tools_config(&mut state);
+    // Crash black-box: the hook reads the diag ring via the shared global
+    // (registered inside DiagLog::new), so install order does not matter.
+    crate::tui::crashlog::install(bridge.diag.clone());
+    if let Some(line) = crate::tui::crashlog::crash_since_clean_exit() {
+        state.notice = Some((
+            format!("previous run crashed — {line} · /diag last"),
+            "warning".into(),
+        ));
+    }
     if let Some((count, bytes)) = crate::tui::janitor::auto_run() {
         state.notice = Some((
             format!(
@@ -1547,7 +1557,9 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         // desktops reserve it, /quit always works). MUST precede the plain
         // Esc arm or the guard never fires.
         KeyCode::Esc if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            graceful_quit(state, bridge).await;
+            if state.quit_may_proceed() {
+                graceful_quit(state, bridge).await;
+            }
         }
         KeyCode::Esc => {
             if state.is_streaming {
@@ -1995,7 +2007,27 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             // Local fixed commands.
             match msg.as_str() {
                 "/quit" | "/q" => {
-                    graceful_quit(state, bridge).await;
+                    if state.quit_may_proceed() {
+                        graceful_quit(state, bridge).await;
+                    }
+                    return;
+                }
+                "/diag last" => {
+                    let path = crate::tui::crashlog::crash_log_path();
+                    match std::fs::read_to_string(&path) {
+                        Ok(text) => {
+                            let lines: Vec<&str> = text.lines().collect();
+                            let tail = lines.len().saturating_sub(20);
+                            for line in &lines[tail..] {
+                                state
+                                    .entries
+                                    .push(state::ChatEntry::Diag((*line).to_string()));
+                            }
+                        }
+                        Err(_) => state
+                            .entries
+                            .push(state::ChatEntry::Diag("no crash log".into())),
+                    }
                     return;
                 }
                 "/diag" => {
@@ -2355,6 +2387,8 @@ fn env_secs(name: &str, default: u64) -> u64 {
 /// session before the TUI exits. Killing the child mid-tool is what created
 /// dangling tool calls and corrupted long sessions.
 async fn graceful_quit(state: &mut AppState, bridge: &mut RpcBridge) {
+    // Deliberate quit: the black-box knows this was not a crash.
+    crate::tui::crashlog::stamp_clean_exit();
     // Resolve extension dialogs before abort. A pending confirm/select is a
     // promise inside pi's beforeToolCall; leaving it unanswered while the
     // child is torn down is how dangling tool calls were born.

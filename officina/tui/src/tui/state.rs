@@ -597,6 +597,9 @@ pub struct AppState {
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
     pub cost: Option<crate::tui::cost::CostReport>,
+    /// Safe-quit arm (2026-11-13): when a turn/tool is in flight, the first
+    /// quit press arms a 5 s confirm window instead of killing the work.
+    pub quit_armed_at: Option<std::time::Instant>,
     /// Thinking display (2026-11-13): hide thinking blocks behind a collapsed
     /// marker line; persisted at ~/.vitriol/officina/tui-thinking.
     pub hide_thinking: bool,
@@ -811,6 +814,7 @@ impl Default for AppState {
             review_sel: 0,
             cost_open: false,
             cost: None,
+            quit_armed_at: None,
             hide_thinking: load_hide_thinking(),
             watchdog: None,
             watchdog_file: None,
@@ -1563,6 +1567,32 @@ impl AppState {
         if mtime.is_some() && mtime != self.answers_mtime_seen {
             self.answers_mtime_seen = mtime;
             self.notice = Some(("answer ready — /answers".into(), "info".into()));
+        }
+    }
+
+    /// Safe quit (2026-11-13): returns true when quitting may proceed.
+    /// While a turn streams or a tool runs, the first press arms a 5 s
+    /// confirm window; idle quits proceed immediately (I2).
+    pub fn quit_may_proceed(&mut self) -> bool {
+        let busy = self.is_streaming || self.has_running_tool();
+        if !busy {
+            self.quit_armed_at = None;
+            return true;
+        }
+        let now = std::time::Instant::now();
+        match self.quit_armed_at {
+            Some(t) if now.duration_since(t).as_secs() < 5 => {
+                self.quit_armed_at = None;
+                true
+            }
+            _ => {
+                self.quit_armed_at = Some(now);
+                self.notice = Some((
+                    "working — press again to quit anyway (esc waits)".into(),
+                    "warning".into(),
+                ));
+                false
+            }
         }
     }
 
@@ -4060,6 +4090,30 @@ mod tests {
             .join("\n");
         assert!(text.contains("watch"), "watchdog label: {text}");
         assert!(text.contains("no output for 61s"));
+    }
+
+    #[test]
+    fn quit_guard_arms_only_when_busy() {
+        // 2026-11-13: restart-mid-turn manufactured session patches — the
+        // guard makes that a deliberate two-press decision instead.
+        let mut s = AppState::default();
+        // idle: proceeds immediately
+        assert!(s.quit_may_proceed());
+        // busy + not armed: first press arms, does not proceed
+        s.is_streaming = true;
+        assert!(!s.quit_may_proceed());
+        assert!(s.quit_armed_at.is_some(), "armed");
+        // second press inside the 5 s window: proceeds, disarms
+        assert!(s.quit_may_proceed());
+        assert!(s.quit_armed_at.is_none());
+        // re-arm then let the window expire (>5 s): still blocked
+        assert!(!s.quit_may_proceed());
+        s.quit_armed_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(6));
+        assert!(!s.quit_may_proceed(), "expired arm re-arms");
+        // not streaming anymore: proceeds and disarms
+        s.is_streaming = false;
+        assert!(s.quit_may_proceed());
+        assert!(s.quit_armed_at.is_none());
     }
 
     #[test]

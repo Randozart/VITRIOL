@@ -28,6 +28,20 @@ enum Cli {
         /// Optional file to read for storage bandwidth (the real GGUF).
         #[arg(long)]
         model: Option<String>,
+    },    /// llama-bench load grid: throughput vs ubatch on a model-load-light
+    /// GGUF (engine test model or synthetic). Runs llama-bench per combo,
+    /// writes a fingerprinted JSON report.
+    ProbeLoad {
+        #[arg(long, default_value = "/home/randozart/Desktop/Projects/VITRIOL/engine/tools/server/tests/tmp/models--ggml-org--test-model-stories260K/snapshots/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf")]
+        model: String,
+        #[arg(long)]
+        also: Vec<String>,
+        #[arg(long, default_value = "64,128,256")]
+        ubatch: String,
+        #[arg(long, default_value = "512")]
+        prompt: String,
+        #[arg(long, default_value = "64")]
+        gen: String,
     },
 }
 
@@ -95,6 +109,79 @@ fn main() -> anyhow::Result<()> {
             std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
             println!("report: {}", path.display());
         }
+        Cli::ProbeLoad { model, also, ubatch, prompt, gen } => {
+            let bench = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join("Desktop/Projects/VITRIOL/engine/build/bin/llama-bench");
+            let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".vitriol")
+                .join("probes");
+            std::fs::create_dir_all(&dir)?;
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let mut report = serde_json::json!({
+                "argv": std::env::args().collect::<Vec<_>>(),
+                "grid": [],
+            });
+            let mut models = vec![model];
+            models.extend(also);
+            for m in &models {
+                for ub in ubatch.split(',') {
+                    let ub = ub.trim();
+                    let out = std::process::Command::new(&bench).args([
+                        "-m", m, "-p", prompt.trim(), "-n", gen.trim(),
+                        "-ub", ub, "-ngl", "99", "-ts", "27,21",
+                    ]).output();
+                    let Ok(o) = out else { continue };
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    let mut pp = None::<f64>;
+                    let mut tg = None::<f64>;
+                    for line in text.lines() {
+                        // robust row parse: the test cell names pp/tg; the t/s
+                        // cell is the LAST cell containing the ± marker
+                        if !line.contains("±") {
+                            continue;
+                        }
+                        let cells: Vec<&str> =
+                            line.split('|').map(|c| c.trim()).collect();
+                        let ts_cell = cells
+                            .iter()
+                            .filter(|c| c.contains("±"))
+                            .next_back()
+                            .copied()
+                            .unwrap_or("");
+                        let v = ts_cell
+                            .split_whitespace()
+                            .next()
+                            .and_then(|x| x.parse::<f64>().ok());
+                        if cells.iter().any(|c| c.starts_with(&format!("pp{}", prompt.trim()))) {
+                            pp = v;
+                        } else if cells.iter().any(|c| c.starts_with(&format!("tg{}", gen.trim()))) {
+                            tg = v;
+                        }
+                    }
+                    report["grid"].as_array_mut().unwrap().push(serde_json::json!({
+                        "model": std::path::Path::new(m)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy(),
+                        "ubatch": ub,
+                        "pp": pp,
+                        "tg": tg,
+                    }));
+                    println!(
+                        "{} ub={}: pp={:?} tg={:?}",
+                        std::path::Path::new(m).file_name().unwrap_or_default().to_string_lossy(),
+                        ub, pp, tg
+                    );
+                }
+            }
+            let path = dir.join(format!("probe-load-{stamp}.json"));
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("report: {}", path.display());
+        }
+
         Cli::Calibrate { quick: true, model } => {
             let path = std::path::Path::new(&model);
 

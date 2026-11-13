@@ -355,3 +355,65 @@ collapse to CUDA-only. Keep auto; revisit only with the streaming family.
 | E-kv.quant (K/V) | q4_0/q4_0 | tq3_0 on merged base; q4_0 blessed on BuffedMod | current ✓ |
 | E-spec.draft_n_max | 2 | 2 (2026-11-11 A/B) | current ✓ |
 | E-gpu.tensor_split | 27,21 | 27,21 (2026-09-28, lares off) | current ✓ |
+
+## Experiment protocols (drift audit, 2026-11-13)
+
+Each protocol: hypothesis · exact commands · pass/fail bar · rollback.
+Fingerprint discipline applies to every run (RESULT embeds argv; check the
+`VITRIOL-FINGERPRINT:` line — `spec=`, `ts=`, `cram=`, `ckpts=`, `cxr=`
+must match the arm you think you are running). Probe reports land in
+`~/.vitriol/probes/`.
+
+### E1 — ubatch 128 vs 64 (live drift candidate)
+Hypothesis: the blessed depth point was `-ub 64` (2026-09-04 cert); the
+live file carries 128. On the 3060 pair the difference should be small
+but measurable at depth.
+- Shallow: `vitriol probe load --ubatch 64,128` (load-light models —
+  ubatch curve only; expect pp to scale, tg roughly flat).
+- Depth: for each arm, restart via the unit with an edited profile and run
+  the 13K-depth check (3×64 decode at ≥13K filled) exactly as the 09-04
+  cert did; record t/s + filled tokens.
+- Pass/fail: ≥3% decode delta at depth in favour of one arm.
+- Rollback: the live profile is untouched; profiles exist for every
+  blessed point (`qwen38-buffedmod-208k` if external GPU tenants return).
+
+### E2 — adaptive_k (never A/B'd on BuffedMod)
+Hypothesis: acceptance-driven draft-length trim helps when acceptance
+decays at depth; hurts when acceptance is stable (11-11 A/B: 0.953 at
+n=2).
+- A/B at 42K and 130K filled depth: `[spec] adaptive_k = 0` vs `1`
+  (engine flag rides the fingerprint as `specak=1`).
+- Pass/fail: ≥5% decode delta at 130K with no acceptance-rate collapse
+  (log the per-position acceptance from the engine log).
+- Rollback: set `adaptive_k = 0`.
+
+### E3 — cache_reuse (rare-turn salvage)
+Hypothesis: the KV-shift salvage saves re-prefill on prompt-head
+divergence (mode switches, cancels).
+- Force one mode-switch turn and one cancel-after-long-prefill turn per
+  arm (`cache_reuse = 0` vs `256`); read the re-prefill token count from
+  the server log.
+- Pass/fail: ≥30% fewer re-prefilled tokens on the divergent turn with
+  identical output quality (spot-check the reply).
+- Rollback: `cache_reuse = 0`.
+
+### E4 — pin_first_n_layers (untested on BuffedMod)
+Hypothesis: expert pinning targets the fast MMVQ/MMQ path but the
+weights are already VRAM-resident at `vitriol.mode = off`; the win is
+unproven on IQ3_S_XL.
+- Sweep `pin_first_n_layers = 0,4,8` at shallow depth only (pin 8 costs
+  ~1.8 GiB VRAM — watch fit).
+- Pass/fail: ≥3% decode delta at pin 4 — anything else is noise.
+- Rollback: `0`.
+
+### Probe subsystem cheat-sheet
+```
+vitriol probe hardware                  # GPUs, RAM/zram/swap, store read BW
+vitriol probe load --ubatch 64,128,256  # ubatch throughput grid (load-light)
+vitriol probe recommend                 # derived-KV ladder + ranked config
+vitriol probe recommend --write-profile NAME   # opt-in profile file
+vitriol probe synth --model PATH --scale tiny|mid --out FILE  # shape-mirror GGUF
+```
+Labels: MEASURED numbers come from llama-bench runs; EXTRAPOLATED numbers
+come from the estimator + derived KV. Never mix them in a decision
+without saying which is which.

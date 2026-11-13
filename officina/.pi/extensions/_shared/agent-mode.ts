@@ -49,7 +49,7 @@ Plan mode has ended — you are allowed to modify files and run state-changing c
     name: "inquire",
     label: "INQUIRE",
     glyph: "?",
-    color: "mercury", // neutral steel: asks, does not act
+    color: "safety", // green: confirmations/steering are constructive, non-blocking
     hint: "answers & steering only · work keeps running · TAB / /agent build",
     directive: `AGENT MODE: INQUIRE (confirm & steer, do not act).
 Answer the user's question directly and concisely, and confirm or correct the current approach when asked. Do NOT start new work for this turn: no file modifications, no state-changing commands. If the request is really an instruction to change something, answer/piece the plan and tell the user to switch to BUILD (TAB). Keep answers short — full explanations go in the answer panel.`,

@@ -47,6 +47,7 @@ fn mode_chip(label: &str) -> Option<(&'static str, ratatui::style::Color)> {
     match label.to_ascii_uppercase().as_str() {
         "PLAN" => Some(("☽", theme::SILVER)),
         "BUILD" => Some(("☉", theme::GOLD)),
+        "INQUIRE" => Some(("?", theme::GREEN)),
         _ => None,
     }
 }

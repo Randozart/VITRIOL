@@ -303,7 +303,7 @@ the 09-28 point (+17% at 42.7K vs n=1); build/model-sensitive, re-certify
 after any model or MTP-engine change. n=4 loads but is not faster.
 Rollback: n=1 or 3.
 
-### E-spec.adaptive_k — `0`
+### E-spec.adaptive_k — `0` (E2 MEASURED 2026-11-13: keep)
 Acceptance-driven draft-length trim (shrink K when per-position acceptance
 drops; full-K re-exploration every 128 drafts; fingerprint `specak=1`).
 0 = fixed K. **Never A/B'd on BuffedMod** — experiment candidate E2:
@@ -349,7 +349,7 @@ collapse to CUDA-only. Keep auto; revisit only with the streaming family.
 | Entry | Live | Blessed/reference | Status |
 |---|---|---|---|
 | E-kv.ubatch_size | 128 | 64 (2026-09-04 depth cert) | **RESOLVED — keep 128 (E1 below)** |
-| E-spec.adaptive_k | 0 | never tested on BuffedMod | **E2 protocol** |
+| E-spec.adaptive_k | 0 | 0 kept (E2 measured 2026-11-13: +1.0% at 42K, under the 5% bar — n_max=2 leaves no trim room) | **RESOLVED — keep 0** |
 | E-server.cache_reuse | 0 | 256 on rebis builds | E3 protocol (rare turns) |
 | E-vitriol.pin_first_n_layers | 0 | untested on BuffedMod | E4 protocol |
 | E-kv.quant (K/V) | q4_0/q4_0 | tq3_0 on merged base; q4_0 blessed on BuffedMod | current ✓ |
@@ -444,3 +444,24 @@ build; ub64 regresses at the depth the operator actually works at. The
 live config already carries 128 — **no change needed**. Caveat: sparse
 KV/probe scoring were configured via env but inactive at these depths
 (no eviction below the 50% min-fill); both arms share that condition.
+
+## E2 result — adaptive_k 0 vs 1 (measured 2026-11-13)
+
+Harness: depth_cert (isolated :8299), ub 128, spec mtp:n2, 42K filled,
+identical fingerprints except `specak=`. Paired arms, 3x64 decode.
+
+| arm | adaptive_k | decode t/s mean (3 rounds) |
+|---|---|---|
+| ak0 | 0 | 22.30 |
+| ak1 | 1 | 22.52 |
+
+Delta: **+0.99% for ak1** — under the 5% adoption bar, within round
+variance (±2 t/s spread). Draft acceptance was IDENTICAL across arms
+(0.89 → 0.62 → 0.48 declining, deterministic stream) — the trim changes
+speculation cost, not generation. Root observation: with draft_n_max = 2
+the trim ceiling is a single token — nothing meaningful to trim. adaptive_k
+becomes interesting only at n_max >= 4, which this model rejects (n=4
+loads but is not faster; n=3 acceptance collapses per the 11-11 A/B).
+
+**Verdict**: keep `adaptive_k = 0`. Revisit only if draft_n_max ever
+exceeds 2.

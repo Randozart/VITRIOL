@@ -511,7 +511,7 @@ export default function (pi: ExtensionAPI) {
     lastDecision = null;
   });
 
-  pi.registerCommand("profile", {
+  pi.registerCommand("model-profile", {
     description: "Routing profile: auto | fast | deep | local",
     handler: async (args: string, ctx: { ui: any }) => {
       const raw = args.trim().toLowerCase();
@@ -527,7 +527,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("why", {
+  pi.registerCommand("route-why", {
     description: "Explain the last routing decision",
     handler: async (_args: string, ctx: { ui: any }) => {
       const last = lastRouteEntry();
@@ -542,7 +542,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("cost", {
+  pi.registerCommand("budget", {
     description: "Free token usage for today and this month",
     handler: async (_args: string, ctx: { ui: any }) => {
       const t = todaySummary();

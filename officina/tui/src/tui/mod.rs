@@ -1687,21 +1687,6 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             // Prompt history (2026-11-13): recallable via Up/Down.
             state.record_prompt_history(&msg);
             // /fire — pure-local UI state (composer flames); never RPC.
-            if msg == "/fire" || msg.starts_with("/fire ") {
-                let args = msg["/fire".len()..].trim();
-                let label = state.set_fire(args);
-                state.notice = Some((format!("fire: {}", label), "info".to_string()));
-                persist_fire(state);
-                return;
-            }
-            // /glimmer — pure-local UI state (watermark glimmer); never RPC.
-            if msg == "/glimmer" || msg.starts_with("/glimmer ") {
-                let args = msg["/glimmer".len()..].trim();
-                let label = state.set_glimmer(args);
-                state.notice = Some((format!("glimmer: {}", label), "info".to_string()));
-                persist_glimmer(state);
-                return;
-            }
             // /settings (alias /config) — consolidated UI settings.
             if msg.starts_with("/settings") || msg.starts_with("/config") {
                 let start = if msg.starts_with("/settings") {
@@ -1911,7 +1896,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             // then switches this TUI to it; never launches a nested
             // frontend). NOT /import: session-panel owns /import for
             // task/scratchpad state.
-            if msg == "/opencode" || msg.starts_with("/opencode ") {
+            if msg == "/import-opencode" || msg.starts_with("/import-opencode ") {
                 let args = msg
                     .strip_prefix("/opencode")
                     .unwrap_or("")

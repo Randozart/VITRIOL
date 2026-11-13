@@ -308,7 +308,7 @@ async function fetchActiveProviders(baseUrl: string): Promise<Set<string> | null
   if (!existsSync(VENDOR_API_MODULE)) return null;
   try {
     const mod = await import(pathToFileURL(VENDOR_API_MODULE).href);
-    const res = await mod.apiFetch("/api/providers?limit=5000", {
+    const res = await mod.apiFetch("/api/provider-health?limit=5000", {
       baseUrl: new URL(baseUrl).origin,
       timeout: 5_000,
     });
@@ -334,7 +334,7 @@ async function fetchConnectionBuckets(
   if (!existsSync(VENDOR_API_MODULE)) return null;
   try {
     const mod = await import(pathToFileURL(VENDOR_API_MODULE).href);
-    const res = await mod.apiFetch("/api/providers?limit=5000", {
+    const res = await mod.apiFetch("/api/provider-health?limit=5000", {
       baseUrl: new URL(baseUrl).origin,
       timeout: 5_000,
     });
@@ -584,7 +584,7 @@ export default async function (pi: ExtensionAPI) {
       });
   }
 
-  pi.registerCommand("keys", {
+  pi.registerCommand("provider-keys", {
     description: "Show configured provider keys (masked)",
     handler: async (_args: string, ctx: { ui: any }) => {
       const rows = readKeyRows();
@@ -597,7 +597,7 @@ export default async function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("providers", {
+  pi.registerCommand("provider-health", {
     description: "Show provider health and cooling lanes",
     handler: async (_args: string, ctx: { ui: any }) => {
       const rows = readKeyRows();
@@ -610,16 +610,16 @@ export default async function (pi: ExtensionAPI) {
   });
 
   // Quick key add (2026-11-12, panel stage 4): invoked by the TUI's `a` key
-  // as `/caduceus-add <provider>`. Writes the env key, enables the account,
+  // as `/provider-add <provider>`. Writes the env key, enables the account,
   // pushes it to the gateway, and refreshes the state file. The key is
   // visible while typing (pi has no password mode) — the wizard
   // (`vitriol caduceus signup --only <id>`) is the hidden alternative.
-  pi.registerCommand("caduceus-add", {
+  pi.registerCommand("provider-add", {
     description: "Add a provider API key (env + accounts + sync)",
     handler: async (args: string, ctx: { ui: any }) => {
       const provider = String(args ?? "").trim().toLowerCase();
       if (!provider) {
-        await ctx.ui.notify?.("usage: /caduceus-add <provider>", "warning");
+        await ctx.ui.notify?.("usage: /provider-add <provider>", "warning");
         return;
       }
       const account = readAccountsDoc(officinaDir).accounts.find(

@@ -562,29 +562,9 @@ export default function (pi: ExtensionAPI) {
     renderStatus(ctx, getEngineSnapshot().queueWaitMs);
   });
 
-  pi.registerCommand("overflow-catalog", {
-    description: "List Caduceus free/tool-capable overflow candidates and cooldowns",
-    handler: async (_args: string, ctx: { ui: any }) => {
-      await resolveModels(ctx as unknown as ExtensionContext);
-      if (cloudCandidates.length === 0) {
-        await ctx.ui.notify?.("overflow: no cloud candidates (catalog/key missing?)", "warning");
-        return;
-      }
-      const now = Date.now();
-      const lines = cloudCandidates.map((m, i) => {
-        const until = Math.max(
-          coolingUntil.get(cloudKey(m)) ?? 0,
-          coolingUntil.get(ownerKey(m)) ?? 0,
-        );
-        const cool = until > now ? ` · cool ${Math.ceil((until - now) / 60_000)}m` : "";
-        return `${i + 1}. ${m.id} · ctx ${Math.round((m.contextWindow ?? 0) / 1000)}k${cool}`;
-      });
-      await ctx.ui.notify?.(`overflow candidates:\n${lines.join("\n")}`, "info");
-    },
-  });
 
-  pi.registerCommand("overflow", {
-    description: "Overflow routing: show status, or /overflow on|off",
+  pi.registerCommand("route-overflow", {
+    description: "Overflow routing: show status, or /route-overflow on|off",
     handler: async (args: string, ctx: { ui: any }) => {
       const a = args.trim().toLowerCase();
       if (a === "on" || a === "off") {

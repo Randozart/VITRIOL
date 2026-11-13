@@ -643,13 +643,6 @@ export default function (pi: ExtensionAPI) {
     renderSidebar();
   });
 
-  pi.registerCommand("panel", {
-    description: "Toggle the session panel (coupling, folder, tokens, files)",
-    handler: async () => {
-      visible = !visible;
-      renderSidebar();
-    },
-  });
 
   // ── /history — full transcript, scrollable modal overlay ─────────────
   const ESC = "\x1b";
@@ -722,7 +715,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ── /import — pull another session's tasks + scratchpad into this one ───
-  pi.registerCommand("import", {
+  pi.registerCommand("import-tasks", {
     description: "Import tasks and scratchpad from another session (/import or /import <stem>)",
     handler: async (args: string, ctx: { ui: any; sessionManager: any; mode?: string }) => {
       const tasksDir = join(cwd, ".officina", "tasks");

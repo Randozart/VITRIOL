@@ -261,7 +261,7 @@ export default function (pi: ExtensionAPI) {
   registerPhaseCommand(pi, "plan");
   registerPhaseCommand(pi, "action");
 
-  pi.registerCommand("model-handover", {
+  pi.registerCommand("model-phase", {
     description: "Switch models automatically between phases, or leave it to you (auto|manual)",
     getArgumentCompletions: (prefix: string) => {
       const items = ["auto", "manual"]
@@ -291,7 +291,7 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("phase-models", {
+  pi.registerCommand("model-phases", {
     description: "Show the plan/action model tags and handover mode",
     handler: async (_args: string, ctx: any) => {
       ensureLoaded();

@@ -75,8 +75,8 @@ Check what is actually configured:
     vitriol caduceus preflight         # local/gateway/keys/keepalive/cooling
     vitriol caduceus stats --today     # route/token usage
 
-In the TUI: `/profile auto|fast|deep|local`, `/why`, `/free`, `/cost`,
-`/keys`, `/providers`.
+In the TUI: `/model-profile auto|fast|deep|local`, `/route-why`, `/free`,
+`/cost` (ledger) or `/budget` (usage), `/provider-keys`, `/provider-health`.
 
 Session safety:
 ```bash

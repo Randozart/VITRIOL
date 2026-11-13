@@ -12,8 +12,8 @@ import { LAPIS, loadCouplings, providerTagOf, type CouplingDef } from "../_share
 // again. Groundwork for a built-in ascensus (euro-capped cloud escalation)
 // tool: an ascensus coupling in couplings.json is already all it takes.
 //
-// Couplings file: ~/.vitriol/officina/couplings.json (shape:
-// officina/couplings.example.json). Kill switch: OFFICINA_COUPLING=0.
+// Couplings file: ~/.vitriol/officina/model-swaps.json (shape:
+// officina/model-swaps.example.json). Kill switch: OFFICINA_COUPLING=0.
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_COUPLING === "0") return; // Rule 15
@@ -37,9 +37,9 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
-  pi.registerCommand("coupling", {
+  pi.registerCommand("model-swap", {
     description:
-      "Show couplings, or hot-swap: /coupling <id> (default: lapis-occultus = whatever VITRIOL is serving)",
+      "Show couplings, or hot-swap: /model-swap <id> (default: lapis-occultus = whatever VITRIOL is serving)",
     handler: async (args: string, ctx: { ui: any; modelRegistry: any; model?: { provider?: string } }) => {
       const wanted = args.trim();
       const lines: string[] = [`◈ ${LAPIS.name} (default)`];
@@ -56,7 +56,7 @@ export default function (pi: ExtensionAPI) {
             : (couplings.find((c) => providerTagOf(c) === currentProvider)?.name ?? currentProvider);
         lines.push("");
         lines.push(`current: ${current}`);
-        lines.push(`switch:  /coupling ${couplings[0]?.id ?? "<id>"}`);
+        lines.push(`switch:  /model-swap ${couplings[0]?.id ?? "<id>"}`);
         await ctx.ui.select(lines.join("\n"), couplings.map((c) => c.id).concat(["__stay__"]))
           .catch(() => undefined);
         return;
@@ -81,7 +81,7 @@ export default function (pi: ExtensionAPI) {
 
       const def = couplings.find((c) => c.id === wanted);
       if (!def) {
-        await ctx.ui.notify?.(`unknown coupling '${wanted}' — /coupling lists them`, "error");
+        await ctx.ui.notify?.(`unknown coupling '${wanted}' — /model-swap lists them`, "error");
         return;
       }
       const model = ctx.modelRegistry.find(providerTagOf(def), def.models[0]!.id);

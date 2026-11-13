@@ -199,7 +199,7 @@ describe("manual latch", () => {
     expect(setModel).toHaveBeenCalledTimes(1); // unchanged
   });
 
-  it("/overflow on re-arms auto routing after a manual pick", async () => {
+  it("/route-overflow on re-arms auto routing after a manual pick", async () => {
     const h = harness();
     busy.current = false; // pick a manual model while LOCAL and idle
     await h.start();
@@ -208,7 +208,7 @@ describe("manual latch", () => {
     busy.current = true;
     await h.start(); // contention — but manual pauses the spill
     expect(setModel).not.toHaveBeenCalled();
-    await h.command("overflow", "on");
+    await h.command("route-overflow", "on");
     await h.start(); // re-armed: busy local spills to cloud now
     expect(setModel).toHaveBeenCalledTimes(1);
     expect(setModel.mock.calls[0][0]).toMatchObject({ provider: "caduceus" });

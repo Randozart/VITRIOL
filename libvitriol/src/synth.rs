@@ -372,8 +372,6 @@ pub fn write_synthetic(path: &Path, spec: &SynthSpec) -> Result<u64> {
         }
         kv_count += 1;
     }
-    // MTP/nextn layer count — also how gguf.rs detects has_mtp.
-    kv_u32_c!(&format!("{}.nextn_predict_layers", spec.arch), 1);
     let toks = vocab_tokens(spec.vocab);
     kv_str_c!("tokenizer.ggml.model", "gpt2");
     {
@@ -508,7 +506,7 @@ mod exec_tests {
     #[test]
     fn write_executes_fast_and_reads_back() {
         let spec = SynthSpec {
-            arch: "qwen35".into(),
+            arch: "llama".into(),
             name: "synth-test".into(),
             layers: 2,
             n_embd: 256,
@@ -537,8 +535,11 @@ mod exec_tests {
         );
         println!("READ START");
         let mi = crate::gguf::read_gguf(&path).expect("reads back");
-        println!("READ OK");
-        assert_eq!(mi.architecture, "qwen35");
+        // Plain llama arch: NO nextn/MTP metadata — a nextn_predict_layers
+        // key made the engine expect an extra 9-tensor MTP layer and reject
+        // the file (75-vs-66 loader mismatch, 2026-11-13).
+        assert!(!mi.has_mtp, "llama synth must not advertise MTP layers");
+        assert_eq!(mi.architecture, "llama");
         assert_eq!(mi.block_count, 2);
         assert_eq!(mi.embedding_length, 256);
         assert_eq!(mi.expert_count, 4);

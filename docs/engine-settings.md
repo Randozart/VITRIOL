@@ -262,7 +262,7 @@ Keep the system prompt static to avoid re-prefixing. Off: the TUI's
 preservation layer (scratchpad/task tails re-injection) mutates the
 system prompt each turn anyway; freezing would fight it.
 
-### E-kv.ubatch_size — `128`
+### E-kv.ubatch_size — `128` (E1 MEASURED 2026-11-13: keep)
 Physical batch for prompt processing; lower = smaller compute buffers
 (VRAM). **DRIFT FLAG**: the AGENTS working-config line says `-ub 64`
 (blessed 2026-09-04 depth cert); the live file says 128. The 09-28
@@ -348,7 +348,7 @@ collapse to CUDA-only. Keep auto; revisit only with the streaming family.
 
 | Entry | Live | Blessed/reference | Status |
 |---|---|---|---|
-| E-kv.ubatch_size | 128 | 64 (2026-09-04 depth cert) | **E1 protocol** |
+| E-kv.ubatch_size | 128 | 64 (2026-09-04 depth cert) | **RESOLVED — keep 128 (E1 below)** |
 | E-spec.adaptive_k | 0 | never tested on BuffedMod | **E2 protocol** |
 | E-server.cache_reuse | 0 | 256 on rebis builds | E3 protocol (rare turns) |
 | E-vitriol.pin_first_n_layers | 0 | untested on BuffedMod | E4 protocol |
@@ -417,3 +417,30 @@ vitriol probe synth --model PATH --scale tiny|mid --out FILE  # shape-mirror GGU
 Labels: MEASURED numbers come from llama-bench runs; EXTRAPOLATED numbers
 come from the estimator + derived KV. Never mix them in a decision
 without saying which is which.
+
+## E1 result — ubatch 64 vs 128 (measured 2026-11-13)
+
+Harness: `scripts/depth_cert.py` (repaired: engine binary path, `--spec-n`
+passthrough), isolated server on :8299, live GGUF, `--window 262144
+--ts 27,21 --kv q4_0/q4_0 --cache-ram 8192 --ckpts 4 --mode off
+--spec mtp:n2`. Arms differ ONLY in `ub=` (fingerprint-verified). Decode =
+3x64 greedy at depth; `filled` = tokens_evaluated.
+
+| arm | ub | filled | decode t/s (mean of 3) |
+|---|---|---|---|
+| shallow | 128 | 290 | 23.33 |
+| shallow | 64 | 290 | 23.48 |
+| 13K | 128 | 13,075 | 22.77 |
+| 13K | 64 | 13,075 | 22.56 |
+| 42K | 128 | 42,175 | 21.27 |
+| 42K | 64 | 42,175 | 20.23 |
+
+Deltas (128 vs 64): shallow -0.6% · 13K +0.9% · **42K +5.1% (128
+faster)**. Paired per-round at 42K, 128 won every round (+2.1, +0.8,
++0.2 t/s).
+
+**Verdict**: keep ubatch **128**. The "blessed ub64" line predates this
+build; ub64 regresses at the depth the operator actually works at. The
+live config already carries 128 — **no change needed**. Caveat: sparse
+KV/probe scoring were configured via env but inactive at these depths
+(no eviction below the 50% min-fill); both arms share that condition.

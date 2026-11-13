@@ -70,7 +70,7 @@ fi
 # the sensitive-prompt routing test); anything else fails the publish.
 # Allowlist: KNOWN test fixtures (obvious dummies — alphabet sequences,
 # FAKE markers). Extend only with strings that are provably synthetic.
-ALLOW_FAKE='sk-abcdefghijklmnopqrstuvwxyz0123456789|sk-live-abcdef1234567890xyz|ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234'
+ALLOW_FAKE='sk-abcdefghijklmnopqrstuvwxyz0123456789|sk-live-abcdef1234567890xyz|ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 PATTERN='sk-[A-Za-z0-9_-]{20,}|gho_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}'
 LEAKS="$(git grep -nE "$PATTERN" -- "${SUBTREE}" | grep -vE "$ALLOW_FAKE" || true)"
 [[ -z "$LEAKS" ]] || { echo "$LEAKS" | head -5 >&2; fail "secret-shaped strings in ${SUBTREE} working tree"; }

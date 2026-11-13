@@ -2432,6 +2432,40 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         "  config     your live daily driver (unit as-is; `vitriol config load <profile>` outside the TUI)",
                         Style::new().fg(theme::MUTED).bg(theme::PANEL),
                     )));
+                lines.push(Line::from(Span::styled(
+                    "  ── config view (read-only · j/k scroll · docs/engine-settings.md) ──",
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                )));
+                match page.config.as_ref() {
+                    Some(rows) => {
+                        let start = page.config_scroll.min(rows.len());
+                        for r in rows.iter().skip(start) {
+                            let val_st = if r.risk {
+                                Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+                            } else {
+                                Style::new().fg(theme::TEXT).bg(theme::PANEL)
+                            };
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    format!(
+                                        "  {:<24} {:<14}",
+                                        trunc(&r.label(), 24),
+                                        trunc(&r.value, 14)
+                                    ),
+                                    val_st,
+                                ),
+                                Span::styled(
+                                    trunc(r.explain, inner.width.saturating_sub(44) as usize),
+                                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                                ),
+                            ]));
+                        }
+                    }
+                    None => lines.push(Line::from(Span::styled(
+                        "  config not readable (~/.vitriol/config)",
+                        Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                    ))),
+                }
             }
             None => {
                 lines.push(Line::from(Span::styled(

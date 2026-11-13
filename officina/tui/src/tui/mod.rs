@@ -2,6 +2,7 @@ pub mod ansi;
 pub mod cache;
 pub mod caduceus;
 pub mod cost;
+pub mod engine_config;
 pub mod layout;
 pub mod paste;
 pub mod review;
@@ -862,10 +863,34 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
                     page.set_tab(tab);
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => page.move_sel(-1),
-            KeyCode::Down | KeyCode::Char('j') => page.move_sel(1),
-            KeyCode::PageUp => page.move_sel(-10),
-            KeyCode::PageDown => page.move_sel(10),
+            KeyCode::Up | KeyCode::Char('k') => {
+                if page.tab == Tab::Vitriol {
+                    page.config_scroll = page.config_scroll.saturating_sub(1);
+                } else {
+                    page.move_sel(-1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if page.tab == Tab::Vitriol {
+                    page.config_scroll += 1;
+                } else {
+                    page.move_sel(1);
+                }
+            }
+            KeyCode::PageUp => {
+                if page.tab == Tab::Vitriol {
+                    page.config_scroll = page.config_scroll.saturating_sub(10);
+                } else {
+                    page.move_sel(-10);
+                }
+            }
+            KeyCode::PageDown => {
+                if page.tab == Tab::Vitriol {
+                    page.config_scroll += 10;
+                } else {
+                    page.move_sel(10);
+                }
+            }
             KeyCode::Home | KeyCode::Char('g') => page.sel = 0,
             KeyCode::End | KeyCode::Char('G') => {
                 page.sel = page.row_count().saturating_sub(1);

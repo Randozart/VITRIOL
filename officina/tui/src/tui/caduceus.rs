@@ -448,6 +448,10 @@ pub struct Page {
     /// confirmation for stop/restart — they interrupt active turns).
     pub engine: Option<EngineInfo>,
     pub engine_arm: Option<&'static str>,
+    /// Vitriol tab: the live config with one-line explanations (stage 6).
+    /// Read-only; loaded on open/reload/tab entry.
+    pub config: Option<Vec<crate::tui::engine_config::ConfigRow>>,
+    pub config_scroll: usize,
 }
 
 impl Default for Page {
@@ -465,6 +469,8 @@ impl Default for Page {
             note: None,
             engine: None,
             engine_arm: None,
+            config: None,
+            config_scroll: 0,
         }
     }
 }
@@ -479,6 +485,7 @@ impl Page {
             prefs,
             note,
             engine: Some(probe_engine()),
+            config: crate::tui::engine_config::load(),
             ..Self::default()
         }
     }
@@ -487,6 +494,8 @@ impl Page {
     pub fn reload(&mut self) {
         self.state = load();
         self.engine = Some(probe_engine());
+        self.config = crate::tui::engine_config::load();
+        self.config_scroll = 0;
         let (prefs, note) = load_prefs_at(&self.prefs_file);
         self.prefs = prefs;
         self.note = note;
@@ -582,8 +591,13 @@ impl Page {
             self.sel = 0;
             self.detail = false;
             self.engine_arm = None;
-            if tab == Tab::Vitriol && self.engine.is_none() {
-                self.engine = Some(probe_engine());
+            if tab == Tab::Vitriol {
+                if self.engine.is_none() {
+                    self.engine = Some(probe_engine());
+                }
+                if self.config.is_none() {
+                    self.config = crate::tui::engine_config::load();
+                }
             }
         }
     }

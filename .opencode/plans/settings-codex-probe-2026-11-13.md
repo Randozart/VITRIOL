@@ -1,7 +1,22 @@
 # Settings codex + vitriol probe subsystem
 
 - Date: 2026-11-13
-- Status: in progress (stages 1–6)
+- Status: implemented 2026-11-13 — stages 1–6 landed.
+  - Stage 1 (d3ceb3c): docs/engine-settings.md, full live-key coverage verified.
+  - Stage 2 (e6fe616): synth generator + hardware/storage probes. Synth
+    llama-bench loadability: TODO (header parses; loader-side tensor-count
+    mismatch remains; probe load uses the engine's tiny test models).
+    Bugs caught by tests along the way: missing kv_count, wrong GGML type
+    ids, attention.* key names, Q8_0 block alignment, infinite pad loop,
+    order-dependent metadata extraction.
+  - Stage 3 (d6bef34): probe load grid via llama-bench (measured numbers).
+  - Stage 4 (ef3d05d): probe recommend with KV derived from the tensor
+    catalog — 19.12 KiB/token, matching the AGENTS certification exactly;
+    opt-in profile write.
+  - Stage 5 (de6b9ab): drift protocols E1–E4 in the codex.
+  - Stage 6: TUI Config view in the Vitriol tab (read-only, dictionary
+    coverage test over tests/fixtures/vitriol-config-keys.txt), rebuilt +
+    installed.
 - Origin: operator observation — the daily driver works but the settings
   are opaque and there is no information anywhere to judge better values.
   Decisions: everything lands in default VITRIOL; probe tools are

@@ -2219,6 +2219,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         ),
         Tab::Health => "gateway · catalog · budget · connections".to_string(),
         Tab::Policy => "policy — space toggles · +/- adjusts".to_string(),
+        Tab::Vitriol => "engine · vitriol-server.service".to_string(),
     };
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
@@ -2376,6 +2377,69 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 )));
             }
         },
+        Tab::Vitriol => match page.engine.as_ref() {
+            Some(e) => {
+                let state_st = match e.state.as_str() {
+                    "active" => Style::new().fg(theme::GREEN).bg(theme::PANEL),
+                    "inactive" => Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    _ => Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "  unit       ",
+                        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    ),
+                    Span::styled(
+                        "vitriol-server.service",
+                        Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                    ),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "  state      ",
+                        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    ),
+                    Span::styled(
+                        format!(
+                            "{}{}{}",
+                            e.state,
+                            if e.pid.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" (pid {})", e.pid)
+                            },
+                            if e.since.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" · since {}", e.since)
+                            }
+                        ),
+                        state_st,
+                    ),
+                ]));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  last log   {}",
+                        trunc(&e.last_log, inner.width.saturating_sub(14) as usize)
+                    ),
+                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                )));
+                lines.push(Line::from(Span::styled(
+                        "  controls   S start · X stop · R restart (press twice to confirm) · r re-sample",
+                        Style::new().fg(theme::GOLD).bg(theme::PANEL),
+                    )));
+                lines.push(Line::from(Span::styled(
+                        "  config     your live daily driver (unit as-is; `vitriol config load <profile>` outside the TUI)",
+                        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    )));
+            }
+            None => {
+                lines.push(Line::from(Span::styled(
+                    "  engine facts not sampled yet — press r",
+                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                )));
+            }
+        },
         Tab::Policy => {
             for (idx, row) in page.policy_rows().iter().enumerate() {
                 let selected = idx == page.sel;
@@ -2521,6 +2585,15 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         footer.push(Line::from(Span::styled(
             format!("  /{}_", page.filter),
             Style::new().fg(theme::GOLD).bg(theme::PANEL),
+        )));
+    } else if let Some(arm) = page.engine_arm.as_ref() {
+        footer.push(Line::from(Span::styled(
+            format!(
+                "  ARMED: press {} again to confirm engine {} (any other key cancels)",
+                arm.chars().next().unwrap_or('?').to_string(),
+                arm
+            ),
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
         )));
     } else if let Some(note) = page.note.as_ref() {
         let style = if note.contains("ignored") || note.contains("failed") {

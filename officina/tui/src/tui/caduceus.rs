@@ -292,10 +292,17 @@ pub enum Tab {
     Models,
     Health,
     Policy,
+    Vitriol,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Providers, Tab::Models, Tab::Health, Tab::Policy];
+    pub const ALL: [Tab; 5] = [
+        Tab::Providers,
+        Tab::Models,
+        Tab::Health,
+        Tab::Policy,
+        Tab::Vitriol,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -303,6 +310,7 @@ impl Tab {
             Tab::Models => "Models",
             Tab::Health => "Health",
             Tab::Policy => "Policy",
+            Tab::Vitriol => "Vitriol",
         }
     }
 
@@ -311,16 +319,18 @@ impl Tab {
             Tab::Providers => Tab::Models,
             Tab::Models => Tab::Health,
             Tab::Health => Tab::Policy,
-            Tab::Policy => Tab::Providers,
+            Tab::Policy => Tab::Vitriol,
+            Tab::Vitriol => Tab::Providers,
         }
     }
 
     pub fn prev(self) -> Tab {
         match self {
-            Tab::Providers => Tab::Policy,
+            Tab::Providers => Tab::Vitriol,
             Tab::Models => Tab::Providers,
             Tab::Health => Tab::Models,
             Tab::Policy => Tab::Health,
+            Tab::Vitriol => Tab::Policy,
         }
     }
 
@@ -335,6 +345,86 @@ pub enum PolicyRow {
     PerOwner,
     MaxCandidates,
     AllowPaid { provider: String, allow: bool },
+}
+
+/// Engine facts sampled from the systemd unit (Vitriol tab). Sampled on
+/// page open, `r`, tab entry, and after a control action — never per frame.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineInfo {
+    pub state: String,
+    pub pid: String,
+    pub since: String,
+    pub last_log: String,
+}
+
+/// Pure parse of `systemctl show -p ActiveState -p MainPID
+/// -p ExecMainStartTimestamp` output (key=value lines).
+pub fn parse_engine_show(output: &str) -> (String, String, String) {
+    let mut state = String::new();
+    let mut pid = String::new();
+    let mut since = String::new();
+    for line in output.lines() {
+        if let Some(v) = line.strip_prefix("ActiveState=") {
+            state = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("MainPID=") {
+            let v = v.trim();
+            if v != "0" {
+                pid = v.to_string();
+            }
+        } else if let Some(v) = line.strip_prefix("ExecMainStartTimestamp=") {
+            since = v.trim().to_string();
+        }
+    }
+    (state, pid, since)
+}
+
+pub fn probe_engine() -> EngineInfo {
+    let show = std::process::Command::new("systemctl")
+        .args([
+            "show",
+            "vitriol-server.service",
+            "-p",
+            "ActiveState",
+            "-p",
+            "MainPID",
+            "-p",
+            "ExecMainStartTimestamp",
+            "--no-pager",
+        ])
+        .output();
+    let (state, pid, since) = match show {
+        Ok(o) => parse_engine_show(&String::from_utf8_lossy(&o.stdout)),
+        Err(_) => (String::new(), String::new(), String::new()),
+    };
+    let last_log = match std::process::Command::new("journalctl")
+        .args([
+            "-u",
+            "vitriol-server.service",
+            "-n",
+            "1",
+            "--no-pager",
+            "-o",
+            "cat",
+        ])
+        .output()
+    {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .trim()
+            .chars()
+            .take(160)
+            .collect(),
+        Err(_) => String::new(),
+    };
+    EngineInfo {
+        state: if state.is_empty() {
+            "unknown".into()
+        } else {
+            state
+        },
+        pid,
+        since,
+        last_log,
+    }
 }
 
 /// The page state owned by AppState while `/caduceus` is open.
@@ -354,6 +444,10 @@ pub struct Page {
     pub prefs: CaduceusPrefs,
     /// Footer note: prefs save result or a corrupt-file warning.
     pub note: Option<String>,
+    /// Vitriol tab: sampled engine facts + armed control (press-twice
+    /// confirmation for stop/restart — they interrupt active turns).
+    pub engine: Option<EngineInfo>,
+    pub engine_arm: Option<&'static str>,
 }
 
 impl Default for Page {
@@ -369,6 +463,8 @@ impl Default for Page {
             state: None,
             prefs: CaduceusPrefs::default(),
             note: None,
+            engine: None,
+            engine_arm: None,
         }
     }
 }
@@ -382,13 +478,15 @@ impl Page {
             state: load(),
             prefs,
             note,
+            engine: Some(probe_engine()),
             ..Self::default()
         }
     }
 
-    /// `r` — re-read both files; selection clamps to the new row set.
+    /// `r` — re-read both files (and the engine facts); selection clamps.
     pub fn reload(&mut self) {
         self.state = load();
+        self.engine = Some(probe_engine());
         let (prefs, note) = load_prefs_at(&self.prefs_file);
         self.prefs = prefs;
         self.note = note;
@@ -465,6 +563,7 @@ impl Page {
             Tab::Models => self.candidate_view().len(),
             Tab::Health => 0,
             Tab::Policy => self.policy_rows().len(),
+            Tab::Vitriol => 0, // static facts, no selectable rows
         }
     }
 
@@ -482,6 +581,10 @@ impl Page {
             self.tab = tab;
             self.sel = 0;
             self.detail = false;
+            self.engine_arm = None;
+            if tab == Tab::Vitriol && self.engine.is_none() {
+                self.engine = Some(probe_engine());
+            }
         }
     }
 
@@ -533,7 +636,7 @@ impl Page {
                     None => false,
                 }
             }
-            Tab::Health => false,
+            Tab::Health | Tab::Vitriol => false,
             Tab::Policy => {
                 let row = self.policy_rows().get(self.sel).cloned();
                 match row {
@@ -911,6 +1014,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_engine_show_extracts_unit_facts() {
+        let out = "ActiveState=active\nMainPID=12345\nExecMainStartTimestamp=Thu 2026-11-12 21:58:02 CET\n";
+        let (state, pid, since) = parse_engine_show(out);
+        assert_eq!(state, "active");
+        assert_eq!(pid, "12345");
+        assert_eq!(since, "Thu 2026-11-12 21:58:02 CET");
+        // inactive engines have MainPID=0 → no pid shown
+        let (state, pid, _) = parse_engine_show("ActiveState=inactive\nMainPID=0\n");
+        assert_eq!(state, "inactive");
+        assert_eq!(pid, "");
+    }
+
+    #[test]
     fn views_filter_and_order_by_rank() {
         let mut page = sample_page();
         assert_eq!(
@@ -1030,9 +1146,12 @@ mod tests {
         page.move_sel(10);
         assert_eq!(page.sel, 0); // one candidate
         assert_eq!(Tab::from_number(3), Some(Tab::Health));
+        assert_eq!(Tab::from_number(5), Some(Tab::Vitriol));
         assert_eq!(Tab::from_number(0), None);
-        assert_eq!(Tab::Policy.next(), Tab::Providers);
-        assert_eq!(Tab::Providers.prev(), Tab::Policy);
+        assert_eq!(Tab::Policy.next(), Tab::Vitriol);
+        assert_eq!(Tab::Vitriol.next(), Tab::Providers);
+        assert_eq!(Tab::Providers.prev(), Tab::Vitriol);
+        assert_eq!(Tab::Vitriol.prev(), Tab::Policy);
     }
 
     #[test]

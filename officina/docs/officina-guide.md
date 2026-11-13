@@ -168,6 +168,13 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   `bg_status`, waits bounded with `bg_wait`, or ends its turn — and is
   woken with the result when the job finishes. Append `#fg` to force
   foreground; `OFFICINA_NO_AUTOBG=1` restores blocking behaviour.
+- **/engine + Vitriol tab** — `vitriol-server.service` control from inside
+  the TUI: `/engine [start|stop|restart|status]`, or the **Vitriol** tab on
+  the caduceus page (unit state, pid, since, last journal line; **S**/X/R
+  start/stop/restart with press-twice confirmation). No sudo — the polkit
+  rule scopes you to the two vitriol units. Your daily-driver config is
+  untouched: the unit runs the live config; profile changes stay with
+  `vitriol config load <name>`.
 - **Hang watchdog** — long bash calls that stop producing output get a
   notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
   (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge

@@ -683,6 +683,130 @@ async fn run_loop(
     Ok(())
 }
 
+/// /engine + the Vitriol tab share this control path (systemd unit only —
+/// the polkit rule scopes randozart to the two vitriol units; no sudo).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineAction {
+    Start,
+    Stop,
+    Restart,
+    Status,
+    Help,
+}
+
+pub fn parse_engine_action(msg: &str) -> EngineAction {
+    let arg = msg
+        .strip_prefix("/engine")
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match arg.as_str() {
+        "start" => EngineAction::Start,
+        "stop" => EngineAction::Stop,
+        "restart" => EngineAction::Restart,
+        "status" | "" => EngineAction::Status,
+        _ => EngineAction::Help,
+    }
+}
+
+async fn engine_ctl(state: &mut AppState, action: EngineAction) {
+    match action {
+        EngineAction::Status => {
+            let out = tokio::process::Command::new("systemctl")
+                .args(["is-active", "vitriol-server.service"])
+                .output()
+                .await;
+            let state_txt = match out {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                Err(e) => format!("systemctl failed: {e}"),
+            };
+            let extra = if state_txt == "active" {
+                " · config: your live daily driver (unit as-is)"
+            } else {
+                " · start it with /engine start"
+            };
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "engine: {state_txt}{extra}"
+            )));
+        }
+        EngineAction::Start => {
+            state.entries.push(state::ChatEntry::Diag(
+                "engine: starting vitriol-server.service (daily-driver config; the unit emits the VITRIOL-FINGERPRINT — watch the journal)".into(),
+            ));
+            let out = tokio::process::Command::new("systemctl")
+                .args(["start", "vitriol-server.service"])
+                .output()
+                .await;
+            let ok = matches!(&out, Ok(o) if o.status.success());
+            let verify = tokio::process::Command::new("systemctl")
+                .args(["is-active", "vitriol-server.service"])
+                .output()
+                .await;
+            let state_txt = match verify {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                Err(_) => "unknown".to_string(),
+            };
+            if ok && state_txt == "active" {
+                state.entries.push(state::ChatEntry::Diag(
+                    "engine: vitriol-server.service is active — model loading; check readiness with /engine status or /cost".into(),
+                ));
+            } else {
+                let err = match out {
+                    Ok(o) => String::from_utf8_lossy(&o.stderr).trim().to_string(),
+                    Err(e) => format!("{e}"),
+                };
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "engine: start FAILED (state {state_txt}) — journalctl -u vitriol-server: {}",
+                    if err.is_empty() {
+                        "see journal".to_string()
+                    } else {
+                        err.chars().take(200).collect()
+                    }
+                )));
+            }
+        }
+        EngineAction::Stop => {
+            let out = tokio::process::Command::new("systemctl")
+                .args(["stop", "vitriol-server.service"])
+                .output()
+                .await;
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "engine: stop {}",
+                matches!(&out, Ok(o) if o.status.success())
+                    .then_some("ok — warm KV slot mirror persists for the next start")
+                    .unwrap_or("FAILED — see journal")
+            )));
+        }
+        EngineAction::Restart => {
+            state.entries.push(state::ChatEntry::Diag(
+                "engine: restarting vitriol-server.service (warm KV slot mirror restores the session on the next turn)".into(),
+            ));
+            let out = tokio::process::Command::new("systemctl")
+                .args(["restart", "vitriol-server.service"])
+                .output()
+                .await;
+            let ok = matches!(&out, Ok(o) if o.status.success());
+            let verify = tokio::process::Command::new("systemctl")
+                .args(["is-active", "vitriol-server.service"])
+                .output()
+                .await;
+            let state_txt = match verify {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+                Err(_) => "unknown".to_string(),
+            };
+            state.entries.push(state::ChatEntry::Diag(format!(
+                "engine: restart {} (state {state_txt})",
+                if ok { "done" } else { "FAILED — see journal" }
+            )));
+        }
+        EngineAction::Help => {
+            state.entries.push(state::ChatEntry::Diag(
+                "usage: /engine [start|stop|restart|status] — the unit runs your live config (daily driver); config changes stay with `vitriol config load <name>` outside the TUI".into(),
+            ));
+        }
+    }
+}
+
 async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
     use crate::tui::caduceus::Tab;
     let mut close = false;
@@ -732,7 +856,7 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
             KeyCode::Char('q') => close = true,
             KeyCode::Tab => page.set_tab(page.tab.next()),
             KeyCode::BackTab => page.set_tab(page.tab.prev()),
-            KeyCode::Char(c @ '1'..='4') => {
+            KeyCode::Char(c @ '1'..='5') => {
                 if let Some(tab) = crate::tui::caduceus::Tab::from_number((c as u8 - b'0') as usize)
                 {
                     page.set_tab(tab);
@@ -764,6 +888,36 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
             KeyCode::Char('H') => page.toggle_show_hidden(),
             KeyCode::Backspace | KeyCode::Delete => {
                 page.clear_model_state();
+            }
+            // Vitriol tab: S/X/R engine controls with press-twice confirm
+            // (stop/restart interrupt active turns).
+            KeyCode::Char('S') | KeyCode::Char('X') | KeyCode::Char('R') => {
+                if page.tab == Tab::Vitriol {
+                    let want = match key.code {
+                        KeyCode::Char('S') => "start",
+                        KeyCode::Char('X') => "stop",
+                        _ => "restart",
+                    };
+                    if page.engine_arm == Some(want) {
+                        page.engine_arm = None;
+                        let action = match want {
+                            "start" => EngineAction::Start,
+                            "stop" => EngineAction::Stop,
+                            _ => EngineAction::Restart,
+                        };
+                        engine_ctl(state, action).await;
+                        if let Some(pg) = state.caduceus.as_mut() {
+                            pg.engine = Some(crate::tui::caduceus::probe_engine());
+                        }
+                    } else {
+                        page.engine_arm = Some(want);
+                        page.note = Some(format!(
+                            "press {} again to confirm engine {}",
+                            want.chars().next().unwrap_or('?'),
+                            want
+                        ));
+                    }
+                }
             }
             // a — quick key (extension dialog; key visible while typing).
             KeyCode::Char('a') => {
@@ -1595,6 +1749,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 return;
             }
             // /status — session snapshot modal (local, read-only).
+            if msg == "/engine" || msg.starts_with("/engine ") {
+                let action = parse_engine_action(msg.trim());
+                engine_ctl(state, action).await;
+                return;
+            }
             if msg == "/status" {
                 state.status_open_modal();
                 return;

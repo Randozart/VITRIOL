@@ -3,3 +3,4 @@ pub mod estimator;
 pub mod gguf;
 pub mod probe;
 pub mod rewrite;
+pub mod synth;

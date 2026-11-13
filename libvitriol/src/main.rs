@@ -9,11 +9,92 @@ enum Cli {
         #[arg(long)]
         model: String,
     },
+    /// Write a synthetic GGUF mirroring the target model's SHAPES
+    /// (weights are zero-filled Q8_0 — never load real weights into it).
+    Synth {
+        /// The real GGUF whose header supplies the shapes.
+        #[arg(long)]
+        model: String,
+        /// tiny (seconds-to-load) | mid (~1 GB)
+        #[arg(long, default_value = "tiny")]
+        scale: String,
+        #[arg(long)]
+        out: String,
+    },
+    /// Model-free hardware probe: GPUs, host RAM/zram/swap, storage
+    /// bandwidth of the model store. Writes a fingerprinted report to
+    /// ~/.vitriol/probes/ and prints it.
+    ProbeHw {
+        /// Optional file to read for storage bandwidth (the real GGUF).
+        #[arg(long)]
+        model: Option<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli: Cli = Cli::parse();
+    let cli = Cli::parse();
     match cli {
+        Cli::Synth { model, scale, out } => {
+            let mi = vitriol_calibrate::gguf::read_gguf(std::path::Path::new(&model))?;
+            let scale = match scale.as_str() {
+                "tiny" => vitriol_calibrate::synth::SynthScale::Tiny,
+                "mid" => vitriol_calibrate::synth::SynthScale::Mid,
+                other => anyhow::bail!("unknown scale '{other}' (tiny|mid)"),
+            };
+            let spec = vitriol_calibrate::synth::spec_from_model(&mi, scale);
+            println!(
+                "synth: arch={} layers={} embd={} heads={} kv_heads={} experts={} used={} ffn={} ctx={}",
+                spec.arch, spec.layers, spec.n_embd, spec.n_head, spec.n_kv_head,
+                spec.n_experts, spec.n_expert_used, spec.ffn, spec.ctx
+            );
+            let bytes =
+                vitriol_calibrate::synth::write_synthetic(std::path::Path::new(&out), &spec)?;
+            println!("wrote {} ({} MiB)", out, bytes / (1024 * 1024));
+        }
+        Cli::ProbeHw { model } => {
+            let hw = vitriol_calibrate::probe::probe_hardware()?;
+            let mem = vitriol_calibrate::probe::probe_host_memory()?;
+            let mut report = serde_json::json!({
+                "argv": std::env::args().collect::<Vec<_>>(),
+                "gpus": hw.gpus,
+                "gpu_count": hw.gpu_count,
+                "host_memory": mem,
+            });
+            if let Some(m) = model {
+                let bw =
+                    vitriol_calibrate::probe::probe_storage_bandwidth(std::path::Path::new(&m))?;
+                println!(
+                    "  -> store read: {:.2} GiB/s ({:.2}s)",
+                    bw.gib_per_s, bw.seconds
+                );
+                report["storage"] = serde_json::to_value(&bw)?;
+            }
+            for gpu in &hw.gpus {
+                println!(
+                    "  -> [{}] {} {} MiB (cc {})",
+                    gpu.index, gpu.name, gpu.vram_mib, gpu.compute_cap
+                );
+            }
+            println!(
+                "  -> RAM {} MiB (avail {}) · swap {} MiB used of {} (zram={})",
+                mem.total_mib,
+                mem.available_mib,
+                mem.swap_used_mib,
+                mem.swap_total_mib,
+                mem.zram_device
+            );
+            let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                .join(".vitriol")
+                .join("probes");
+            std::fs::create_dir_all(&dir)?;
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let path = dir.join(format!("probe-hw-{stamp}.json"));
+            std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
+            println!("report: {}", path.display());
+        }
         Cli::Calibrate { quick: true, model } => {
             let path = std::path::Path::new(&model);
 

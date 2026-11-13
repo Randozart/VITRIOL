@@ -318,11 +318,20 @@ pub fn read_gguf(path: &Path) -> anyhow::Result<ModelInfo> {
         let key = read_str(&mut f);
         let tval = read_i32(&mut f);
         // Check if this key (or with arch prefix) is wanted
+        // Order-independent: general.architecture may arrive AFTER the
+        // arch-prefixed keys, so substring matches carry the wanted keys
+        // regardless of position (caught live: qwen35.expert_count was
+        // skipped because the arch var was still "unknown").
         let is_wanted = store_keys.contains(key.as_str())
             || key.starts_with("llama.")
             || key.starts_with(&arch)
             || key.contains("block_count")
-            || key.contains("head_count");
+            || key.contains("head_count")
+            || key.contains("expert_count")
+            || key.contains("expert_used_count")
+            || key.contains("embedding_length")
+            || key.contains("context_length")
+            || key.contains("feed_forward_length");
         if is_wanted {
             let val = read_kv_as_str(&mut f, tval);
             meta.insert(key, val);

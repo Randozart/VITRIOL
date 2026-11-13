@@ -179,3 +179,93 @@ fn check_ipc() -> bool {
     }
     false
 }
+
+// ── Probe subsystem extras (2026-11-13, settings-codex/probe plan) ────────
+
+use std::time::Instant;
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HostMemoryInfo {
+    pub total_mib: u64,
+    pub available_mib: u64,
+    pub swap_total_mib: u64,
+    pub swap_used_mib: u64,
+    pub zram_device: bool,
+}
+
+/// /proc/meminfo + /proc/swaps parse — model-free host facts.
+pub fn probe_host_memory() -> Result<HostMemoryInfo> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo")?;
+    let get = |key: &str| -> u64 {
+        meminfo
+            .lines()
+            .find(|l| l.starts_with(key))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+            / 1024
+    };
+    let total_mib = get("MemTotal:");
+    let available_mib = get("MemAvailable:");
+    let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
+    let mut swap_total_mib = 0u64;
+    let mut swap_used_mib = 0u64;
+    let mut zram_device = false;
+    for (i, line) in swaps.lines().enumerate() {
+        if i == 0 || line.trim().is_empty() {
+            continue;
+        }
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() >= 4 {
+            let (t, u) = (
+                cols[2].parse::<u64>().unwrap_or(0),
+                cols[3].parse::<u64>().unwrap_or(0),
+            );
+            swap_total_mib += t / 1024;
+            swap_used_mib += u / 1024;
+            if cols[0].contains("zram") {
+                zram_device = true;
+            }
+        }
+    }
+    Ok(HostMemoryInfo {
+        total_mib,
+        available_mib,
+        swap_total_mib,
+        swap_used_mib,
+        zram_device,
+    })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageBandwidth {
+    pub path: String,
+    pub gib_per_s: f64,
+    pub seconds: f64,
+}
+
+/// Sequential-read bandwidth of one file (model-store load-time estimate).
+/// Reads with a 1 MiB buffer, deliberately NOT cached-friendly beyond the
+/// first pass (the OS page cache still applies — label the result as
+/// warm-cache unless the caller drops caches).
+pub fn probe_storage_bandwidth(path: &std::path::Path) -> Result<StorageBandwidth> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = vec![0u8; 1 << 20];
+    let mut read_total = 0u64;
+    let start = Instant::now();
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        read_total += n as u64;
+    }
+    let secs = start.elapsed().as_secs_f64().max(1e-6);
+    let gib = read_total as f64 / (1024.0 * 1024.0 * 1024.0);
+    Ok(StorageBandwidth {
+        path: path.display().to_string(),
+        gib_per_s: gib / secs,
+        seconds: secs,
+    })
+}

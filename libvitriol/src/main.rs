@@ -34,11 +34,8 @@ enum Cli {
     /// synthetic GGUF now loads; shapes mirror the target model). Runs
     /// llama-bench per combo, writes a fingerprinted JSON report.
     ProbeLoad {
-        #[arg(
-            long,
-            default_value = "/home/randozart/Desktop/Projects/VITRIOL/engine/tools/server/tests/tmp/models--ggml-org--test-model-stories260K/snapshots/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf"
-        )]
-        model: String,
+        #[arg(long)]
+        model: Option<String>,
         #[arg(long)]
         also: Vec<String>,
         #[arg(long, default_value = "64,128,256")]
@@ -147,7 +144,35 @@ fn main() -> anyhow::Result<()> {
                 "argv": std::env::args().collect::<Vec<_>>(),
                 "grid": [],
             });
-            let mut models = vec![model];
+            let mut models: Vec<String> = Vec::new();
+            match model.as_deref() {
+                Some(m) => models.push(m.to_string()),
+                None => {
+                    // shape-true default: synth from the shape source (the
+                    // live config's model), generated on demand into /tmp.
+                    let source = shape_source_override().unwrap_or_else(|| {
+                        std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+                            .join("Models")
+                            .join("Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf")
+                            .to_string_lossy()
+                            .to_string()
+                    });
+                    let mi = vitriol_calibrate::gguf::read_gguf(std::path::Path::new(&source))?;
+                    let spec = vitriol_calibrate::synth::spec_from_model(
+                        &mi,
+                        vitriol_calibrate::synth::SynthScale::Tiny,
+                    );
+                    let out = std::env::temp_dir().join(format!(
+                        "officina-synth-{}-tiny.gguf",
+                        spec.layers
+                    ));
+                    if !out.exists() {
+                        vitriol_calibrate::synth::write_synthetic(&out, &spec)?;
+                        println!("synth: generated {}", out.display());
+                    }
+                    models.push(out.to_string_lossy().to_string());
+                }
+            }
             models.extend(also);
             for m in &models {
                 for ub in ubatch.split(',') {
@@ -498,4 +523,41 @@ fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
         }
     }
     out
+}
+
+
+fn shape_source_override() -> Option<String> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let cfg = std::fs::read_to_string(home.join(".vitriol").join("config")).ok()?;
+    let mut section = String::new();
+    for line in cfg.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && t.ends_with(']') {
+            section = t[1..t.len() - 1].to_string();
+            continue;
+        }
+        if section == "model" {
+            if let Some(v) = t.strip_prefix("path") {
+                let v = v.trim_start().strip_prefix('=')?.trim();
+                if !v.is_empty() {
+                    let v = v.trim_matches('"').to_string();
+                    if !v.is_empty() {
+                        // ~/ expansion
+                        if let Some(rest) = v.strip_prefix("~/") {
+                            return Some(
+                                std::path::PathBuf::from(
+                                    std::env::var_os("HOME").unwrap_or_default(),
+                                )
+                                .join(rest)
+                                .to_string_lossy()
+                                .to_string(),
+                            );
+                        }
+                        return Some(v);
+                    }
+                }
+            }
+        }
+    }
+    None
 }

@@ -29,6 +29,8 @@ def main():
     ap.add_argument("--spec", action="store_true", help="enable MTP speculative decoding")
     ap.add_argument("--spec-n", type=int, default=1,
                     help="speculative draft tokens (live driver: 2)")
+    ap.add_argument("--adaptive-k", type=int, default=0,
+                    help="adaptive draft trim: 0=disabled (default), 1=enabled")
     ap.add_argument("--spec-draft-model", type=str, default=None, help="separate MTP head gguf")
     ap.add_argument("--no-mmap", action="store_true")
     ap.add_argument("--gen", type=int, default=64)
@@ -37,13 +39,14 @@ def main():
     ap.add_argument("--ckpts", type=int, default=4, help="RAM checkpoint ring depth (0 forbidden)")
     ap.add_argument("--cache-ram", type=int, default=2048, help="host KV reservoir MiB")
     a = ap.parse_args()
-    fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=%s ub=%d mode=%s substrate=%s spec=%s:%d" %
+    fp = ("VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=%s ub=%d mode=%s substrate=%s spec=%s:%d specak=%d" %
           (os.path.basename(a.model), a.ts, a.window,
            a.kv, a.kv, a.fa or 'auto', a.ub,
            a.mode,
            'off' if a.no_substrate else 'on',
            'mtp' if a.spec else 'none',
-           a.spec_n if a.spec else 0))
+           a.spec_n if a.spec else 0,
+           a.adaptive_k))
     fp += " pool_reset=" + os.environ.get('VITRIOL_POOL_RESET','0')
     fp += " ckpts=%d cram=%d" % (a.ckpts, a.cache_ram)
 
@@ -65,6 +68,8 @@ def main():
            "-t", "4",
            *([] if a.ts == "none" else ["-ts", a.ts]),
            *([] if not a.fa else ["-fa", a.fa]),
+           *(["--spec-adaptive-k"] if a.spec and a.adaptive_k else
+              ([] if not a.spec else ["--no-spec-adaptive-k"])),
            *([] if not a.spec else (["--spec-type", "mtp", "--spec-draft-n-max", str(a.spec_n),
                "--spec-draft-ngl", "all"] +
               ([] if not a.spec_draft_model else ["--spec-draft-model", a.spec_draft_model]))),

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::text::Span;
 
@@ -314,6 +314,9 @@ pub enum ChatEntry {
     /// invisible beyond the 40-char glance row. Neutral violet — NOT an
     /// error (Diag renders with theme::crit, which is red).
     Notice(String),
+    /// hang-watchdog entry (2026-11-13): rendered as a compact amber-bordered
+    /// block instead of a red Diag line — it is an observation, not an error.
+    Watchdog(String),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1759,6 +1762,11 @@ impl AppState {
     /// is ALSO captured as a Notice entry so /free, /nimbus, /phase-models
     /// output is actually readable.
     pub fn apply_notify(&mut self, msg: &str, ntype: &str) {
+        // Watchdog observations are not errors — give them their own block.
+        if msg.starts_with("hang-watchdog") {
+            self.entries.push(ChatEntry::Watchdog(msg.to_string()));
+            return;
+        }
         if ntype == "error" || ntype == "warning" {
             self.entries.push(ChatEntry::Diag(msg.to_string()));
         } else {
@@ -2601,6 +2609,36 @@ impl AppState {
                             ]));
                         }
                     }
+                }
+                ChatEntry::Watchdog(text) => {
+                    // Compact amber block: observation, not an error.
+                    let edge = Style::new().fg(theme::ORANGE).bg(theme::BG);
+                    let body = Style::new().fg(theme::TEXT).bg(theme::BG);
+                    let label = " ⏱ watch ";
+                    let span_w = width.saturating_sub(4) as usize;
+                    let dashes = span_w.saturating_sub(label.chars().count() + 2);
+                    lines.push(Line::from(vec![
+                        Span::styled("  ╭─", edge),
+                        Span::styled(
+                            label,
+                            Style::new()
+                                .fg(theme::ORANGE)
+                                .bg(theme::BG)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(format!("{}╮", "─".repeat(dashes)), edge),
+                    ]));
+                    for seg in wrap_text(text, width.saturating_sub(7)) {
+                        lines.push(Line::from(vec![
+                            Span::styled("  │ ", edge),
+                            Span::styled(seg, body),
+                        ]));
+                    }
+                    lines.push(Line::from(vec![
+                        Span::styled("  ╰", edge),
+                        Span::styled("─".repeat(span_w.saturating_sub(1)), edge),
+                        Span::styled("╯", edge),
+                    ]));
                 }
             }
             // Breathing room between transcript entries (owner request
@@ -3736,6 +3774,35 @@ mod tests {
         s.resume_filter = "zzz".into();
         s.clamp_resume_sel();
         assert_eq!(s.resume_sel, 0);
+    }
+
+    #[test]
+    fn watchdog_notifies_get_their_own_block() {
+        // 2026-11-13: warnings from the watchdog are observations, not diags
+        let mut s = AppState::default();
+        s.apply_notify(
+            "hang-watchdog: \"brievc build\" — no output for 61s (61s total)",
+            "warning",
+        );
+        assert_eq!(s.entries.len(), 1);
+        assert!(matches!(s.entries[0], ChatEntry::Watchdog(_)));
+        assert!(
+            s.notice.is_none(),
+            "watchdog entries do not use the glance row"
+        );
+        // normal warnings still become Diag
+        let mut s2 = AppState::default();
+        s2.apply_notify("engine down", "warning");
+        assert!(matches!(s2.entries[0], ChatEntry::Diag(_)));
+        // the block renders with its label
+        let text = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("watch"), "watchdog label: {text}");
+        assert!(text.contains("no output for 61s"));
     }
 
     #[test]

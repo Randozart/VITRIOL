@@ -1,7 +1,7 @@
 # Crash forensics + safe quit + shape-true probes + E2
 
 - Date: 2026-11-13
-- Status: stages 1–3 landed 2026-11-13 (crash black-box 399e505, safe quit, shape-true probe grid — synth loads in llama-bench, probe-load defaults to shape-mirrored synth). Stage 4 (E2 adaptive_k) IN PROGRESS at operator request — GPU seconded for training mid-run; ak0/ak1 at 13.1K measured (ak1 +2.9%, inconclusive), 42K arms pending GPU availability.
+- Status: stages 1–3 landed 2026-11-13 (crash black-box 399e505, safe quit, shape-true probe grid — synth loads in llama-bench, probe-load defaults to shape-mirrored synth). Stage 4 (E2 adaptive_k) COMPLETED after GPU freed — fresh paired 42K arms: ak0 22.30 vs ak1 22.52 t/s (+1.0%, under the 5% bar; draft acceptance identical across arms — deterministic stream). Verdict: keep adaptive_k = 0; the trim ceiling at n_max=2 is one token. Revisit only if draft_n_max ever exceeds 2.
 - Origin: operator reports "Officina crashed" with zero artifacts (no
   coredump, no panic text, no OOM) and restarts mid-turn that churn the
   session store. Plus: synth GGUF now loads in llama-bench — the probe

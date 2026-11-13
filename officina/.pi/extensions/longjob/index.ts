@@ -105,9 +105,12 @@ export default function (pi: ExtensionAPI) {
       try {
         mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
         const dispatch = rewriteToDispatch(command, paths, job);
+        // NOTE the `; ` before the kill-watch subshell — appending it
+        // bare after the pointer echo was a bash syntax error at `(`,
+        // caught live 2026-11-13 (the dispatch died before mkdir ran).
         const killLine =
           maxMinutes > 0
-            ? ` (sleep ${Math.trunc(maxMinutes * 60)}; kill -- -$(cat '${paths.pid}') 2>/dev/null; echo exit=124 > '${paths.exit}') &`
+            ? `; (sleep ${Math.trunc(maxMinutes * 60)}; kill -- -$(cat '${paths.pid}') 2>/dev/null; echo exit=124 > '${paths.exit}') &`
             : "";
         const res = spawnSync("bash", ["-c", `${dispatch}${killLine}`], {
           encoding: "utf8",

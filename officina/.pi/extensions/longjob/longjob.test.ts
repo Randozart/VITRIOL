@@ -142,3 +142,31 @@ describe("snapshotJob + announce-once", () => {
     expect(jobsToAnnounce("/tmp/lj", deps)).toEqual([]);
   });
 });
+
+// Real-shell regression (2026-11-13): the kill-watch subshell appended
+// bare after the pointer echo was a bash syntax error at `(` — the whole
+// dispatch died before mkdir ran. Execute the composed line for real.
+describe("bash_bg dispatch execution (max_minutes path)", () => {
+  it("composes a valid bash line with the kill watcher", { timeout: 45_000 }, () => {
+    const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+    const { mkdtempSync, existsSync } = require("node:fs") as typeof import("node:fs");
+    const { tmpdir } = require("node:os") as typeof import("node:os");
+    const { join } = require("node:path") as typeof import("node:path");
+    const root = mkdtempSync(join(tmpdir(), "longjob-exec-"));
+    const paths = jobDir(root, "j-exec-kill");
+    const dispatch = rewriteToDispatch("echo payload && sleep 1", paths, "j-exec-kill");
+    const kill = `; (sleep 30; kill -- -$(cat '${paths.pid}') 2>/dev/null; echo exit=124 > '${paths.exit}') &`;
+    const line = dispatch + kill;
+    const run = spawnSync("bash", ["-n", "-c", line], { encoding: "utf8" });
+    expect(run.status, `syntax error: ${run.stderr}`).toBe(0);
+    const run2 = spawnSync("bash", ["-c", line], { encoding: "utf8", timeout: 10_000 });
+    expect(run2.status).toBe(0);
+    expect(run2.stdout).toContain("dispatched");
+    // kill watcher wrote the exit marker (30 s sleep — wait for it)
+    const deadline = Date.now() + 40_000;
+    while (!existsSync(paths.exit) && Date.now() < deadline) {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+    }
+    expect(existsSync(paths.exit)).toBe(true);
+  });
+});

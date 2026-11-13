@@ -28,11 +28,16 @@ enum Cli {
         /// Optional file to read for storage bandwidth (the real GGUF).
         #[arg(long)]
         model: Option<String>,
-    },    /// llama-bench load grid: throughput vs ubatch on a model-load-light
-    /// GGUF (engine test model or synthetic). Runs llama-bench per combo,
-    /// writes a fingerprinted JSON report.
+    },
+    /// llama-bench load grid: throughput vs ubatch on a model-load-light
+    /// GGUF — an engine test model OR a `vitriol probe synth` output (the
+    /// synthetic GGUF now loads; shapes mirror the target model). Runs
+    /// llama-bench per combo, writes a fingerprinted JSON report.
     ProbeLoad {
-        #[arg(long, default_value = "/home/randozart/Desktop/Projects/VITRIOL/engine/tools/server/tests/tmp/models--ggml-org--test-model-stories260K/snapshots/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf")]
+        #[arg(
+            long,
+            default_value = "/home/randozart/Desktop/Projects/VITRIOL/engine/tools/server/tests/tmp/models--ggml-org--test-model-stories260K/snapshots/479896ec924af6d40fd419ab8f4d1eb2101de00d/stories260K-f32.gguf"
+        )]
         model: String,
         #[arg(long)]
         also: Vec<String>,
@@ -47,7 +52,10 @@ enum Cli {
     /// measured-vs-extrapolated confidence labels; --write-profile writes a
     /// PROFILE file (never the live config).
     ProbeRecommend {
-        #[arg(long, default_value = "/home/randozart/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf")]
+        #[arg(
+            long,
+            default_value = "/home/randozart/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf"
+        )]
         model: String,
         #[arg(long)]
         write_profile: Option<String>,
@@ -118,7 +126,13 @@ fn main() -> anyhow::Result<()> {
             std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
             println!("report: {}", path.display());
         }
-        Cli::ProbeLoad { model, also, ubatch, prompt, gen } => {
+        Cli::ProbeLoad {
+            model,
+            also,
+            ubatch,
+            prompt,
+            gen,
+        } => {
             let bench = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
                 .join("Desktop/Projects/VITRIOL/engine/build/bin/llama-bench");
             let dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
@@ -138,10 +152,22 @@ fn main() -> anyhow::Result<()> {
             for m in &models {
                 for ub in ubatch.split(',') {
                     let ub = ub.trim();
-                    let out = std::process::Command::new(&bench).args([
-                        "-m", m, "-p", prompt.trim(), "-n", gen.trim(),
-                        "-ub", ub, "-ngl", "99", "-ts", "27,21",
-                    ]).output();
+                    let out = std::process::Command::new(&bench)
+                        .args([
+                            "-m",
+                            m,
+                            "-p",
+                            prompt.trim(),
+                            "-n",
+                            gen.trim(),
+                            "-ub",
+                            ub,
+                            "-ngl",
+                            "99",
+                            "-ts",
+                            "27,21",
+                        ])
+                        .output();
                     let Ok(o) = out else { continue };
                     let text = String::from_utf8_lossy(&o.stdout);
                     let mut pp = None::<f64>;
@@ -152,8 +178,7 @@ fn main() -> anyhow::Result<()> {
                         if !line.contains("±") {
                             continue;
                         }
-                        let cells: Vec<&str> =
-                            line.split('|').map(|c| c.trim()).collect();
+                        let cells: Vec<&str> = line.split('|').map(|c| c.trim()).collect();
                         let ts_cell = cells
                             .iter()
                             .filter(|c| c.contains("±"))
@@ -164,25 +189,39 @@ fn main() -> anyhow::Result<()> {
                             .split_whitespace()
                             .next()
                             .and_then(|x| x.parse::<f64>().ok());
-                        if cells.iter().any(|c| c.starts_with(&format!("pp{}", prompt.trim()))) {
+                        if cells
+                            .iter()
+                            .any(|c| c.starts_with(&format!("pp{}", prompt.trim())))
+                        {
                             pp = v;
-                        } else if cells.iter().any(|c| c.starts_with(&format!("tg{}", gen.trim()))) {
+                        } else if cells
+                            .iter()
+                            .any(|c| c.starts_with(&format!("tg{}", gen.trim())))
+                        {
                             tg = v;
                         }
                     }
-                    report["grid"].as_array_mut().unwrap().push(serde_json::json!({
-                        "model": std::path::Path::new(m)
+                    report["grid"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(serde_json::json!({
+                            "model": std::path::Path::new(m)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                            "ubatch": ub,
+                            "pp": pp,
+                            "tg": tg,
+                        }));
+                    println!(
+                        "{} ub={}: pp={:?} tg={:?}",
+                        std::path::Path::new(m)
                             .file_name()
                             .unwrap_or_default()
                             .to_string_lossy(),
-                        "ubatch": ub,
-                        "pp": pp,
-                        "tg": tg,
-                    }));
-                    println!(
-                        "{} ub={}: pp={:?} tg={:?}",
-                        std::path::Path::new(m).file_name().unwrap_or_default().to_string_lossy(),
-                        ub, pp, tg
+                        ub,
+                        pp,
+                        tg
                     );
                 }
             }
@@ -191,7 +230,10 @@ fn main() -> anyhow::Result<()> {
             println!("report: {}", path.display());
         }
 
-        Cli::ProbeRecommend { model, write_profile } => {
+        Cli::ProbeRecommend {
+            model,
+            write_profile,
+        } => {
             let hw = vitriol_calibrate::probe::probe_hardware()?;
             let mi = vitriol_calibrate::gguf::read_gguf(std::path::Path::new(&model))?;
             let (est, opt) = vitriol_calibrate::estimator::estimate_vram(&mi, &hw);
@@ -215,21 +257,34 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or(0)
                 .max(1) as f64;
             let kv_kib_per_token = attn_layers as f64 * kv_width * 2.0 * 0.5625 / 1024.0;
-            println!("recommend: {} ({} layers, {} experts)", mi.architecture, mi.block_count, mi.expert_count);
-            println!("  weights        {:.1} GiB", mi.total_size_bytes as f64 / (1u64 << 30) as f64);
+            println!(
+                "recommend: {} ({} layers, {} experts)",
+                mi.architecture, mi.block_count, mi.expert_count
+            );
+            println!(
+                "  weights        {:.1} GiB",
+                mi.total_size_bytes as f64 / (1u64 << 30) as f64
+            );
             println!(
                 "  KV/token       {:.2} KiB (derived: {attn_layers} attention layers x {kv_width:.0} kv-width, q4_0; estimator says {:.2} KiB — per-layer only)",
                 kv_kib_per_token,
                 est.kv_mib_per_token * 1024.0
             );
-            println!("  usable VRAM    {:.0} MiB (90% of {:.0})", est.vram_usable_mib, est.vram_total_mib);
+            println!(
+                "  usable VRAM    {:.0} MiB (90% of {:.0})",
+                est.vram_usable_mib, est.vram_total_mib
+            );
             println!();
             println!("  ctx ladder (extrapolated from the estimator; KV = ctx x KiB/token):");
             for ctx in [131_072u64, 208_000, 262_144] {
                 let kv_mib = kv_kib_per_token * ctx as f64 / 1024.0;
                 let total = est.base_model_mib + kv_mib;
                 let pct = total / est.vram_usable_mib * 100.0;
-                let verdict = if total <= est.vram_usable_mib { "fits" } else { "OVER" };
+                let verdict = if total <= est.vram_usable_mib {
+                    "fits"
+                } else {
+                    "OVER"
+                };
                 println!("    ctx {ctx:>7}: kv {kv_mib:>7.1} MiB · total {total:>7.1} MiB ({pct:>5.1}%) {verdict}");
             }
             println!();
@@ -240,37 +295,58 @@ fn main() -> anyhow::Result<()> {
             println!("    kv quant         k={} v={}", opt.k_quant, opt.v_quant);
             println!("    draft_n_max      {}", opt.draft_n_max);
             println!("    pin_first_n      {}", opt.pin_first_n_layers);
-            println!("    est VRAM         {:.1} MiB ({:.1}%)", opt.estimated_vram_mib, opt.estimated_vram_pct);
+            println!(
+                "    est VRAM         {:.1} MiB ({:.1}%)",
+                opt.estimated_vram_mib, opt.estimated_vram_pct
+            );
             println!();
 
             // measured grid, if a probe-load report exists
             let probes = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-                .join(".vitriol").join("probes");
+                .join(".vitriol")
+                .join("probes");
             let mut newest: Option<std::path::PathBuf> = None;
             if let Ok(rd) = std::fs::read_dir(&probes) {
                 for e in rd.flatten() {
                     let p = e.path();
-                    if p.file_name().map(|n| n.to_string_lossy().starts_with("probe-load-")).unwrap_or(false) {
-                        let newer = newest.as_ref().map(|n| {
-                            std::fs::metadata(&p).and_then(|m| m.modified()).ok()
-                                > std::fs::metadata(n).and_then(|m| m.modified()).ok()
-                        }).unwrap_or(true);
-                        if newer { newest = Some(p); }
+                    if p.file_name()
+                        .map(|n| n.to_string_lossy().starts_with("probe-load-"))
+                        .unwrap_or(false)
+                    {
+                        let newer = newest
+                            .as_ref()
+                            .map(|n| {
+                                std::fs::metadata(&p).and_then(|m| m.modified()).ok()
+                                    > std::fs::metadata(n).and_then(|m| m.modified()).ok()
+                            })
+                            .unwrap_or(true);
+                        if newer {
+                            newest = Some(p);
+                        }
                     }
                 }
             }
             if let Some(p) = newest {
                 if let Ok(txt) = std::fs::read_to_string(&p) {
                     if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&txt) {
-                        println!("  measured grid ({}):", p.file_name().unwrap_or_default().to_string_lossy());
+                        println!(
+                            "  measured grid ({}):",
+                            p.file_name().unwrap_or_default().to_string_lossy()
+                        );
                         if let Some(rows) = doc["grid"].as_array() {
                             for r in rows {
                                 println!(
                                     "    {} ub={} → pp {} t/s · tg {} t/s",
                                     r["model"].as_str().unwrap_or("?"),
                                     r["ubatch"].as_str().unwrap_or("?"),
-                                    r["pp"].as_f64().map(|v| format!("{v:.0}")).unwrap_or_else(|| "—".into()),
-                                    r["tg"].as_f64().map(|v| format!("{v:.0}")).unwrap_or_else(|| "—".into())
+                                    r["pp"]
+                                        .as_f64()
+                                        .map(|v| format!("{v:.0}"))
+                                        .unwrap_or_else(|| "—".into()),
+                                    r["tg"]
+                                        .as_f64()
+                                        .map(|v| format!("{v:.0}"))
+                                        .unwrap_or_else(|| "—".into())
                                 );
                             }
                         }
@@ -288,7 +364,9 @@ fn main() -> anyhow::Result<()> {
                 let live = home.join(".vitriol").join("config");
                 let dir = home.join(".vitriol").join("profiles").join(&name);
                 if dir.exists() {
-                    anyhow::bail!("profile '{name}' already exists — pick another name or remove it first");
+                    anyhow::bail!(
+                        "profile '{name}' already exists — pick another name or remove it first"
+                    );
                 }
                 std::fs::create_dir_all(&dir)?;
                 let text = std::fs::read_to_string(&live)?;
@@ -308,7 +386,10 @@ fn main() -> anyhow::Result<()> {
                     ),
                 )?;
                 println!();
-                println!("  profile written: {} (load it explicitly with: vitriol config load {name})", dir.display());
+                println!(
+                    "  profile written: {} (load it explicitly with: vitriol config load {name})",
+                    dir.display()
+                );
             }
         }
 
@@ -387,7 +468,6 @@ fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
-
 
 /// Replace `key = value` inside `[section]` (config/profile INI text).
 /// Unknown sections/keys are left untouched (the profile starts from the

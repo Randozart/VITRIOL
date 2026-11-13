@@ -51,7 +51,10 @@ echo "== source commit: $LOCAL_HEAD"
 
 # ── 2. Gates (same as every officina rework) ────────────────────────────
 echo "== gates: npm test"
-(cd officina && npm test --silent >/tmp/opencode/publish-npm.log 2>&1) || fail "npm test failed — see /tmp/opencode/publish-npm.log"
+# testTimeout headroom: the full suite is unchanged, but spawn-heavy tests
+# (jiti isolation, subagent SIGKILL) need wall-time tolerance on a loaded
+# host (e.g. GPU training saturating CPU alongside the gate run).
+(cd officina && npm test --silent -- --testTimeout=30000 --hookTimeout=30000 >/tmp/opencode/publish-npm.log 2>&1) || fail "npm test failed — see /tmp/opencode/publish-npm.log"
 echo "== gates: tsc"
 (cd officina && npx tsc --noEmit >/tmp/opencode/publish-tsc.log 2>&1) || fail "tsc failed — see /tmp/opencode/publish-tsc.log"
 echo "== gates: build-patch canaries"

@@ -219,6 +219,16 @@ vitriol caduceus recover-session       # offline only; refuses while TUI runs
 The TUI holds `~/.vitriol/officina/tui.lock` and quarantines corrupt
 sessions (`.corrupt-*`) at startup instead of resuming them.
 
+If the engine rejects a saved KV checkpoint, Officina continues cold and
+moves its recovery marker into `.pi/ckpt/failed-restores/` (under
+`TRIS_CKPT_DIR` when set), preserving the original marker in a unique
+backup directory. This stops repeated automatic restore attempts. The
+engine's "No available space in KV cache or invalid slot save file" error
+is ambiguous; the backup allows manual retry after correcting the cause.
+Network failures, authentication errors, rate limits and server outages
+keep the active marker for a later retry. A successful subsequent autosave
+creates a fresh active marker normally.
+
 Bulk key import (one file, one pass):
 
     vitriol caduceus accounts import-keys ~/keys.env   # KEY=VALUE bundle

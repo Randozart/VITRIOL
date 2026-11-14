@@ -1,0 +1,8 @@
+[package]
+name = "vitriol-core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "Pure decision logic for VITRIOL/Officina routing: provider-error facts, admission, budgets"
+
+[dependencies]

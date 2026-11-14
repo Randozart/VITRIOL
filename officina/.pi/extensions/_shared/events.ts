@@ -30,7 +30,8 @@ export type EventSource =
   | "lc-ledger"
   | "lc-bg"
   | "lc-scratchpad"
-  | "lc-verify";
+  | "lc-verify"
+  | "lc-agents";
 
 export interface HarnessEvent {
   ts: number;

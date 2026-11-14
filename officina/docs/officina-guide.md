@@ -37,6 +37,16 @@
   "verify", paths, tier:"cheap"|"full"})` and returns a ✓/⚠/✗ report.
   Write/edit blocks show the code (syntax-highlighted) and the diff; click
   cycles closed → formatted → full.
+- **AGENTS.md aware** (2026-11-14): Officina reads the `AGENTS.md` files of
+  the project (cwd and ancestors), injects a compact digest (headings +
+  bullets, ~3k chars) once per session, and reloads it when a file changes
+  (checked at each turn boundary). `/agents-md` shows what it sees. The full
+  file stays on disk; tuning: `OFFICINA_AGENTS_DIGEST_CHARS`,
+  `OFFICINA_AGENTS_FILES`, kill switch `OFFICINA_NO_AGENTS_MD=1`.
+- **Learned context limits** (2026-11-14): a provider 400 ("maximum context
+  length is N tokens") is recorded per model (shared facts file), the
+  registered window is clamped to it on the next catalog refresh, and lane
+  selection never plans a prompt past it — the catalog can overstate windows.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
@@ -65,6 +75,16 @@
   "verify", paths, tier:"cheap"|"full"})` and returns a ✓/⚠/✗ report.
   Write/edit blocks show the code (syntax-highlighted) and the diff; click
   cycles closed → formatted → full.
+- **AGENTS.md aware** (2026-11-14): Officina reads the `AGENTS.md` files of
+  the project (cwd and ancestors), injects a compact digest (headings +
+  bullets, ~3k chars) once per session, and reloads it when a file changes
+  (checked at each turn boundary). `/agents-md` shows what it sees. The full
+  file stays on disk; tuning: `OFFICINA_AGENTS_DIGEST_CHARS`,
+  `OFFICINA_AGENTS_FILES`, kill switch `OFFICINA_NO_AGENTS_MD=1`.
+- **Learned context limits** (2026-11-14): a provider 400 ("maximum context
+  length is N tokens") is recorded per model (shared facts file), the
+  registered window is clamped to it on the next catalog refresh, and lane
+  selection never plans a prompt past it — the catalog can overstate windows.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real

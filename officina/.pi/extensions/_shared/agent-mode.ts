@@ -46,6 +46,19 @@ export const DEFAULT_MODES: ModeDef[] = [
 Plan mode has ended — you are allowed to modify files and run state-changing commands again, effective immediately. Apply the plan (or the current request) with normal write/edit tools.`,
   },
   {
+    name: "grind",
+    label: "GRIND",
+    glyph: "∞",
+    color: "violet", // alchemical violet: the work that does not stop
+    hint: "persistent build · runs until GRIND: DONE · TAB / /agent build",
+    directive: `AGENT MODE: GRIND (persistent build — keep going until the work is truly done).
+You are allowed to modify files and run state-changing commands. Work the task list to zero: if the request implies more than one step and no task list exists, create one first (update_tasks), then execute every item. Do NOT stop at a natural checkpoint, do NOT ask permission for in-scope work, and do NOT end the turn with only a summary while work remains — continue into the next step yourself. Verify each change (build/tests/gates) before claiming it done. You may end the turn only with a final line of exactly one of:
+  GRIND: DONE — only when the task list has no pending or in-progress items and your changes are verified;
+  GRIND: BLOCKED: <one-line reason> — only when progress is impossible without the user (missing decision, credentials, or access).
+If you stop without one of those markers, the harness sends you a continuation message. If the user sends any input while the loop runs, the loop stands down and follows them.`,
+    enterDirective: `GRIND armed: the continuation loop is active — keep working until the task list is empty and your changes are verified, then finish with GRIND: DONE (or GRIND: BLOCKED: <reason>).`,
+  },
+  {
     name: "steer",
     label: "STEER",
     glyph: "↝",
@@ -118,6 +131,12 @@ function readTextFileSync(path: string): string | null {
 export function modesPath(env: NodeJS.ProcessEnv = process.env): string {
   return env.OFFICINA_MODES
     || join(env.HOME || homedir(), ".vitriol", "officina", "modes.json");
+}
+
+/** Facts file the TUI/other extensions read for the CURRENT mode (jiti
+ *  isolation: module state does not cross extension boundaries). */
+export function agentModeFactsPath(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.HOME || homedir(), ".vitriol", "officina", "agent-mode.json");
 }
 
 export function setAgentMode(name: string): boolean {

@@ -36,10 +36,13 @@ atomic tmp+rename). The grind extension reads it (mtime-cached).
 - `rules.ts` (pure): marker parsing (`GRIND: DONE` / `GRIND: BLOCKED: …`),
   `shouldContinue(state)` with explicit reasons, `continuationPrompt(...)`,
   caps.
-- `index.ts` wiring:
-  - `agent_end` → stand down if: not grind, `willRetry`, `agent_settled`
-    aborted, steering/follow-up queued (`queue_update`), compaction in
-    flight, caps hit, DONE/BLOCKED marker.
+- `index.ts` wiring (trigger = `agent_settled`, pi's documented "no
+    automatic retry, compaction, or queued continuation will run" point;
+    the assistant text for markers arrives via `message_end` so abort and
+    settle ordering cannot race a continuation):
+  - stand down if: not grind, aborted (settled flag or `stopReason:
+    "aborted"`), user input while the loop ran, steering/follow-up input
+    queued, caps hit, DONE/BLOCKED marker.
   - DONE is accepted only when task-state has no pending/in_progress items and
     (when the repo has gates) the last verify was green; a DONE claim that
     fails the check gets one reminder turn, then is accepted (no fight).

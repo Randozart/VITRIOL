@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  agentModeFactsPath,
   allModes,
   getModeDef,
   loadModesFromConfigFile,
@@ -75,6 +76,25 @@ export default function (pi: ExtensionAPI) {
     return base + hint;
   };
 
+  // Mode FACTS (2026-11-14): other extensions (grind) cannot read our
+  // module state across jiti instances, so publish the current mode to a
+  // facts file on every switch and at session start.
+  const writeModeFacts = (): void => {
+    try {
+      const def = getModeDef();
+      const path = agentModeFactsPath();
+      mkdirSync(join(homedir(), ".vitriol", "officina"), { recursive: true });
+      const tmp = `${path}.tmp-${process.pid}`;
+      writeFileSync(
+        tmp,
+        `${JSON.stringify({ version: 1, ts: Date.now(), mode: def.name, label: def.label }, null, 2)}\n`,
+      );
+      renameSync(tmp, path);
+    } catch {
+      // decoration contract
+    }
+  };
+
   // Mode indicator lives BELOW the editor — canonical spot (owner decision
   // 2026-09-01): bold glyph+label in the mode color, recoloring on every
   // mode switch, next to the composer where the eye is. Sidebar carries
@@ -107,6 +127,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (def.enterDirective) enterDirectivePending = def.enterDirective;
+    writeModeFacts();
     // No notify here (owner request 2026-09-02): the mode chip above the
     // prompt box + border tint already announce the switch; the footer
     // notice duplicated it as noise.
@@ -193,6 +214,7 @@ export default function (pi: ExtensionAPI) {
     ui = ctx.ui;
     applyModeTheme();
     renderIndicator();
+    writeModeFacts();
   });
 
   // TAB cycles through the registered modes in definition order.

@@ -11,11 +11,18 @@
 - **Prompt history**: **↑/↓** step through earlier prompts (persisted at
   `~/.vitriol/officina/input-history.jsonl`); stepping past the newest
   entry restores your in-progress draft.
-- **Agent modes**: TAB cycles **BUILD → STEER → INQUIRE → PLAN**. STEER
-  (copper) applies a course correction to the work in flight and keeps
-  going. INQUIRE (green) answers and steers without acting — its replies
-  land in `/answers` (scrollable panel, also pinged after each turn).
-  PLAN is research-only (`*.md` writes); BUILD unlocks writes.
+- **Agent modes**: TAB cycles **BUILD → GRIND → STEER → INQUIRE → PLAN**.
+  GRIND (violet, ∞) is a persistent build: writes unlocked like BUILD, and
+  the harness re-prompts until the model finishes with `GRIND: DONE` (task
+  list empty + changes verified) or `GRIND: BLOCKED: <reason>`. Verify
+  runs on a DONE claim and every 3rd continuation; caps: 24 continuations
+  / 120 min (`OFFICINA_GRIND_MAX_TURNS`, `OFFICINA_GRIND_MAX_MINUTES`);
+  any input while the loop runs, Esc, or switching modes stands it down;
+  `OFFICINA_NO_GRIND=1` removes it. STEER (amber) applies a course
+  correction to the work in flight and keeps going. INQUIRE (green)
+  answers and steers without acting — its replies land in `/answers`
+  (scrollable panel, also pinged after each turn). PLAN is research-only
+  (`*.md` writes); BUILD unlocks writes.
 - **Clarifying questions**: the model's question tool opens a menu
   directly on top of the prompt (options list; the RPC path stages it as
   a facts file, so it works on every lane and can never hang the wire).

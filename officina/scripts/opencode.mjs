@@ -264,12 +264,13 @@ function main() {
 
   --json                 machine output
   --fork                 open the imported session with --fork
-  --full                 all messages, larger caps
+  --full                 all messages (no char cap), larger per-part caps
   --dry-run              report size/destination without writing
   --no-launch            write the Officina session but do not open it
   --last N               optional: import only the last N blocks (default: all)
   --max-tool-chars N     per-tool input/output guard (default 500; full 4000)
-  --max-chars N          optional total transcript budget (default: none)
+  --max-chars N          total transcript budget (default 160000 ≈ 40k tokens;
+                         0 = unlimited; the omitted history becomes a digest)
 `);
     return;
   }

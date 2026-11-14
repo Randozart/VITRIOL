@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OPTIONS,
+  FULL_OPTIONS,
   filterSessionsByCwd,
   normalizeOpenCodeSession,
   parseSessionList,
@@ -80,6 +81,48 @@ describe("normalizeOpenCodeSession", () => {
   });
 });
 
+describe("default import budget", () => {
+  function bigSource(pairs = 400) {
+    const messages = [];
+    const parts = [];
+    for (let i = 0; i < pairs; i += 1) {
+      messages.push({ id: `u${i}`, time_created: i * 10, data: { role: "user", time: { created: i * 10 } } });
+      messages.push({ id: `a${i}`, time_created: i * 10 + 1, data: { role: "assistant", time: { created: i * 10 + 1 }, modelID: "m", providerID: "x", finish: "stop" } });
+      parts.push({ id: `p${i}`, message_id: `u${i}`, data: { type: "text", text: `user prompt ${i} ${"x".repeat(500)}` } });
+      parts.push({ id: `q${i}`, message_id: `a${i}`, data: { type: "text", text: `answer ${i} ${"y".repeat(500)}` } });
+    }
+    return { session: { id: "s", directory: "/tmp/p" }, messages, parts };
+  }
+
+  it("keeps a manageable window and digests the omitted history", () => {
+    const src = bigSource();
+    const n = normalizeOpenCodeSession(src, DEFAULT_OPTIONS);
+    expect(DEFAULT_OPTIONS.maxChars).toBe(160_000);
+    expect(n.blocks.length).toBeLessThan(src.messages.length);
+    expect(n.stats.omittedBlocks).toBeGreaterThan(0);
+    expect(n.stats.chars).toBeLessThanOrEqual(DEFAULT_OPTIONS.maxChars);
+    expect(n.blocks[0].kind).toBe("user");
+    expect(n.digest).toContain("omitted to keep the context manageable");
+    expect(n.digest).toContain("user prompt 0");
+    expect(n.digest).toContain("--full");
+  });
+
+  it("--full restores everything with no digest", () => {
+    const src = bigSource(40);
+    const n = normalizeOpenCodeSession(src, FULL_OPTIONS);
+    expect(FULL_OPTIONS.maxChars).toBe(0);
+    expect(n.blocks).toHaveLength(80);
+    expect(n.digest).toBe("");
+    expect(n.stats.omittedBlocks).toBe(0);
+  });
+
+  it("leaves small sessions untouched", () => {
+    const n = normalizeOpenCodeSession(source, DEFAULT_OPTIONS);
+    expect(n.blocks).toHaveLength(4);
+    expect(n.digest).toBe("");
+  });
+});
+
 describe("toSessionJsonl", () => {
   it("emits a v3 session with a linked parent chain", () => {
     const normalized = normalizeOpenCodeSession(source, DEFAULT_OPTIONS);
@@ -92,5 +135,32 @@ describe("toSessionJsonl", () => {
     }
     expect(text).toContain('"type":"toolCall"');
     expect(text).toContain('"role":"toolResult"');
+  });
+
+  it("embeds the digest as a hidden context entry", () => {
+    const messages = [];
+    const parts = [];
+    for (let i = 0; i < 400; i += 1) {
+      messages.push({ id: `u${i}`, time_created: i * 10, data: { role: "user", time: { created: i * 10 } } });
+      messages.push({ id: `a${i}`, time_created: i * 10 + 1, data: { role: "assistant", time: { created: i * 10 + 1 }, modelID: "m", providerID: "x", finish: "stop" } });
+      parts.push({ id: `p${i}`, message_id: `u${i}`, data: { type: "text", text: `p${i} ${"x".repeat(500)}` } });
+      parts.push({ id: `q${i}`, message_id: `a${i}`, data: { type: "text", text: `a${i} ${"y".repeat(500)}` } });
+    }
+    const big = { session: { id: "s", directory: "/tmp/p" }, messages, parts };
+    const normalized = normalizeOpenCodeSession(big, DEFAULT_OPTIONS);
+    const entries = toSessionJsonl(big, normalized, { cwd: "/tmp/p" })
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(entries[0].type).toBe("session");
+    expect(entries[1]).toMatchObject({
+      type: "custom_message",
+      customType: "opencode-import",
+      display: false,
+      parentId: null,
+    });
+    expect(entries[1].content).toContain("omitted");
+    // The chain continues from the digest entry.
+    expect(entries[2].parentId).toBe(entries[1].id);
   });
 });

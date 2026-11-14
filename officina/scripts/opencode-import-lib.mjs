@@ -12,11 +12,13 @@ import { DatabaseSync } from "node:sqlite";
 
 export const DEFAULT_OPTIONS = {
   full: false,
-  // No arbitrary message/total caps. These are explicit opt-ins:
-  // --last N and --max-chars N. The only default guards are per-tool-output
-  // and per-reasoning caps, because OpenCode stores multi-GB tool bodies.
+  // A manageable window by default (2026-11-14, operator report: importing
+  // one session pulled in the full ~4M-token history and instantly blew the
+  // context). The newest ~40k tokens are kept verbatim and everything older
+  // collapses into a compact digest entry. --full (or --max-chars 0)
+  // restores the old "everything" behaviour; --last N narrows further.
   last: 0,
-  maxChars: 0,
+  maxChars: 160_000,
   maxToolChars: 500,
   maxToolInputChars: 200,
   maxReasoningChars: 1_000,
@@ -25,6 +27,7 @@ export const DEFAULT_OPTIONS = {
 export const FULL_OPTIONS = {
   ...DEFAULT_OPTIONS,
   full: true,
+  maxChars: 0,
   maxToolChars: 4_000,
   maxToolInputChars: 4_000,
   maxReasoningChars: 4_000,
@@ -246,20 +249,66 @@ export function normalizeOpenCodeSession(source, options = {}) {
       chars -= JSON.stringify(selected[start]).length;
       start += 1;
     }
+    // Never open the window mid-tool-loop: advance to the next user turn.
+    while (start < selected.length - 1 && selected[start].kind !== "user") start += 1;
+    chars = selected
+      .slice(start)
+      .reduce((sum, block) => sum + JSON.stringify(block).length, 0);
   }
 
+  const firstKept = blocks.length - selected.length + start;
+  const omitted = blocks.slice(0, firstKept);
+  const kept = selected.slice(start);
+
   return {
-    blocks: selected.slice(start),
+    blocks: kept,
+    digest: buildImportDigest(omitted, opts),
     stats: {
       sourceMessages: (source.messages ?? []).length,
       sourceParts: (source.parts ?? []).length,
       blocks: blocks.length,
-      selected: selected.length - start,
+      selected: kept.length,
+      omittedBlocks: omitted.length,
+      omittedChars: omitted.reduce((sum, block) => sum + JSON.stringify(block).length, 0),
       skipped,
       chars,
       full: opts.full === true,
     },
   };
+}
+
+/**
+ * One hidden context entry describing what was dropped by the default cap.
+ * Bounded: a header plus the most recent 25 user prompts (oldest first,
+ * clipped) so the model knows the arc without carrying the payload.
+ */
+export function buildImportDigest(omitted, opts = DEFAULT_OPTIONS) {
+  if (!Array.isArray(omitted) || omitted.length === 0) return "";
+  const chars = omitted.reduce((sum, block) => sum + JSON.stringify(block).length, 0);
+  const allUsers = omitted.filter((b) => b.kind === "user");
+  const head = allUsers.slice(0, 3);
+  const tail = allUsers.length > 25 ? allUsers.slice(-22) : [];
+  const lines = [
+    `Imported from an OpenCode session: ${omitted.length} earlier message block(s) (~${chars} chars) were omitted to keep the context manageable; the transcript below is the most recent portion.`,
+  ];
+  if (allUsers.length > 0) {
+    lines.push("Earlier user prompts (start of the arc + most recent, truncated):");
+    const emit = (u) => {
+      const one = String(u.text ?? "").replace(/\s+/g, " ").trim();
+      if (one) lines.push(`- ${one.length > 120 ? `${one.slice(0, 119)}…` : one}`);
+    };
+    head.forEach(emit);
+    if (tail.length > 0) {
+      lines.push("  …");
+      tail.forEach(emit);
+    } else {
+      allUsers.slice(head.length).forEach(emit);
+    }
+  }
+  lines.push(
+    "If the omitted history matters, ask the operator to re-import with `/import-opencode <id> full` (CLI: `--full`), or narrow with `--last N`.",
+  );
+  return lines.join("\n");
 }
 
 export function sessionDirForCwd(cwd, sessionsRoot = join(homedir(), ".pi", "agent", "sessions")) {
@@ -284,6 +333,22 @@ export function toSessionJsonl(source, normalized, options = {}) {
     cwd,
   }];
   let parentId = null;
+
+  // Hidden digest of the omitted history (default-cap imports). A custom
+  // message rides in context without cluttering the visible transcript.
+  if (normalized.digest) {
+    const id = shortId();
+    entries.push({
+      type: "custom_message",
+      customType: "opencode-import",
+      content: normalized.digest,
+      display: false,
+      id,
+      parentId: null,
+      timestamp: now,
+    });
+    parentId = id;
+  }
 
   for (const block of normalized.blocks) {
     const timestamp = new Date(block.timestamp || Date.now()).toISOString();

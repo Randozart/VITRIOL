@@ -1,0 +1,475 @@
+{
+  "admission": [
+    {
+      "declared": 180000,
+      "expect": "admit",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": null,
+      "promptTokens": 100000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    },
+    {
+      "declared": 180000,
+      "expect": "no-fit",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": null,
+      "promptTokens": 170000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    },
+    {
+      "declared": 180000,
+      "expect": "invalid",
+      "lane": {
+        "cooling": false,
+        "invalid": true,
+        "ownerPaused": false
+      },
+      "learned": null,
+      "promptTokens": 100000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    },
+    {
+      "declared": 180000,
+      "expect": "cooling",
+      "lane": {
+        "cooling": true,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": null,
+      "promptTokens": 100000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    },
+    {
+      "declared": 180000,
+      "expect": "owner-paused",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": true
+      },
+      "learned": null,
+      "promptTokens": 100000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    },
+    {
+      "declared": 180000,
+      "expect": "no-fit",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": null,
+      "promptTokens": 20000,
+      "reserveTokens": 16384,
+      "safeBytes": 57344
+    },
+    {
+      "declared": 180000,
+      "expect": "admit",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": null,
+      "promptTokens": 10000,
+      "reserveTokens": 1000,
+      "safeBytes": 57344
+    },
+    {
+      "declared": 400000,
+      "expect": "admit",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": 180000,
+      "promptTokens": 150000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    },
+    {
+      "declared": 400000,
+      "expect": "admit",
+      "lane": {
+        "cooling": false,
+        "invalid": false,
+        "ownerPaused": false
+      },
+      "learned": 262144,
+      "promptTokens": 150000,
+      "reserveTokens": 16384,
+      "safeBytes": null
+    }
+  ],
+  "backoff": [
+    {
+      "expectMs": 24000,
+      "failCount": 1,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 30000,
+      "failCount": 1,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 36000,
+      "failCount": 1,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 48000,
+      "failCount": 2,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 60000,
+      "failCount": 2,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 72000,
+      "failCount": 2,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 96000,
+      "failCount": 3,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 120000,
+      "failCount": 3,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 144000,
+      "failCount": 3,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 240000,
+      "failCount": 4,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 300000,
+      "failCount": 4,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 360000,
+      "failCount": 4,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 480000,
+      "failCount": 5,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 600000,
+      "failCount": 5,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 720000,
+      "failCount": 5,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 480000,
+      "failCount": 6,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 600000,
+      "failCount": 6,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 720000,
+      "failCount": 6,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 480000,
+      "failCount": 7,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 600000,
+      "failCount": 7,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 720000,
+      "failCount": 7,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 480000,
+      "failCount": 8,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 600000,
+      "failCount": 8,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 720000,
+      "failCount": 8,
+      "jitter": 1.0
+    },
+    {
+      "expectMs": 480000,
+      "failCount": 9,
+      "jitter": 0.0
+    },
+    {
+      "expectMs": 600000,
+      "failCount": 9,
+      "jitter": 0.5
+    },
+    {
+      "expectMs": 720000,
+      "failCount": 9,
+      "jitter": 1.0
+    }
+  ],
+  "exhaustion": [
+    {
+      "expect": false,
+      "horizon": 1800000,
+      "lanes": [
+        {
+          "id": "dahl/MiniMaxAI/MiniMax-M2.7",
+          "owner": "dahl"
+        },
+        {
+          "id": "freeinference/deepseek-v4-flash",
+          "owner": "freeinference"
+        },
+        {
+          "id": "agentrouter/gpt-5.6-sol",
+          "owner": "agentrouter"
+        }
+      ],
+      "now": 1790000000000,
+      "world": {
+        "coolingUntil": {
+          "dahl/MiniMaxAI/MiniMax-M2.7": 1790000060000
+        },
+        "invalid": [],
+        "pausedOwners": [],
+        "probes": {}
+      }
+    },
+    {
+      "expect": true,
+      "horizon": 1800000,
+      "lanes": [
+        {
+          "id": "dahl/MiniMaxAI/MiniMax-M2.7",
+          "owner": "dahl"
+        },
+        {
+          "id": "freeinference/deepseek-v4-flash",
+          "owner": "freeinference"
+        },
+        {
+          "id": "agentrouter/gpt-5.6-sol",
+          "owner": "agentrouter"
+        }
+      ],
+      "now": 1790000000000,
+      "world": {
+        "coolingUntil": {
+          "agentrouter/gpt-5.6-sol": 1790001860000
+        },
+        "invalid": [
+          "dahl/MiniMaxAI/MiniMax-M2.7"
+        ],
+        "pausedOwners": [
+          "freeinference"
+        ],
+        "probes": {}
+      }
+    }
+  ],
+  "now": 1790000000000,
+  "rate": {
+    "daily": 100,
+    "perMin": 3,
+    "steps": [
+      {
+        "expectAllow": true,
+        "offsetMs": 0
+      },
+      {
+        "expectAllow": true,
+        "offsetMs": 1
+      },
+      {
+        "expectAllow": true,
+        "offsetMs": 2
+      },
+      {
+        "expectAllow": false,
+        "offsetMs": 3
+      },
+      {
+        "expectAllow": false,
+        "offsetMs": 10
+      },
+      {
+        "expectAllow": true,
+        "offsetMs": 86400000
+      }
+    ]
+  },
+  "selection": [
+    {
+      "expect": {
+        "lane": "agentrouter/gpt-5.6-sol",
+        "why": "unverified"
+      },
+      "lanes": [
+        {
+          "id": "dahl/MiniMaxAI/MiniMax-M2.7",
+          "owner": "dahl"
+        },
+        {
+          "id": "freeinference/deepseek-v4-flash",
+          "owner": "freeinference"
+        },
+        {
+          "id": "agentrouter/gpt-5.6-sol",
+          "owner": "agentrouter"
+        }
+      ],
+      "now": 1790000000000,
+      "ttl": 600000,
+      "world": {
+        "coolingUntil": {},
+        "invalid": [],
+        "pausedOwners": [],
+        "probes": {
+          "dahl/MiniMaxAI/MiniMax-M2.7": {
+            "failCount": 1,
+            "kind": "cooling",
+            "nextProbeAt": 1790000000000,
+            "okAt": null,
+            "until": 1789999995000
+          },
+          "freeinference/deepseek-v4-flash": {
+            "failCount": 0,
+            "kind": "ok",
+            "nextProbeAt": 1790000000000,
+            "okAt": 1789999340000,
+            "until": null
+          }
+        }
+      }
+    },
+    {
+      "expect": {
+        "lane": "dahl/MiniMaxAI/MiniMax-M2.7",
+        "why": "cooldown-expired"
+      },
+      "lanes": [
+        {
+          "id": "dahl/MiniMaxAI/MiniMax-M2.7",
+          "owner": "dahl"
+        },
+        {
+          "id": "freeinference/deepseek-v4-flash",
+          "owner": "freeinference"
+        },
+        {
+          "id": "agentrouter/gpt-5.6-sol",
+          "owner": "agentrouter"
+        }
+      ],
+      "now": 1790000000000,
+      "ttl": 600000,
+      "world": {
+        "coolingUntil": {},
+        "invalid": [],
+        "pausedOwners": [],
+        "probes": {
+          "agentrouter/gpt-5.6-sol": {
+            "failCount": 0,
+            "kind": "ok",
+            "nextProbeAt": 1790000000000,
+            "okAt": 1789999999000,
+            "until": null
+          },
+          "dahl/MiniMaxAI/MiniMax-M2.7": {
+            "failCount": 1,
+            "kind": "cooling",
+            "nextProbeAt": 1790000000000,
+            "okAt": null,
+            "until": 1789999995000
+          },
+          "freeinference/deepseek-v4-flash": {
+            "failCount": 0,
+            "kind": "ok",
+            "nextProbeAt": 1790000000000,
+            "okAt": 1789999999000,
+            "until": null
+          }
+        }
+      }
+    },
+    {
+      "expect": null,
+      "lanes": [
+        {
+          "id": "dahl/MiniMaxAI/MiniMax-M2.7",
+          "owner": "dahl"
+        },
+        {
+          "id": "freeinference/deepseek-v4-flash",
+          "owner": "freeinference"
+        },
+        {
+          "id": "agentrouter/gpt-5.6-sol",
+          "owner": "agentrouter"
+        }
+      ],
+      "now": 1790000000000,
+      "ttl": 600000,
+      "world": {
+        "coolingUntil": {
+          "dahl/MiniMaxAI/MiniMax-M2.7": 1790000060000
+        },
+        "invalid": [
+          "agentrouter/gpt-5.6-sol"
+        ],
+        "pausedOwners": [
+          "freeinference"
+        ],
+        "probes": {}
+      }
+    }
+  ]
+}

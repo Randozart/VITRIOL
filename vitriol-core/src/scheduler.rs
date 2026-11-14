@@ -151,14 +151,26 @@ pub struct RateBucket {
     pub day_count: u64,
 }
 
+/// UTC day key (YYYY-MM-DD), matching `new Date(now).toISOString().slice(0,10)`.
+pub fn day_key(now_ms: u64) -> String {
+    let z = (now_ms / 86_400_000) as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    if month <= 2 {
+        year += 1;
+    }
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
 /// Per-minute + per-day probe allowance (UTC day key like TS).
-pub fn rate_allow(
-    bucket: &RateBucket,
-    now: u64,
-    per_min: u64,
-    daily: u64,
-    day_key: &str,
-) -> (bool, RateBucket) {
+pub fn rate_allow(bucket: &RateBucket, now: u64, per_min: u64, daily: u64) -> (bool, RateBucket) {
+    let day_key = day_key(now);
     let day_count = if bucket.day_key == day_key {
         bucket.day_count
     } else {
@@ -178,7 +190,7 @@ pub fn rate_allow(
         allow,
         RateBucket {
             recent,
-            day_key: day_key.to_string(),
+            day_key,
             day_count: if allow { day_count + 1 } else { day_count },
         },
     )
@@ -314,13 +326,13 @@ mod tests {
     fn rate_limits() {
         let mut bucket = RateBucket::default();
         for i in 0..3 {
-            let (allow, next) = rate_allow(&bucket, NOW + i, 3, 100, "day");
+            let (allow, next) = rate_allow(&bucket, NOW + i, 3, 100);
             assert!(allow);
             bucket = next;
         }
-        let (allow, _) = rate_allow(&bucket, NOW + 10, 3, 100, "day");
+        let (allow, _) = rate_allow(&bucket, NOW + 10, 3, 100);
         assert!(!allow);
-        let (allow, next) = rate_allow(&bucket, NOW + 86_400_000, 3, 100, "next-day");
+        let (allow, next) = rate_allow(&bucket, NOW + 86_400_000, 3, 100);
         assert!(allow);
         assert_eq!(next.day_count, 1);
     }

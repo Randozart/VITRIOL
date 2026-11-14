@@ -27,6 +27,7 @@ import {
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import { isVerified } from "../_shared/probe-scheduler.ts";
+import { admitLane, effectiveWindow } from "../_shared/admission.ts";
 import {
   markGatewayCooldown,
   markAlias,
@@ -317,21 +318,22 @@ export default function (pi: ExtensionAPI) {
     }
     const admitted = (m: Model): boolean => {
       const owner = ownerOfLane(m.id);
-      if (marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner)) return false;
-      if (marks.pausedOwners.has(owner)) return false;
-      const safeTokens = marks.safeBytesByOwner[owner]
-        ? Math.floor(marks.safeBytesByOwner[owner] / 4)
-        : Number.POSITIVE_INFINITY;
-      const window = Math.min(
-        Number(m.contextWindow ?? 0),
-        marks.limits[m.id] ?? Number.POSITIVE_INFINITY,
-        safeTokens,
+      return (
+        admitLane({
+          promptTokens: tokens,
+          reserveTokens: CLOUD_RESERVE_TOKENS,
+          lane: {
+            invalid: marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner),
+            cooling: healthCooling(m.provider, m.id, now),
+            ownerPaused: marks.pausedOwners.has(owner),
+          },
+          declared: Number(m.contextWindow ?? 0),
+          learned: marks.limits[m.id] ?? null,
+          safeBytes: marks.safeBytesByOwner[owner] ?? null,
+        }) === "admit"
       );
-      return Number.isFinite(window) && tokens + CLOUD_RESERVE_TOKENS < window;
     };
-    const eligible = cloudCandidates.filter(
-      (m) => !healthCooling(m.provider, m.id, now) && admitted(m),
-    );
+    const eligible = cloudCandidates.filter(admitted);
     // Learned remaps: prefer the offered replacement when it is admitted.
     const seen = new Set<string>();
     const remapped: Model[] = [];

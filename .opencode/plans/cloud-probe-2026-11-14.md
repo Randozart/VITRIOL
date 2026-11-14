@@ -118,3 +118,14 @@ vectors; TS implementation is authoritative until parity gate I2 passes.
 
 `npm test`, `npm run typecheck`, `cargo test` (vitriol-core), `cargo test` +
 `cargo fmt --check` (TUI), rebuild + install.
+
+
+## Phase status (2026-11-14 20:25)
+
+- Facts, lease, scheduler, extension, verified-first routing, `/probe`,
+  `/doctor`, `/routes` probe column: SHIPPED (`ed5cb34`).
+- Rust parity: scheduler functions + **golden vectors**
+  (`vitriol-core/testdata/vectors.json`) with TS assertions in
+  `officina/.pi/extensions/_shared/core-parity.test.ts` (gate I2).
+- Next: JSON-RPC sidecar behind `OFFICINA_ROUTER_CORE=rust`, then flip
+  defaults per parity.

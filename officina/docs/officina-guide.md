@@ -411,6 +411,17 @@ TUI only changes routing preferences.
 
 ## Running multiple sessions
 
+Sessions can share the same Caduceus cloud model. The gateway queues requests
+at its configured account/model concurrency limit and releases capacity when
+each response finishes. Officina retries explicit gateway queue-full/queue-timeout
+429 errors on that same model up to twice, within a 120-second admission budget,
+using an abortable wait of at least one second and respecting `Retry-After`.
+These rejected admissions do not start inference or cool the lane as exhausted
+quota. Accepted streams run to completion; no answer is interrupted to switch
+sessions. Genuine quota errors and exhausted admission retries follow ordinary
+SDK retry and routing handling. `OFFICINA_NO_CAPACITY_WAIT=1` disables the extra
+capacity retries. Reload extensions in running sessions to activate changes.
+
 Local llama.cpp streams request native prefill progress (`return_progress`)
 by default. These events belong to the actual inference request, keeping
 its HTTP response active while the prompt is processed; they are not

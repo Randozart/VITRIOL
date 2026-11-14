@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { streamCloudWithCapacity } from "./capacity.ts";
 import { budgetStatus } from "../_shared/budget.ts";
 import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
 import { readGatewayMarks } from "../_shared/gateway-health.ts";
@@ -454,6 +455,7 @@ function providerConfig(
     headers: { ...PASSTHROUGH_HEADERS },
     models,
     refreshModels: refresh,
+    streamSimple: streamCloudWithCapacity,
   };
 }
 

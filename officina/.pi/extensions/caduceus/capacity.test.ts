@@ -1,0 +1,156 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { normalizeContext } from "@earendil-works/pi-ai";
+import { capacityAwareFetch, streamCloudWithCapacity } from "./capacity.ts";
+
+const capacity = (code = "SEMAPHORE_TIMEOUT", headers = {}) => new Response(JSON.stringify({ error: { code } }), { status: 429, headers });
+const request = { method: "POST", body: JSON.stringify({ model: "shared", messages: ["private context"] }) };
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+
+describe("gateway capacity admission", () => {
+  it.each(["SEMAPHORE_TIMEOUT", "SEMAPHORE_QUEUE_FULL", "semaphore_timeout"])("retries %s with identical body and options", async (code) => {
+    vi.useFakeTimers();
+    const final = new Response("accepted");
+    const fetcher = vi.fn().mockResolvedValueOnce(capacity(code)).mockResolvedValue(final);
+    const result = capacityAwareFetch(fetcher)("http://gateway/v1/chat/completions", request);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await result).toBe(final);
+    expect(fetcher.mock.calls).toEqual([["http://gateway/v1/chat/completions", request], ["http://gateway/v1/chat/completions", request]]);
+  });
+
+  it.each([400, 401, 403, 500, 503])( "passes status %s through untouched", async (status) => {
+    const response = new Response("failure", { status });
+    const fetcher = vi.fn().mockResolvedValue(response);
+    expect(await capacityAwareFetch(fetcher)("http://gateway", request)).toBe(response);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await response.text()).toBe("failure");
+  });
+
+  it.each([
+    '{"error":{"code":"rate_limit_exceeded","message":"quota exhausted"}}',
+    '{"error":{"message":"SEMAPHORE_TIMEOUT"}}',
+    '{"code":"SEMAPHORE_TIMEOUT"}',
+    "too many concurrent requests", "malformed", "x".repeat(17_000),
+  ])("preserves unknown/quota 429 body %#", async (body) => {
+    const response = new Response(body, { status: 429 });
+    const fetcher = vi.fn().mockResolvedValue(response);
+    expect(await capacityAwareFetch(fetcher)("http://gateway", request)).toBe(response);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(await response.text()).toBe(body);
+  });
+
+  it("recognizes the gateway's SSE error envelope", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValueOnce(new Response('data: {"error":{"code":"SEMAPHORE_QUEUE_FULL"}}\n\ndata: [DONE]\n\n', { status: 429 })).mockResolvedValue(new Response("OK"));
+    const pending = capacityAwareFetch(fetcher)("http://gateway", request);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect((await pending).status).toBe(200);
+  });
+
+  it("shares a two-retry budget across SDK attempts and exposes the final error", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockImplementation(async () => capacity());
+    const wrapped = capacityAwareFetch(fetcher);
+    const pending = wrapped("http://gateway", request);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((await pending).status).toBe(429);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect((await wrapped("http://gateway", request)).status).toBe(429);
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["3", new Date(Date.now() + 3000).toUTCString()])("honors Retry-After %s", async (hint) => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn().mockResolvedValueOnce(capacity("SEMAPHORE_TIMEOUT", { "Retry-After": hint })).mockResolvedValue(new Response("OK"));
+    const pending = capacityAwareFetch(fetcher)("http://gateway", request);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect((await pending).status).toBe(200);
+  });
+
+  it("does not shorten a Retry-After beyond its admission budget", async () => {
+    const response = capacity("SEMAPHORE_TIMEOUT", { "Retry-After": "121" });
+    const fetcher = vi.fn().mockResolvedValue(response);
+    expect(await capacityAwareFetch(fetcher)("http://gateway", request)).toBe(response);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels during the wait without another request", async () => {
+    vi.useFakeTimers();
+    const abort = new AbortController();
+    const fetcher = vi.fn().mockResolvedValue(capacity());
+    const pending = capacityAwareFetch(fetcher)("http://gateway", { ...request, signal: abort.signal });
+    const rejected = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(100);
+    abort.abort();
+    await rejected;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves stalled error bodies to the SDK after bounded inspection", async () => {
+    vi.useFakeTimers();
+    const response = new Response(new ReadableStream(), { status: 429 });
+    const fetcher = vi.fn().mockResolvedValue(response);
+    const pending = capacityAwareFetch(fetcher)("http://gateway", request);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await pending).toBe(response);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    void response.body?.cancel();
+  });
+
+  it("does not replay a one-shot request body or retry a network failure", async () => {
+    const response = capacity();
+    const fetcher = vi.fn().mockResolvedValueOnce(response).mockRejectedValueOnce(new Error("network failed"));
+    const wrapped = capacityAwareFetch(fetcher);
+    expect(await wrapped("http://gateway", { method: "POST", body: new ReadableStream() })).toBe(response);
+    await expect(wrapped("http://gateway", request)).rejects.toThrow("network failed");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+});
+
+const model = { api: "openai-completions" as const, provider: "caduceus", id: "shared", name: "Shared cloud",
+  baseUrl: "http://gateway.invalid/v1", reasoning: false, input: ["text"] as ["text"],
+  contextWindow: 262144, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+const context = (name: string) => normalizeContext({ messages: [{ role: "user", content: name, timestamp: 1 }] });
+const answer = (name: string) => `data: ${JSON.stringify({ id: name, choices: [{ index: 0, delta: { role: "assistant", content: name }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: name, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+
+it("lets two SDK sessions finish on the same model through a one-slot gateway", async () => {
+  let occupied = false;
+  let finishFirst: (() => void) | undefined;
+  const accepted: string[] = [];
+  let admitFirst!: () => void;
+  const admitted = new Promise<void>((resolve) => { admitFirst = resolve; });
+  const fetcher = vi.fn(async (_input: unknown, init?: RequestInit) => {
+    const payload = JSON.parse(init?.body as string);
+    expect(payload.model).toBe("shared");
+    const name = payload.messages.at(-1).content;
+    if (occupied) { finishFirst!(); return capacity(); }
+    occupied = true;
+    if (name === "first") admitFirst();
+    accepted.push(name);
+    const body = new ReadableStream({ start(controller) {
+      controller.enqueue(new TextEncoder().encode(answer(name)));
+      const finish = () => { occupied = false; controller.close(); };
+      if (name === "first") finishFirst = finish;
+      else finish();
+    } });
+    return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
+  });
+  const statuses: number[] = [];
+  const options = { apiKey: "test", fetch: fetcher as typeof fetch, maxRetries: 0,
+    onResponse: (response: { status: number }) => { statuses.push(response.status); } };
+  const first = streamCloudWithCapacity(model, context("first"), options).result();
+  // Wait until the first request is admitted; no real network or provider calls.
+  await Promise.race([admitted, first.then((result) => { throw new Error(`First session ended before admission: ${result.errorMessage}`); })]);
+  const second = streamCloudWithCapacity(model, context("second"), options).result();
+  const results = await Promise.all([first, second]);
+  expect(results.map((result) => result.errorMessage)).toEqual([undefined, undefined]);
+  expect(results.map((result) => result.stopReason)).toEqual(["stop", "stop"]);
+  expect(results.map((result) => result.content)).toEqual([
+    [{ type: "text", text: "first" }], [{ type: "text", text: "second" }],
+  ]);
+  expect(accepted).toEqual(["first", "second"]);
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(statuses).toEqual([200, 200]);
+});

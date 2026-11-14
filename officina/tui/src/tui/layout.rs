@@ -589,6 +589,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // block toggles collapse. Rows are screen coords of the visible
     // window; rebuilt every frame from the line→entry map.
     state.thinking_hitboxes.clear();
+    state.tool_hitboxes.clear();
     if visible > 0 {
         let last_visible = (start + visible - 1).min(state.line_entries.len().saturating_sub(1));
         let mut i = 0usize;
@@ -598,15 +599,25 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             while j + 1 < state.line_entries.len() && state.line_entries[j + 1] == idx {
                 j += 1;
             }
-            if matches!(state.entries.get(idx), Some(ChatEntry::Thinking { .. })) {
+            let kind = state.entries.get(idx).map(|e| match e {
+                ChatEntry::Thinking { .. } => 1u8,
+                ChatEntry::Tool { .. } => 2,
+                _ => 0,
+            });
+            if let Some(kind) = kind.filter(|k| *k != 0) {
                 let lo = i.max(start);
                 let hi = j.min(last_visible);
                 if lo <= hi {
-                    state.thinking_hitboxes.push((
+                    let range = (
                         chat_area.y + (lo - start) as u16,
                         chat_area.y + (hi - start) as u16,
                         idx,
-                    ));
+                    );
+                    if kind == 1 {
+                        state.thinking_hitboxes.push(range);
+                    } else {
+                        state.tool_hitboxes.push(range);
+                    }
                 }
             }
             i = j + 1;

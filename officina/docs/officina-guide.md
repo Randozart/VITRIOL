@@ -23,6 +23,9 @@
 - **Thinking traces**: rendered as dimmed markdown (headings, bold,
   code, lists). Click any thinking block to close it — it collapses to a
   one-line marker with its character count; click again to reopen.
+  Tool calls work the same way: click a tool block to open the full args
+  and output, click again to collapse to the one-line form (per-block; the
+  `/tools` default is untouched).
   `/thinking-view collapse|expand` collapses or expands all traces;
   `/thinking-view default collapsed|expanded` sets what NEW traces start
   as (default: collapsed); bare `/thinking-view` shows the current state.
@@ -30,6 +33,9 @@
 - **Thinking traces**: rendered as dimmed markdown (headings, bold,
   code, lists). Click any thinking block to close it — it collapses to a
   one-line marker with its character count; click again to reopen.
+  Tool calls work the same way: click a tool block to open the full args
+  and output, click again to collapse to the one-line form (per-block; the
+  `/tools` default is untouched).
   `/thinking-view collapse|expand` collapses or expands all traces;
   `/thinking-view default collapsed|expanded` sets what NEW traces start
   as (default: collapsed); bare `/thinking-view` shows the current state.

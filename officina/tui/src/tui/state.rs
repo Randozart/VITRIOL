@@ -295,6 +295,9 @@ pub enum ChatEntry {
         name: String,
         summary: String,
         args: Option<serde_json::Value>,
+        /// Click override (2026-11-13): Some(true) = full args/output,
+        /// Some(false) = collapsed line, None = follow /tools config.
+        expanded: Option<bool>,
         output: Vec<String>,
         output_truncated: bool,
         running: bool,
@@ -655,6 +658,9 @@ pub struct AppState {
     /// Filled by layout each frame; a left click inside a range toggles
     /// the block's collapsed state (2026-11-13).
     pub thinking_hitboxes: Vec<(u16, u16, usize)>,
+    /// Visible tool blocks as screen rows: (y0, y1, entry idx). A left
+    /// click toggles collapsed ⇄ full args/output (2026-11-13).
+    pub tool_hitboxes: Vec<(u16, u16, usize)>,
     /// Latest structured watchdog facts (card + countdown).
     pub watchdog: Option<WatchdogDoc>,
     /// Injectable watchdog facts path (tests must never read the
@@ -977,6 +983,7 @@ impl Default for AppState {
             md_cache: HashMap::new(),
             line_entries: Vec::new(),
             thinking_hitboxes: Vec::new(),
+            tool_hitboxes: Vec::new(),
         }
     }
 }
@@ -2280,6 +2287,33 @@ impl AppState {
         false
     }
 
+    /// Left-click on a tool block: collapse ⇄ full args/output. Returns
+    /// true when the click landed on a block (2026-11-13).
+    pub fn tool_toggle_at(&mut self, row: u16) -> bool {
+        let idx = self
+            .tool_hitboxes
+            .iter()
+            .find(|(y0, y1, _)| row >= *y0 && row <= *y1)
+            .map(|(_, _, idx)| *idx);
+        let Some(idx) = idx else { return false };
+        if let Some(ChatEntry::Tool {
+            expanded,
+            render_cache,
+            ..
+        }) = self.entries.get_mut(idx)
+        {
+            *expanded = if *expanded == Some(true) {
+                Some(false)
+            } else {
+                Some(true)
+            };
+            // The cached block was rendered at the old verbosity.
+            *render_cache = None;
+            return true;
+        }
+        false
+    }
+
     pub fn push_user(&mut self, text: String) {
         self.entries.push(ChatEntry::User(text));
         // A new turn means the operator is looking at the prompt: release
@@ -2300,6 +2334,7 @@ impl AppState {
             name: name.to_string(),
             summary,
             args: Some(args.clone()),
+            expanded: None,
             output: Vec::new(),
             output_truncated: false,
             running: true,
@@ -3078,9 +3113,15 @@ impl AppState {
                     started_at,
                     timeout_s,
                     render_cache,
+                    expanded,
                     ..
                 } => {
-                    let mode = effective_mode(name, self.tool_default, &self.tool_overrides);
+                    // Click override wins over /tools config (2026-11-13).
+                    let mode = match *expanded {
+                        Some(true) => ToolVerbosity::Full,
+                        Some(false) => ToolVerbosity::Line,
+                        None => effective_mode(name, self.tool_default, &self.tool_overrides),
+                    };
                     if mode == ToolVerbosity::Line {
                         // Collapsed single line — the status-quo rendering,
                         // byte-identical to pre-verbosity builds.
@@ -4570,6 +4611,77 @@ mod tests {
                     ..
                 }
             )));
+    }
+
+    #[test]
+    fn tool_click_toggles_full_and_back() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
+        s.tool_start(
+            Some("t1"),
+            "bash",
+            &serde_json::json!({"command": "brievc build c4probe.bv --verify-bodies", "timeout": 240}),
+        );
+        s.tool_update(Some("t1"), "bash", "compiling\n");
+        let collapsed = s.chat_lines(100);
+        assert!(!collapsed.is_empty());
+        assert_eq!(s.line_entries.len(), collapsed.len());
+        s.tool_hitboxes = vec![(5, 9, 0)];
+        assert!(s.tool_toggle_at(5), "click inside the tool block toggles");
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Tool {
+                expanded: Some(true),
+                ..
+            }
+        ));
+        let full = s.chat_lines(100);
+        assert!(
+            full.len() > collapsed.len(),
+            "full rendering shows args/output below the header"
+        );
+        assert!(s.tool_toggle_at(5), "click again collapses");
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Tool {
+                expanded: Some(false),
+                ..
+            }
+        ));
+        let line = s.chat_lines(100);
+        assert_eq!(line.len(), collapsed.len(), "collapsed is one line again");
+        assert!(!s.tool_toggle_at(99), "click outside all blocks is a miss");
+    }
+
+    #[test]
+    fn tool_and_thinking_hitboxes_are_separate() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
+        s.push_thinking_delta("reasoning");
+        s.tool_start(Some("t1"), "read", &serde_json::json!({"path": "/tmp/x"}));
+        let lines = s.chat_lines(80);
+        assert_eq!(s.line_entries.len(), lines.len());
+        s.thinking_hitboxes = vec![(0, 0, 0)];
+        s.tool_hitboxes = vec![(1, 2, 1)];
+        assert!(s.thinking_toggle_at(0));
+        assert!(!s.tool_toggle_at(0), "row 0 is the thinking block");
+        assert!(s.tool_toggle_at(1));
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Thinking {
+                collapsed: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            s.entries[1],
+            ChatEntry::Tool {
+                expanded: Some(true),
+                ..
+            }
+        ));
     }
 
     #[test]

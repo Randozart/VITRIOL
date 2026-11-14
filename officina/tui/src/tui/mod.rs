@@ -2688,6 +2688,11 @@ async fn handle_mouse(m: crossterm::event::MouseEvent, state: &mut AppState) {
             if !over_sidebar(state, m.column, m.row) && state.thinking_toggle_at(m.row) {
                 return;
             }
+            // Tool blocks (2026-11-13): click opens the full args/output,
+            // click again collapses to the one-line form.
+            if !over_sidebar(state, m.column, m.row) && state.tool_toggle_at(m.row) {
+                return;
+            }
             state.clear_selection();
             if let Some(a) = state.last_chat_area {
                 if m.row >= a.y && m.row < a.y + a.height {

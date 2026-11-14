@@ -4015,6 +4015,7 @@ mod render_smoke {
                     tokens_out: 1319,
                     cost_estimate: 0.0,
                     outcome: "ok".into(),
+                    candidates_skipped: vec!["dahl/x: cooling 12m".into()],
                 }],
             });
             draw_at(&mut s, w, h);

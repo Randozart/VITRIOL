@@ -33,6 +33,9 @@ pub struct RouteEntry {
     #[serde(rename = "costEstimate")]
     pub cost_estimate: f64,
     pub outcome: String,
+    /// Lanes skipped by admission, with reasons (2026-11-14).
+    #[serde(rename = "candidatesSkipped")]
+    pub candidates_skipped: Vec<String>,
 }
 
 /// Background probe fact (cloud-probe, 2026-11-14).

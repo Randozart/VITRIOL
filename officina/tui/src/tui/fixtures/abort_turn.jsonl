@@ -1,0 +1,5 @@
+{"event":"agent_start","fields":{}}
+{"event":"message_start","fields":{}}
+{"event":"message_update","fields":{"delta":"partial"}}
+{"event":"agent_settled","fields":{"aborted":true}}
+{"event":"agent_end","fields":{}}

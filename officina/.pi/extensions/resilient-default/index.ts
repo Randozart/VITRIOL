@@ -107,6 +107,8 @@ interface LastDecision {
   profile: RoutingProfile;
   localState: "up" | "down" | "busy" | "unknown";
   startedAt: number;
+  /** Why other lanes were not chosen (ledger observability, 2026-11-14). */
+  skipped: string[];
 }
 
 const CLOUD_RESERVE_TOKENS = 16_384;
@@ -191,6 +193,7 @@ export default function (pi: ExtensionAPI) {
   let healthSig = ""; // gateway lane-health marking the pool was built against
   let activeCloud: Model | undefined;
   let lastDecision: LastDecision | null = null;
+  let lastSkipReasons: string[] = [];
 
   startEnginePolling();
   onEngineUpdate(() => {
@@ -352,6 +355,7 @@ export default function (pi: ExtensionAPI) {
     now: number,
     override?: Map<string, string> | null,
   ): Model[] => {
+    lastSkipReasons = [];
     let marks = {
       invalid: new Set<string>(),
       models: new Set<string>(),
@@ -371,11 +375,11 @@ export default function (pi: ExtensionAPI) {
       }
     }
     const admitted = (m: Model): boolean => {
-      const core = override?.get(m.id);
-      if (core) return core === "admit";
-      const owner = ownerOfLane(m.id);
-      return (
-        admitLane({
+      const why = ((): string | undefined => {
+        const core = override?.get(m.id);
+        if (core) return core === "admit" ? undefined : core;
+        const owner = ownerOfLane(m.id);
+        const verdict = admitLane({
           promptTokens: tokens,
           reserveTokens: CLOUD_RESERVE_TOKENS,
           lane: {
@@ -386,8 +390,14 @@ export default function (pi: ExtensionAPI) {
           declared: Number(m.contextWindow ?? 0),
           learned: marks.limits[m.id] ?? null,
           safeBytes: marks.safeBytesByOwner[owner] ?? null,
-        }) === "admit"
-      );
+        });
+        return verdict === "admit" ? undefined : verdict;
+      })();
+      if (why) {
+        if (lastSkipReasons.length < 8) lastSkipReasons.push(`${m.id}: ${why}`);
+        return false;
+      }
+      return true;
     };
     const eligible = cloudCandidates.filter(admitted);
     // Learned remaps: prefer the offered replacement when it is admitted.
@@ -564,6 +574,7 @@ export default function (pi: ExtensionAPI) {
         profile,
         localState: stateKind,
         startedAt: now,
+        skipped: lastSkipReasons.slice(),
       };
       publishPeerDecision(chosenTier, chosen, tokens, ctx, now);
     };
@@ -851,6 +862,7 @@ export default function (pi: ExtensionAPI) {
       costEstimate: 0,
       outcome: failed ? "error" : "ok",
       errorClass: failed ? "completion_error" : undefined,
+      candidatesSkipped: decision.skipped.length > 0 ? decision.skipped : undefined,
     };
     recordRoute(entry);
     lastDecision = null;
@@ -988,6 +1000,7 @@ export default function (pi: ExtensionAPI) {
       profile: readProfile(),
       localState: getEngineSnapshot().up ? "up" : "down",
       startedAt: now,
+      skipped: lastSkipReasons.slice(),
     };
     publishPeerDecision("cloud", candidate, tokens, ctx, now);
     setRouteWidget(ctx, "cloud", candidate, readProfile(), "nimbus");

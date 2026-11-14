@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordFailure } from "../_shared/provider-health.ts";
+import { lastRouteEntry } from "../_shared/route-ledger.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,8 +47,14 @@ const previous = { provider: "caduceus", id: "previous-model", api: "openai-comp
 
 function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boolean } = {}) {
   const virtuals: Record<string, any> = {};
+  const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   const pi = {
-    on: () => undefined,
+    on: (event: string, fn: (event: any, ctx: any) => unknown) => {
+      const list = handlers.get(event) ?? [];
+      list.push(fn);
+      handlers.set(event, list);
+      return () => undefined;
+    },
     registerCommand: () => undefined,
     registerVirtualModel: (m: any) => {
       virtuals[m.id] = m;
@@ -100,7 +108,10 @@ function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boo
       },
       ctx,
     );
-  return { run, runLane, virtual: virtuals["lapis"], virtuals };
+  const fire = async (event: string, payload: any): Promise<void> => {
+    for (const fn of handlers.get(event) ?? []) await fn(payload, ctx);
+  };
+  return { run, runLane, fire, virtual: virtuals["lapis"], virtuals };
 }
 
 describe("resilient-default", () => {
@@ -118,6 +129,9 @@ describe("resilient-default", () => {
     // Deterministic picks: never consult the operator's live peer registry.
     process.env.OFFICINA_NO_LANE_SPREAD = "1";
     process.env.OFFICINA_NO_GATEWAY_MARKS = "1";
+    // Never touch the operator's live provider-health file.
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = join(tmpdir(), "officina-resilient-health-test.json");
+    rmSync(process.env.OFFICINA_PROVIDER_HEALTH_FILE, { force: true });
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
   });
   afterEach(() => {
@@ -128,6 +142,7 @@ describe("resilient-default", () => {
     delete process.env.OFFICINA_NO_LANE_SPREAD;
     delete process.env.OFFICINA_NO_GATEWAY_MARKS;
     delete process.env.OFFICINA_GATEWAY_HEALTH_FILE;
+    delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
     delete process.env.OFFICINA_CLOUD_RETRIES;
     delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
@@ -274,6 +289,25 @@ describe("resilient-default", () => {
     const route = await h.run("user");
     expect(route.model.id).toBe("second-model");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("records admission skip reasons in the route ledger", async () => {
+    engine.up = true;
+    engine.busy = false;
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
+    const healthDir = mkdtempSync(join(tmpdir(), "gw-ledger-health-"));
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = join(healthDir, "health.json");
+    recordFailure("caduceus", "test-model", 429, { retryAfterMs: 120_000 });
+    const h = harness({ noLocal: true });
+    await h.run("user");
+    await h.fire("message_end", {
+      message: { role: "assistant", stopReason: "end_turn", usage: { input: 10, output: 5 } },
+    });
+    const entry = lastRouteEntry();
+    expect(entry?.model).toBe("second-model");
+    expect(entry?.candidatesSkipped?.some((s: string) => s.includes("test-model"))).toBe(true);
+    rmSync(healthDir, { recursive: true, force: true });
+    delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
   });
 
   it("names the real gate when nothing can serve", async () => {

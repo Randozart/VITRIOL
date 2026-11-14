@@ -3217,7 +3217,41 @@ const CONTINUE_PROMPT: &str = "Continue the open work — pick up exactly where 
 
 /// Handle one agent event. Returns true when the run loop should submit
 /// the compaction auto-continue (see CONTINUE_PROMPT).
+/// Optional wire-event trace (2026-11-14, conformance harness): with
+/// OFFICINA_TRACE_EVENTS=1 every pi event is appended as one JSON line to
+/// ~/.vitriol/officina/traces/events-<pid>.jsonl (bounded to 20 MB). These
+/// traces become replay fixtures for `handle_event` conformance tests.
+fn capture_event(event_type: &str, fields: &serde_json::Value) {
+    if std::env::var_os("OFFICINA_TRACE_EVENTS").is_none() {
+        return;
+    }
+    let mut dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    dir.push(".vitriol");
+    dir.push("officina");
+    dir.push("traces");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("events-{}.jsonl", std::process::id()));
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 20 * 1024 * 1024)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let line = serde_json::json!({"event": event_type, "fields": fields});
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Value) -> bool {
+    capture_event(event_type, fields);
     match event_type {
         "agent_start" => {
             state.note_phase(state::UiEvent::AgentStart);
@@ -4133,6 +4167,41 @@ mod phase_wiring_tests {
             "normal turn must not trip the table: {:?}",
             state_diags(&s)
         );
+    }
+
+    fn replay_fixture(name: &str, text: &str) -> AppState {
+        let mut s = AppState::default();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let value: serde_json::Value = serde_json::from_str(line).expect("fixture line json");
+            let event = value["event"].as_str().expect("fixture event");
+            handle_event(&mut s, event, &value["fields"]);
+        }
+        assert!(!s.is_streaming, "{name}: settles streaming");
+        assert!(!s.has_running_tool(), "{name}: no running tools at settle");
+        assert!(s.held.is_empty(), "{name}: held messages cleared");
+        assert!(!s.is_compacting, "{name}: compaction cleared");
+        assert!(
+            s.compaction_started_at.is_none(),
+            "{name}: compaction timer cleared"
+        );
+        s
+    }
+
+    #[test]
+    fn recorded_fixtures_replay_to_a_clean_settle() {
+        replay_fixture("full_turn", include_str!("fixtures/full_turn.jsonl"));
+        replay_fixture("abort_turn", include_str!("fixtures/abort_turn.jsonl"));
+        replay_fixture(
+            "compaction_turn",
+            include_str!("fixtures/compaction_turn.jsonl"),
+        );
+        let error = replay_fixture("error_turn", include_str!("fixtures/error_turn.jsonl"));
+        let errors = error
+            .entries
+            .iter()
+            .filter(|e| matches!(e, state::ChatEntry::Error(_)))
+            .count();
+        assert_eq!(errors, 1, "model error surfaced exactly once");
     }
 
     #[test]

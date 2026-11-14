@@ -129,5 +129,11 @@ compaction shrink, Rust parser/admission tests + golden vectors.
   warning per code per minute (advisory, kill switch).
 - Turn-lifecycle conformance: SHIPPED — full-turn and abort-settle tests pin
   streaming/tool/held transitions.
-- Still open: record/replay of real RPC traces as fixtures; `/doctor` session
-  format check.
+- Record/replay SHIPPED: `OFFICINA_TRACE_EVENTS=1` captures wire events to
+  `~/.vitriol/officina/traces/events-<pid>.jsonl` (20 MB bound); fixtures in
+  `tui/src/tui/fixtures/*.jsonl` replay through `handle_event` and assert a
+  clean settle (streaming, tools, held, compaction, errors).
+- Skip reasons SHIPPED: the router records `candidatesSkipped` (invalid /
+  cooling / paused / no-fit / core verdict) in the route ledger; `/routes`
+  shows the latest entry's skips on a footer line.
+- Still open: `/doctor` session-format check.

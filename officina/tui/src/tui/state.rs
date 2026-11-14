@@ -772,6 +772,16 @@ pub struct AppState {
     /// Chat viewport of the last rendered frame — lets handle_key map
     /// selection rows to transcript lines without a Frame.
     pub last_chat_area: Option<ratatui::layout::Rect>,
+    /// Scroll lock (2026-11-13, operator request): while scrolled back the
+    /// view is pinned to an absolute line index so streaming output below
+    /// never drags the lines being read. None = following the tail.
+    pub scroll_lock: Option<usize>,
+    /// Line index at the top of the last rendered window (scroll_up base).
+    pub last_start: usize,
+    /// Total rendered transcript lines at the last frame.
+    pub last_chat_total: usize,
+    /// Screen rect of the "scrolled back" hint row; click jumps to tail.
+    pub tail_hint_area: Option<ratatui::layout::Rect>,
     /// Sidebar viewport of the last rendered frame — wheel events over this
     /// rect scroll the sidebar independently of the chat (2026-11-10).
     pub last_sidebar_area: Option<ratatui::layout::Rect>,
@@ -909,6 +919,10 @@ impl Default for AppState {
             sel_anchor: None,
             sel_head: None,
             last_chat_area: None,
+            scroll_lock: None,
+            last_start: 0,
+            last_chat_total: 0,
+            tail_hint_area: None,
             last_sidebar_area: None,
             sidebar_scroll: 0,
             sidebar_scroll_max: 0,
@@ -2100,6 +2114,9 @@ impl AppState {
 
     pub fn push_user(&mut self, text: String) {
         self.entries.push(ChatEntry::User(text));
+        // A new turn means the operator is looking at the prompt: release
+        // the scroll lock so the answer streams in view.
+        self.scroll_follow();
     }
 
     /// Tool execution started — add a running tool entry with full args.
@@ -2608,6 +2625,9 @@ impl AppState {
     // ── Scrollback (owner request 2026-09-02) ────────────────────────────
 
     pub fn scroll_up(&mut self, rows: u16) {
+        self.clear_selection();
+        let anchor = self.scroll_lock.unwrap_or(self.last_start);
+        self.scroll_lock = Some(anchor.saturating_sub(rows as usize));
         self.scroll = self
             .scroll
             .saturating_add(rows)
@@ -2615,7 +2635,23 @@ impl AppState {
     }
 
     pub fn scroll_down(&mut self, rows: u16) {
+        self.clear_selection();
+        if self.scroll == 0 {
+            return;
+        }
+        let anchor = self.scroll_lock.unwrap_or(self.last_start);
         self.scroll = self.scroll.saturating_sub(rows);
+        if self.scroll == 0 {
+            self.scroll_lock = None;
+        } else {
+            self.scroll_lock = Some(anchor.saturating_add(rows as usize));
+        }
+    }
+
+    /// Lock released — the view follows the tail again.
+    pub fn scroll_follow(&mut self) {
+        self.scroll = 0;
+        self.scroll_lock = None;
     }
 
     // ── Text selection (owner request 2026-09-03) ────────────────────────
@@ -2677,11 +2713,12 @@ impl AppState {
     /// Jump to the oldest visible content (renderer clamps to scroll_max).
     pub fn scroll_home(&mut self) {
         self.scroll = u16::MAX;
+        self.scroll_lock = Some(0);
     }
 
     /// Back to the live tail.
     pub fn scroll_end(&mut self) {
-        self.scroll = 0;
+        self.scroll_follow();
     }
 
     /// Sidebar has its own scrollback (owner request 2026-11-10): the panel
@@ -4236,6 +4273,45 @@ mod tests {
             "hidden thinking marker maps to its entry (plus the blank)"
         );
         assert!(s.line_entries.iter().any(|i| *i == 1));
+    }
+
+    #[test]
+    fn scroll_lock_freezes_the_view_and_releases_at_the_tail() {
+        let mut s = AppState::default();
+        s.last_start = 100;
+        s.last_chat_total = 200;
+        s.scroll_max = 120;
+        s.scroll_up(5);
+        assert_eq!(s.scroll_lock, Some(95), "lock pins the top line");
+        assert_eq!(s.scroll, 5);
+        // New output arrives: total grows, but the lock is untouched.
+        s.last_chat_total = 260;
+        assert_eq!(
+            s.scroll_lock,
+            Some(95),
+            "streaming never moves a locked view"
+        );
+        s.scroll_down(5);
+        assert_eq!(s.scroll, 0);
+        assert_eq!(s.scroll_lock, None, "reaching the tail re-engages follow");
+        s.scroll_up(3);
+        s.scroll_home();
+        assert_eq!(s.scroll_lock, Some(0), "Home jumps to the oldest line");
+        s.scroll_end();
+        assert_eq!(s.scroll_lock, None);
+        assert_eq!(s.scroll, 0);
+    }
+
+    #[test]
+    fn new_user_turn_releases_the_scroll_lock() {
+        let mut s = AppState::default();
+        s.last_start = 40;
+        s.scroll_max = 80;
+        s.scroll_up(4);
+        assert!(s.scroll_lock.is_some());
+        s.push_user("hello".into());
+        assert_eq!(s.scroll_lock, None);
+        assert_eq!(s.scroll, 0);
     }
 
     #[test]

@@ -51,7 +51,12 @@
   marks, cooldowns, and the next pick.
 - **Autofill**: press **Tab** to cycle keyword/target completions (shown on the
   ⧉ bar under the prompt). BackTab still cycles tabs.
-- **Scroll**: **PgUp**/**PgDn** scroll the output; Up/Down recall command
+- **Scroll**: **PgUp**/**PgDn** (and the wheel) scroll the output. Scrolling
+  up **locks the view**: incoming streaming output never drags the lines
+  you are reading. A hint row above the prompt shows the lock; click it or
+  press **End** (empty input) to jump back to the live tail. **Home** jumps
+  to the oldest line; sending a message also returns to the tail.
+- **Command recall**: Up/Down recall command
   history; Enter runs a command.
 
 ## Subscriptions via Caduceus

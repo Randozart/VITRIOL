@@ -507,8 +507,53 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if state.scroll > max_scroll {
         state.scroll = max_scroll;
     }
-    let start = total.saturating_sub(visible + state.scroll as usize);
+    // Scroll lock (2026-11-13, operator request): while scrolled back the
+    // top line is pinned by absolute index — streaming below never drags
+    // the text being read. Reaching the tail re-engages follow mode.
+    let max_start = total.saturating_sub(visible);
+    let start = if state.scroll == 0 {
+        state.scroll_lock = None;
+        max_start
+    } else {
+        let anchor = state.scroll_lock.unwrap_or(state.last_start);
+        let locked = anchor.min(max_start);
+        if locked >= max_start {
+            state.scroll_follow();
+            max_start
+        } else {
+            state.scroll_lock = Some(locked);
+            locked
+        }
+    };
+    state.last_start = start;
+    state.last_chat_total = total;
     let view: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    // Scrolled-back hint + click target (2026-11-13): the breathing row
+    // between transcript and prompt says the view is locked and offers a
+    // one-click jump back to the live tail.
+    state.tail_hint_area = None;
+    if state.scroll > 0 && chat_area.height > 0 {
+        let hint = Rect {
+            y: chat_area.y + chat_area.height,
+            height: 1,
+            ..chat_area
+        };
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "  {}▲ scrolled back {} rows — click here or press End to jump to the tail",
+                    theme::GLYPH_ALEMBIC,
+                    state
+                        .last_chat_total
+                        .saturating_sub(state.last_start + visible as usize)
+                ),
+                Style::new().fg(theme::MUTED).bg(theme::BG),
+            ))),
+            hint,
+        );
+        state.tail_hint_area = Some(hint);
+    }
 
     // Thinking-block hitboxes (2026-11-13): a left click on any row of a
     // block toggles collapse. Rows are screen coords of the visible

@@ -1588,7 +1588,12 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         }
         KeyCode::Esc => {
             if state.is_streaming {
+                // Arm the settle deadline: if pi never confirms with
+                // agent_end, the watchdog releases the UI instead of
+                // spinning forever (2026-11-13, operator report).
                 let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+                state.abort_deadline =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
             }
             // Idle Esc: close-overlays is handled above (modals); here it
             // is a deliberate NO-OP — it used to quit (owner report:
@@ -2444,10 +2449,33 @@ async fn cancel_pending_dialogs(state: &mut AppState, bridge: &mut RpcBridge) {
 /// threshold, cancel any blocking dialog, abort once, and (if the abort also
 /// fails to settle) surface an explicit restart hint.
 async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
+    let now = std::time::Instant::now();
+
+    // Abort-settle deadline runs even with the tool watchdog disabled: an
+    // unresponsive abort must never leave 'working…' spinning forever
+    // (2026-11-13, operator report).
+    if state.abort_deadline.is_some_and(|deadline| now >= deadline) {
+        state.abort_deadline = None;
+        state.note_phase(state::UiEvent::AgentEnd);
+        state.is_streaming = false;
+        state.is_compacting = false;
+        state.expected_tool_calls.clear();
+        let abandoned = state.abandon_running_tools("abort did not settle — released");
+        state.entries.push(state::ChatEntry::Diag(format!(
+            "harness watchdog: abort did not settle after 10s — UI released{}; \
+             the pi child may still be finishing in the background. If it stays \
+             unresponsive, /quit then relaunch Officina.",
+            if abandoned > 0 {
+                format!(", {abandoned} tool call(s) marked cancelled")
+            } else {
+                String::new()
+            }
+        )));
+    }
+
     if state.tool_watchdog_secs == 0 {
         return;
     }
-    let now = std::time::Instant::now();
     let mut stalled = false;
 
     // Stage 0: an assistant turn announced a tool call, but pi never emitted
@@ -2486,15 +2514,6 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
         cancel_pending_dialogs(state, bridge).await;
         let _ = bridge.request(RpcCommand::Abort { id: None }).await;
         state.abort_deadline = Some(now + std::time::Duration::from_secs(10));
-    }
-
-    if state.abort_deadline.is_some_and(|deadline| now >= deadline) {
-        state.abort_deadline = None;
-        state.entries.push(state::ChatEntry::Diag(
-            "harness watchdog: abort did not settle (pi child may be stuck). \
-             Session is preserved; /quit then relaunch Officina to repair it."
-                .to_string(),
-        ));
     }
 }
 

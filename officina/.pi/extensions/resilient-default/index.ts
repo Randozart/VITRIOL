@@ -456,6 +456,12 @@ export default function (pi: ExtensionAPI) {
       // lottery; the local stone has 262k and is the deterministic answer
       // when the prompt no longer fits the failed lane.
       if ((overflowTokens || learnedLimit) && local && local.provider === "llamacpp") {
+        if (state.tier !== "local") {
+          ctx.ui?.notify?.(
+            "route: local (Lapis Occultus) after context overflow — the first turn re-prefills",
+            "info",
+          );
+        }
         activeCloud = undefined;
         remember(local, "local");
         setRouteWidget(ctx, "local", undefined, profile);
@@ -583,6 +589,12 @@ export default function (pi: ExtensionAPI) {
       return { model: candidate, thinkingLevel: request.thinkingLevel, state };
     }
     if (local) {
+      if (state.tier !== "local") {
+        ctx.ui?.notify?.(
+          "route: local (Lapis Occultus) — switching back re-prefills the prompt",
+          "info",
+        );
+      }
       activeCloud = undefined;
       remember(local, "local");
       setRouteWidget(ctx, "local", undefined, profile);

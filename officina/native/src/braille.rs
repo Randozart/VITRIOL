@@ -44,7 +44,7 @@ fn find_ramp(name: &str) -> Option<&'static Ramp> {
                     &[
                         (0.0, (0xff, 0xff, 0xff)),
                         (0.25, (0xff, 0xe0, 0x66)), // lightYellow
-                        (0.5, (0xff, 0x5f, 0x1f)),  // antidote
+                        (0.5, (0xff, 0xa0, 0x00)),  // antidote (amber, 2026-11-14)
                         (0.75, (0xf8, 0x51, 0x49)), // substrate
                         (1.0, (0x8a, 0x15, 0x15)),  // deepRed
                     ],

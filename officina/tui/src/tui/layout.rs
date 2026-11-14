@@ -546,7 +546,9 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
     state.last_start = start;
     state.last_chat_total = total;
-    let view: Vec<Line> = lines.into_iter().skip(start).collect();
+    // Only the visible window is materialised (2026-11-14 perf: long
+    // transcripts used to clone thousands of out-of-view lines per frame).
+    let view: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
 
     // Scrolled-back hint + click target (2026-11-13): the breathing row
     // between transcript and prompt says the view is locked and offers a

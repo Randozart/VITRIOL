@@ -775,6 +775,12 @@ pub struct AppState {
     pub thinking_default_file: Option<std::path::PathBuf>,
     /// Injectable toolchecks dir (tests never read the operator's live facts).
     pub tool_checks_dir: Option<std::path::PathBuf>,
+    /// Per-entry rendered lines (idx → (revision, lines)). `chat_lines` used
+    /// to rebuild the whole transcript every frame — 59 ms at 2.8k entries,
+    /// which starved input on long sessions (2026-11-14 perf fix). Static
+    /// entries are now rendered once and cloned; only the streaming tail
+    /// (and running tools) re-render per frame.
+    pub entry_lines_cache: std::collections::HashMap<usize, (u64, Vec<Line<'static>>)>,
     /// Line → entry map of the last chat_lines output. The renderer also
     /// derives clickable thinking-block row ranges from it (2026-11-13).
     pub line_entries: Vec<usize>,
@@ -1106,6 +1112,7 @@ impl Default for AppState {
             scroll: 0,
             scroll_max: 0,
             md_cache: HashMap::new(),
+            entry_lines_cache: std::collections::HashMap::new(),
             line_entries: Vec::new(),
             thinking_hitboxes: Vec::new(),
             tool_hitboxes: Vec::new(),
@@ -3172,15 +3179,73 @@ impl AppState {
     /// Drop the markdown render cache (on transcript clear/rehydrate).
     pub fn md_cache_clear(&mut self) {
         self.md_cache.clear();
+        self.entry_lines_cache.clear();
     }
 
     /// All chat lines as styled ratatui Lines.
     /// Assistant entries go through the markdown renderer (cached).
     /// Tool entries render per their effective verbosity mode (cached per
     /// entry against width + tools_gen + output length).
+    /// Cheap revision of an entry's rendered inputs (2026-11-14): content
+    /// lengths + flags that change the output. Args are immutable after a
+    /// tool starts, so only output/diff/checks growth matters.
+    fn entry_rev(entry: &ChatEntry, width: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        width.hash(&mut h);
+        std::mem::discriminant(entry).hash(&mut h);
+        match entry {
+            ChatEntry::User(t)
+            | ChatEntry::Assistant(t)
+            | ChatEntry::Diag(t)
+            | ChatEntry::Warn(t)
+            | ChatEntry::Error(t)
+            | ChatEntry::Notice(t)
+            | ChatEntry::Watchdog(t) => t.len().hash(&mut h),
+            ChatEntry::Thinking { text, collapsed } => {
+                text.len().hash(&mut h);
+                collapsed.hash(&mut h);
+            }
+            ChatEntry::Tool {
+                name,
+                summary,
+                output,
+                output_truncated,
+                error,
+                click_mode,
+                diff,
+                pre_content,
+                checks,
+                ..
+            } => {
+                name.hash(&mut h);
+                summary.hash(&mut h);
+                output.len().hash(&mut h);
+                output_truncated.hash(&mut h);
+                error.hash(&mut h);
+                click_mode.map(ToolVerbosity::label).hash(&mut h);
+                diff.as_ref().map(|d| d.len()).hash(&mut h);
+                pre_content.as_ref().map(|c| c.len()).hash(&mut h);
+                if let Some(c) = checks {
+                    c.format
+                        .as_ref()
+                        .map(|f| (f.tool.as_str(), f.changed))
+                        .hash(&mut h);
+                    c.syntax.as_ref().map(|s| s.ok).hash(&mut h);
+                    c.praetor.as_ref().map(|p| p.count).hash(&mut h);
+                }
+            }
+            _ => {}
+        }
+        h.finish()
+    }
+
     pub fn chat_lines(&mut self, width: usize) -> Vec<Line<'static>> {
         if self.md_cache.len() > 1024 {
             self.md_cache.clear();
+        }
+        if self.entry_lines_cache.len() > self.entries.len() {
+            self.entry_lines_cache.clear();
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
         let mut line_entries: Vec<usize> = Vec::new();
@@ -3195,6 +3260,34 @@ impl AppState {
         let wd = self.watchdog.clone();
         for (idx, entry) in self.entries.iter_mut().enumerate() {
             let before = lines.len();
+            // Dynamic entries (the streaming tail's thinking block, running
+            // tools) animate — never cached (2026-11-14).
+            let dynamic = matches!(entry, ChatEntry::Tool { running: true, .. })
+                || matches!(entry, ChatEntry::Thinking { .. })
+                    && idx + 1 == total
+                    && self.is_streaming;
+            if !dynamic {
+                let rev = Self::entry_rev(entry, width);
+                if let Some((cached_rev, cached)) = self.entry_lines_cache.get(&idx) {
+                    if *cached_rev == rev {
+                        lines.extend(cached.iter().cloned());
+                        for _ in before..lines.len() {
+                            line_entries.push(idx);
+                        }
+                        if lines.len() > before && idx + 1 < total {
+                            let already_blank = lines
+                                .last()
+                                .map(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+                                .unwrap_or(true);
+                            if !already_blank {
+                                lines.push(Line::from(""));
+                                line_entries.push(idx);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
             match entry {
                 ChatEntry::User(text) => {
                     for (i, seg) in wrap_text(text, width.saturating_sub(2))
@@ -3635,6 +3728,11 @@ impl AppState {
                         Span::styled("\u{256f}", edge),
                     ]));
                 }
+            }
+            if !dynamic {
+                let rev = Self::entry_rev(entry, width);
+                self.entry_lines_cache
+                    .insert(idx, (rev, lines[before..].to_vec()));
             }
             // Breathing room between transcript entries (owner request
             // 2026-11-10: everything was bunched). Exactly one blank row,
@@ -5469,6 +5567,74 @@ mod tests {
             .any(|sp| sp.style.fg == Some(theme::RED) && sp.content.contains("gates"));
         assert!(ok, "green status line: {}", flat_text(&lines));
         assert!(bad, "red status line: {}", flat_text(&lines));
+    }
+
+    #[test]
+    fn transcript_cache_is_transparent_and_invalidates() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
+        s.push_user("hello".into());
+        s.push_text_delta("answer text\n");
+        s.push_thinking_delta("reasoning");
+        s.tool_start(Some("t"), "bash", &serde_json::json!({"command": "ls"}));
+        s.tool_end(Some("t"), "bash", "a\nb", false);
+
+        let flat = |v: Vec<Line<'static>>| {
+            v.iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let a = flat(s.chat_lines(80));
+        let b = flat(s.chat_lines(80)); // warm cache
+        assert_eq!(a, b, "warm frames are identical");
+        assert_eq!(s.line_entries.len(), s.chat_lines(80).len());
+        s.entry_lines_cache.clear();
+        let c = flat(s.chat_lines(80)); // cold rebuild
+        assert_eq!(a, c, "the cache must be transparent");
+
+        s.push_text_delta(" more words");
+        let d = flat(s.chat_lines(80));
+        assert!(d.contains("more words"), "tail mutation invalidates: {d}");
+        assert_ne!(a, d);
+
+        s.entries.push(ChatEntry::Thinking {
+            text: "trace-body".into(),
+            collapsed: false,
+        });
+        let e1 = flat(s.chat_lines(80));
+        if let Some(ChatEntry::Thinking { collapsed, .. }) = s.entries.last_mut() {
+            *collapsed = true;
+        }
+        let e2 = flat(s.chat_lines(80));
+        assert!(e1.contains("trace-body"), "{e1}");
+        assert!(e2.contains("click to expand"), "collapse invalidates: {e2}");
+    }
+
+    #[test]
+    fn streaming_tail_rerenders_per_frame() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
+        s.push_user("go".into());
+        s.is_streaming = true;
+        s.push_text_delta("first");
+        let a = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        s.push_text_delta(" second");
+        let b = s
+            .chat_lines(80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(a.contains("first") && !a.contains("second"), "{a}");
+        assert!(b.contains("first second"), "{b}");
     }
 
     #[test]

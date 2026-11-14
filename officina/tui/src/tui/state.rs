@@ -4589,23 +4589,38 @@ fn code_view_lines(
     }
 
     if !content.is_empty() {
+        // Markdown files render as markdown (2026-11-14, operator report:
+        // a .md write showed the diff but the preview stayed raw text).
+        let lower = path.to_ascii_lowercase();
+        let is_markdown =
+            lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".mdx");
         out.push(Line::from(vec![
             Span::styled("│ ", border),
             Span::styled(
                 if full {
-                    "code".to_string()
+                    if is_markdown {
+                        "markdown".to_string()
+                    } else {
+                        "code".to_string()
+                    }
                 } else {
-                    format!("code · {} line(s)", content.lines().count())
+                    format!(
+                        "{} · {} line(s)",
+                        if is_markdown { "markdown" } else { "code" },
+                        content.lines().count()
+                    )
                 },
                 muted,
             ),
         ]));
         let cap = if full { 400 } else { 24 };
         let total = content.lines().count();
-        for line in crate::markdown::highlight_code(path, content, width.saturating_sub(4))
-            .into_iter()
-            .take(cap)
-        {
+        let rendered = if is_markdown {
+            crate::markdown::render(content, width.saturating_sub(4))
+        } else {
+            crate::markdown::highlight_code(path, content, width.saturating_sub(4))
+        };
+        for line in rendered.into_iter().take(cap) {
             let mut spans = vec![Span::styled("│   ", border)];
             spans.extend(line.spans);
             out.push(Line::from(spans));
@@ -5635,6 +5650,27 @@ mod tests {
             .join("\n");
         assert!(a.contains("first") && !a.contains("second"), "{a}");
         assert!(b.contains("first second"), "{b}");
+    }
+
+    #[test]
+    fn write_block_renders_markdown_files_as_markdown() {
+        let mut s = AppState::default();
+        s.tool_default = ToolVerbosity::Block;
+        s.tool_start(
+            Some("m1"),
+            "write",
+            &serde_json::json!({
+                "path": "docs/note.md",
+                "content": "# Sprint notes\n\n- shipped the panel\n- **bold** item\n"
+            }),
+        );
+        s.tool_end(Some("m1"), "write", "ok", false);
+        let text = flat_text(&s.chat_lines(100));
+        assert!(text.contains("markdown · 4 line(s)"), "{text}");
+        assert!(text.contains("Sprint notes"), "heading rendered: {text}");
+        assert!(!text.contains("# Sprint notes"), "hashes stripped: {text}");
+        assert!(text.contains("shipped the panel"), "list rendered: {text}");
+        assert!(!text.contains("- shipped"), "list marker stripped: {text}");
     }
 
     #[test]

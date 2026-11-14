@@ -15,14 +15,29 @@ use vitriol_core::{admit, Admission, LaneState};
 const NOW: u64 = 1_790_000_000_000;
 
 fn lane(id: &str, owner: &str) -> ProbeLane {
-    ProbeLane { id: id.into(), owner: owner.into() }
+    ProbeLane {
+        id: id.into(),
+        owner: owner.into(),
+    }
 }
 
 fn fact(kind: &str, ok_at: Option<u64>, until: Option<u64>, next: u64, fails: u64) -> ProbeFact {
-    ProbeFact { kind: kind.into(), ok_at, until, latency_ms: None, fail_count: fails, next_probe_at: next }
+    ProbeFact {
+        kind: kind.into(),
+        ok_at,
+        until,
+        latency_ms: None,
+        fail_count: fails,
+        next_probe_at: next,
+    }
 }
 
-fn world_json(probes: &[(&str, ProbeFact)], invalid: &[&str], paused: &[&str], cooling: &[(&str, u64)]) -> Value {
+fn world_json(
+    probes: &[(&str, ProbeFact)],
+    invalid: &[&str],
+    paused: &[&str],
+    cooling: &[(&str, u64)],
+) -> Value {
     let probes: serde_json::Map<String, Value> = probes
         .iter()
         .map(|(id, f)| {
@@ -38,8 +53,10 @@ fn world_json(probes: &[(&str, ProbeFact)], invalid: &[&str], paused: &[&str], c
             )
         })
         .collect();
-    let cooling: serde_json::Map<String, Value> =
-        cooling.iter().map(|(id, until)| ((*id).to_string(), json!(until))).collect();
+    let cooling: serde_json::Map<String, Value> = cooling
+        .iter()
+        .map(|(id, until)| ((*id).to_string(), json!(until)))
+        .collect();
     json!({
         "probes": probes,
         "invalid": invalid,
@@ -65,8 +82,18 @@ fn build_world(value: &Value) -> ProbeWorld {
     }
     ProbeWorld {
         probes,
-        invalid: value["invalid"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<HashSet<_>>(),
-        paused_owners: value["pausedOwners"].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect::<HashSet<_>>(),
+        invalid: value["invalid"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect::<HashSet<_>>(),
+        paused_owners: value["pausedOwners"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect::<HashSet<_>>(),
         cooling_until: value["coolingUntil"]
             .as_object()
             .unwrap()
@@ -76,7 +103,14 @@ fn build_world(value: &Value) -> ProbeWorld {
     }
 }
 
-fn admission_case(prompt: u64, reserve: u64, lane: LaneState, declared: u64, learned: Option<u64>, safe: Option<u64>) -> Value {
+fn admission_case(
+    prompt: u64,
+    reserve: u64,
+    lane: LaneState,
+    declared: u64,
+    learned: Option<u64>,
+    safe: Option<u64>,
+) -> Value {
     let outcome = admit(prompt, reserve, &lane, declared, learned, safe);
     let expect = match outcome {
         Admission::Admit => "admit",
@@ -104,15 +138,87 @@ fn vectors() -> Value {
     ];
 
     let mut admission = Vec::new();
-    admission.push(admission_case(100_000, 16_384, LaneState::default(), 180_000, None, None));
-    admission.push(admission_case(170_000, 16_384, LaneState::default(), 180_000, None, None));
-    admission.push(admission_case(100_000, 16_384, LaneState { invalid: true, ..Default::default() }, 180_000, None, None));
-    admission.push(admission_case(100_000, 16_384, LaneState { cooling: true, ..Default::default() }, 180_000, None, None));
-    admission.push(admission_case(100_000, 16_384, LaneState { owner_paused: true, ..Default::default() }, 180_000, None, None));
-    admission.push(admission_case(20_000, 16_384, LaneState::default(), 180_000, None, Some(56 * 1024)));
-    admission.push(admission_case(10_000, 1_000, LaneState::default(), 180_000, None, Some(56 * 1024)));
-    admission.push(admission_case(150_000, 16_384, LaneState::default(), 400_000, Some(180_000), None));
-    admission.push(admission_case(150_000, 16_384, LaneState::default(), 400_000, Some(262_144), None));
+    admission.push(admission_case(
+        100_000,
+        16_384,
+        LaneState::default(),
+        180_000,
+        None,
+        None,
+    ));
+    admission.push(admission_case(
+        170_000,
+        16_384,
+        LaneState::default(),
+        180_000,
+        None,
+        None,
+    ));
+    admission.push(admission_case(
+        100_000,
+        16_384,
+        LaneState {
+            invalid: true,
+            ..Default::default()
+        },
+        180_000,
+        None,
+        None,
+    ));
+    admission.push(admission_case(
+        100_000,
+        16_384,
+        LaneState {
+            cooling: true,
+            ..Default::default()
+        },
+        180_000,
+        None,
+        None,
+    ));
+    admission.push(admission_case(
+        100_000,
+        16_384,
+        LaneState {
+            owner_paused: true,
+            ..Default::default()
+        },
+        180_000,
+        None,
+        None,
+    ));
+    admission.push(admission_case(
+        20_000,
+        16_384,
+        LaneState::default(),
+        180_000,
+        None,
+        Some(56 * 1024),
+    ));
+    admission.push(admission_case(
+        10_000,
+        1_000,
+        LaneState::default(),
+        180_000,
+        None,
+        Some(56 * 1024),
+    ));
+    admission.push(admission_case(
+        150_000,
+        16_384,
+        LaneState::default(),
+        400_000,
+        Some(180_000),
+        None,
+    ));
+    admission.push(admission_case(
+        150_000,
+        16_384,
+        LaneState::default(),
+        400_000,
+        Some(262_144),
+        None,
+    ));
 
     let mut backoff = Vec::new();
     for fail_count in 1..=9u64 {
@@ -129,19 +235,38 @@ fn vectors() -> Value {
         // unverified wins
         world_json(
             &[
-                ("dahl/MiniMaxAI/MiniMax-M2.7", fact("cooling", None, Some(NOW - 5_000), NOW, 1)),
-                ("freeinference/deepseek-v4-flash", fact("ok", Some(NOW - 11 * 60_000), None, NOW, 0)),
+                (
+                    "dahl/MiniMaxAI/MiniMax-M2.7",
+                    fact("cooling", None, Some(NOW - 5_000), NOW, 1),
+                ),
+                (
+                    "freeinference/deepseek-v4-flash",
+                    fact("ok", Some(NOW - 11 * 60_000), None, NOW, 0),
+                ),
             ],
-            &[], &[], &[],
+            &[],
+            &[],
+            &[],
         ),
         // cooldown just expired beats stale
         world_json(
             &[
-                ("dahl/MiniMaxAI/MiniMax-M2.7", fact("cooling", None, Some(NOW - 5_000), NOW, 1)),
-                ("freeinference/deepseek-v4-flash", fact("ok", Some(NOW - 1_000), None, NOW, 0)),
-                ("agentrouter/gpt-5.6-sol", fact("ok", Some(NOW - 1_000), None, NOW, 0)),
+                (
+                    "dahl/MiniMaxAI/MiniMax-M2.7",
+                    fact("cooling", None, Some(NOW - 5_000), NOW, 1),
+                ),
+                (
+                    "freeinference/deepseek-v4-flash",
+                    fact("ok", Some(NOW - 1_000), None, NOW, 0),
+                ),
+                (
+                    "agentrouter/gpt-5.6-sol",
+                    fact("ok", Some(NOW - 1_000), None, NOW, 0),
+                ),
             ],
-            &[], &[], &[],
+            &[],
+            &[],
+            &[],
         ),
         // every lane blocked
         world_json(
@@ -165,7 +290,12 @@ fn vectors() -> Value {
     }
 
     let exhaustion_worlds = vec![
-        world_json(&[], &[], &[], &[("dahl/MiniMaxAI/MiniMax-M2.7", NOW + 60_000)]),
+        world_json(
+            &[],
+            &[],
+            &[],
+            &[("dahl/MiniMaxAI/MiniMax-M2.7", NOW + 60_000)],
+        ),
         world_json(
             &[],
             &["dahl/MiniMaxAI/MiniMax-M2.7"],
@@ -217,5 +347,8 @@ fn golden_vectors_are_current() {
     let committed = std::fs::read_to_string(&path).expect("testdata/vectors.json missing");
     let a: Value = serde_json::from_str(&committed).unwrap();
     let b: Value = serde_json::from_str(&generated).unwrap();
-    assert_eq!(a, b, "golden vectors drifted — run VITRIOL_WRITE_VECTORS=1 cargo test --test emit_vectors");
+    assert_eq!(
+        a, b,
+        "golden vectors drifted — run VITRIOL_WRITE_VECTORS=1 cargo test --test emit_vectors"
+    );
 }

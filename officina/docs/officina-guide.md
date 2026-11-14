@@ -27,6 +27,16 @@
   directly on top of the prompt (options list; the RPC path stages it as
   a facts file, so it works on every lane and can never hang the wire).
   No response in 10 minutes fail-opens; esc cancels.
+- **Clean code by default** (2026-11-14): every `edit`/`write` is formatted
+  with the project-canonical tool (project-local `node_modules/.bin` first,
+  then PATH; rustfmt edition from `Cargo.toml`), syntax-checked, and — after
+  the turn — cheaply verified (typecheck/cargo check/rustfmt/ruff); failures
+  come back to the model as one bounded tail. Praetor advisories are on by
+  default (`vitriol caduceus config set praetor off` disables). The explicit
+  `code` tool formats + verifies on demand: `code({action:"all"|"format"|
+  "verify", paths, tier:"cheap"|"full"})` and returns a ✓/⚠/✗ report.
+  Write/edit blocks show the code (syntax-highlighted) and the diff; click
+  cycles closed → formatted → full.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
@@ -45,6 +55,16 @@
   `/thinking-view default collapsed|expanded` sets what NEW traces start
   as (default: collapsed); bare `/thinking-view` shows the current state.
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
+- **Clean code by default** (2026-11-14): every `edit`/`write` is formatted
+  with the project-canonical tool (project-local `node_modules/.bin` first,
+  then PATH; rustfmt edition from `Cargo.toml`), syntax-checked, and — after
+  the turn — cheaply verified (typecheck/cargo check/rustfmt/ruff); failures
+  come back to the model as one bounded tail. Praetor advisories are on by
+  default (`vitriol caduceus config set praetor off` disables). The explicit
+  `code` tool formats + verifies on demand: `code({action:"all"|"format"|
+  "verify", paths, tier:"cheap"|"full"})` and returns a ✓/⚠/✗ report.
+  Write/edit blocks show the code (syntax-highlighted) and the diff; click
+  cycles closed → formatted → full.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real

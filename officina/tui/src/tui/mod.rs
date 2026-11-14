@@ -3,6 +3,7 @@ pub mod cache;
 pub mod caduceus;
 pub mod cost;
 pub mod crashlog;
+pub mod diff;
 pub mod engine_config;
 pub mod janitor;
 pub mod layout;
@@ -3285,7 +3286,16 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                         .map(String::from)
                 })
                 .unwrap_or_default();
+            // pi's edit tool returns the canonical diff; keep it for the
+            // block (2026-11-14).
+            let diff = fields
+                .get("result")
+                .and_then(|r| r.get("details"))
+                .and_then(|d| d.get("diff"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
             state.note_tool_finished(tool_call_id);
+            state.set_tool_diff(tool_call_id, diff);
             state.tool_end(tool_call_id, name, &result_text, is_err);
         }
         "extension_error" => {

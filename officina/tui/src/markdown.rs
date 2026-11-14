@@ -69,6 +69,63 @@ fn heading_style(h1: bool) -> Style {
     }
 }
 
+/// Highlight a code snippet for a tool block (2026-11-14): language inferred
+/// from the file path, lines truncated (never wrapped) to `width`.
+pub fn highlight_code(path: &str, text: &str, width: usize) -> Vec<Line<'static>> {
+    let ss = syntaxes();
+    let syntax = ss
+        .find_syntax_for_file(path)
+        .ok()
+        .flatten()
+        .or_else(|| {
+            std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .and_then(|ext| ss.find_syntax_by_extension(ext))
+        })
+        .unwrap_or_else(|| ss.find_syntax_plain_text());
+    let mut hl = HighlightLines::new(syntax, highlight_theme());
+    let mut out: Vec<Line<'static>> = Vec::new();
+    for raw in text.split('\n') {
+        let line = format!("{raw}\n");
+        let spans = hl
+            .highlight_line(&line, ss)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(style, seg)| {
+                Span::styled(seg.trim_end_matches('\n').to_string(), syn_style(style))
+            })
+            .collect::<Vec<Span>>();
+        let taken = truncate_spans(spans, width);
+        out.push(Line::from(taken));
+    }
+    out
+}
+
+/// Truncate styled spans to a column budget (`…` when cut). Pure.
+fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut used = 0usize;
+    let mut out: Vec<Span<'static>> = Vec::new();
+    for sp in spans {
+        let len = sp.content.chars().count();
+        if used + len <= width {
+            used += len;
+            out.push(sp);
+            continue;
+        }
+        let room = width.saturating_sub(used);
+        if room > 1 {
+            let mut text: String = sp.content.chars().take(room - 1).collect();
+            text.push('…');
+            out.push(Span::styled(text, sp.style));
+        } else if room == 1 {
+            out.push(Span::styled("…".to_string(), sp.style));
+        }
+        break;
+    }
+    out
+}
+
 /// Render `text` into wrapped, styled lines of at most `width` columns.
 pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
     use pulldown_cmark::{Options, Parser};

@@ -191,12 +191,24 @@ Officina can import an OpenCode session as a native pi session:
     vitriol opencode import <id> --no-launch
     vitriol opencode import <id> --fork
 
-Defaults import the whole transcript; `--last N` and `--max-chars N` are
-explicit trims. Tool outputs are capped at 500 chars each by default (4k with
-`--full`) because OpenCode can store multi-GB tool bodies. Imported sessions
-are written under `~/.pi/agent/sessions/` and opened with
-`vitriol officina --session <path>` unless `--no-launch` is passed. Source DB
-is read-only.
+Defaults import a manageable window: the newest ~160k chars (~40k tokens)
+verbatim, with the older history collapsed into one hidden digest entry
+(counts + the start of the arc and the most recent user prompts). `--full`
+imports everything; `--last N` / `--max-chars N` narrow further. Tool outputs
+are capped at 500 chars each by default (4k with `--full`) because OpenCode can
+store multi-GB tool bodies. Imported sessions are written under
+`~/.pi/agent/sessions/` and opened with `vitriol officina --session <path>`
+unless `--no-launch` is passed. Source DB is read-only.
+
+Already-imported sessions that predate the budget (e.g. a multi-million-token
+import) can be re-budgeted in place without touching the source:
+
+    vitriol opencode compact <session.jsonl> [--max-chars N] [--in-place]
+    vitriol opencode compact <file> --out <path>   # default: sibling .compact.jsonl
+
+The compactor keeps whole conversation units (assistant tool calls stay with
+their results), digests the dropped prefix, and rebuilds parent links; it
+refuses to run unless the input and output both pass the structural check.
 
 ## Settings TUI (2026-11-09)
 

@@ -412,6 +412,168 @@ export function toSessionJsonl(source, normalized, options = {}) {
   return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }
 
+/**
+ * Compact an ALREADY-imported pi session (2026-11-14, operator report: one
+ * import predates the default budget and carries ~2.6M tokens).
+ *
+ * Works on the JSONL text: groups entries into conversation units (a user
+ * message plus everything before the next user message, so assistant calls
+ * stay with their tool results), keeps the newest units within `maxChars`,
+ * and replaces the dropped prefix with one hidden digest entry. Parent links
+ * are rebuilt; ids are preserved.
+ */
+export function compactSessionText(text, options = {}) {
+  const maxChars = Number.isFinite(options.maxChars) ? options.maxChars : DEFAULT_OPTIONS.maxChars;
+  const rows = String(text ?? "")
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line) => JSON.parse(line));
+  const header = rows.find((row) => row.type === "session");
+  if (!header || header.version !== 3) throw new Error("not a pi session v3 file");
+  const body = rows.filter((row) => row !== header);
+
+  const sizeOf = (row) => JSON.stringify(row).length;
+  const isUser = (row) => row.type === "message" && row.message?.role === "user";
+  // Units start at each user message; entries before the first user turn
+  // (thinking_level_change, custom context) attach to the first unit.
+  const units = [];
+  let current = null;
+  for (const row of body) {
+    if (isUser(row) || current === null) {
+      if (!current) {
+        current = [];
+        units.push(current);
+      } else if (isUser(row)) {
+        current = [row];
+        units.push(current);
+        continue;
+      }
+    }
+    current.push(row);
+  }
+  if (units.length === 0) return { text, stats: { keptUnits: 0, omittedUnits: 0, chars: sizeOf(header) } };
+
+  let keptFrom = units.length - 1;
+  let chars = 0;
+  for (let i = units.length - 1; i >= 0; i -= 1) {
+    const unitChars = units[i].reduce((sum, row) => sum + sizeOf(row), 0);
+    if (chars + unitChars > maxChars && i < units.length - 1) break;
+    chars += unitChars;
+    keptFrom = i;
+  }
+
+  const omitted = units.slice(0, keptFrom).flat();
+  const kept = units.slice(keptFrom).flat();
+  const digest = buildImportDigest(
+    omitted
+      .filter((row) => row.type === "message")
+      .map((row) => ({
+        kind: row.message?.role === "user" ? "user" : "assistant",
+        text:
+          row.message?.role === "user"
+            ? (row.message.content ?? []).map((c) => c.text ?? "").join(" ")
+            : "",
+      }))
+      .filter((block) => block.text),
+    DEFAULT_OPTIONS,
+  );
+
+  const entries = [header];
+  let parentId = null;
+  if (digest) {
+    const id = shortId();
+    entries.push({
+      type: "custom_message",
+      customType: "opencode-import",
+      content: digest,
+      display: false,
+      id,
+      parentId: null,
+      timestamp: new Date().toISOString(),
+    });
+    parentId = id;
+  }
+  for (const row of kept) {
+    entries.push({ ...row, parentId });
+    parentId = row.id;
+  }
+  const out = `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+  return {
+    text: out,
+    stats: {
+      keptUnits: units.length - keptFrom,
+      omittedUnits: keptFrom,
+      omittedEntries: omitted.length,
+      keptEntries: kept.length,
+      chars: Buffer.byteLength(out),
+      maxChars,
+    },
+  };
+}
+
+/** Structural conformance check for a pi session JSONL (v3). */
+export function validateSessionText(text) {
+  const rows = String(text ?? "")
+    .split("\n")
+    .filter((line) => line.trim())
+    .map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return { __badLine: index + 1 };
+      }
+    });
+  const issues = [];
+  const header = rows.find((row) => row.type === "session");
+  if (!header) issues.push("missing session header");
+  else if (header.version !== 3) issues.push(`session version ${header.version} != 3`);
+  const body = rows.filter((row) => row !== header);
+  const seen = new Set();
+  let prev = null;
+  const calls = new Set();
+  const results = new Set();
+  for (const [index, row] of body.entries()) {
+    if (row.__badLine) {
+      issues.push(`line ${row.__badLine}: invalid JSON`);
+      continue;
+    }
+    if (!row.id) {
+      issues.push(`entry ${index}: missing id`);
+      continue;
+    }
+    if (seen.has(row.id)) issues.push(`duplicate id ${row.id}`);
+    seen.add(row.id);
+    if (row.parentId !== prev) issues.push(`chain break at ${row.id}`);
+    prev = row.id;
+    const role = row.message?.role;
+    if (row.type === "message" && !["user", "assistant", "toolResult", "system"].includes(role)) {
+      issues.push(`entry ${row.id}: bad role ${role}`);
+    }
+    if (role === "assistant") {
+      for (const part of row.message.content ?? []) {
+        if (part.type === "toolCall") calls.add(part.id);
+      }
+    }
+    if (role === "toolResult") results.add(row.message.toolCallId);
+  }
+  for (const call of calls) {
+    if (!results.has(call)) issues.push(`toolCall ${call} has no toolResult`);
+  }
+  for (const result of results) {
+    if (!calls.has(result)) issues.push(`toolResult ${result} has no toolCall`);
+  }
+  return {
+    ok: issues.length === 0,
+    issues,
+    stats: {
+      entries: body.length,
+      chars: Buffer.byteLength(String(text ?? "")),
+      toolCalls: calls.size,
+      toolResults: results.size,
+    },
+  };
+}
+
 export function writeSession(cwd, source, normalized, options = {}) {
   const dir = sessionDirForCwd(cwd);
   mkdirSync(dir, { recursive: true, mode: 0o700 });

@@ -210,6 +210,7 @@ Web-cookie and local providers stay manual.
 Config toggles:
 
     vitriol opencode                       # import an OpenCode session
+    vitriol opencode compact <session.jsonl>  # re-budget an old oversized import
     vitriol settings                       # full-screen searchable settings TUI
     vitriol caduceus config set cache auto
     vitriol caduceus config set praetor on

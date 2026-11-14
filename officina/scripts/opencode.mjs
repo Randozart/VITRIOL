@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 // Import OpenCode sessions into Officina/pi sessions.
 
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { ProcessTerminal, SelectList, Text, TuiMainScreen, getTerminalColorMode, matchesKey, parseColor, styleText } from "@earendil-works/pi-tui";
 import {
   DEFAULT_OPTIONS,
   FULL_OPTIONS,
+  compactSessionText,
   filterSessionsByCwd,
   loadSessionFromDb,
   normalizeCwd,
@@ -18,6 +19,7 @@ import {
   sessionDirForCwd,
   sessionStats,
   toSessionJsonl,
+  validateSessionText,
   writeSession,
 } from "./opencode-import-lib.mjs";
 
@@ -257,6 +259,34 @@ function tui(sessions, flags, cwd) {
   tuiApp.start();
 }
 
+function compactFile(input, flags) {
+  if (!input) fail("compact: pass a pi session .jsonl path");
+  const path = resolve(input);
+  if (!existsSync(path)) fail(`compact: no such file: ${path}`);
+  const text = readFileSync(path, "utf8");
+  const before = validateSessionText(text);
+  if (!before.ok) fail(`compact: input does not conform: ${before.issues.slice(0, 3).join("; ")}`);
+  const maxChars = flags["max-chars"] !== undefined ? Number(flags["max-chars"]) : DEFAULT_OPTIONS.maxChars;
+  const { text: out, stats } = compactSessionText(text, { maxChars });
+  const after = validateSessionText(out);
+  if (!after.ok) fail(`compact: produced an invalid session: ${after.issues.slice(0, 3).join("; ")}`);
+  const destination = flags["in-place"] ? path : resolve(flags.out ?? `${path.replace(/\.jsonl$/, "")}.compact.jsonl`);
+  const tmp = `${destination}.tmp-${process.pid}`;
+  writeFileSync(tmp, out, { mode: 0o600 });
+  chmodSync(tmp, 0o600);
+  renameSync(tmp, destination);
+  const report = { input: path, output: destination, before: before.stats, after: after.stats, ...stats };
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    process.stdout.write(`Compacted ${path}\n`);
+    process.stdout.write(`  ${before.stats.entries} entries / ${fmtBytes(before.stats.chars)} -> ${after.stats.entries} entries / ${fmtBytes(after.stats.chars)}\n`);
+    process.stdout.write(`  omitted ${stats.omittedUnits} conversation unit(s) (${stats.omittedEntries} entries); chain + tool pairs verified\n`);
+    process.stdout.write(`  -> ${destination}\n`);
+  }
+  return report;
+}
+
 function main() {
   const flags = parseArgs(process.argv.slice(2));
   if (flags.help) {
@@ -271,6 +301,12 @@ function main() {
   --max-tool-chars N     per-tool input/output guard (default 500; full 4000)
   --max-chars N          total transcript budget (default 160000 ≈ 40k tokens;
                          0 = unlimited; the omitted history becomes a digest)
+
+  vitriol opencode compact <session.jsonl> [--max-chars N] [--out <path>]
+                         [--in-place] [--json]
+                         Re-budget an already-imported pi session: keeps the
+                         newest conversation units, digests the rest, rebuilds
+                         parent links. The input is untouched unless --in-place.
 `);
     return;
   }
@@ -283,6 +319,10 @@ function main() {
   }
   if (command === "import") {
     importSession(flags._[1] ?? "latest", flags, cwd);
+    return;
+  }
+  if (command === "compact") {
+    compactFile(flags._[1], flags);
     return;
   }
   if (command !== "pick") fail(`unknown command: ${command}`);

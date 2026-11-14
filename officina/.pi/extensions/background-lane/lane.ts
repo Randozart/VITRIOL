@@ -85,13 +85,15 @@ export function renderCard(file: string, response: string, cfg: LaneConfig): str
 }
 
 /**
- * Gate decision. "always" launches whenever the engine is up and a job is
+ * Gate decision. Require a known second slot: an idle single slot still holds
+ * foreground KV, and a small review can displace its recurrent checkpoint ring.
+ * "always" launches whenever the engine is up and a job is
  * pending (concurrent decode — owner preference 2026-09-01, the dual-GPU
  * split interleaves slot work with only a ~20% per-slot dip). "idle" is the
  * conservative mode: wait for a fully idle engine for idleMs. Pure.
  */
 export function shouldLaunch(
-  snapshot: { up: boolean; busy: number; delta: { tps: number } },
+  snapshot: { up: boolean; busy: number; delta: { tps: number }; slots?: readonly unknown[] },
   pendingChars: number,
   idleSince: number | null,
   now: number,
@@ -99,6 +101,7 @@ export function shouldLaunch(
 ): boolean {
   if (pendingChars < cfg.minPatchChars) return false;
   if (!snapshot.up) return false;
+  if ((snapshot.slots?.length ?? 0) < 2) return false;
   if (cfg.gate === "always") return true;
   if (snapshot.busy > 0 || snapshot.delta.tps > 0) return false;
   if (idleSince === null) return false;

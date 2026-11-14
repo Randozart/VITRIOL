@@ -411,6 +411,14 @@ TUI only changes routing preferences.
 
 ## Running multiple sessions
 
+Local background code reviews require at least two reported engine slots.
+With one slot (or unknown capacity), pending reviews wait rather than replace
+the foreground KV cache. On recurrent models, restoring a displaced cache can
+require a full prefill when its state cannot rewind to the matching prefix.
+This guard also applies to `OFFICINA_BG_GATE=always`; idle-only scheduling
+does not protect a single slot's cached state. Reload extensions in each running
+session to apply the guard; it cannot recover a prefill already underway.
+
 Sessions can share the same Caduceus cloud model. The gateway queues requests
 at its configured account/model concurrency limit and releases capacity when
 each response finishes. Officina retries explicit gateway queue-full/queue-timeout

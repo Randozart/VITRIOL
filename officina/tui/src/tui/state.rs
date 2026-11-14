@@ -621,6 +621,11 @@ pub struct AppState {
     pub editor_suspend: Option<(Vec<String>, std::path::PathBuf, String)>,
     /// /cost modal (exec-infra stage 5): today's route ledger, read-only.
     pub cost_open: bool,
+    /// /routes modal — Caduceus decision trail (2026-11-13, operator
+    /// request: see routing decisions at a glance).
+    pub routes: Option<crate::tui::routes::RouteReport>,
+    pub routes_open: bool,
+    pub routes_sel: usize,
     pub cost: Option<crate::tui::cost::CostReport>,
     /// Turn clock (2026-11-13): stamped when streaming starts, cleared when
     /// it settles — drives the "working… Ns" readouts.
@@ -882,6 +887,9 @@ impl Default for AppState {
             review: None,
             review_sel: 0,
             cost_open: false,
+            routes: None,
+            routes_open: false,
+            routes_sel: 0,
             cost: None,
             question: None,
             question_sel: 0,
@@ -1852,6 +1860,21 @@ impl AppState {
             "context",
             self.ctx_bar_label()
                 .unwrap_or_else(|| "— (no report yet)".to_string()),
+        ));
+        let last = crate::tui::routes::load_recent(&crate::tui::routes::today(), 1);
+        rows.push((
+            "last route",
+            last.latest()
+                .map(|e| {
+                    format!(
+                        "{} · {} · {} · {}",
+                        e.tier,
+                        e.provider,
+                        e.model,
+                        crate::tui::routes::short_time(&e.ts)
+                    )
+                })
+                .unwrap_or_else(|| "— (no decisions today)".to_string()),
         ));
         rows.push(("permissions", self.perm_mode.clone()));
         rows.push((
@@ -3334,6 +3357,7 @@ impl AppState {
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
         ("cost", "routing ledger", "/cost — today's route ledger: requests, tokens in/out, failures per provider/model + budget bars (read-only)"),
+        ("routes", "caduceus decisions", "/routes — the latest routing decisions: tier, provider, model, reason, local state, latency, outcome (newest first; read-only)"),
         ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
         ("janitor", "stale cache cleanup", "/janitor [dry] — remove stale prompt/watchdog/longjob/probe/KV/session-chain artifacts (protected: newest store file, slot0.bin, corrupt quarantines, ledgers); auto-runs daily"),

@@ -337,6 +337,11 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_cost_modal(frame, state, area);
         return;
     }
+    if state.routes_open {
+        render_chat_and_editor(frame, state, area);
+        render_routes_modal(frame, state, area);
+        return;
+    }
     if state.xsessions_open {
         render_chat_and_editor(frame, state, area);
         render_xsessions_modal(frame, state, area);
@@ -2151,6 +2156,126 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
 /// /cost (exec-infra stage 5) — today's route ledger + budget bars.
 /// Euro appears only when the ledger itself carried costEstimate (I5).
+fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let h = area.height.min(30);
+    let w = area.width.min(116);
+    let modal = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        x: area.x,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, modal);
+    let day = state
+        .routes
+        .as_ref()
+        .map(|r| r.day.clone())
+        .unwrap_or_else(|| "—".to_string());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" 🜍 caduceus decisions · {day} (newest first) "),
+            Style::new()
+                .fg(theme::GOLD)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(modal);
+    frame.render_widget(block, modal);
+    if inner.width < 60 || inner.height < 4 {
+        return;
+    }
+    let Some(report) = state.routes.as_ref() else {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  no route ledger for today",
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ))),
+            inner,
+        );
+        return;
+    };
+    if report.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "  no decisions recorded today",
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ))),
+            inner,
+        );
+        return;
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(
+            "  {:<9}{:<7}{:<6}{:<42}{:<10}{:<7}{:>7}  {:>9}",
+            "time", "tier", "state", "model", "reason", "local", "latency", "tokens"
+        ),
+        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+    )));
+    let visible = (inner.height as usize).saturating_sub(2);
+    let total = report.entries.len();
+    let max_sel = total.saturating_sub(visible);
+    if state.routes_sel > max_sel {
+        state.routes_sel = max_sel;
+    }
+    let sel = state.routes_sel;
+    for (i, e) in report.entries.iter().enumerate().skip(sel).take(visible) {
+        let latest = i == 0;
+        let marker = if latest { "▸" } else { " " };
+        let state_style = if e.outcome == "ok" {
+            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+        } else {
+            Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+        };
+        let tier_style = if e.tier == "local" {
+            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+        } else {
+            Style::new().fg(theme::GOLD).bg(theme::PANEL)
+        };
+        let model = format!("{}/{}", e.provider, e.model);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{} {:<9}", marker, crate::tui::routes::short_time(&e.ts)),
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ),
+            Span::styled(format!("{:<7}", e.tier), tier_style),
+            Span::styled(format!("{:<6}", e.outcome), state_style),
+            Span::styled(
+                format!("{:<42}", trunc(&model, 42)),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+            Span::styled(
+                format!("{:<10}", trunc(&e.reason, 10)),
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ),
+            Span::styled(
+                format!("{:<7}", trunc(&e.local_state, 7)),
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ),
+            Span::styled(
+                format!("{:>6.1}s", e.latency_ms as f64 / 1000.0),
+                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            ),
+            Span::styled(
+                format!("  {:>4}→{:<4}", e.tokens_in, e.tokens_out),
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ),
+        ]));
+    }
+    lines.push(Line::from(Span::styled(
+        format!("  {} decisions · ↑↓ scroll · esc closes", total),
+        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        inner,
+    );
+}
+
 fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let h = area.height.min(30);
     let w = area.width.min(96);
@@ -3843,6 +3968,29 @@ mod render_smoke {
             let mut s = base_state();
             s.cost_open = true;
             s.cost = Some(crate::tui::cost::CostReport::default());
+            draw_at(&mut s, w, h);
+            // routes modal (decision trail, incl. an empty ledger)
+            let mut s = base_state();
+            s.routes_open = true;
+            s.routes = Some(crate::tui::routes::RouteReport::default());
+            draw_at(&mut s, w, h);
+            s.routes = Some(crate::tui::routes::RouteReport {
+                day: "20261114".into(),
+                entries: vec![crate::tui::routes::RouteEntry {
+                    ts: "2026-11-14T09:28:51.223Z".into(),
+                    reason: "user".into(),
+                    tier: "cloud".into(),
+                    provider: "caduceus".into(),
+                    model: "opencode-go/deepseek-v4.1-flash".into(),
+                    profile: "auto".into(),
+                    local_state: "down".into(),
+                    latency_ms: 17_908,
+                    tokens_in: 3536,
+                    tokens_out: 1319,
+                    cost_estimate: 0.0,
+                    outcome: "ok".into(),
+                }],
+            });
             draw_at(&mut s, w, h);
             // review findings
             let mut s = base_state();

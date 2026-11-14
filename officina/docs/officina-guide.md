@@ -49,6 +49,11 @@
   lane — every turn routes to the best verified-FREE cloud model, the
   local engine is never selected, and the lane dies loudly (no silent
   local fallback) when no free lane fits the context.
+- **Decision trail** (`/routes`): at a glance — the latest routing
+  decisions newest-first: time, tier (local/cloud), outcome, provider/model,
+  reason (user/retry/continuation), engine state at decision time, latency,
+  tokens. The last decision also shows on the `/caduceus` Status tab as
+  `last route`. `/cost` remains the aggregate per-model view.
 - **Lane order** (2026-11-13): free-tier models come first, in catalog
   order; the paid subscription lanes (`opencode-go`) rank after every
   free lane. A free lane that hits its quota (429/quota response) is put

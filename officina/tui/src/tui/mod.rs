@@ -9,6 +9,7 @@ pub mod layout;
 pub mod paste;
 pub mod question;
 pub mod review;
+pub mod routes;
 pub mod state;
 
 use std::io::{self, IsTerminal};
@@ -1373,6 +1374,27 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    // /routes — decision trail; esc/q closes, arrows/pg scroll.
+    if state.routes_open {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                state.note_phase(state::UiEvent::CloseModal);
+                state.routes_open = false;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                state.routes_sel = state.routes_sel.saturating_sub(1)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                state.routes_sel = state.routes_sel.saturating_add(1)
+            }
+            KeyCode::PageUp => state.routes_sel = state.routes_sel.saturating_sub(10),
+            KeyCode::PageDown => state.routes_sel = state.routes_sel.saturating_add(10),
+            KeyCode::Home | KeyCode::Char('g') => state.routes_sel = 0,
+            KeyCode::End | KeyCode::Char('G') => state.routes_sel = usize::MAX,
+            _ => {}
+        }
+        return;
+    }
     // /cost — read-only rows; esc/q closes.
     if state.cost_open {
         match key.code {
@@ -1889,6 +1911,14 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             // /answers — last INQUIRE answer panel (facts file, read-only).
             if msg == "/answers" {
                 state.answers_open_modal();
+                return;
+            }
+            // /routes — Caduceus decision trail (read-only facts file).
+            if msg == "/routes" {
+                state.routes = Some(crate::tui::routes::load_recent(&chrono_day(), 400));
+                state.routes_sel = 0;
+                state.note_phase(state::UiEvent::OpenModal);
+                state.routes_open = true;
                 return;
             }
             // /cost — today's routing ledger + budget bars (read-only).

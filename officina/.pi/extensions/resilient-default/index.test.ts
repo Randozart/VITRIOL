@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 // Gateway lane health — static marking the tests can mutate per case.
 const laneHealthState = {
@@ -115,6 +117,7 @@ describe("resilient-default", () => {
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     // Deterministic picks: never consult the operator's live peer registry.
     process.env.OFFICINA_NO_LANE_SPREAD = "1";
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "1";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
   });
   afterEach(() => {
@@ -123,6 +126,8 @@ describe("resilient-default", () => {
     delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
     delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
     delete process.env.OFFICINA_NO_LANE_SPREAD;
+    delete process.env.OFFICINA_NO_GATEWAY_MARKS;
+    delete process.env.OFFICINA_GATEWAY_HEALTH_FILE;
     delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
     delete process.env.OFFICINA_NO_LANE_SPREAD;
@@ -161,6 +166,30 @@ describe("resilient-default", () => {
     const route = await h.run("user");
     expect(route.model.provider).toBe("llamacpp");
     expect(route.model.id).toBe("Qwen3.8-27B-Q3_K_M.gguf");
+  });
+
+  it("skips a lane the gateway marked invalid (model_not_found)", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const dir = mkdtempSync(join(tmpdir(), "gw-invalid-"));
+    const path = join(dir, "gateway-health.json");
+    const until = Date.now() + 3600_000;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        invalid: { "test-model": { until, reason: "not offered" } },
+      }),
+    );
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "0";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = path;
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp"); // first candidate skipped
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("names the real gate when nothing can serve", async () => {

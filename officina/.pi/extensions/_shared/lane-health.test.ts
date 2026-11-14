@@ -5,6 +5,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyModelHealth,
   classifyConnections,
   EMPTY_HEALTH,
   formatLanes,
@@ -122,5 +123,24 @@ describe("getLaneHealth fail-open cache", () => {
     const h = await getLaneHealth();
     expect(h.hardDown.size).toBe(0);
     expect(h.backoff.size).toBe(0);
+  });
+});
+
+describe("applyModelHealth", () => {
+  it("demotes circuit-open/rate-limited providers to backoff, never hardDown", () => {
+    const health = EMPTY_HEALTH();
+    health.active.add("freeinference");
+    health.active.add("dahl");
+    applyModelHealth(health, [
+      { provider: "freeinference", canExecute: false, circuitBreakerState: "OPEN" },
+      { provider: "dahl", circuitBreakerState: "CLOSED", connections: [{ state: "RATE_LIMITED" }] },
+      { provider: "agentrouter", circuitBreakerState: "CLOSED", connections: [{ state: "HEALTHY" }] },
+    ]);
+    expect(health.backoff.has("freeinference")).toBe(true);
+    expect(health.backoff.has("dahl")).toBe(true);
+    expect(health.active.has("freeinference")).toBe(false);
+    expect(health.active.has("dahl")).toBe(false);
+    expect(health.hardDown.size).toBe(0);
+    expect(health.backoff.has("agentrouter")).toBe(false);
   });
 });

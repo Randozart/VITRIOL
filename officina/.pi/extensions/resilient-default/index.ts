@@ -26,6 +26,14 @@ import {
 } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
+import {
+  markGatewayCooldown,
+  markGatewayInvalid,
+  ownerOfLane,
+  parseCooldownFromError,
+  parseModelNotFound,
+  readGatewayMarks,
+} from "../_shared/gateway-health.ts";
 import { formatLanes, getLaneHealth, type LaneRow } from "../_shared/lane-health.ts";
 import {
   cooldownRemaining,
@@ -267,6 +275,26 @@ export default function (pi: ExtensionAPI) {
         // registry unavailable → plain priority order
       }
     }
+    // Gateway-refused lanes (2026-11-14): the gateway's own credential
+    // cooldowns are invisible to our health file; marks learned from a 429
+    // body are shared across sessions and skipped here BEFORE the first
+    // wasted request.
+    if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
+      try {
+        const marks = readGatewayMarks(now);
+        const notMarked = eligible.filter(
+          (m) =>
+            !marks.invalid.has(m.id) &&
+            !marks.models.has(m.id) &&
+            !marks.owners.has(ownerOfLane(m.id)),
+        );
+        if (notMarked.length > 0) {
+          return spreadPick(notMarked, busy);
+        }
+      } catch {
+        // marks unavailable → plain priority order
+      }
+    }
     return spreadPick(eligible, busy);
   };
 
@@ -348,6 +376,7 @@ export default function (pi: ExtensionAPI) {
       profileAllowsCloud(profile) && canSpendCloud() ? pickCloud(tokens, now) : undefined;
     const previous = request.previous?.model;
     const failed = request.failed?.model;
+    const failedMessage = request.failed?.message;
     const cls = latestUserText(request.messages)
       ? classifyTurn({
           promptText: latestUserText(request.messages),
@@ -392,7 +421,34 @@ export default function (pi: ExtensionAPI) {
         tier = candidate ? "cloud" : "local";
         state = { ...state, failoverActive: true };
       } else if (failed && failed.provider === "caduceus") {
-        recordFailure(failed.provider, failed.id, undefined, { errorClass: "cloud_retry" });
+        // The gateway puts its cooldown in the 429 BODY (reset_seconds /
+        // retry_after / reset_at), not in a header — record it once, cap it,
+        // and share the mark with every other session.
+        const errorText = (failedMessage as { errorMessage?: string } | undefined)?.errorMessage;
+        const cooldownMs = parseCooldownFromError(errorText, now);
+        const notFound = parseModelNotFound(errorText);
+        recordFailure(failed.provider, failed.id, undefined, {
+          errorClass: notFound ? "model_not_found" : cooldownMs ? "model_cooldown" : "cloud_retry",
+          retryAfterMs: cooldownMs,
+        });
+        if (cooldownMs) {
+          markGatewayCooldown({
+            model: failed.id,
+            owner: ownerOfLane(failed.id),
+            untilMs: now + cooldownMs,
+            reason: "gateway 429 body",
+          });
+        }
+        if (notFound) {
+          // Self-heal (2026-11-14): the catalog advertised an id the upstream
+          // does not offer. Exclude that exact lane for hours (shared with
+          // every session) and record the upstream's alternatives so the
+          // cause is visible; other lanes of the owner stay usable.
+          markGatewayInvalid({
+            model: failed.id,
+            reason: `not offered; upstream: ${notFound.alternatives.join(", ").slice(0, 200) || "unknown"}`,
+          });
+        }
         const next = pickCloud(tokens, now);
         tier = next ? "cloud" : "local";
         if (next) state = { ...state, failoverActive: true };

@@ -616,6 +616,13 @@ pub struct AppState {
     /// Thinking display (2026-11-13): hide thinking blocks behind a collapsed
     /// marker line; persisted at ~/.vitriol/officina/tui-thinking.
     pub hide_thinking: bool,
+    /// Default collapsed state for NEW thinking blocks (2026-11-13,
+    /// operator request — default is collapsed). Persisted at
+    /// ~/.vitriol/officina/tui-thinking-default.
+    pub thinking_default_collapsed: bool,
+    /// Injectable default-prefs path (tests must never write the
+    /// operator's live file).
+    pub thinking_default_file: Option<std::path::PathBuf>,
     /// Line → entry map of the last chat_lines output. The renderer also
     /// derives clickable thinking-block row ranges from it (2026-11-13).
     pub line_entries: Vec<usize>,
@@ -857,6 +864,8 @@ impl Default for AppState {
             turn_started_at: None,
             quit_armed_at: None,
             hide_thinking: load_hide_thinking(),
+            thinking_default_collapsed: load_thinking_default(),
+            thinking_default_file: None,
             watchdog: None,
             watchdog_file: None,
             fx_open: false,
@@ -1952,19 +1961,84 @@ impl AppState {
         self.cache_refresh();
     }
 
+    /// Collapse every thinking trace (2026-11-13, operator request).
+    pub fn thinking_collapse_all(&mut self) {
+        let mut n = 0;
+        for e in self.entries.iter_mut() {
+            if let ChatEntry::Thinking { collapsed, .. } = e {
+                if !*collapsed {
+                    *collapsed = true;
+                    n += 1;
+                }
+            }
+        }
+        self.entries.push(ChatEntry::Diag(format!(
+            "thinking: collapsed {n} trace(s) — /thinking-view expand reopens them"
+        )));
+    }
+
+    /// Expand every thinking trace.
+    pub fn thinking_expand_all(&mut self) {
+        let mut n = 0;
+        for e in self.entries.iter_mut() {
+            if let ChatEntry::Thinking { collapsed, .. } = e {
+                if *collapsed {
+                    *collapsed = false;
+                    n += 1;
+                }
+            }
+        }
+        self.entries
+            .push(ChatEntry::Diag(format!("thinking: expanded {n} trace(s)")));
+    }
+
     /// `/cache` command surface. Bare opens the manager modal.
     /// `/thinking-view [hide|show]` — display-only toggle (the model's
     /// thinking LEVEL stays with pi's /thinking). Bare = status.
     pub fn thinking_view_command(&mut self, args: &str) {
         match args.trim() {
             "" => self.entries.push(ChatEntry::Diag(format!(
-                "thinking display: {} — /thinking-view hide|show",
+                "thinking display: {}; new blocks start {} — /thinking-view hide|show|collapse|expand|default",
                 if self.hide_thinking {
                     "hidden"
                 } else {
                     "shown"
+                },
+                if self.thinking_default_collapsed {
+                    "collapsed"
+                } else {
+                    "expanded"
                 }
             ))),
+            "collapse" | "collapse-all" => self.thinking_collapse_all(),
+            "expand" | "expand-all" => self.thinking_expand_all(),
+            "default" => self.entries.push(ChatEntry::Diag(format!(
+                "thinking default: {} — /thinking-view default collapsed|expanded",
+                if self.thinking_default_collapsed {
+                    "collapsed"
+                } else {
+                    "expanded"
+                }
+            ))),
+            a if a.starts_with("default ") => {
+                let v = a["default ".len()..].trim();
+                let collapsed = match v {
+                    "collapsed" | "collapse" | "hide" | "hidden" | "on" => true,
+                    "expanded" | "expand" | "show" | "shown" | "off" => false,
+                    other => {
+                        self.entries.push(ChatEntry::Diag(format!(
+                            "thinking-view: unknown default '{other}' — use collapsed | expanded"
+                        )));
+                        return;
+                    }
+                };
+                self.thinking_default_collapsed = collapsed;
+                persist_thinking_default(self);
+                self.entries.push(ChatEntry::Diag(format!(
+                    "thinking default: {} (applies to new traces)",
+                    if collapsed { "collapsed" } else { "expanded" }
+                )));
+            }
             "hide" | "hidden" | "off" => {
                 self.hide_thinking = true;
                 persist_hide_thinking(self);
@@ -1979,7 +2053,7 @@ impl AppState {
                     .push(ChatEntry::Diag("thinking display: shown".into()));
             }
             other => self.entries.push(ChatEntry::Diag(format!(
-                "thinking-view: unknown '{other}' — use hide | show"
+                "thinking-view: unknown '{other}' — use hide | show | collapse | expand | default"
             ))),
         }
     }
@@ -2091,7 +2165,7 @@ impl AppState {
             Some(ChatEntry::Thinking { text, .. }) => text.push_str(delta),
             _ => self.entries.push(ChatEntry::Thinking {
                 text: delta.to_string(),
-                collapsed: false,
+                collapsed: self.thinking_default_collapsed,
             }),
         }
     }
@@ -4200,6 +4274,7 @@ mod tests {
     fn thinking_renders_markdown_and_maps_lines_to_entries() {
         let mut s = AppState::default();
         s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
         s.push_thinking_delta("**bold** reasoning and `code` here");
         let lines = s.chat_lines(80);
         assert!(!lines.is_empty());
@@ -4227,6 +4302,7 @@ mod tests {
     fn thinking_click_toggles_collapse_and_reopen() {
         let mut s = AppState::default();
         s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
         s.push_thinking_delta("line one\n\nline two");
         let expanded = s.chat_lines(80);
         assert!(expanded.len() > 1, "expanded block spans rows");
@@ -4312,6 +4388,93 @@ mod tests {
         s.push_user("hello".into());
         assert_eq!(s.scroll_lock, None);
         assert_eq!(s.scroll, 0);
+    }
+
+    #[test]
+    fn thinking_default_collapsed_applies_to_new_blocks_and_is_configurable() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.thinking_default_collapsed = true;
+        s.push_thinking_delta("first block");
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Thinking {
+                collapsed: true,
+                ..
+            }
+        ));
+        // New block after an assistant entry also starts collapsed.
+        s.push_text_delta("answer");
+        s.push_thinking_delta("second block");
+        assert!(matches!(
+            s.entries.last(),
+            Some(ChatEntry::Thinking {
+                collapsed: true,
+                ..
+            })
+        ));
+        let dir = std::env::temp_dir().join(format!("thinking-default-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        s.thinking_default_file = Some(dir.join("tui-thinking-default"));
+        s.thinking_view_command("default expanded");
+        assert!(!s.thinking_default_collapsed);
+        let raw = std::fs::read_to_string(dir.join("tui-thinking-default")).unwrap();
+        assert_eq!(raw.trim(), "expanded");
+        s.push_thinking_delta("third block");
+        assert!(matches!(
+            s.entries.last(),
+            Some(ChatEntry::Thinking {
+                collapsed: false,
+                ..
+            })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn thinking_collapse_and_expand_all_commands() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.thinking_default_collapsed = false;
+        s.push_thinking_delta("one");
+        s.push_text_delta("mid");
+        s.push_thinking_delta("two");
+        s.thinking_view_command("collapse");
+        assert!(s
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::Thinking { .. }))
+            .all(|e| matches!(
+                e,
+                ChatEntry::Thinking {
+                    collapsed: true,
+                    ..
+                }
+            )));
+        s.thinking_view_command("expand");
+        assert!(s
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::Thinking { .. }))
+            .all(|e| matches!(
+                e,
+                ChatEntry::Thinking {
+                    collapsed: false,
+                    ..
+                }
+            )));
+        s.thinking_view_command("collapse-all");
+        assert!(s
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::Thinking { .. }))
+            .all(|e| matches!(
+                e,
+                ChatEntry::Thinking {
+                    collapsed: true,
+                    ..
+                }
+            )));
     }
 
     #[test]
@@ -5866,6 +6029,46 @@ pub fn persist_hide_thinking(state: &AppState) {
             "{}
 ",
             if state.hide_thinking { "hide" } else { "show" }
+        ),
+    );
+}
+
+fn thinking_default_path() -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("tui-thinking-default");
+    p
+}
+
+/// Default collapsed state for new thinking blocks. Default = collapsed
+/// (2026-11-13, operator request).
+fn load_thinking_default() -> bool {
+    if let Ok(v) = std::env::var("OFFICINA_THINKING_DEFAULT") {
+        return !matches!(v.trim(), "expanded" | "expand" | "show" | "shown" | "off");
+    }
+    std::fs::read_to_string(thinking_default_path())
+        .map(|s| !matches!(s.trim(), "expanded" | "expand" | "show" | "shown" | "off"))
+        .unwrap_or(true)
+}
+
+pub fn persist_thinking_default(state: &AppState) {
+    let path = state
+        .thinking_default_file
+        .clone()
+        .unwrap_or_else(thinking_default_path);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        path,
+        format!(
+            "{}\n",
+            if state.thinking_default_collapsed {
+                "collapsed"
+            } else {
+                "expanded"
+            }
         ),
     );
 }

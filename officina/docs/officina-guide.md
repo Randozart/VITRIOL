@@ -23,10 +23,16 @@
 - **Thinking traces**: rendered as dimmed markdown (headings, bold,
   code, lists). Click any thinking block to close it — it collapses to a
   one-line marker with its character count; click again to reopen.
+  `/thinking-view collapse|expand` collapses or expands all traces;
+  `/thinking-view default collapsed|expanded` sets what NEW traces start
+  as (default: collapsed); bare `/thinking-view` shows the current state.
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
 - **Thinking traces**: rendered as dimmed markdown (headings, bold,
   code, lists). Click any thinking block to close it — it collapses to a
   one-line marker with its character count; click again to reopen.
+  `/thinking-view collapse|expand` collapses or expands all traces;
+  `/thinking-view default collapsed|expanded` sets what NEW traces start
+  as (default: collapsed); bare `/thinking-view` shows the current state.
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
   blocks to a one-line marker (char count) or shows them again. Display
   only — the model's thinking *level* remains pi's `/thinking`.

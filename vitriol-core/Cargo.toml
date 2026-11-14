@@ -6,6 +6,10 @@ license = "Apache-2.0 OR MIT"
 description = "Pure decision logic for VITRIOL/Officina routing: provider-error facts, admission, budgets"
 
 [dependencies]
-
-[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[[bin]]
+name = "vitriol-core-rpc"
+path = "src/bin/vitriol-core-rpc.rs"
+

@@ -28,6 +28,7 @@ import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.t
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import { isVerified } from "../_shared/probe-scheduler.ts";
 import { admitLane, effectiveWindow } from "../_shared/admission.ts";
+import { coreAdmissions, coreEnabled } from "../_shared/core-rpc.ts";
 import {
   markGatewayCooldown,
   markAlias,
@@ -295,9 +296,62 @@ export default function (pi: ExtensionAPI) {
     return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 2;
   };
 
+  /** Admission inputs for the Rust sidecar (same facts as cloudEligible). */
+  const admissionLanesForCore = (
+    now: number,
+  ): Array<{
+    id: string;
+    invalid: boolean;
+    cooling: boolean;
+    ownerPaused: boolean;
+    declared: number;
+    learned: number | null;
+    safeBytes: number | null;
+  }> => {
+    let marks = {
+      invalid: new Set<string>(),
+      models: new Set<string>(),
+      owners: new Set<string>(),
+      pausedOwners: new Set<string>(),
+      safeBytesByOwner: {} as Record<string, number>,
+      limits: {} as Record<string, number>,
+    };
+    if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
+      try {
+        const full = readGatewayMarks(now);
+        marks = {
+          invalid: full.invalid,
+          models: full.models,
+          owners: full.owners,
+          pausedOwners: full.pausedOwners,
+          safeBytesByOwner: full.safeBytesByOwner,
+          limits: full.limits,
+        };
+      } catch {
+        // fail-open
+      }
+    }
+    return cloudCandidates.map((m) => {
+      const owner = ownerOfLane(m.id);
+      return {
+        id: m.id,
+        invalid: marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner),
+        cooling: healthCooling(m.provider, m.id, now),
+        ownerPaused: marks.pausedOwners.has(owner),
+        declared: Number(m.contextWindow ?? 0),
+        learned: marks.limits[m.id] ?? null,
+        safeBytes: marks.safeBytesByOwner[owner] ?? null,
+      };
+    });
+  };
+
   /** Lanes allowed by the gateway facts (2026-11-14): invalid, cooling,
    *  paused owners, learned windows and the owner's safe-byte ceiling. */
-  const cloudEligible = (tokens: number, now: number): Model[] => {
+  const cloudEligible = (
+    tokens: number,
+    now: number,
+    override?: Map<string, string> | null,
+  ): Model[] => {
     let marks = {
       invalid: new Set<string>(),
       models: new Set<string>(),
@@ -317,6 +371,8 @@ export default function (pi: ExtensionAPI) {
       }
     }
     const admitted = (m: Model): boolean => {
+      const core = override?.get(m.id);
+      if (core) return core === "admit";
       const owner = ownerOfLane(m.id);
       return (
         admitLane({
@@ -364,8 +420,12 @@ export default function (pi: ExtensionAPI) {
     return probeAllowed;
   };
 
-  const pickCloud = (tokens: number, now: number): Model | undefined => {
-    const eligible = cloudEligible(tokens, now);
+  const pickCloud = (
+    tokens: number,
+    now: number,
+    override?: Map<string, string> | null,
+  ): Model | undefined => {
+    const eligible = cloudEligible(tokens, now, override);
     // Multi-session quota spread (2026-11-14): never stampede the same free
     // lane the other live sessions are already turning on; the registry is
     // written by adaptive-router and expires in 60 s.
@@ -463,8 +523,16 @@ export default function (pi: ExtensionAPI) {
     const learnedLimit = parseContextLimit(failureText);
     const estimated = estimatePromptTokens(request.messages);
     const tokens = Math.max(ctx.getContextUsage()?.tokens ?? 0, estimated, overflowTokens ?? 0);
+    // Phase-2 sidecar (2026-11-14): one batched admission call per decision.
+    // Fail-open — a missing/broken sidecar yields undefined and the TS
+    // implementation below decides (gate I1).
+    const coreOverride = coreEnabled()
+      ? await coreAdmissions(tokens, CLOUD_RESERVE_TOKENS, admissionLanesForCore(now))
+      : undefined;
     const candidate =
-      profileAllowsCloud(profile) && canSpendCloud() ? pickCloud(tokens, now) : undefined;
+      profileAllowsCloud(profile) && canSpendCloud()
+        ? pickCloud(tokens, now, coreOverride)
+        : undefined;
     const previous = request.previous?.model;
     const failed = request.failed?.model;
     const cls = latestUserText(request.messages)
@@ -581,7 +649,7 @@ export default function (pi: ExtensionAPI) {
           const owner = ownerOfLane(failed.id);
           markOffered(owner, notFound.alternatives);
           const offered = notFound.alternatives.map((alt) => `${owner}/${alt}`);
-          const eligibleNow = cloudEligible(tokens, now);
+          const eligibleNow = cloudEligible(tokens, now, coreOverride);
           const replacement = eligibleNow.find((m) => offered.includes(m.id));
           if (replacement) {
             markAlias(failed.id, replacement.id);
@@ -597,7 +665,7 @@ export default function (pi: ExtensionAPI) {
           // model of that owner for the stated pause and honour safe bytes.
           markOwnerPause(ownerOfLane(failed.id), pause, "400 key pause");
         }
-        const next = pickCloud(tokens, now);
+        const next = pickCloud(tokens, now, coreOverride);
         tier = next ? "cloud" : "local";
         if (next) state = { ...state, failoverActive: true };
       } else {

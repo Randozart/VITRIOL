@@ -46,6 +46,7 @@ import {
   type RateBucket,
 } from "../_shared/probe-scheduler.ts";
 import { healthSnapshot, recordFailure, recordSuccess } from "../_shared/provider-health.ts";
+import { coreEnabled, coreProbePlan } from "../_shared/core-rpc.ts";
 
 const TICK_MS = Number(process.env.OFFICINA_PROBE_TICK_MS) || 15_000;
 const HEARTBEAT_MS = Number(process.env.OFFICINA_PROBE_HEARTBEAT_MS) || 10 * 60_000;
@@ -174,6 +175,47 @@ export default function (pi: ExtensionAPI) {
       if (lanes.length === 0) return;
       const w = world();
       if (now < pauseUntil) return;
+
+      // Phase-2 sidecar (2026-11-14): Rust owns the scheduling policy when
+      // enabled; its answer is used verbatim on success and the TS scheduler
+      // below is the fail-open fallback.
+      let coreAction: "probe" | "wait" | "exhausted" | undefined;
+      let coreLane: ProbeLane | undefined;
+      let coreWhy = "";
+      if (coreEnabled()) {
+        const plan = await coreProbePlan({
+          lanes,
+          probes: w.probes,
+          invalid: [...w.invalid],
+          pausedOwners: [...w.pausedOwners],
+          coolingUntil: w.coolingUntil,
+          now,
+          ttl: VERIFIED_TTL_MS,
+          perMin: PER_MIN,
+          daily: DAILY,
+          bucket,
+        });
+        if (plan) {
+          coreAction = plan.action;
+          if (plan.lane) {
+            coreLane = { id: plan.lane.id, owner: plan.lane.owner };
+          }
+          coreWhy = plan.why ?? "";
+          if (plan.bucket) bucket = plan.bucket as RateBucket;
+        }
+      }
+
+      if (coreAction === "exhausted") {
+        pauseUntil = now + HEARTBEAT_MS;
+        emitHarnessEvent(harnessEvent("lc-probe", "exhausted", { detail: `${lanes.length} lane(s)` }));
+        return;
+      }
+      if (coreAction === "wait") return;
+      if (coreAction === "probe" && coreLane) {
+        await probeChosen(coreLane, coreWhy || "core", now, w);
+        return;
+      }
+
       if (isExhausted(lanes, w, now)) {
         // Truly exhausted: keep a slow heartbeat (operator requirement).
         pauseUntil = now + HEARTBEAT_MS;
@@ -185,13 +227,25 @@ export default function (pi: ExtensionAPI) {
       const gate = rateAllow(bucket, now, PER_MIN, DAILY);
       bucket = gate.bucket;
       if (!gate.allow) return;
+      await probeChosen(choice.lane, choice.why, now, w);
+    } finally {
+      busy = false;
+    }
+  };
 
-      const cfg = envConfig();
-      const lane = choice.lane.id.replace(/^caduceus\//, "");
-      const owner = choice.lane.owner;
-      const res = await probeLane(cfg.baseUrl, cfg.key, lane);
-      const prev = w.probes[lane];
-      const failCount = res.ok ? 0 : Number(prev?.failCount ?? 0) + 1;
+  /** Execute one probe and publish the outcome (shared by core and TS paths). */
+  const probeChosen = async (
+    chosen: ProbeLane,
+    why: string,
+    now: number,
+    w: ProbeWorld,
+  ): Promise<void> => {
+    const cfg = envConfig();
+    const lane = chosen.id.replace(/^caduceus\//, "");
+    const owner = chosen.owner;
+    const res = await probeLane(cfg.baseUrl, cfg.key, lane);
+    const prev = w.probes[lane];
+    const failCount = res.ok ? 0 : Number(prev?.failCount ?? 0) + 1;
 
       const baseFact = (kind: ProbeFact["kind"], extra: Partial<ProbeFact> = {}): ProbeFact => ({
         kind,
@@ -234,14 +288,11 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      emitHarnessEvent(
-        harnessEvent("lc-probe", res.ok ? "ok" : "fail", {
-          detail: `${lane} (${choice.why}) ${res.status || "err"} ${res.latencyMs}ms`,
-        }),
-      );
-    } finally {
-      busy = false;
-    }
+    emitHarnessEvent(
+      harnessEvent("lc-probe", res.ok ? "ok" : "fail", {
+        detail: `${lane} (${why}) ${res.status || "err"} ${res.latencyMs}ms`,
+      }),
+    );
   };
 
   pi.on("session_start", () => {

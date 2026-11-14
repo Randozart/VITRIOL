@@ -127,5 +127,12 @@ vectors; TS implementation is authoritative until parity gate I2 passes.
 - Rust parity: scheduler functions + **golden vectors**
   (`vitriol-core/testdata/vectors.json`) with TS assertions in
   `officina/.pi/extensions/_shared/core-parity.test.ts` (gate I2).
-- Next: JSON-RPC sidecar behind `OFFICINA_ROUTER_CORE=rust`, then flip
-  defaults per parity.
+- JSON-RPC sidecar SHIPPED: `vitriol-core/src/bin/vitriol-core-rpc.rs`
+  (line-delimited JSON: admit / probe_plan / parse_error / ping). TS client
+  `_shared/core-rpc.ts` is fail-open (globalThis singleton, 250 ms timeout);
+  the router uses one batched `admit` call per decision and cloud-probe uses
+  `probe_plan`, both behind `OFFICINA_ROUTER_CORE=rust` (off by default).
+  Build: `cargo build --release --manifest-path vitriol-core/Cargo.toml`;
+  override the binary path with `OFFICINA_CORE_BIN`.
+- Next: flip defaults per parity after a soak; then response-shape
+  validation + record/replay conformance harness.

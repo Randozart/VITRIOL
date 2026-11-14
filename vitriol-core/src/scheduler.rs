@@ -5,7 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ProbeFact {
     pub kind: String,
     pub ok_at: Option<u64>,
@@ -15,7 +16,8 @@ pub struct ProbeFact {
     pub next_probe_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProbeLane {
     pub id: String,
     pub owner: String,
@@ -144,7 +146,8 @@ pub fn is_exhausted(lanes: &[ProbeLane], world: &ProbeWorld, now: u64, horizon_m
     true
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct RateBucket {
     pub recent: Vec<u64>,
     pub day_key: String,

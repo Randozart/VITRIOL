@@ -42,10 +42,12 @@ Operator report: "Lapis Occultus can't connect."
   earliest lane cooldown.
 
 ### `llama-cpp-provider/index.ts`
-- Re-probe `/v1/models` while the alias is missing: on `session_start` and a
-  bounded backoff timer (≤15 attempts). On success, unregister + re-register
-  the provider through the live model registry so the alias appears without a
-  restart.
+- Alias WATCHER while the alias is missing (2026-11-14 follow-up: a single
+  retry per turn is not sufficient): exponential backoff 2s → 4s → 8s → 16s
+  → 32s → 60s, capped at a 30-minute window per arming; `agent_start` and
+  `session_start` re-arm a fresh window. On success the provider is
+  re-registered with the alias entry — no restart needed. Pure backoff helper
+  (`aliasRetryDelay`) is unit-tested.
 
 ## Invariants
 
@@ -54,7 +56,8 @@ Operator report: "Lapis Occultus can't connect."
 - **I3** The router error always names the refusing gate (no catch-all).
 - **I4** A 429 cooldown never exceeds 30 min.
 - **I5** No retry storm when both tiers are unavailable (error is immediate;
-  GRIND already pauses on model errors).
+  GRIND already pauses on model errors). Alias discovery retries at most once
+  per backoff step (never concurrent) and stops the moment the alias lands.
 
 ## Tests / gates
 budget zero-cost exclusion + billed caps; Retry-After clamp (seconds/date);

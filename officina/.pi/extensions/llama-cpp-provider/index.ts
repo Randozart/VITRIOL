@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  aliasRetryDelay,
   fillModelDefaults,
   formatContextWindow,
   loadProviders,
@@ -306,11 +307,36 @@ export default async function (pi: ExtensionAPI) {
       }
     };
 
-    pi.on("agent_start", () => {
-      if (llamacpp && !llamacpp.engineAlias) void discoverAliasOnce();
-    });
+    // Alias WATCHER (2026-11-14): one probe per turn is not sufficient — a
+    // turn can end before the engine finishes booting, or the engine can
+    // come up mid-turn. Retry with exponential backoff (2s → 60s) for up to
+    // 30 minutes per arming; each agent_start re-arms a fresh window, so a
+    // long outage heals on the first turn after the engine returns.
+    const ALIAS_WATCH_MS = 30 * 60_000;
+    let aliasTimer: ReturnType<typeof setTimeout> | undefined;
+    let aliasAttempt = 0;
+    let aliasDeadline = 0;
+
+    const armAliasWatch = (): void => {
+      if (!llamacpp || llamacpp.engineAlias) return;
+      if (aliasTimer) return; // already watching
+      aliasDeadline = Date.now() + ALIAS_WATCH_MS;
+      aliasAttempt = 0;
+      const step = async (): Promise<void> => {
+        aliasTimer = undefined;
+        if (!llamacpp || llamacpp.engineAlias) return;
+        if (Date.now() >= aliasDeadline) return; // ambient re-arm on next turn
+        if (await discoverAliasOnce()) return;
+        aliasAttempt += 1;
+        aliasTimer = setTimeout(() => void step(), aliasRetryDelay(aliasAttempt));
+      };
+      void step();
+    };
+
+    pi.on("agent_start", () => armAliasWatch());
 
     pi.on("session_start", (_event, ctx) => {
+      armAliasWatch();
       armSync(ctx as SyncCtx);
     });
   }

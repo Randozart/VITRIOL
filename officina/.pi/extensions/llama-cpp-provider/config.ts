@@ -16,6 +16,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+/** Exponential backoff for engine-alias discovery (2026-11-14): one-shot
+ *  probes gave up before a slow engine boot finished; the watcher retries
+ *  2s → 60s until the alias appears or its 30-minute window expires. */
+export function aliasRetryDelay(attempt: number): number {
+  const n = Math.max(1, Math.floor(Number(attempt) || 1));
+  return Math.min(60_000, 2_000 * 2 ** Math.min(n - 1, 5));
+}
+
 export interface ProviderModelEntry {
   id: string;
   name: string;

@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { budgetStatus } from "../_shared/budget.ts";
 import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
+import { readGatewayMarks } from "../_shared/gateway-health.ts";
 import {
   applyModelHealth,
   classifyConnections,
@@ -20,6 +21,7 @@ import {
 import {
   extractCatalogModels,
   filterCatalogByProviders,
+  clampModelsToLimits,
   mapCatalogModels,
   toolCandidates,
   type PiModelEntry,
@@ -617,7 +619,10 @@ export default async function (pi: ExtensionAPI) {
     return mapped;
   };
 
-  pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, models, refreshModels));
+  // Learned windows (2026-11-14): a provider 400 taught us the real limit;
+  // clamp the registered window so pi's compaction budget matches reality.
+  const clampedModels = clampModelsToLimits(models, readGatewayMarks().limits);
+  pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, clampedModels, refreshModels));
 
   if (!needsNetwork) {
     void fetchCatalog(baseUrl, apiKey)

@@ -63,3 +63,15 @@ Operator report: "Lapis Occultus can't connect."
 budget zero-cost exclusion + billed caps; Retry-After clamp (seconds/date);
 resilient-default fallback + error text; provider re-probe decision.
 `npm test`, `npm run typecheck`; commit (no TUI binary change).
+
+
+## Addendum (2026-11-14 19:30)
+
+- Gateway v16 probe drift fixed: `/api/providers` (+ legacy fallback),
+  `/api/health` liveness, `/api/monitoring/model-health` merged into the lane
+  buckets.
+- Shared gateway-health facts: 429 body cooldowns (`reset_seconds` /
+  `retry_after` / `reset_at`, 30 min cap), invalid-lane marks on 404
+  model_not_found (6 h cap, alternatives recorded), learned context limits
+  (provider 400) applied to lane fit and to the registered catalog windows.
+- Reactive AGENTS.md awareness added (digest injection + change reload).

@@ -29,7 +29,9 @@ import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import {
   markGatewayCooldown,
   markGatewayInvalid,
+  markModelLimit,
   ownerOfLane,
+  parseContextLimit,
   parseCooldownFromError,
   parseModelNotFound,
   readGatewayMarks,
@@ -286,7 +288,10 @@ export default function (pi: ExtensionAPI) {
           (m) =>
             !marks.invalid.has(m.id) &&
             !marks.models.has(m.id) &&
-            !marks.owners.has(ownerOfLane(m.id)),
+            !marks.owners.has(ownerOfLane(m.id)) &&
+            // Learned windows (2026-11-14): a provider 400 taught us the real
+            // limit; never plan a prompt past it (the catalog may overstate).
+            tokens + CLOUD_RESERVE_TOKENS < (marks.limits[m.id] ?? m.contextWindow ?? 0),
         );
         if (notMarked.length > 0) {
           return spreadPick(notMarked, busy);
@@ -427,6 +432,8 @@ export default function (pi: ExtensionAPI) {
         const errorText = (failedMessage as { errorMessage?: string } | undefined)?.errorMessage;
         const cooldownMs = parseCooldownFromError(errorText, now);
         const notFound = parseModelNotFound(errorText);
+        const limit = parseContextLimit(errorText);
+        if (limit) markModelLimit(failed.id, limit);
         recordFailure(failed.provider, failed.id, undefined, {
           errorClass: notFound ? "model_not_found" : cooldownMs ? "model_cooldown" : "cloud_retry",
           retryAfterMs: cooldownMs,

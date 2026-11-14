@@ -1,3 +1,4 @@
+import { clampModelsToLimits } from "./catalog.ts";
 import { describe, expect, it } from "vitest";
 import {
   extractCatalogModels,
@@ -257,5 +258,21 @@ describe("toolCandidates policy widening", () => {
       (c) => c.id === "glm/paid",
     );
     expect(paid?.free).toBe(false);
+  });
+});
+
+describe("clampModelsToLimits", () => {
+  it("clamps only over-declared windows and leaves others alone", () => {
+    const out = clampModelsToLimits(
+      [
+        { id: "dahl/MiniMaxAI/MiniMax-M2.7", contextWindow: 400000 },
+        { id: "dahl/x", contextWindow: 100000 },
+        { id: "dahl/y" },
+      ],
+      { "dahl/MiniMaxAI/MiniMax-M2.7": 180000, "dahl/x": 200000 },
+    );
+    expect(out[0].contextWindow).toBe(180000);
+    expect(out[1].contextWindow).toBe(100000);
+    expect(out[2].contextWindow).toBeUndefined();
   });
 });

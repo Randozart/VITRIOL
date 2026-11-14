@@ -30,6 +30,9 @@ export interface GatewayMarksFile {
   /** Model ids the upstream says it does not offer (404 model_not_found).
    *  Longer-lived than a 429: the catalog simply has a stale name. */
   invalid?: Record<string, GatewayMark>;
+  /** Learned real context limits (provider 400 "maximum context length is
+   *  N tokens"). The catalog often overstates the window. */
+  limits?: Record<string, { tokens: number; learnedAt: number }>;
 }
 
 export function gatewayHealthPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -51,6 +54,7 @@ function readFileAt(path: string): GatewayMarksFile {
       models: (parsed.models ?? {}) as Record<string, GatewayMark>,
       owners: (parsed.owners ?? {}) as Record<string, GatewayMark>,
       invalid: (parsed.invalid ?? {}) as Record<string, GatewayMark>,
+      limits: (parsed.limits ?? {}) as Record<string, { tokens: number; learnedAt: number }>,
     };
   } catch {
     return emptyFile(Date.now());
@@ -76,6 +80,8 @@ export interface GatewayMarks {
   owners: Set<string>;
   /** Lanes the upstream rejected as not-offered (stale catalog ids). */
   invalid: Set<string>;
+  /** Learned effective context windows (tokens). */
+  limits: Record<string, number>;
 }
 
 /** Lanes/owners currently refused by the gateway (expired marks pruned). */
@@ -88,6 +94,9 @@ export function readGatewayMarks(
     models: new Set(Object.keys(file.models)),
     owners: new Set(Object.keys(file.owners)),
     invalid: new Set(Object.keys(file.invalid ?? {})),
+    limits: Object.fromEntries(
+      Object.entries(file.limits ?? {}).map(([k, v]) => [k, Number(v?.tokens) || 0]),
+    ),
   };
 }
 
@@ -193,6 +202,53 @@ export function parseModelNotFound(text: string | undefined): ModelNotFoundFact 
     .map(clean)
     .filter((s) => s.length > 0 && s.length < 120);
   return { missing, alternatives };
+}
+
+/** Parse a provider context-length 400 ("maximum context length is 180000
+ *  tokens"). Returns the effective window (output reserve already included
+ *  by the provider's own message). */
+export function parseContextLimit(text: string | undefined): number | undefined {
+  if (!text) return undefined;
+  const m = /maximum context length is\s+(\d{3,})\s+tokens/i.exec(text);
+  if (!m) return undefined;
+  const tokens = Number(m[1]);
+  return Number.isFinite(tokens) && tokens >= 1024 ? Math.floor(tokens) : undefined;
+}
+
+/** Learn a model's real window (idempotent; keeps the smaller value). */
+export function markModelLimit(
+  modelId: string,
+  tokens: number,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const id = String(modelId ?? "").trim();
+  const value = Math.floor(Number(tokens));
+  if (!id || !Number.isFinite(value) || value < 1024) return;
+  const now = Date.now();
+  const path = gatewayHealthPath(env);
+  const file = prune(readFileAt(path), now);
+  file.limits = file.limits ?? {};
+  const prev = file.limits[id]?.tokens ?? Number.POSITIVE_INFINITY;
+  file.limits[id] = { tokens: Math.min(prev, value), learnedAt: now };
+  file.ts = now;
+  try {
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+}
+
+/** Learned limit for a lane (undefined = use the catalog window). */
+export function modelLimit(
+  modelId: string,
+  env: NodeJS.ProcessEnv = process.env,
+): number | undefined {
+  const limits = readGatewayMarks(Date.now(), env).limits;
+  const value = limits[modelId];
+  return Number.isFinite(value) && value! > 0 ? value : undefined;
 }
 
 /** Owner part of a lane id ("freeinference/deepseek-v4-flash" → "freeinference"). */

@@ -5,6 +5,9 @@ import { join } from "node:path";
 import {
   markGatewayCooldown,
   markGatewayInvalid,
+  markModelLimit,
+  modelLimit,
+  parseContextLimit,
   ownerOfLane,
   parseCooldownFromError,
   parseModelNotFound,
@@ -117,5 +120,23 @@ describe("model_not_found self-heal", () => {
     expect(delta).toBeGreaterThan(1_800_000);
     expect(delta).toBeLessThanOrEqual(6 * 3600_000);
     expect(readGatewayMarks(Date.now() + 7 * 3600_000).invalid.has("dahl/x")).toBe(false);
+  });
+});
+
+describe("learned context limits", () => {
+  it("parses the provider 400 message", () => {
+    const text =
+      "[400]: This model's maximum context length is 180000 tokens. However, you requested 8192 output tokens";
+    expect(parseContextLimit(text)).toBe(180000);
+    expect(parseContextLimit("429 rate limited")).toBeUndefined();
+    expect(parseContextLimit('{"maximum context length is 512 tokens"}')).toBeUndefined();
+  });
+
+  it("remembers the smaller of repeated limits", () => {
+    markModelLimit("dahl/MiniMaxAI/MiniMax-M2.7", 180000);
+    markModelLimit("dahl/MiniMaxAI/MiniMax-M2.7", 190000);
+    expect(modelLimit("dahl/MiniMaxAI/MiniMax-M2.7")).toBe(180000);
+    markModelLimit("dahl/MiniMaxAI/MiniMax-M2.7", 160000);
+    expect(modelLimit("dahl/MiniMaxAI/MiniMax-M2.7")).toBe(160000);
   });
 });

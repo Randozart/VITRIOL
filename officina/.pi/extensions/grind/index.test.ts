@@ -172,6 +172,27 @@ describe("grind loop wiring", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("pauses the loop on a model-call error instead of retrying into it", async () => {
+    const pi = fakePi();
+    await loadExtension(pi);
+    const { ctx, sent, notices } = makeCtx(mkdtempSync(join(tmpdir(), "grind-cwd-")));
+    await pi.fire(
+      "message_end",
+      {
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "" }],
+          stopReason: "error",
+          errorMessage: "no physical model available",
+        },
+      },
+      ctx,
+    );
+    await pi.fire("agent_settled", { aborted: false }, ctx);
+    expect(sent).toHaveLength(0);
+    expect(notices.some((n) => n.includes("model call failed"))).toBe(true);
+  });
+
   it("stands down when the user queued a steering message", async () => {
     const pi = fakePi();
     await loadExtension(pi);

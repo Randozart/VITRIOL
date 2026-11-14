@@ -129,6 +129,7 @@ export default function (pi: ExtensionAPI) {
 
   let lastText = "";
   let abortedSeen = false;
+  let erroredSeen = false;
 
   pi.on("input", (event) => {
     if (event.source === "extension") return;
@@ -149,6 +150,10 @@ export default function (pi: ExtensionAPI) {
     if (msg?.role !== "assistant") return;
     lastText = assistantTextOf(msg.content);
     abortedSeen = msg.stopReason === "aborted";
+    // A model-call error is not "work remains": re-prompting would hammer
+    // the router with the same failure (2026-11-14, live incident: GRIND
+    // looped into 'no physical model available' every ~14 s).
+    erroredSeen = msg.stopReason === "error";
   });
 
   // agent_settled is the documented "no automatic retry, compaction, or
@@ -172,6 +177,8 @@ export default function (pi: ExtensionAPI) {
     lastText = "";
     const aborted = event.aborted || abortedSeen;
     abortedSeen = false;
+    const errored = erroredSeen;
+    erroredSeen = false;
     const wasQueued = queued;
     queued = false;
 
@@ -180,9 +187,16 @@ export default function (pi: ExtensionAPI) {
     const current = state ?? freshState(now);
     const round = current.rounds + 1;
 
-    if (aborted) {
+    if (aborted || errored) {
       state = null;
       paint(loopCtx, null);
+      if (errored) {
+        notify(
+          loopCtx,
+          "grind: model call failed — loop paused (fix the model/route, then send a message to re-arm)",
+          "warning",
+        );
+      }
       return;
     }
 

@@ -3781,7 +3781,7 @@ impl AppState {
         ("sidebar", "cycle sidebar visibility", "/sidebar — auto (hide when narrow) → show → hide"),
         ("permissions", "permission mode", "/permissions — ask | auto | yolo (sensitive roots always guarded)"),
         ("yolo", "toggle YOLO mode", "/yolo — toggle ask <-> yolo (sensitive roots still prompt)"),
-        ("import-opencode", "import an OpenCode session", "/import-opencode [latest|<id>|list] [full] — convert an OpenCode session for this project and switch to it"),
+        ("import-opencode", "import an OpenCode session", "/import-opencode [latest|<id>|list] [full] — convert an OpenCode session and switch to it (default: newest ~40k tokens + a digest of older history; full = everything)"),
         ("model", "select a model", "/model [provider/id] — picker from available models; provider/id switches directly"),
         ("new", "new session", "/new — fresh session (old one stays resumable)"),
         ("quit", "quit the TUI", "/quit — deliberate quit; the only other path is ^esc"),

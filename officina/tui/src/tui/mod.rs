@@ -3192,6 +3192,29 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 .and_then(|r| r.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Model-call failures used to end the turn SILENTLY (owner
+            // report 2026-11-14: a bad model selection "immediately halts"
+            // with no explanation). Surface pi's errorMessage as a real
+            // error entry; retries repeat the same string, so collapse
+            // consecutive duplicates.
+            if role == "assistant"
+                && msg
+                    .and_then(|m| m.get("stopReason"))
+                    .and_then(|v| v.as_str())
+                    == Some("error")
+            {
+                let detail = msg
+                    .and_then(|m| m.get("errorMessage"))
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or("model call failed (no errorMessage)");
+                let entry = format!("model error: {detail}");
+                let dup =
+                    matches!(state.entries.last(), Some(state::ChatEntry::Error(t)) if *t == entry);
+                if !dup {
+                    state.entries.push(state::ChatEntry::Error(entry));
+                }
+            }
             if role == "assistant" {
                 if let Some(content) = msg.and_then(|m| m.get("content")) {
                     state.note_expected_tool_calls(content);
@@ -4020,6 +4043,57 @@ mod phase_wiring_tests {
             state_diags(&s).is_empty(),
             "normal turn must not trip the table: {:?}",
             state_diags(&s)
+        );
+    }
+
+    #[test]
+    fn model_error_is_surfaced_and_deduplicated() {
+        let ev = |v: serde_json::Value| v;
+        let mut s = AppState::default();
+        let event = ev(serde_json::json!({
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": ""}],
+                "stopReason": "error",
+                "errorMessage": "Lapis Occultus: no physical model available — engine down"
+            }
+        }));
+        handle_event(&mut s, "message_end", &event);
+        let errors: Vec<String> = s
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                state::ChatEntry::Error(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("model error: Lapis Occultus"),
+            "{errors:?}"
+        );
+        // Retries repeat the identical string — no duplicate entries.
+        handle_event(&mut s, "message_end", &event);
+        let count = s
+            .entries
+            .iter()
+            .filter(|e| matches!(e, state::ChatEntry::Error(_)))
+            .count();
+        assert_eq!(count, 1, "identical consecutive errors collapse");
+        // A healthy message adds no error.
+        handle_event(
+            &mut s,
+            "message_end",
+            &ev(serde_json::json!({
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}], "stopReason": "end_turn"}
+            })),
+        );
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Error(_)))
+                .count(),
+            1
         );
     }
 

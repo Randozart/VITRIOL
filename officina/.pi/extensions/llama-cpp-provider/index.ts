@@ -266,6 +266,50 @@ export default async function (pi: ExtensionAPI) {
       }, 5000);
     };
 
+    // Alias discovery is separate from model SELECTION (2026-11-14): the
+    // bounded session_start sync gives up after ~60 s, so a session started
+    // while the engine was down never registered the engine alias for its
+    // whole lifetime (owner incident: "Lapis Occultus can't connect").
+    // Re-probe once per turn while the alias is missing — cheap, and the
+    // router can then resolve the local lane without a restart.
+    const discoverAliasOnce = async (): Promise<boolean> => {
+      const lc = llamacpp!;
+      if (lc.engineAlias) return true;
+      try {
+        const resp = await fetch(modelsUrlFor(lc.baseUrl), {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        const alias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
+        if (!alias) return false;
+        if (!lc.models.some((m) => m.id === alias)) {
+          lc.models = [
+            ...lc.models,
+            fillModelDefaults(
+              { id: alias, name: alias, contextWindow: lc.registeredCtx },
+              "llamacpp",
+              lc.models.length,
+            ),
+          ];
+          pi.registerProvider("llamacpp", {
+            baseUrl: lc.baseUrl,
+            apiKey: lc.apiKey,
+            api: lc.api,
+            models: lc.models,
+          });
+        }
+        lc.engineAlias = alias;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    pi.on("agent_start", () => {
+      if (llamacpp && !llamacpp.engineAlias) void discoverAliasOnce();
+    });
+
     pi.on("session_start", (_event, ctx) => {
       armSync(ctx as SyncCtx);
     });

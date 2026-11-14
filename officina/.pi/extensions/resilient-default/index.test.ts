@@ -41,7 +41,7 @@ const cloud = { provider: "caduceus", id: "test-model", api: "openai-completions
 const cloud2 = { provider: "caduceus", id: "second-model", api: "openai-completions", contextWindow: 500000 };
 const previous = { provider: "caduceus", id: "previous-model", api: "openai-completions", contextWindow: 1000000 };
 
-function harness(opts: { tokens?: number } = {}) {
+function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boolean } = {}) {
   const virtuals: Record<string, any> = {};
   const pi = {
     on: () => undefined,
@@ -52,10 +52,14 @@ function harness(opts: { tokens?: number } = {}) {
   };
   register(pi as never);
   if (!virtuals["lapis"]) throw new Error("lapis virtual model not registered");
+  const staleLocal = { ...local, id: "Qwen3.8-27B-Q3_K_M.gguf" };
+  const localList = opts.noLocal ? [] : opts.localId === null ? [staleLocal] : [local];
   const ctx = {
     modelRegistry: {
+      getAll: () => (opts.noLocal ? [] : localList),
+      getAvailable: () => localList,
       find: (provider: string, id: string) => {
-        if (provider === "llamacpp") return local;
+        if (provider === "llamacpp") return opts.noLocal || opts.localId === null ? undefined : local;
         if (id === "test-model") return cloud;
         if (id === "second-model") return cloud2;
         if (id === "previous-model") return previous;
@@ -148,6 +152,23 @@ describe("resilient-default", () => {
     const route = await h.run("continuation", "continue", { previous: { model: previous } });
     expect(route.model).toBe(previous);
     expect(route.state).toBeUndefined();
+  });
+
+  it("routes local through a stale registered id when the alias was never probed", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const h = harness({ localId: null });
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp");
+    expect(route.model.id).toBe("Qwen3.8-27B-Q3_K_M.gguf");
+  });
+
+  it("names the real gate when nothing can serve", async () => {
+    engine.up = false;
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "0";
+    const h = harness({ noLocal: true });
+    await expect(h.run("user")).rejects.toThrow(/no local model configured/);
+    await expect(h.run("user")).rejects.toThrow(/cloud budget exhausted/);
   });
 
   it("fails over to cloud on a local retry", async () => {

@@ -326,7 +326,14 @@ export default function (pi: ExtensionAPI) {
     await loadCandidates(ctx);
     const now = Date.now();
     const profile = readProfile();
-    const local = ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
+    // Local resolution (2026-11-14): the engine ignores the request's model
+    // id (verified: stale and bogus ids both complete), so ANY registered
+    // llamacpp model is routable. Alias first, then the first available
+    // llamacpp model — stale sessions stay usable after an engine restart
+    // even when the startup alias probe failed.
+    const local =
+      ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ??
+      ctx.modelRegistry.getAvailable().find((m) => m.provider === "llamacpp");
     const snap = getEngineSnapshot();
     const localDown = cfg.failover && snap.polled && !snap.up;
     const load = {
@@ -482,16 +489,30 @@ export default function (pi: ExtensionAPI) {
       setRouteWidget(ctx, "cloud", candidate, profile);
       return { model: candidate, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "cloud" } };
     }
-    // Honest failure (2026-11-12): "both unavailable" hid the actual gate —
-    // budget-exhausted afternoons made this look like an outage.
+    // Honest failure (2026-11-14): name the gate that actually refused.
     const budget = budgetStatus();
     const cloudWhy = !profileAllowsCloud(profile)
       ? `profile '${profile}' is local-only`
       : !canSpendCloud()
-        ? `cloud budget exhausted (daily ${budget.dailyTokens}/${budget.dailyCap}, monthly ${budget.monthlyTokens}/${budget.monthlyCap})`
-        : "no free cloud lane fits or all cooling";
+        ? `cloud budget exhausted (billed daily ${budget.dailyTokens}/${budget.dailyCap}, monthly ${budget.monthlyTokens}/${budget.monthlyCap})`
+        : (() => {
+            const coolingMs = cloudCandidates
+              .map((m) => cooldownRemaining(m.provider, m.id, now))
+              .filter((ms) => ms > 0);
+            return coolingMs.length > 0
+              ? `every candidate lane is cooling (earliest in ${Math.ceil(Math.min(...coolingMs) / 60_000)}m)`
+              : "no free cloud lane fits this context";
+          })();
+    const registered = ctx.modelRegistry
+      .getAll()
+      .filter((m) => m.provider === "llamacpp")
+      .map((m) => m.id);
+    const localWhy =
+      registered.length > 0
+        ? `local model not registered in this session (engine alias not probed; registered: ${registered.slice(0, 3).join(", ")})`
+        : "no local model configured (models.json has no llamacpp entries)";
     throw new Error(
-      `Lapis Occultus: no physical model available — engine ${localDown ? "down" : "unavailable"}; ${cloudWhy}`,
+      `Lapis Occultus: no physical model available — ${local ? "local ready" : localWhy}; engine ${snap.up ? "up" : "down"}; ${cloudWhy}`,
     );
   };
 

@@ -3371,11 +3371,19 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             // DESIGN (pi agent-session.js: "user continues manually") — fire
             // the one-shot continuation. Overflow compactions already
             // auto-retry; aborted/failed ones have nothing to continue.
+            // GRIND handoff (2026-11-14): the grind extension owns the
+            // post-compaction continuation while that mode is active — two
+            // continuation prompts would race.
+            let grind_active = state
+                .agent_mode_label
+                .as_deref()
+                .is_some_and(|l| l.eq_ignore_ascii_case("GRIND"));
             let fire = !aborted
                 && !will_retry
                 && err.is_none()
                 && reason == "threshold"
-                && state.compaction_auto_armed;
+                && state.compaction_auto_armed
+                && !grind_active;
             state.compaction_auto_armed = false;
             if fire {
                 state.entries.push(state::ChatEntry::Diag(
@@ -3844,6 +3852,41 @@ mod compaction_tests {
 
     fn ev(json: serde_json::Value) -> serde_json::Value {
         json
+    }
+
+    #[test]
+    fn grind_mode_owns_the_post_compaction_continuation() {
+        // 2026-11-14: the grind extension re-prompts on agent_end; the TUI
+        // must not fire its own continuation under GRIND (double turns).
+        let mut s = AppState::default();
+        s.agent_mode_label = Some("GRIND".into());
+        handle_event(
+            &mut s,
+            "compaction_start",
+            &ev(serde_json::json!({ "reason": "threshold" })),
+        );
+        let fired = handle_event(
+            &mut s,
+            "compaction_end",
+            &ev(serde_json::json!({
+                "reason": "threshold", "aborted": false, "willRetry": false
+            })),
+        );
+        assert!(!fired, "TUI continues nothing while GRIND is active");
+        assert!(!s.compaction_auto_armed, "one-shot still consumed");
+        // A non-GRIND label keeps the old behaviour (parity, I5).
+        let mut b = AppState::default();
+        b.agent_mode_label = Some("BUILD".into());
+        handle_event(
+            &mut b,
+            "compaction_start",
+            &ev(serde_json::json!({ "reason": "threshold" })),
+        );
+        assert!(handle_event(
+            &mut b,
+            "compaction_end",
+            &ev(serde_json::json!({ "reason": "threshold", "willRetry": false })),
+        ));
     }
 
     #[test]

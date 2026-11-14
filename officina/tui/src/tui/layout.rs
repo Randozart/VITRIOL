@@ -49,6 +49,7 @@ fn mode_chip(label: &str) -> Option<(&'static str, ratatui::style::Color)> {
         "BUILD" => Some(("☉", theme::GOLD)),
         "INQUIRE" => Some(("?", theme::GREEN)),
         "STEER" => Some(("↝", theme::ORANGE)),
+        "GRIND" => Some(("∞", theme::VIOLET)),
         _ => None,
     }
 }
@@ -4069,5 +4070,23 @@ mod render_smoke {
         for (w, h) in [(40u16, 12u16), (100, 30)] {
             draw_at(&mut s, w, h);
         }
+    }
+}
+
+#[cfg(test)]
+mod grind_chip_tests {
+    use super::*;
+
+    #[test]
+    fn grind_mode_gets_its_own_alchemical_chip() {
+        assert_eq!(mode_chip("GRIND"), Some(("∞", theme::VIOLET)));
+        assert_eq!(mode_chip("grind"), Some(("∞", theme::VIOLET)));
+        let mut s = AppState::default();
+        s.agent_mode_label = Some("GRIND".into());
+        s.agent_mode_glyph = Some("∞".into());
+        let title = composer_title(&s).expect("chip present");
+        let text: String = title.iter().map(|sp| sp.content.to_string()).collect();
+        assert!(text.contains("GRIND"), "{text}");
+        assert!(text.contains('∞'), "{text}");
     }
 }

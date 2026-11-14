@@ -3495,12 +3495,12 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     Style::new().fg(theme::MUTED),
                 ),
             };
-            (name.to_string(), status, st)
+            (crate::tui::state::tool_display_name(name), status, st)
         };
         if selected {
             lines.push(Line::from(Span::styled(
                 trunc(
-                    &format!("▸ {:<8} {}", label, status),
+                    &format!("▸ {:<16} {}", label, status),
                     (inner.width as usize).saturating_sub(1),
                 ),
                 Style::new()

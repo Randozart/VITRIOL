@@ -137,6 +137,41 @@ pub const KNOWN_TOOLS: &[&str] = &[
     "update_tasks",
 ];
 
+/// Formal display title for a tool registry name (2026-11-13, operator
+/// request: "Update Tasks" instead of "update_tasks"). Unknown names are
+/// title-cased on '_' / '-' boundaries.
+pub fn tool_display_name(name: &str) -> String {
+    let title = match name {
+        "update_tasks" => return "Update Tasks".to_string(),
+        "scratchpad_write" => return "Scratchpad Write".to_string(),
+        "scratchpad_read" => return "Scratchpad Read".to_string(),
+        "bash" => "Bash",
+        "read" => "Read",
+        "write" => "Write",
+        "edit" => "Edit",
+        "find" => "Find",
+        "grep" => "Grep",
+        "ls" => "List Directory",
+        _ => {
+            let mut out = String::with_capacity(name.len());
+            let mut cap = true;
+            for ch in name.chars() {
+                if ch == '_' || ch == '-' {
+                    out.push(' ');
+                    cap = true;
+                } else if cap {
+                    out.extend(ch.to_uppercase());
+                    cap = false;
+                } else {
+                    out.push(ch);
+                }
+            }
+            return out;
+        }
+    };
+    title.to_string()
+}
+
 // ── /help modal (owner request 2026-09-03) ───────────────────────────
 
 /// Sidebar glossary — every row explained. DRIFT GUARD (standing rule,
@@ -3138,11 +3173,12 @@ impl AppState {
                             // title and command must be different colors).
                             let budget = width.saturating_sub(8);
                             let title_s = trunc_str(title, 40);
-                            let used = name.chars().count() + 3 + title_s.chars().count() + 3;
+                            let display = tool_display_name(name);
+                            let used = display.chars().count() + 3 + title_s.chars().count() + 3;
                             let cmd_s = trunc_str(&cmd, budget.saturating_sub(used));
                             let mut spans = vec![
                                 Span::styled(format!("  {} ", icon), st),
-                                Span::styled(name.clone(), st),
+                                Span::styled(display, st),
                                 Span::styled(
                                     " ▸ ",
                                     Style::default().fg(theme::MUTED).bg(theme::BG),
@@ -3164,10 +3200,11 @@ impl AppState {
                             }
                             lines.push(Line::from(spans));
                         } else {
+                            let display = tool_display_name(name);
                             let body = if summary.is_empty() {
-                                name.clone()
+                                display
                             } else {
-                                format!("{} {}", name, summary)
+                                format!("{} {}", display, summary)
                             };
                             for (i, seg) in wrap_text(&body, width.saturating_sub(8))
                                 .into_iter()
@@ -3992,6 +4029,7 @@ fn diff_line_style(line: &str, default: Style) -> Style {
 /// JSON, arrays collapse to a comma list or "[N items]". Max 6 rows.
 fn generic_args_lines(
     args: &serde_json::Value,
+    full: bool,
     width: usize,
     surf: ratatui::style::Color,
     muted_st: Style,
@@ -4013,7 +4051,8 @@ fn generic_args_lines(
         if v.is_null() || (v.as_str().map(|s| s.trim().is_empty()).unwrap_or(false)) {
             continue;
         }
-        if shown >= 6 {
+        // Block preview caps the list; the full (clicked) view shows all.
+        if !full && shown >= 6 {
             let rest = obj.len().saturating_sub(shown);
             if rest > 0 {
                 lines.push(Line::from(vec![
@@ -4028,17 +4067,18 @@ fn generic_args_lines(
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::Bool(b) => b.to_string(),
             serde_json::Value::Array(items) => {
+                let cap = if full { items.len() } else { 6 };
                 let parts: Vec<String> = items
                     .iter()
-                    .take(6)
+                    .take(cap)
                     .map(|i| match i {
                         serde_json::Value::String(s) => s.clone(),
                         other => other.to_string(),
                     })
                     .collect();
                 let joined = parts.join(", ");
-                if items.len() > 6 {
-                    format!("{joined}, … (+{} more)", items.len() - 6)
+                if items.len() > cap {
+                    format!("{joined}, … (+{} more)", items.len() - cap)
                 } else {
                     joined
                 }
@@ -4093,14 +4133,14 @@ fn render_tool_block(
                 Style::default().fg(theme::GOLD).bg(surf),
             ),
             Span::styled(
-                name.to_string(),
+                tool_display_name(name),
                 Style::default()
                     .fg(theme::SILVER)
                     .bg(surf)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
         ];
-        let head_w = width.saturating_sub(6 + name.chars().count());
+        let head_w = width.saturating_sub(6 + tool_display_name(name).chars().count());
         if let Some((title, cmd)) = bash_title_and_cmd(name, args) {
             if head_w > 4 {
                 let budget = head_w.saturating_sub(3);
@@ -4133,22 +4173,17 @@ fn render_tool_block(
     if let Some(a) = args.filter(|a| !a.is_null()) {
         if let Some(special) = special_tool_args(name, a, full, width, surf) {
             lines.extend(special);
-        } else if full {
-            lines.push(Line::from(vec![
-                Span::styled("│ ", border),
-                Span::styled("args", muted_st),
-            ]));
-            if let Ok(pretty) = serde_json::to_string_pretty(a) {
-                for pl in pretty.lines() {
-                    let mut spans = vec![Span::styled("│   ", border)];
-                    spans.extend(json_line_spans(pl, width.saturating_sub(4)));
-                    lines.push(Line::from(spans));
-                }
-            }
         } else {
             // Generic tools: key/value lines instead of a raw JSON blob
-            // (owner request 2026-11-13).
-            lines.extend(generic_args_lines(a, width, surf, muted_st, text_st));
+            // (owner request 2026-11-13) — full mode lists every field,
+            // the block preview caps at six.
+            if full {
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", border),
+                    Span::styled("args", muted_st),
+                ]));
+            }
+            lines.extend(generic_args_lines(a, full, width, surf, muted_st, text_st));
         }
     }
 
@@ -4306,29 +4341,6 @@ fn fmt_elapsed(total: u64) -> String {
 
 /// Pretty-JSON line colorized into spans: `"key":` cyan, braces muted,
 /// scalar values text-colored. Truncated to `width` chars.
-fn json_line_spans(line: &str, width: usize) -> Vec<Span<'static>> {
-    let surf = theme::PANEL;
-    let t = trunc_str(line, width);
-    let trimmed = t.trim_start();
-    let brace = trimmed == "{" || trimmed == "}" || trimmed == "},";
-    if brace {
-        return vec![Span::styled(t, Style::default().fg(theme::MUTED).bg(surf))];
-    }
-    if let Some(pos) = t.find("\":") {
-        let split = pos + 2; // include the colon
-        return vec![
-            Span::styled(
-                t[..split].to_string(),
-                Style::default().fg(theme::CYAN).bg(surf),
-            ),
-            Span::styled(
-                t[split..].to_string(),
-                Style::default().fg(theme::TEXT).bg(surf),
-            ),
-        ];
-    }
-    vec![Span::styled(t, Style::default().fg(theme::TEXT).bg(surf))]
-}
 
 /// Char-count truncation with ellipsis.
 fn trunc_str(s: &str, w: usize) -> String {
@@ -5021,7 +5033,7 @@ mod tests {
             "empty": null,
             "blank": ""
         });
-        let lines = generic_args_lines(&args, 80, theme::PANEL, muted, base);
+        let lines = generic_args_lines(&args, false, 80, theme::PANEL, muted, base);
         let text = lines
             .iter()
             .map(|l| l.to_string())
@@ -5037,6 +5049,68 @@ mod tests {
         assert!(text.contains(r#"{"k":1}"#));
         assert!(!text.contains("null"), "nulls skipped: {text}");
         assert!(!text.contains(r#""path":"#), "no JSON key quoting: {text}");
+
+        // Clicked (full) view: every field, no six-key cap, arrays opened up.
+        let many = serde_json::json!({
+            "a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8,
+            "items": ["x", "y", "z", "w", "v", "u", "t", "s"]
+        });
+        let full = generic_args_lines(&many, true, 120, theme::PANEL, muted, base)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for k in ["a", "h"] {
+            assert!(full.contains(k), "full lists {k}: {full}");
+        }
+        assert!(full.contains("items"), "full lists arrays: {full}");
+        assert!(full.contains('s'), "arrays uncapped in full: {full}");
+        let preview = generic_args_lines(&many, false, 120, theme::PANEL, muted, base)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            preview.contains("more"),
+            "preview caps with a count: {preview}"
+        );
+    }
+
+    #[test]
+    fn tool_display_titles_format_registry_names() {
+        assert_eq!(tool_display_name("update_tasks"), "Update Tasks");
+        assert_eq!(tool_display_name("scratchpad_write"), "Scratchpad Write");
+        assert_eq!(tool_display_name("bash"), "Bash");
+        assert_eq!(tool_display_name("ls"), "List Directory");
+        assert_eq!(tool_display_name("some_custom_tool"), "Some Custom Tool");
+        assert_eq!(tool_display_name("kebab-tool"), "Kebab Tool");
+    }
+
+    #[test]
+    fn unknown_tool_block_shows_titles_and_key_values_not_json() {
+        let mut s = AppState::default();
+        s.tool_start(
+            Some("t1"),
+            "custom_fetch",
+            &serde_json::json!({"url": "https://example.com", "headers": {"a": "b"}}),
+        );
+        s.tool_end(Some("t1"), "custom_fetch", "done", false);
+        s.tool_overrides.insert(
+            "custom_fetch".to_string(),
+            ToolOverride {
+                mode: ToolVerbosity::Block,
+                strictness: Strictness::Pinned,
+            },
+        );
+        let text = s
+            .chat_lines(110)
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Custom Fetch"), "formal title: {text}");
+        assert!(text.contains("url"), "key/value rows: {text}");
+        assert!(!text.contains("\"url\":"), "no raw JSON: {text}");
     }
 
     #[test]
@@ -5562,7 +5636,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("✓"), "done icon present: {}", text);
-        assert!(text.contains("write"), "name present: {}", text);
+        assert!(text.contains("Write"), "formal title present: {}", text);
         assert!(text.contains("src/main.rs"), "summary present: {}", text);
         // No block furniture in Line mode.
         assert!(!text.contains('╭'), "no block border: {}", text);
@@ -5659,7 +5733,7 @@ mod tests {
     }
 
     #[test]
-    fn full_mode_shows_pretty_args() {
+    fn full_mode_shows_all_args_as_key_values() {
         let mut s = AppState::default();
         s.tool_default = ToolVerbosity::Full;
         s.tool_start(
@@ -5675,8 +5749,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("args"), "args header: {}", text);
-        assert!(text.contains("\"path\""), "pretty json key: {}", text);
-        assert!(text.contains("\"old\""), "second key: {}", text);
+        assert!(text.contains("path"), "key/value rows: {}", text);
+        assert!(text.contains("a.rs"), "value visible: {}", text);
+        assert!(text.contains("old"), "second key: {}", text);
+        assert!(!text.contains("\"path\":"), "no JSON quoting: {}", text);
     }
 
     #[test]

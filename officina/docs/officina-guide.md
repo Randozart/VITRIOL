@@ -25,7 +25,9 @@
   one-line marker with its character count; click again to reopen.
   Tool calls work the same way: click a tool block to open the full args
   and output, click again to collapse to the one-line form (per-block; the
-  `/tools` default is untouched).
+  `/tools` default is untouched). Tool blocks show formal titles ("Update
+  Tasks", "Scratchpad Write", "List Directory"); args render as key/value
+  rows — the clicked view lists every field (no raw JSON).
   `/thinking-view collapse|expand` collapses or expands all traces;
   `/thinking-view default collapsed|expanded` sets what NEW traces start
   as (default: collapsed); bare `/thinking-view` shows the current state.
@@ -35,7 +37,9 @@
   one-line marker with its character count; click again to reopen.
   Tool calls work the same way: click a tool block to open the full args
   and output, click again to collapse to the one-line form (per-block; the
-  `/tools` default is untouched).
+  `/tools` default is untouched). Tool blocks show formal titles ("Update
+  Tasks", "Scratchpad Write", "List Directory"); args render as key/value
+  rows — the clicked view lists every field (no raw JSON).
   `/thinking-view collapse|expand` collapses or expands all traces;
   `/thinking-view default collapsed|expanded` sets what NEW traces start
   as (default: collapsed); bare `/thinking-view` shows the current state.

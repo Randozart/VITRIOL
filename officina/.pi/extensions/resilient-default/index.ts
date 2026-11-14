@@ -33,6 +33,7 @@ import {
   ownerOfLane,
   parseContextLimit,
   parseCooldownFromError,
+  parseOverflowPromptTokens,
   parseModelNotFound,
   readGatewayMarks,
 } from "../_shared/gateway-health.ts";
@@ -130,6 +131,26 @@ function messageText(content: unknown): string {
       return "";
     })
     .join("\n");
+}
+
+/** chars/4 estimate over the request messages (text, thinking, tool args). */
+function estimatePromptTokens(messages: ReadonlyArray<unknown>): number {
+  let chars = 0;
+  for (const raw of messages) {
+    const m = raw as { content?: unknown };
+    const content = m?.content;
+    if (typeof content === "string") {
+      chars += content.length;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        const p = part as { text?: unknown; thinking?: unknown; input?: unknown };
+        if (typeof p?.text === "string") chars += p.text.length;
+        else if (typeof p?.thinking === "string") chars += p.thinking.length;
+        else if (p?.input !== undefined) chars += JSON.stringify(p.input).length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
 }
 
 function latestUserText(messages: readonly unknown[]): string {
@@ -376,12 +397,20 @@ export default function (pi: ExtensionAPI) {
       stalled: snap.polled && snap.stalled,
       gpuLoad: snap.gpuLoad,
     };
-    const tokens = ctx.getContextUsage()?.tokens ?? 0;
+    // Prompt size, not just session usage (2026-11-14): during overflow
+    // recovery the session counter lags the request (171k prompt read as
+    // ~165k), so a lane that cannot fit was still selected. Use the larger
+    // of the reported usage and a message estimate.
+    const failedMessage = request.failed?.message as { errorMessage?: string } | undefined;
+    const failureText = failedMessage?.errorMessage;
+    const overflowTokens = parseOverflowPromptTokens(failureText);
+    const learnedLimit = parseContextLimit(failureText);
+    const estimated = estimatePromptTokens(request.messages);
+    const tokens = Math.max(ctx.getContextUsage()?.tokens ?? 0, estimated, overflowTokens ?? 0);
     const candidate =
       profileAllowsCloud(profile) && canSpendCloud() ? pickCloud(tokens, now) : undefined;
     const previous = request.previous?.model;
     const failed = request.failed?.model;
-    const failedMessage = request.failed?.message;
     const cls = latestUserText(request.messages)
       ? classifyTurn({
           promptText: latestUserText(request.messages),
@@ -420,7 +449,22 @@ export default function (pi: ExtensionAPI) {
       return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
     }
 
+    if (learnedLimit && failed) markModelLimit(failed.id, learnedLimit);
+
     if (request.reason === "retry") {
+      // Context overflow (2026-11-14): another cloud lane that fits is a
+      // lottery; the local stone has 262k and is the deterministic answer
+      // when the prompt no longer fits the failed lane.
+      if ((overflowTokens || learnedLimit) && local && local.provider === "llamacpp") {
+        activeCloud = undefined;
+        remember(local, "local");
+        setRouteWidget(ctx, "local", undefined, profile);
+        return {
+          model: local,
+          thinkingLevel: request.thinkingLevel,
+          state: { ...state, tier: "local", failoverActive: true },
+        };
+      }
       if (failed && failed.provider === "llamacpp") {
         recordFailure(failed.provider, failed.id, undefined, { errorClass: "local_retry" });
         tier = candidate ? "cloud" : "local";
@@ -429,11 +473,9 @@ export default function (pi: ExtensionAPI) {
         // The gateway puts its cooldown in the 429 BODY (reset_seconds /
         // retry_after / reset_at), not in a header — record it once, cap it,
         // and share the mark with every other session.
-        const errorText = (failedMessage as { errorMessage?: string } | undefined)?.errorMessage;
+        const errorText = failureText;
         const cooldownMs = parseCooldownFromError(errorText, now);
         const notFound = parseModelNotFound(errorText);
-        const limit = parseContextLimit(errorText);
-        if (limit) markModelLimit(failed.id, limit);
         recordFailure(failed.provider, failed.id, undefined, {
           errorClass: notFound ? "model_not_found" : cooldownMs ? "model_cooldown" : "cloud_retry",
           retryAfterMs: cooldownMs,

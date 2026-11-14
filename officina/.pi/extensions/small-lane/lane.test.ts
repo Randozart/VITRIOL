@@ -1,3 +1,4 @@
+import { chooseSummarizer, estimateMessagesTokens } from "./lane.ts";
 import { describe, expect, it } from "vitest";
 import { buildSummaryText, laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
 
@@ -57,5 +58,43 @@ describe("laneCompactionOutcome", () => {
     expect(laneCompactionOutcome("   \n  ")).toBe("fallback");
     expect(laneCompactionOutcome(null)).toBe("fallback");
     expect(laneCompactionOutcome(undefined)).toBe("fallback");
+  });
+});
+
+describe("estimateMessagesTokens", () => {
+  it("counts text, thinking and tool arguments at chars/4", () => {
+    const msgs = [
+      { content: "abcd".repeat(25) }, // 100 chars
+      { content: [{ type: "thinking", thinking: "x".repeat(200) }] },
+      { content: [{ type: "toolCall", input: { a: "b".repeat(100) } }] },
+    ];
+    const est = estimateMessagesTokens(msgs);
+    expect(est).toBeGreaterThanOrEqual(90);
+    expect(est).toBeLessThanOrEqual(130);
+  });
+});
+
+describe("chooseSummarizer", () => {
+  const models = [
+    { provider: "caduceus", id: "freeinference/qwen3.6-35b", contextWindow: 128000 },
+    { provider: "caduceus", id: "agentrouter/gpt-5.6-sol", contextWindow: 1050000 },
+    { provider: "llamacpp", id: "Lapis Occultus", contextWindow: 262144 },
+  ];
+
+  it("picks the largest window that fits estimate + reserve", () => {
+    expect(chooseSummarizer(models, 183_106)?.id).toBe("agentrouter/gpt-5.6-sol");
+    expect(chooseSummarizer(models, 20_000)?.id).toBe("agentrouter/gpt-5.6-sol");
+  });
+
+  it("returns undefined when nothing fits", () => {
+    expect(chooseSummarizer(models, 2_000_000)).toBeUndefined();
+  });
+
+  it("prefers cloud on equal windows", () => {
+    const tie = [
+      { provider: "llamacpp", id: "Lapis Occultus", contextWindow: 262144 },
+      { provider: "caduceus", id: "caduceus/other", contextWindow: 262144 },
+    ];
+    expect(chooseSummarizer(tie, 50_000)?.provider).toBe("caduceus");
   });
 });

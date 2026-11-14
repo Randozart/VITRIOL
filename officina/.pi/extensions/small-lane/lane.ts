@@ -67,3 +67,61 @@ export function buildSummaryText(conversationText: string, previousSummary?: str
 export function laneCompactionOutcome(summary: string | null | undefined): "use" | "fallback" {
   return summary && summary.trim() ? "use" : "fallback";
 }
+
+/** chars/4 estimate over the messages a compaction must summarize. */
+export function estimateMessagesTokens(messages: ReadonlyArray<unknown>): number {
+  let chars = 0;
+  for (const raw of messages) {
+    const m = raw as { content?: unknown };
+    const content = m?.content;
+    if (typeof content === "string") {
+      chars += content.length;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        const p = part as { text?: unknown; thinking?: unknown; input?: unknown };
+        if (typeof p?.text === "string") chars += p.text.length;
+        else if (typeof p?.thinking === "string") chars += p.thinking.length;
+        else if (p?.input !== undefined) chars += JSON.stringify(p.input).length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
+
+export interface SummarizerCandidate {
+  provider: string;
+  id: string;
+  contextWindow: number;
+}
+
+/**
+ * Fit-aware summarizer choice (2026-11-14): compaction requests carry the
+ * WHOLE transcript, so the summarizer must have a window >= estimate +
+ * reserve. Picks the largest window (cloud first for speed; local ties as
+ * the safe fallback). Pure.
+ */
+export function orderSummarizers(
+  candidates: ReadonlyArray<SummarizerCandidate>,
+  estimateTokens: number,
+  reserveTokens = 4096,
+): SummarizerCandidate[] {
+  const need = estimateTokens + reserveTokens;
+  const fit = candidates.filter((c) => Number(c.contextWindow) >= need);
+  fit.sort((a, b) => {
+    const byWindow = Number(b.contextWindow) - Number(a.contextWindow);
+    if (byWindow !== 0) return byWindow;
+    const localA = a.provider === "llamacpp" ? 1 : 0;
+    const localB = b.provider === "llamacpp" ? 1 : 0;
+    if (localA !== localB) return localA - localB; // cloud first on ties
+    return a.id.localeCompare(b.id);
+  });
+  return fit;
+}
+
+export function chooseSummarizer(
+  candidates: ReadonlyArray<SummarizerCandidate>,
+  estimateTokens: number,
+  reserveTokens = 4096,
+): SummarizerCandidate | undefined {
+  return orderSummarizers(candidates, estimateTokens, reserveTokens)[0];
+}

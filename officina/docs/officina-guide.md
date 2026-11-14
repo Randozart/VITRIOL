@@ -43,10 +43,16 @@
   (checked at each turn boundary). `/agents-md` shows what it sees. The full
   file stays on disk; tuning: `OFFICINA_AGENTS_DIGEST_CHARS`,
   `OFFICINA_AGENTS_FILES`, kill switch `OFFICINA_NO_AGENTS_MD=1`.
-- **Learned context limits** (2026-11-14): a provider 400 ("maximum context
-  length is N tokens") is recorded per model (shared facts file), the
-  registered window is clamped to it on the next catalog refresh, and lane
-  selection never plans a prompt past it — the catalog can overstate windows.
+- **Learned context limits + aware compaction** (2026-11-14): a provider 400
+  ("maximum context length is N tokens" or "estimated N input tokens, limit
+  L") is recorded per model (shared facts file), the registered window is
+  clamped to it on refresh, and lane selection plans with the ACTUAL request
+  size (message estimate) — the catalog can overstate windows. On an
+  overflow retry the router goes straight to local (262k) instead of
+  gambling on another cloud lane. Compaction's summarizer is chosen by fit
+  (whole transcript + reserve): the small lane first when enabled, then the
+  largest fitting windows, always including the local stone, retrying past
+  429/403 summarizers before falling back to pi's default.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
@@ -81,10 +87,16 @@
   (checked at each turn boundary). `/agents-md` shows what it sees. The full
   file stays on disk; tuning: `OFFICINA_AGENTS_DIGEST_CHARS`,
   `OFFICINA_AGENTS_FILES`, kill switch `OFFICINA_NO_AGENTS_MD=1`.
-- **Learned context limits** (2026-11-14): a provider 400 ("maximum context
-  length is N tokens") is recorded per model (shared facts file), the
-  registered window is clamped to it on the next catalog refresh, and lane
-  selection never plans a prompt past it — the catalog can overstate windows.
+- **Learned context limits + aware compaction** (2026-11-14): a provider 400
+  ("maximum context length is N tokens" or "estimated N input tokens, limit
+  L") is recorded per model (shared facts file), the registered window is
+  clamped to it on refresh, and lane selection plans with the ACTUAL request
+  size (message estimate) — the catalog can overstate windows. On an
+  overflow retry the router goes straight to local (262k) instead of
+  gambling on another cloud lane. Compaction's summarizer is chosen by fit
+  (whole transcript + reserve): the small lane first when enabled, then the
+  largest fitting windows, always including the local stone, retrying past
+  429/403 summarizers before falling back to pi's default.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real

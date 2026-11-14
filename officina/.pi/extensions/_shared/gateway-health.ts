@@ -209,7 +209,24 @@ export function parseModelNotFound(text: string | undefined): ModelNotFoundFact 
  *  by the provider's own message). */
 export function parseContextLimit(text: string | undefined): number | undefined {
   if (!text) return undefined;
-  const m = /maximum context length is\s+(\d{3,})\s+tokens/i.exec(text);
+  // Variant 1 (upstream): "maximum context length is 180000 tokens".
+  // Variant 2 (gateway): "estimated 183106 input tokens, limit 128000".
+  const m =
+    /maximum context length is\s+(\d{3,})\s+tokens/i.exec(text) ??
+    /\blimit\s+(\d{4,})\b/i.exec(text);
+  if (!m) return undefined;
+  const tokens = Number(m[1]);
+  return Number.isFinite(tokens) && tokens >= 1024 ? Math.floor(tokens) : undefined;
+}
+
+/** Prompt size quoted by a context-overflow 400 ("value=171809",
+ *  "estimated 183106 input tokens"). */
+export function parseOverflowPromptTokens(text: string | undefined): number | undefined {
+  if (!text) return undefined;
+  const m =
+    /value=(\d{3,})/i.exec(text) ??
+    /estimated\s+(\d{3,})\s+input tokens/i.exec(text) ??
+    /prompt contains at least\s+(\d{3,})/i.exec(text);
   if (!m) return undefined;
   const tokens = Number(m[1]);
   return Number.isFinite(tokens) && tokens >= 1024 ? Math.floor(tokens) : undefined;

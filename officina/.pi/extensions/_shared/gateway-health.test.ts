@@ -8,6 +8,7 @@ import {
   markModelLimit,
   modelLimit,
   parseContextLimit,
+  parseOverflowPromptTokens,
   ownerOfLane,
   parseCooldownFromError,
   parseModelNotFound,
@@ -138,5 +139,25 @@ describe("learned context limits", () => {
     expect(modelLimit("dahl/MiniMaxAI/MiniMax-M2.7")).toBe(180000);
     markModelLimit("dahl/MiniMaxAI/MiniMax-M2.7", 160000);
     expect(modelLimit("dahl/MiniMaxAI/MiniMax-M2.7")).toBe(160000);
+  });
+});
+
+describe("gateway context-overflow variants", () => {
+  it("reads the limit from the gateway wrapper", () => {
+    expect(
+      parseContextLimit(
+        "Input exceeds context window for freeinference/qwen3.6-35b: estimated 183106 input tokens, limit 128000",
+      ),
+    ).toBe(128000);
+  });
+
+  it("reads the prompt size quoted by the provider", () => {
+    expect(parseOverflowPromptTokens("(parameter=input_tokens, value=171809)")).toBe(171809);
+    expect(
+      parseOverflowPromptTokens("estimated 183106 input tokens, limit 128000"),
+    ).toBe(183106);
+    expect(
+      parseOverflowPromptTokens("your prompt contains at least 171809 input tokens"),
+    ).toBe(171809);
   });
 });

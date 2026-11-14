@@ -192,6 +192,21 @@ describe("resilient-default", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("routes local after a context-overflow retry (no fit lottery)", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const h = harness();
+    const overflow = {
+      model: { provider: "caduceus", id: "test-model" },
+      message: {
+        errorMessage:
+          "[400]: This model's maximum context length is 180000 tokens. However, you requested 8192 output tokens and your prompt contains at least 171809 input tokens (parameter=input_tokens, value=171809)",
+      },
+    };
+    const route = await h.run("retry", "continue", { failed: overflow });
+    expect(route.model.provider).toBe("llamacpp");
+  });
+
   it("names the real gate when nothing can serve", async () => {
     engine.up = false;
     process.env.OFFICINA_FREE_DAILY_TOKENS = "0";

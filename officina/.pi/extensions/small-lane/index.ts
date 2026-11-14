@@ -1,9 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { readGatewayMarks, ownerOfLane } from "../_shared/gateway-health.ts";
 import {
   estimateMessagesTokens,
   orderSummarizers,
+  shrinkMessages,
   laneCompactionOutcome,
   resolveLaneConfig,
 } from "./lane.ts";
@@ -62,17 +64,67 @@ export default function (pi: ExtensionAPI) {
     // is tiny and often unreachable; pi's default uses the current model,
     // which may be a 128k cloud lane while the transcript is 180k+. Choose a
     // model that actually fits the request.
-    const estimate = estimateMessagesTokens(messages);
+    let estimate = estimateMessagesTokens(messages);
+    // Admission-aware candidates (2026-11-14): skip lanes the gateway has
+    // cooled, invalidated, or paused (owner-wide), and honour learned limits.
+    const marks = (() => {
+      try {
+        return readGatewayMarks();
+      } catch {
+        return undefined;
+      }
+    })();
     const candidates = ctx.modelRegistry
       .getAll()
-      .filter(
-        (m) =>
-          m.provider !== "small-lane" &&
-          ctx.modelRegistry.hasConfiguredAuth(m) &&
-          Number(m.contextWindow ?? 0) > 0,
-      )
-      .map((m) => ({ provider: m.provider, id: m.id, contextWindow: Number(m.contextWindow ?? 0) }));
-    const order = orderSummarizers(candidates, estimate);
+      .filter((m) => {
+        if (m.provider === "small-lane") return false;
+        if (!ctx.modelRegistry.hasConfiguredAuth(m)) return false;
+        if (m.provider === "caduceus" && marks) {
+          const owner = ownerOfLane(m.id);
+          if (
+            marks.invalid.has(m.id) ||
+            marks.models.has(m.id) ||
+            marks.owners.has(owner) ||
+            marks.pausedOwners.has(owner)
+          ) {
+            return false;
+          }
+        }
+        return Number(m.contextWindow ?? 0) > 0;
+      })
+      .map((m) => ({
+        provider: m.provider,
+        id: m.id,
+        contextWindow: Math.min(
+          Number(m.contextWindow ?? 0),
+          marks?.limits[m.id] ?? Number.POSITIVE_INFINITY,
+        ),
+      }));
+    let order = orderSummarizers(candidates, estimate);
+    let summaryMessages = messages;
+
+    // Compaction must not fail on size (2026-11-14): if nothing fits the whole
+    // transcript, shrink deterministically to the largest admitted window and
+    // retry once.
+    if (order.length === 0) {
+      const largest = candidates.reduce((max, c) => Math.max(max, c.contextWindow), 0);
+      if (largest > 0) {
+        const budgetChars = Math.max(20_000, Math.floor(largest * 4 * 0.6));
+        const shrunk = shrinkMessages(messages, budgetChars);
+        summaryMessages = shrunk.digest
+          ? [
+              {
+                role: "user",
+                content: shrunk.digest,
+                timestamp: Date.now(),
+              } as never,
+              ...shrunk.messages,
+            ]
+          : shrunk.messages;
+        estimate = estimateMessagesTokens(summaryMessages);
+        order = orderSummarizers(candidates, estimate);
+      }
+    }
 
     // Candidate chain: the dedicated lane first (when enabled), then every
     // fitting model by descending window, cloud before local on ties. A 429
@@ -115,7 +167,7 @@ export default function (pi: ExtensionAPI) {
         : undefined;
       try {
         const { text, usage } = await generateSummaryWithUsage(
-          messages,
+          summaryMessages as never,
           model,
           0, // reserveTokens — the summarizer owns its own window
           auth.apiKey,

@@ -118,6 +118,62 @@ export function orderSummarizers(
   return fit;
 }
 
+/**
+ * Deterministic input shrink for compaction (2026-11-14): when nothing fits
+ * the full transcript, keep the newest messages within `budgetChars` and
+ * prepend a digest of what was dropped. Compaction must never fail on size.
+ */
+export function shrinkMessages<T>(
+  messages: ReadonlyArray<T>,
+  budgetChars: number,
+): { messages: T[]; digest: string; omitted: number } {
+  const items = [...messages];
+  const kept: T[] = [];
+  let chars = 0;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const size = JSON.stringify(items[i]).length;
+    if (kept.length > 0 && chars + size > budgetChars) {
+      return {
+        messages: kept,
+        omitted: i + 1,
+        digest: digestOf(items.slice(0, i + 1)),
+      };
+    }
+    kept.unshift(items[i]);
+    chars += size;
+  }
+  return { messages: kept, omitted: 0, digest: "" };
+}
+
+function digestOf(messages: ReadonlyArray<unknown>): string {
+  const lines: string[] = [];
+  let chars = 0;
+  for (const raw of messages) {
+    const m = raw as { role?: string; content?: unknown };
+    const content = m?.content;
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((p) => {
+                const part = p as { text?: unknown; thinking?: unknown };
+                return typeof part?.text === "string" ? part.text : "";
+              })
+              .join(" ")
+          : "";
+    const one = `${m?.role ?? "?"}: ${text.replace(/\s+/g, " ").trim()}`.slice(0, 180);
+    if (one.length <= 8) continue;
+    if (chars + one.length > 3000) break;
+    lines.push(`- ${one}`);
+    chars += one.length + 3;
+  }
+  return [
+    `Earlier conversation was omitted to make compaction fit (${messages.length} message(s)).`,
+    ...lines,
+  ].join("\n");
+}
+
 export function chooseSummarizer(
   candidates: ReadonlyArray<SummarizerCandidate>,
   estimateTokens: number,

@@ -33,6 +33,13 @@ export interface GatewayMarksFile {
   /** Learned real context limits (provider 400 "maximum context length is
    *  N tokens"). The catalog often overstates the window. */
   limits?: Record<string, { tokens: number; learnedAt: number }>;
+  /** Owner-level 400 pauses ("several requests from this key went over the
+   *  limit … paused for N minutes; under about N KB still go through"). */
+  pauses?: Record<string, { until: number; safeBytes?: number; reason: string }>;
+  /** Offered model ids per owner, learned from 404 bodies. */
+  offered?: Record<string, string[]>;
+  /** Learned remaps: requested full model id -> replacement full model id. */
+  aliases?: Record<string, string>;
 }
 
 export function gatewayHealthPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -55,6 +62,9 @@ function readFileAt(path: string): GatewayMarksFile {
       owners: (parsed.owners ?? {}) as Record<string, GatewayMark>,
       invalid: (parsed.invalid ?? {}) as Record<string, GatewayMark>,
       limits: (parsed.limits ?? {}) as Record<string, { tokens: number; learnedAt: number }>,
+      pauses: (parsed.pauses ?? {}) as Record<string, { until: number; safeBytes?: number; reason: string }>,
+      offered: (parsed.offered ?? {}) as Record<string, string[]>,
+      aliases: (parsed.aliases ?? {}) as Record<string, string>,
     };
   } catch {
     return emptyFile(Date.now());
@@ -72,6 +82,12 @@ function prune(file: GatewayMarksFile, now: number): GatewayMarksFile {
   file.models = keep(file.models);
   file.owners = keep(file.owners);
   file.invalid = keep(file.invalid ?? {});
+  // pauses expire; offered/aliases/limits persist (they are knowledge).
+  const pauses: Record<string, { until: number; safeBytes?: number; reason: string }> = {};
+  for (const [owner, pause] of Object.entries(file.pauses ?? {})) {
+    if (pause && Number(pause.until) > now) pauses[owner] = pause;
+  }
+  file.pauses = pauses;
   return file;
 }
 
@@ -82,6 +98,14 @@ export interface GatewayMarks {
   invalid: Set<string>;
   /** Learned effective context windows (tokens). */
   limits: Record<string, number>;
+  /** Owners paused by the provider's key circuit. */
+  pausedOwners: Set<string>;
+  /** Per-owner safe input size (bytes) while paused/degraded. */
+  safeBytesByOwner: Record<string, number>;
+  /** Offered model ids per owner (404 bodies). */
+  offered: Record<string, string[]>;
+  /** Learned remaps (requested id -> replacement id). */
+  aliases: Record<string, string>;
 }
 
 /** Lanes/owners currently refused by the gateway (expired marks pruned). */
@@ -97,6 +121,14 @@ export function readGatewayMarks(
     limits: Object.fromEntries(
       Object.entries(file.limits ?? {}).map(([k, v]) => [k, Number(v?.tokens) || 0]),
     ),
+    pausedOwners: new Set(Object.keys(file.pauses ?? {})),
+    safeBytesByOwner: Object.fromEntries(
+      Object.entries(file.pauses ?? {})
+        .filter(([, v]) => Number(v?.safeBytes) > 0)
+        .map(([k, v]) => [k, Number(v!.safeBytes)]),
+    ),
+    offered: { ...(file.offered ?? {}) },
+    aliases: { ...(file.aliases ?? {}) },
   };
 }
 
@@ -266,6 +298,124 @@ export function modelLimit(
   const limits = readGatewayMarks(Date.now(), env).limits;
   const value = limits[modelId];
   return Number.isFinite(value) && value! > 0 ? value : undefined;
+}
+
+/** Owner pause ceiling (a provider pause is explicit; keep it honest). */
+export function ownerPauseCeilingMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.OFFICINA_OWNER_PAUSE_MAX_MS);
+  return Number.isFinite(n) && n > 0 ? Math.max(60_000, Math.floor(n)) : 60 * 60_000;
+}
+
+export interface OwnerPauseFact {
+  pauseMs: number;
+  safeBytes?: number;
+}
+
+/**
+ * Parse the provider's key-circuit 400:
+ *   "paused for 11 minutes. Requests under about 56 KB still go through"
+ * Returns the pause and (when present) the degraded safe size.
+ */
+export function parseOwnerPause(
+  text: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): OwnerPauseFact | undefined {
+  if (!text) return undefined;
+  const minutes = /paused for\s+(\d+)\s+minutes?/i.exec(text);
+  const seconds = /paused for\s+(\d+)\s+seconds?/i.exec(text);
+  if (!minutes && !seconds) return undefined;
+  const rawMs = minutes ? Number(minutes[1]) * 60_000 : Number(seconds![1]) * 1000;
+  const pauseMs = Math.min(ownerPauseCeilingMs(env), Math.max(60_000, Math.floor(rawMs)));
+  const kb = /under about\s+(\d+)\s*KB/i.exec(text);
+  return {
+    pauseMs,
+    safeBytes: kb ? Number(kb[1]) * 1024 : undefined,
+  };
+}
+
+/** Bench an owner for a provider-stated pause (owner-wide, operator decision). */
+export function markOwnerPause(
+  owner: string,
+  fact: OwnerPauseFact,
+  reason: string,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const key = String(owner ?? "").trim().toLowerCase();
+  const now = Date.now();
+  const until = Math.min(now + ownerPauseCeilingMs(env), now + Math.max(60_000, fact.pauseMs));
+  if (!key) return until;
+  const path = gatewayHealthPath(env);
+  const file = prune(readFileAt(path), now);
+  file.pauses = file.pauses ?? {};
+  file.pauses[key] = { until, safeBytes: fact.safeBytes, reason: reason.slice(0, 200) };
+  file.ts = now;
+  try {
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+  return until;
+}
+
+/** Owner requested a successful call: clear the pause and the safe-byte cap. */
+export function clearOwnerPause(owner: string, env: NodeJS.ProcessEnv = process.env): void {
+  const key = String(owner ?? "").trim().toLowerCase();
+  if (!key) return;
+  const path = gatewayHealthPath(env);
+  const file = prune(readFileAt(path), Date.now());
+  if (!file.pauses?.[key]) return;
+  delete file.pauses[key];
+  file.ts = Date.now();
+  try {
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+}
+
+/** Remember the ids an owner says it offers (404 bodies; knowledge, no TTL). */
+export function markOffered(owner: string, alternatives: ReadonlyArray<string>): void {
+  const key = String(owner ?? "").trim().toLowerCase();
+  const list = (alternatives ?? []).map((s) => s.trim()).filter(Boolean).slice(0, 60);
+  if (!key || list.length === 0) return;
+  const path = gatewayHealthPath(process.env);
+  const now = Date.now();
+  const file = prune(readFileAt(path), now);
+  file.offered = file.offered ?? {};
+  file.offered[key] = [...new Set([...(file.offered[key] ?? []), ...list])];
+  file.ts = now;
+  try {
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+}
+
+/** Persist a learned remap (requested id -> replacement id). */
+export function markAlias(requested: string, replacement: string): void {
+  if (!requested || !replacement || requested === replacement) return;
+  const path = gatewayHealthPath(process.env);
+  const now = Date.now();
+  const file = prune(readFileAt(path), now);
+  file.aliases = file.aliases ?? {};
+  file.aliases[requested] = replacement;
+  file.ts = now;
+  try {
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
 }
 
 /** Owner part of a lane id ("freeinference/deepseek-v4-flash" → "freeinference"). */

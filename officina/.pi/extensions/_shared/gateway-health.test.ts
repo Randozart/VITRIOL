@@ -9,6 +9,11 @@ import {
   modelLimit,
   parseContextLimit,
   parseOverflowPromptTokens,
+  parseOwnerPause,
+  markOwnerPause,
+  clearOwnerPause,
+  markOffered,
+  markAlias,
   ownerOfLane,
   parseCooldownFromError,
   parseModelNotFound,
@@ -159,5 +164,38 @@ describe("gateway context-overflow variants", () => {
     expect(
       parseOverflowPromptTokens("your prompt contains at least 171809 input tokens"),
     ).toBe(171809);
+  });
+});
+
+describe("owner pause (400 key circuit)", () => {
+  const body =
+    "[400]: This model's maximum context length is 180000 tokens, and this request may not fit. " +
+    "Several requests from this key went over the limit, so requests that may not fit are paused " +
+    "for 11 minutes. Requests under about 56 KB still go through";
+
+  it("parses the pause and the degraded safe size", () => {
+    const p = parseOwnerPause(body);
+    expect(p?.pauseMs).toBe(11 * 60_000);
+    expect(p?.safeBytes).toBe(56 * 1024);
+    expect(parseOwnerPause("paused for 30 seconds")).toMatchObject({ pauseMs: 60_000 });
+    expect(parseOwnerPause("429 rate limited")).toBeUndefined();
+  });
+
+  it("benches the owner and exposes safe bytes until cleared", () => {
+    markOwnerPause("dahl", { pauseMs: 5 * 60_000, safeBytes: 56 * 1024 }, "test");
+    let marks = readGatewayMarks();
+    expect(marks.pausedOwners.has("dahl")).toBe(true);
+    expect(marks.safeBytesByOwner["dahl"]).toBe(56 * 1024);
+    clearOwnerPause("dahl");
+    marks = readGatewayMarks();
+    expect(marks.pausedOwners.has("dahl")).toBe(false);
+  });
+
+  it("remembers offered ids and remaps", () => {
+    markOffered("dahl", ["MiniMaxAI/MiniMax-M2.7", "zai-org/GLM-5.3-Flash"]);
+    markAlias("dahl/moonshotai/Kimi-K2.6", "dahl/MiniMaxAI/MiniMax-M2.7");
+    const marks = readGatewayMarks();
+    expect(marks.offered["dahl"]).toContain("MiniMaxAI/MiniMax-M2.7");
+    expect(marks.aliases["dahl/moonshotai/Kimi-K2.6"]).toBe("dahl/MiniMaxAI/MiniMax-M2.7");
   });
 });

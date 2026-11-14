@@ -1,4 +1,4 @@
-import { chooseSummarizer, estimateMessagesTokens } from "./lane.ts";
+import { chooseSummarizer, estimateMessagesTokens, shrinkMessages } from "./lane.ts";
 import { describe, expect, it } from "vitest";
 import { buildSummaryText, laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
 
@@ -96,5 +96,29 @@ describe("chooseSummarizer", () => {
       { provider: "caduceus", id: "caduceus/other", contextWindow: 262144 },
     ];
     expect(chooseSummarizer(tie, 50_000)?.provider).toBe("caduceus");
+  });
+});
+
+describe("shrinkMessages", () => {
+  it("keeps the newest messages within the budget and digests the rest", () => {
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: i % 2 ? "assistant" : "user",
+      content: `message ${i} ${"x".repeat(100)}`,
+    }));
+    const out = shrinkMessages(messages, 450);
+    expect(out.omitted).toBeGreaterThan(0);
+    expect(out.messages.length).toBeLessThan(messages.length);
+    expect(out.digest).toContain("omitted");
+    expect(out.digest).toContain("message 0");
+    // The kept window is the newest tail.
+    const last = out.messages[out.messages.length - 1] as { content: string };
+    expect(last.content).toContain("message 9");
+  });
+
+  it("is a no-op when everything fits", () => {
+    const messages = [{ role: "user", content: "hi" }];
+    const out = shrinkMessages(messages, 10_000);
+    expect(out.omitted).toBe(0);
+    expect(out.messages).toEqual(messages);
   });
 });

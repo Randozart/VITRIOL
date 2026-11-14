@@ -128,6 +128,7 @@ describe("resilient-default", () => {
     delete process.env.OFFICINA_NO_LANE_SPREAD;
     delete process.env.OFFICINA_NO_GATEWAY_MARKS;
     delete process.env.OFFICINA_GATEWAY_HEALTH_FILE;
+    delete process.env.OFFICINA_CLOUD_RETRIES;
     delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
     delete process.env.OFFICINA_NO_LANE_SPREAD;
@@ -205,6 +206,42 @@ describe("resilient-default", () => {
     };
     const route = await h.run("retry", "continue", { failed: overflow });
     expect(route.model.provider).toBe("llamacpp");
+  });
+
+  it("skips a paused owner (400 key circuit) and routes local", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const dir = mkdtempSync(join(tmpdir(), "gw-paused-"));
+    const path = join(dir, "gateway-health.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        invalid: {},
+        pauses: { "test-model": { until: Date.now() + 5 * 60_000, safeBytes: 56 * 1024 } },
+      }),
+    );
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "0";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = path;
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("respects the cloud retry budget (0 => local immediately)", async () => {
+    engine.up = true;
+    engine.busy = false;
+    process.env.OFFICINA_CLOUD_RETRIES = "0";
+    const h = harness();
+    const route = await h.run("retry", "continue", {
+      failed: { model: { provider: "caduceus", id: "test-model" }, message: { errorMessage: "429" } },
+    });
+    expect(route.model.provider).toBe("llamacpp");
+    delete process.env.OFFICINA_CLOUD_RETRIES;
   });
 
   it("names the real gate when nothing can serve", async () => {

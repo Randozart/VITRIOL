@@ -28,13 +28,17 @@ import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.t
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import {
   markGatewayCooldown,
+  markAlias,
   markGatewayInvalid,
   markModelLimit,
+  markOffered,
+  markOwnerPause,
   ownerOfLane,
   parseContextLimit,
   parseCooldownFromError,
   parseOverflowPromptTokens,
   parseModelNotFound,
+  parseOwnerPause,
   readGatewayMarks,
 } from "../_shared/gateway-health.ts";
 import { formatLanes, getLaneHealth, type LaneRow } from "../_shared/lane-health.ts";
@@ -83,6 +87,8 @@ interface LapisState {
   switches: number;
   turnsOnTier: number;
   failoverActive: boolean;
+  /** Cloud attempts spent in the current turn (retry budget, 2026-11-14). */
+  cloudRetries?: number;
 }
 
 /** Nimbus lane state — cloud-only, no arbitration bookkeeping needed. */
@@ -117,6 +123,7 @@ const initial = (): LapisState => ({
   switches: 0,
   turnsOnTier: 0,
   failoverActive: false,
+  cloudRetries: 0,
 });
 
 function messageText(content: unknown): string {
@@ -281,12 +288,58 @@ export default function (pi: ExtensionAPI) {
     ).map((c) => c.model);
   };
 
-  const pickCloud = (tokens: number, now: number): Model | undefined => {
+  const maxCloudRetries = (): number => {
+    const n = Number(process.env.OFFICINA_CLOUD_RETRIES);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 2;
+  };
+
+  /** Lanes allowed by the gateway facts (2026-11-14): invalid, cooling,
+   *  paused owners, learned windows and the owner's safe-byte ceiling. */
+  const cloudEligible = (tokens: number, now: number): Model[] => {
+    let marks = { invalid: new Set<string>(), models: new Set<string>(), owners: new Set<string>(),
+      pausedOwners: new Set<string>(), safeBytesByOwner: {} as Record<string, number>,
+      limits: {} as Record<string, number>, offered: {} as Record<string, string[]>,
+      aliases: {} as Record<string, string> };
+    if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
+      try {
+        marks = readGatewayMarks(now) as typeof marks;
+      } catch {
+        // fail-open
+      }
+    }
+    const admitted = (m: Model): boolean => {
+      const owner = ownerOfLane(m.id);
+      if (marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner)) return false;
+      if (marks.pausedOwners.has(owner)) return false;
+      const safeTokens = marks.safeBytesByOwner[owner]
+        ? Math.floor(marks.safeBytesByOwner[owner] / 4)
+        : Number.POSITIVE_INFINITY;
+      const window = Math.min(
+        Number(m.contextWindow ?? 0),
+        marks.limits[m.id] ?? Number.POSITIVE_INFINITY,
+        safeTokens,
+      );
+      return Number.isFinite(window) && tokens + CLOUD_RESERVE_TOKENS < window;
+    };
     const eligible = cloudCandidates.filter(
-      (m) =>
-        tokens + CLOUD_RESERVE_TOKENS < (m.contextWindow ?? 0) &&
-        !healthCooling(m.provider, m.id, now),
+      (m) => !healthCooling(m.provider, m.id, now) && admitted(m),
     );
+    // Learned remaps: prefer the offered replacement when it is admitted.
+    const seen = new Set<string>();
+    const remapped: Model[] = [];
+    for (const m of eligible) {
+      const rep = marks.aliases[m.id];
+      const chosen = rep ? eligible.find((x) => x.id === rep) ?? m : m;
+      if (!seen.has(chosen.id)) {
+        seen.add(chosen.id);
+        remapped.push(chosen);
+      }
+    }
+    return remapped;
+  };
+
+  const pickCloud = (tokens: number, now: number): Model | undefined => {
+    const eligible = cloudEligible(tokens, now);
     // Multi-session quota spread (2026-11-14): never stampede the same free
     // lane the other live sessions are already turning on; the registry is
     // written by adaptive-router and expires in 60 s.
@@ -296,29 +349,6 @@ export default function (pi: ExtensionAPI) {
         busy = busyPeerLanes(readLivePeers(process.ppid, { now }));
       } catch {
         // registry unavailable → plain priority order
-      }
-    }
-    // Gateway-refused lanes (2026-11-14): the gateway's own credential
-    // cooldowns are invisible to our health file; marks learned from a 429
-    // body are shared across sessions and skipped here BEFORE the first
-    // wasted request.
-    if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
-      try {
-        const marks = readGatewayMarks(now);
-        const notMarked = eligible.filter(
-          (m) =>
-            !marks.invalid.has(m.id) &&
-            !marks.models.has(m.id) &&
-            !marks.owners.has(ownerOfLane(m.id)) &&
-            // Learned windows (2026-11-14): a provider 400 taught us the real
-            // limit; never plan a prompt past it (the catalog may overstate).
-            tokens + CLOUD_RESERVE_TOKENS < (marks.limits[m.id] ?? m.contextWindow ?? 0),
-        );
-        if (notMarked.length > 0) {
-          return spreadPick(notMarked, busy);
-        }
-      } catch {
-        // marks unavailable → plain priority order
       }
     }
     return spreadPick(eligible, busy);
@@ -423,6 +453,7 @@ export default function (pi: ExtensionAPI) {
       : null;
     const privacy = cls ? cls.privacy : "safe";
     let state = request.state ?? initial();
+    if (request.reason === "user") state = { ...state, cloudRetries: 0 };
     let tier: Tier = state.tier;
 
     const remember = (chosen: Model, chosenTier: Tier): void => {
@@ -452,6 +483,23 @@ export default function (pi: ExtensionAPI) {
     if (learnedLimit && failed) markModelLimit(failed.id, learnedLimit);
 
     if (request.reason === "retry") {
+      // Retry budget (2026-11-14): a turn must not walk the pool one 429 at a
+      // time. After N cloud attempts, local (or one actionable error).
+      if ((state.cloudRetries ?? 0) >= maxCloudRetries()) {
+        if (local) {
+          activeCloud = undefined;
+          remember(local, "local");
+          setRouteWidget(ctx, "local", undefined, profile);
+          return {
+            model: local,
+            thinkingLevel: request.thinkingLevel,
+            state: { ...state, tier: "local", failoverActive: true },
+          };
+        }
+        throw new Error(
+          `Lapis Occultus: cloud retry budget exhausted (${maxCloudRetries()}) and no local model is routable`,
+        );
+      }
       // Context overflow (2026-11-14): another cloud lane that fits is a
       // lottery; the local stone has 262k and is the deterministic answer
       // when the prompt no longer fits the failed lane.
@@ -480,6 +528,7 @@ export default function (pi: ExtensionAPI) {
         // retry_after / reset_at), not in a header — record it once, cap it,
         // and share the mark with every other session.
         const errorText = failureText;
+        const pause = parseOwnerPause(errorText);
         const cooldownMs = parseCooldownFromError(errorText, now);
         const notFound = parseModelNotFound(errorText);
         recordFailure(failed.provider, failed.id, undefined, {
@@ -497,12 +546,30 @@ export default function (pi: ExtensionAPI) {
         if (notFound) {
           // Self-heal (2026-11-14): the catalog advertised an id the upstream
           // does not offer. Exclude that exact lane for hours (shared with
-          // every session) and record the upstream's alternatives so the
-          // cause is visible; other lanes of the owner stay usable.
+          // every session), remember the owner's offered ids, and fail over
+          // to a free offered alternative IN THIS TURN when one is admitted.
           markGatewayInvalid({
             model: failed.id,
             reason: `not offered; upstream: ${notFound.alternatives.join(", ").slice(0, 200) || "unknown"}`,
           });
+          const owner = ownerOfLane(failed.id);
+          markOffered(owner, notFound.alternatives);
+          const offered = notFound.alternatives.map((alt) => `${owner}/${alt}`);
+          const eligibleNow = cloudEligible(tokens, now);
+          const replacement = eligibleNow.find((m) => offered.includes(m.id));
+          if (replacement) {
+            markAlias(failed.id, replacement.id);
+            const next = { ...state, cloudRetries: (state.cloudRetries ?? 0) + 1 };
+            activeCloud = replacement;
+            remember(replacement, "cloud");
+            setRouteWidget(ctx, "cloud", replacement, profile);
+            return { model: replacement, thinkingLevel: request.thinkingLevel, state: next };
+          }
+        }
+        if (pause) {
+          // A 400 key circuit is OWNER-wide (operator decision): bench every
+          // model of that owner for the stated pause and honour safe bytes.
+          markOwnerPause(ownerOfLane(failed.id), pause, "400 key pause");
         }
         const next = pickCloud(tokens, now);
         tier = next ? "cloud" : "local";
@@ -586,7 +653,11 @@ export default function (pi: ExtensionAPI) {
       activeCloud = candidate;
       remember(candidate, "cloud");
       setRouteWidget(ctx, "cloud", candidate, profile);
-      return { model: candidate, thinkingLevel: request.thinkingLevel, state };
+      return {
+        model: candidate,
+        thinkingLevel: request.thinkingLevel,
+        state: { ...state, cloudRetries: (state.cloudRetries ?? 0) + 1 },
+      };
     }
     if (local) {
       if (state.tier !== "local") {
@@ -604,7 +675,15 @@ export default function (pi: ExtensionAPI) {
       activeCloud = candidate;
       remember(candidate, "cloud");
       setRouteWidget(ctx, "cloud", candidate, profile);
-      return { model: candidate, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "cloud" } };
+      return {
+        model: candidate,
+        thinkingLevel: request.thinkingLevel,
+        state: {
+          ...state,
+          tier: "cloud",
+          cloudRetries: (state.cloudRetries ?? 0) + 1,
+        },
+      };
     }
     // Honest failure (2026-11-14): name the gate that actually refused.
     const budget = budgetStatus();

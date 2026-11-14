@@ -91,13 +91,13 @@ interface LastDecision {
 const CLOUD_RESERVE_TOKENS = 16_384;
 const CATALOG = join(homedir(), ".vitriol", "officina", "caduceus-models.json");
 const DEFAULT_FALLBACKS = [
-  "caduceus/opencode-go/deepseek-v4.1-flash",
-  "caduceus/opencode-go/qwen3.8-flash",
-  // No-catalog backstop (2026-11-11): opencode-go subscription lane +
-  // AgentRouter's big tool-capable free lanes (~1M ctx, zero-priced).
-  "caduceus/opencode-go/glm-5.2",
+  // No-catalog backstop: free-tier lanes first (2026-11-13, operator:
+  // "opencode go is paid, I have a subscription" — paid lanes go last).
   "caduceus/agentrouter/gpt-5.6-sol",
   "caduceus/agentrouter/claude-opus-5",
+  "caduceus/opencode-go/deepseek-v4.1-flash",
+  "caduceus/opencode-go/qwen3.8-flash",
+  "caduceus/opencode-go/glm-5.2",
 ];
 
 const initial = (): LapisState => ({
@@ -177,7 +177,13 @@ export default function (pi: ExtensionAPI) {
     cloudCandidates = [];
     const profile = readProfile();
     const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
-    const pool: Array<{ provider: string; id: string; owner: string; free: boolean }> = [];
+    const pool: Array<{
+      provider: string;
+      id: string;
+      owner: string;
+      free: boolean;
+      freeTier: boolean;
+    }> = [];
     try {
       if (existsSync(CATALOG)) {
         const raw = JSON.parse(readFileSync(CATALOG, "utf8"));
@@ -186,7 +192,13 @@ export default function (pi: ExtensionAPI) {
           allowPaidOwners: allowPaidOwners(prefs),
         });
         pool.push(
-          ...found.map((c) => ({ provider: "caduceus", id: c.id, owner: c.owner, free: c.free })),
+          ...found.map((c) => ({
+            provider: "caduceus",
+            id: c.id,
+            owner: c.owner,
+            free: c.free,
+            freeTier: c.freeTier,
+          })),
         );
       }
     } catch {
@@ -194,8 +206,16 @@ export default function (pi: ExtensionAPI) {
     }
     // Explicit fallbacks keep their backstop role; policy still applies to
     // them (routing off / deny / rank), never enablement (I2).
-    pool.push(...fallbacks.map((s) => ({ ...s, owner: ownerOf(s), free: false })));
-    const ordered = applyPrefs(sortIdsForProfile(pool, profile), prefs);
+    pool.push(...fallbacks.map((s) => ({ ...s, owner: ownerOf(s), free: false, freeTier: false })));
+    // Two-class ordering (2026-11-13): free-tier lanes first, paid
+    // subscription lanes after — a free lane exhausting (cooling/429)
+    // walks the router down the line into the paid layer.
+    const freeTierPool = pool.filter((c) => c.freeTier);
+    const paidPool = pool.filter((c) => !c.freeTier);
+    const ordered = [
+      ...applyPrefs(sortIdsForProfile(freeTierPool, profile), prefs),
+      ...applyPrefs(sortIdsForProfile(paidPool, profile), prefs),
+    ];
     // Healthy lanes first, gateway-backoff lanes demoted to the tail,
     // gateway-hard-down owners excluded entirely (fail-open: owners the
     // gateway doesn't know about are treated as healthy).

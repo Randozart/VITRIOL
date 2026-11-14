@@ -158,15 +158,38 @@ describe("freeToolCandidates", () => {
     expect(ids).not.toContain("glm/paid");
     expect(ids).not.toContain("zai/glm-5.3-flash");
     expect(ids).not.toContain("opencode-go/deepseek-v4.1-flash-high");
-    expect(ids.indexOf("opencode-go/deepseek-v4.1-flash")).toBeLessThan(
-      ids.indexOf("dahl/MiniMaxAI/MiniMax-M2.7"),
-    );
+    // Free-tier lanes first; paid subscription (opencode-go) last
+    // (2026-11-13, operator: opencode-go is paid).
     expect(ids.indexOf("dahl/MiniMaxAI/MiniMax-M2.7")).toBeLessThan(
       ids.indexOf("glm/glm-4.7-flash"),
+    );
+    expect(ids.indexOf("freeinference/deepseek-v4-flash")).toBeLessThan(
+      ids.indexOf("opencode-go/deepseek-v4.1-flash"),
+    );
+    expect(ids.indexOf("cfp/openai/gpt-oss-120b")).toBeLessThan(
+      ids.indexOf("opencode-go/deepseek-v4.1-flash"),
     );
   });
 });
 
+
+describe("free-tier vs paid-subscription ordering", () => {
+  it("puts every free-tier lane before the paid subscription lanes", () => {
+    const rows = [
+      { id: "opencode-go/deepseek-v4.1-flash", owned_by: "opencode-go", pricing: null, capabilities: { tool_calling: true }, context_length: 1000000 },
+      { id: "dahl/moonshotai/Kimi-K2.6", owned_by: "dahl", pricing: null, capabilities: { tool_calling: true }, context_length: 200000 },
+      { id: "agentrouter/gpt-5.6-sol", owned_by: "agentrouter", pricing: { input: 0, output: 0 }, capabilities: { tool_calling: true }, context_length: 1050000 },
+      { id: "cohere/command-a-03-2025", owned_by: "cohere", pricing: { input: 0, output: 0 }, capabilities: { tool_calling: true }, context_length: 128000 },
+    ];
+    const c = freeToolCandidates(rows);
+    const lastFree = Math.max(
+      ...c.map((x, i) => (x.freeTier ? i : -1)),
+    );
+    const firstPaid = c.findIndex((x) => !x.freeTier);
+    expect(firstPaid).toBeGreaterThan(lastFree);
+    expect(c[firstPaid].id).toBe("opencode-go/deepseek-v4.1-flash");
+  });
+});
 
 describe("free model preference", () => {
   it("prefers DeepSeek V4.1 Flash, then native DeepSeek, MiMo, GLM", () => {

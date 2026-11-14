@@ -49,6 +49,11 @@
   lane — every turn routes to the best verified-FREE cloud model, the
   local engine is never selected, and the lane dies loudly (no silent
   local fallback) when no free lane fits the context.
+- **Lane order** (2026-11-13): free-tier models come first, in catalog
+  order; the paid subscription lanes (`opencode-go`) rank after every
+  free lane. A free lane that hits its quota (429/quota response) is put
+  on cooldown and the router walks down the line; only when free lanes
+  are exhausted/cooling does it use the subscription lanes.
 - **Lane health** (`/nimbus`): caduceus marks unhealthy endpoints on its
   provider connections — `isActive=false` owners are excluded from lane
   selection before the first wasted turn, `backoffLevel>0` owners are

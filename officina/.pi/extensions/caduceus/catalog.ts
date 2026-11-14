@@ -192,6 +192,12 @@ export const FREE_OWNER_RANK: Record<string, number> = {
 /** Owners whose free grant has no per-token price in the gateway catalog.
  *  Manual FreeInference models are added without a pricing block; they are
  *  still free research lanes, never auto-billed. */
+/** Owners whose "zero price" comes from a PAID plan the operator pays for.
+ *  They stay usable but rank AFTER every free-tier lane — when a free lane
+ *  is exhausted (429/quota/cooling) the router walks down to them
+ *  (2026-11-13, operator: "opencode go is paid, I have a subscription"). */
+export const PAID_SUBSCRIPTION_OWNERS = new Set(["opencode-go"]);
+
 const COSTLESS_OWNERS = new Set([
   "opencode-go",
   "dahl",
@@ -206,6 +212,9 @@ export interface FreeCandidate {
   maxTokens: number;
   /** Explicit zero pricing, or a known-costless subscription/playground lane. */
   free: boolean;
+  /** No paid plan required (free tier). Paid-subscription lanes are false
+   *  even though their marginal token price is zero. */
+  freeTier: boolean;
 }
 
 function toolCallingFlag(record: JsonRecord): boolean {
@@ -261,6 +270,7 @@ export function toolCandidates(
     const free = pricing
       ? cost.input === 0 && cost.output === 0
       : COSTLESS_OWNERS.has(owner);
+    const freeTier = free && !PAID_SUBSCRIPTION_OWNERS.has(owner);
     if (freeOnly && !free && !paidAllowed) continue;
 
     const contextWindow = Math.max(
@@ -279,7 +289,7 @@ export function toolCandidates(
     );
 
     seen.add(id);
-    out.push({ id, owner, contextWindow, maxTokens, free });
+    out.push({ id, owner, contextWindow, maxTokens, free, freeTier });
   }
 
   // Drop effort-tier duplicates (`foo-high`, `foo-low`, …) when the base
@@ -306,6 +316,10 @@ export function toolCandidates(
     return 5;
   };
   deduped.sort((a, b) => {
+    // Free-tier lanes always rank before paid-subscription lanes; the
+    // router walks down the list as lanes exhaust (cooling/429).
+    const tier = (a.freeTier ? 0 : 1) - (b.freeTier ? 0 : 1);
+    if (tier !== 0) return tier;
     const owner = (FREE_OWNER_RANK[a.owner] ?? 99) - (FREE_OWNER_RANK[b.owner] ?? 99);
     if (owner !== 0) return owner;
     const family = familyRank(a.id) - familyRank(b.id);

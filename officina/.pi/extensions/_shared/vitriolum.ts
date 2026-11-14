@@ -17,7 +17,7 @@ export const VITRIOLUM = {
   safety: "#3fb950", // success, additions, token flow (desaturated 2026-09-01)
   solvent: "#00ffff", // links, folders, "alive" cyan
   sovereignty: "#ffd700", // gold: accent, headings, coupling
-  antidote: "#ff5f1f", // warning orange; the brand widget accent
+  antidote: "#ffa000", // warning amber (was #ff5f1f; red-alike, 2026-11-14)
   coldBlue: "#2e5fa3", // borders
   violet: "#b294bb", // files, custom-message labels
   text: "#e0e0e0",

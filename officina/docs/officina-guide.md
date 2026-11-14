@@ -20,6 +20,12 @@
   directly on top of the prompt (options list; the RPC path stages it as
   a facts file, so it works on every lane and can never hang the wire).
   No response in 10 minutes fail-opens; esc cancels.
+- **Colour semantics** (2026-11-14): cyan = active (running tools, working),
+  green = success/healthy, gold = completed work/accents, amber = observation
+  worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
+  failure only. Informational transcript notices are neutral; `Warn` is
+  amber, `Error` is red. Watchdog cards tint by verdict (ALIVE green,
+  JUDGING gold, HUNG amber) and update in place for identical facts.
 - **Thinking traces**: rendered as dimmed markdown (headings, bold,
   code, lists). Click any thinking block to close it — it collapses to a
   one-line marker with its character count; click again to reopen.
@@ -32,6 +38,12 @@
   `/thinking-view default collapsed|expanded` sets what NEW traces start
   as (default: collapsed); bare `/thinking-view` shows the current state.
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
+- **Colour semantics** (2026-11-14): cyan = active (running tools, working),
+  green = success/healthy, gold = completed work/accents, amber = observation
+  worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
+  failure only. Informational transcript notices are neutral; `Warn` is
+  amber, `Error` is red. Watchdog cards tint by verdict (ALIVE green,
+  JUDGING gold, HUNG amber) and update in place for identical facts.
 - **Thinking traces**: rendered as dimmed markdown (headings, bold,
   code, lists). Click any thinking block to close it — it collapses to a
   one-line marker with its character count; click again to reopen.

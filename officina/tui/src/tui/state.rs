@@ -330,9 +330,10 @@ pub enum ChatEntry {
         name: String,
         summary: String,
         args: Option<serde_json::Value>,
-        /// Click override (2026-11-13): Some(true) = full args/output,
-        /// Some(false) = collapsed line, None = follow /tools config.
-        expanded: Option<bool>,
+        /// Click override (2026-11-14): the operator cycles
+        /// closed (line) → formatted (block) → full → closed. None follows
+        /// the /tools config until the first click.
+        click_mode: Option<ToolVerbosity>,
         output: Vec<String>,
         output_truncated: bool,
         running: bool,
@@ -350,8 +351,15 @@ pub enum ChatEntry {
         #[allow(clippy::type_complexity)]
         render_cache: Option<(usize, u64, usize, u64, Vec<Line<'static>>)>,
     },
-    /// Diagnostic notice (extension errors, retries, stderr surfacing).
+    /// Informational notice (neutral, 2026-11-14): settings/janitor/scan
+    /// reports and other ordinary output. Never rendered in the failure red.
     Diag(String),
+    /// Observation that deserves attention but is not a failure (amber):
+    /// harness watchdog aborts, budget pressure.
+    Warn(String),
+    /// Genuine failure (red): extension errors, failed commands, failed
+    /// compactions/imports.
+    Error(String),
     /// Long info-notify captured into the transcript (QoL batch stage 3,
     /// 2026-11-12): multi-line tables (/free, /nimbus, /phase-models) were
     /// invisible beyond the 40-char glance row. Neutral violet — NOT an
@@ -1985,12 +1993,34 @@ impl AppState {
         // Watchdog observations are not errors — give them their own block.
         if msg.starts_with("hang-watchdog") {
             let path = self.watchdog_file.clone().unwrap_or_else(watchdog_path);
+            let prev_key = self
+                .watchdog
+                .as_ref()
+                .map(|d| format!("{}|{}", d.command, d.verdict));
             self.watchdog = load_watchdog_doc_at(&path);
-            self.entries.push(ChatEntry::Watchdog(msg.to_string()));
+            let new_key = self
+                .watchdog
+                .as_ref()
+                .map(|d| format!("{}|{}", d.command, d.verdict));
+            // Same command+verdict as the card on screen: update in place
+            // instead of stacking duplicates (2026-11-14).
+            let replace = matches!(
+                (self.entries.last(), prev_key.as_deref(), new_key.as_deref()),
+                (Some(ChatEntry::Watchdog(_)), Some(p), Some(n)) if p == n
+            );
+            if replace {
+                if let Some(ChatEntry::Watchdog(prev)) = self.entries.last_mut() {
+                    *prev = msg.to_string();
+                }
+            } else {
+                self.entries.push(ChatEntry::Watchdog(msg.to_string()));
+            }
             return;
         }
-        if ntype == "error" || ntype == "warning" {
-            self.entries.push(ChatEntry::Diag(msg.to_string()));
+        if ntype == "error" {
+            self.entries.push(ChatEntry::Error(msg.to_string()));
+        } else if ntype == "warning" {
+            self.entries.push(ChatEntry::Warn(msg.to_string()));
         } else {
             self.notice = Some((msg.to_string(), ntype.to_string()));
             if msg.contains('\n') || msg.len() > 100 {
@@ -2322,8 +2352,9 @@ impl AppState {
         false
     }
 
-    /// Left-click on a tool block: collapse ⇄ full args/output. Returns
-    /// true when the click landed on a block (2026-11-13).
+    /// Left-click on a tool block: cycle closed (line) → formatted (block)
+    /// → full → closed. Returns true when the click landed on a block
+    /// (2026-11-14, operator request).
     pub fn tool_toggle_at(&mut self, row: u16) -> bool {
         let idx = self
             .tool_hitboxes
@@ -2331,17 +2362,22 @@ impl AppState {
             .find(|(y0, y1, _)| row >= *y0 && row <= *y1)
             .map(|(_, _, idx)| *idx);
         let Some(idx) = idx else { return false };
+        let Some(ChatEntry::Tool {
+            name, click_mode, ..
+        }) = self.entries.get(idx)
+        else {
+            return false;
+        };
+        let current = click_mode
+            .unwrap_or_else(|| effective_mode(name, self.tool_default, &self.tool_overrides));
+        let next = current.next();
         if let Some(ChatEntry::Tool {
-            expanded,
+            click_mode,
             render_cache,
             ..
         }) = self.entries.get_mut(idx)
         {
-            *expanded = if *expanded == Some(true) {
-                Some(false)
-            } else {
-                Some(true)
-            };
+            *click_mode = Some(next);
             // The cached block was rendered at the old verbosity.
             *render_cache = None;
             return true;
@@ -2369,7 +2405,7 @@ impl AppState {
             name: name.to_string(),
             summary,
             args: Some(args.clone()),
-            expanded: None,
+            click_mode: None,
             output: Vec::new(),
             output_truncated: false,
             running: true,
@@ -3148,20 +3184,18 @@ impl AppState {
                     started_at,
                     timeout_s,
                     render_cache,
-                    expanded,
+                    click_mode,
                     ..
                 } => {
-                    // Click override wins over /tools config (2026-11-13).
-                    let mode = match *expanded {
-                        Some(true) => ToolVerbosity::Full,
-                        Some(false) => ToolVerbosity::Line,
-                        None => effective_mode(name, self.tool_default, &self.tool_overrides),
-                    };
+                    // Click override wins over /tools config (2026-11-14).
+                    let mode = click_mode.unwrap_or_else(|| {
+                        effective_mode(name, self.tool_default, &self.tool_overrides)
+                    });
                     if mode == ToolVerbosity::Line {
                         // Collapsed single line — the status-quo rendering,
                         // byte-identical to pre-verbosity builds.
                         let (icon, st) = if *running {
-                            (theme::GLYPH_CRUCIBLE, theme::warn())
+                            (theme::GLYPH_CRUCIBLE, theme::live())
                         } else if *error {
                             ("✗", theme::crit())
                         } else {
@@ -3272,14 +3306,55 @@ impl AppState {
                     }
                 }
                 ChatEntry::Diag(text) => {
-                    let st = theme::crit();
+                    // Neutral voice (2026-11-14): diagnostics are info, not
+                    // errors — red is reserved for ChatEntry::Error.
+                    let st = Style::new().fg(theme::SILVER).bg(theme::BG);
+                    let glyph = Style::new().fg(theme::MUTED).bg(theme::BG);
                     for (i, seg) in wrap_text(text, width.saturating_sub(8))
                         .into_iter()
                         .enumerate()
                     {
                         if i == 0 {
                             lines.push(Line::from(vec![
-                                Span::styled(format!("  {} ", theme::GLYPH_SULFUR), st),
+                                Span::styled(format!("  {} ", theme::GLYPH_SULFUR), glyph),
+                                Span::styled(seg, st),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("        "),
+                                Span::styled(seg, st),
+                            ]));
+                        }
+                    }
+                }
+                ChatEntry::Warn(text) => {
+                    let st = Style::new().fg(theme::ORANGE).bg(theme::BG);
+                    for (i, seg) in wrap_text(text, width.saturating_sub(8))
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if i == 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled("  \u{26a0} ", st),
+                                Span::styled(seg, st),
+                            ]));
+                        } else {
+                            lines.push(Line::from(vec![
+                                Span::raw("        "),
+                                Span::styled(seg, st),
+                            ]));
+                        }
+                    }
+                }
+                ChatEntry::Error(text) => {
+                    let st = Style::new().fg(theme::RED).bg(theme::BG);
+                    for (i, seg) in wrap_text(text, width.saturating_sub(8))
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if i == 0 {
+                            lines.push(Line::from(vec![
+                                Span::styled("  \u{2717} ", st),
                                 Span::styled(seg, st),
                             ]));
                         } else {
@@ -3312,7 +3387,8 @@ impl AppState {
                 ChatEntry::Watchdog(text) => {
                     // Structured card when the facts file is fresh; raw text
                     // fallback so a message is never lost (I3).
-                    let edge = Style::new().fg(theme::ORANGE).bg(theme::BG);
+                    let edge_color = watchdog_edge_color(wd.as_ref().map(|d| d.verdict.as_str()));
+                    let edge = Style::new().fg(edge_color).bg(theme::BG);
                     let body = Style::new().fg(theme::TEXT).bg(theme::BG);
                     let muted = Style::new().fg(theme::MUTED).bg(theme::BG);
                     let span_w = width.saturating_sub(4) as usize;
@@ -3353,7 +3429,7 @@ impl AppState {
                         Span::styled(
                             label,
                             Style::new()
-                                .fg(theme::ORANGE)
+                                .fg(edge_color)
                                 .bg(theme::BG)
                                 .add_modifier(Modifier::BOLD),
                         ),
@@ -4244,15 +4320,12 @@ fn render_tool_block(
     } else if running {
         let mut spans = vec![
             Span::styled("│ ", border),
-            Span::styled(
-                "running…",
-                Style::default().fg(theme::LIGHT_YELLOW).bg(surf),
-            ),
+            Span::styled("running…", Style::default().fg(theme::CYAN).bg(surf)),
         ];
         if let Some(secs) = elapsed {
             spans.push(Span::styled(
                 format!(" {}", fmt_elapsed(secs)),
-                Style::default().fg(theme::ORANGE).bg(surf),
+                Style::default().fg(theme::MUTED).bg(surf),
             ));
         }
         // Liveness evidence (2026-11-12): real CPU from pi's subprocess
@@ -4288,7 +4361,7 @@ fn render_tool_block(
             (
                 theme::GLYPH_CRUCIBLE,
                 " running",
-                Style::default().fg(theme::ORANGE).bg(surf),
+                Style::default().fg(theme::CYAN).bg(surf),
             )
         } else if error {
             ("✗", " failed", Style::default().fg(theme::RED).bg(surf))
@@ -4626,7 +4699,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_click_toggles_full_and_back() {
+    fn tool_click_cycles_closed_formatted_full() {
         let mut s = AppState::default();
         s.hide_thinking = false;
         s.thinking_default_collapsed = false;
@@ -4636,33 +4709,55 @@ mod tests {
             &serde_json::json!({"command": "brievc build c4probe.bv --verify-bodies", "timeout": 240}),
         );
         s.tool_update(Some("t1"), "bash", "compiling\n");
-        let collapsed = s.chat_lines(100);
-        assert!(!collapsed.is_empty());
-        assert_eq!(s.line_entries.len(), collapsed.len());
-        s.tool_hitboxes = vec![(5, 9, 0)];
-        assert!(s.tool_toggle_at(5), "click inside the tool block toggles");
+        let closed = s.chat_lines(100);
+        assert_eq!(s.line_entries.len(), closed.len());
         assert!(matches!(
             s.entries[0],
             ChatEntry::Tool {
-                expanded: Some(true),
+                click_mode: None,
+                ..
+            }
+        ));
+        s.tool_hitboxes = vec![(5, 9, 0)];
+
+        // Click 1: formatted block (bordered panel, args preview).
+        assert!(s.tool_toggle_at(5));
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Tool {
+                click_mode: Some(ToolVerbosity::Block),
+                ..
+            }
+        ));
+        let formatted = s.chat_lines(100);
+        assert!(
+            formatted.iter().any(|l| l.to_string().contains('╭')),
+            "formatted state renders the bordered block"
+        );
+
+        // Click 2: full (same block, every field / full output).
+        assert!(s.tool_toggle_at(5));
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Tool {
+                click_mode: Some(ToolVerbosity::Full),
                 ..
             }
         ));
         let full = s.chat_lines(100);
-        assert!(
-            full.len() > collapsed.len(),
-            "full rendering shows args/output below the header"
-        );
-        assert!(s.tool_toggle_at(5), "click again collapses");
+        assert!(full.len() >= formatted.len());
+
+        // Click 3: closed again (single status line).
+        assert!(s.tool_toggle_at(5));
         assert!(matches!(
             s.entries[0],
             ChatEntry::Tool {
-                expanded: Some(false),
+                click_mode: Some(ToolVerbosity::Line),
                 ..
             }
         ));
         let line = s.chat_lines(100);
-        assert_eq!(line.len(), collapsed.len(), "collapsed is one line again");
+        assert_eq!(line.len(), closed.len(), "closed is one line again");
         assert!(!s.tool_toggle_at(99), "click outside all blocks is a miss");
     }
 
@@ -4690,10 +4785,143 @@ mod tests {
         assert!(matches!(
             s.entries[1],
             ChatEntry::Tool {
-                expanded: Some(true),
+                click_mode: Some(ToolVerbosity::Block),
                 ..
             }
         ));
+    }
+
+    fn flat_colors(lines: &[Line]) -> Vec<ratatui::style::Color> {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter_map(|sp| sp.style.fg)
+            .collect()
+    }
+
+    #[test]
+    fn running_tool_is_cyan_never_red() {
+        let mut s = AppState::default();
+        s.tool_start(
+            Some("t1"),
+            "bash",
+            &serde_json::json!({"command": "sleep 5"}),
+        );
+        let lines = s.chat_lines(100);
+        let colors = flat_colors(&lines);
+        assert!(
+            colors.contains(&theme::CYAN),
+            "running uses cyan: {colors:?}"
+        );
+        assert!(!colors.contains(&theme::RED), "running is never red");
+        assert!(
+            !colors.contains(&theme::ORANGE),
+            "running is not amber either"
+        );
+        // Completed → green; failed → red.
+        s.tool_end(Some("t1"), "bash", "done", false);
+        let done: Vec<Line> = s.chat_lines(100);
+        assert!(flat_colors(&done).contains(&theme::GREEN));
+        let mut f = AppState::default();
+        f.tool_start(Some("t2"), "bash", &serde_json::json!({"command": "false"}));
+        f.tool_end(Some("t2"), "bash", "exit 1", true);
+        let failed: Vec<Line> = f.chat_lines(100);
+        assert!(flat_colors(&failed).contains(&theme::RED));
+    }
+
+    #[test]
+    fn severity_entries_render_neutral_amber_red() {
+        let mut s = AppState::default();
+        s.entries
+            .push(ChatEntry::Diag("janitor: nothing stale".into()));
+        let diag = s.chat_lines(90);
+        assert!(!flat_colors(&diag).contains(&theme::RED), "Diag never red");
+        assert!(
+            !flat_colors(&diag).contains(&theme::ORANGE),
+            "Diag not amber"
+        );
+        s.entries.clear();
+        s.entries.push(ChatEntry::Warn("watchdog abort".into()));
+        let warn = s.chat_lines(90);
+        assert!(flat_colors(&warn).contains(&theme::ORANGE));
+        assert!(!flat_colors(&warn).contains(&theme::RED));
+        s.entries.clear();
+        s.entries.push(ChatEntry::Error("checkpoint failed".into()));
+        let err = s.chat_lines(90);
+        assert!(flat_colors(&err).contains(&theme::RED));
+        s.entries.clear();
+    }
+
+    #[test]
+    fn watchdog_edge_follows_the_verdict() {
+        assert_eq!(watchdog_edge_color(Some("ALIVE")), theme::GREEN);
+        assert_eq!(watchdog_edge_color(Some("JUDGING")), theme::GOLD);
+        assert_eq!(watchdog_edge_color(Some("HUNG")), theme::ORANGE);
+        assert_eq!(watchdog_edge_color(Some("?")), theme::MUTED);
+        assert_eq!(watchdog_edge_color(None), theme::MUTED);
+        // ALIVE must never wear the warning/failure hue (I3).
+        let mut s = AppState::default();
+        s.entries
+            .push(ChatEntry::Watchdog("hang-watchdog ALIVE".into()));
+        s.watchdog = Some(WatchdogDoc {
+            version: 1,
+            ts: crate::tui::caduceus::now_ms(),
+            kind: "verdict".into(),
+            command: "brievc build".into(),
+            elapsed_s: 60,
+            stalled_s: 0,
+            verdict: "ALIVE".into(),
+            reason: "compiling".into(),
+            next_check_at: 0,
+            phase: "watch".into(),
+        });
+        let lines = s.chat_lines(90);
+        let colors = flat_colors(&lines);
+        assert!(colors.contains(&theme::GREEN));
+        assert!(!colors.contains(&theme::ORANGE), "ALIVE card is not amber");
+        assert!(!colors.contains(&theme::RED), "ALIVE card is not red");
+    }
+
+    #[test]
+    fn watchdog_cards_update_in_place_for_identical_facts() {
+        let dir = std::env::temp_dir().join(format!("wd-dedupe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("watchdog.json");
+        let now = crate::tui::caduceus::now_ms();
+        let doc = |verdict: &str, reason: &str| {
+            format!(
+                r#"{{"version":1,"ts":{now},"kind":"verdict","command":"brievc build",
+                     "elapsed_s":60,"stalled_s":10,"verdict":"{verdict}",
+                     "reason":"{reason}","next_check_at":0,"phase":"watch"}}"#
+            )
+        };
+        std::fs::write(&path, doc("ALIVE", "working")).unwrap();
+        let mut s = AppState::default();
+        s.watchdog_file = Some(path.clone());
+        s.apply_notify("hang-watchdog: alive check 1", "info");
+        s.apply_notify("hang-watchdog: alive check 2", "info");
+        let cards = s
+            .entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::Watchdog(_)))
+            .count();
+        assert_eq!(cards, 1, "identical facts replace the card");
+        if let Some(ChatEntry::Watchdog(t)) = s.entries.last() {
+            assert!(t.contains("alive check 2"), "card carries the latest text");
+        } else {
+            panic!("expected a watchdog card");
+        }
+        // Different verdict is a new observation → new card.
+        std::fs::write(&path, doc("HUNG", "waiting on stdin")).unwrap();
+        s.apply_notify("hang-watchdog: now hung", "warning");
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, ChatEntry::Watchdog(_)))
+                .count(),
+            2
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -4708,13 +4936,13 @@ mod tests {
     }
 
     #[test]
-    fn notify_warning_and_error_land_as_diag() {
+    fn notify_severity_maps_to_warn_and_error() {
         let mut s = AppState::default();
         s.apply_notify("engine down", "warning");
         s.apply_notify("checkpoint failed", "error");
         assert_eq!(s.entries.len(), 2);
-        assert!(matches!(s.entries[0], ChatEntry::Diag(_)));
-        assert!(matches!(s.entries[1], ChatEntry::Diag(_)));
+        assert!(matches!(s.entries[0], ChatEntry::Warn(_)));
+        assert!(matches!(s.entries[1], ChatEntry::Error(_)));
         assert!(s.notice.is_none(), "errors do not use the glance row");
     }
 
@@ -4818,10 +5046,10 @@ mod tests {
             s.notice.is_none(),
             "watchdog entries do not use the glance row"
         );
-        // normal warnings still become Diag
+        // normal warnings become Warn (amber), not Diag or Watchdog
         let mut s2 = AppState::default();
         s2.apply_notify("engine down", "warning");
-        assert!(matches!(s2.entries[0], ChatEntry::Diag(_)));
+        assert!(matches!(s2.entries[0], ChatEntry::Warn(_)));
         // the block renders with its label
         let text = s
             .chat_lines(80)
@@ -6279,6 +6507,17 @@ fn answer_mtime() -> Option<std::time::SystemTime> {
     std::fs::metadata(answer_path())
         .and_then(|m| m.modified())
         .ok()
+}
+
+/// Watchdog card accent by verdict (2026-11-14, operator report): an ALIVE
+/// observation must never wear the warning/failure colour.
+pub fn watchdog_edge_color(verdict: Option<&str>) -> ratatui::style::Color {
+    match verdict {
+        Some("ALIVE") => theme::GREEN,
+        Some("HUNG") => theme::ORANGE,
+        Some("JUDGING") => theme::GOLD,
+        _ => theme::MUTED,
+    }
 }
 
 fn hide_thinking_path() -> std::path::PathBuf {

@@ -20,8 +20,9 @@ pub const GREEN: Color = Color::Rgb(0x3F, 0xB9, 0x50);
 pub const GOLD: Color = Color::Rgb(0xFF, 0xD7, 0x00);
 /// Solvent cyan — active/streaming decode.
 pub const CYAN: Color = Color::Rgb(0x00, 0xFF, 0xFF);
-/// Antidote orange — warnings.
-pub const ORANGE: Color = Color::Rgb(0xFF, 0x5F, 0x1F);
+/// Antidote amber — warnings/observations. Shifted from #FF5F1F (2026-11-14,
+/// operator report: reddish orange was mistaken for the failure red).
+pub const ORANGE: Color = Color::Rgb(0xFF, 0xA0, 0x00);
 /// Substrate red — down / critical.
 pub const RED: Color = Color::Rgb(0xF8, 0x51, 0x49);
 /// Foreground text.

@@ -1941,7 +1941,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     Ok(list) => state.xsessions_open_with(list),
                     Err(e) => state
                         .entries
-                        .push(state::ChatEntry::Diag(format!("session scan failed: {e}"))),
+                        .push(state::ChatEntry::Error(format!("session scan failed: {e}"))),
                 }
                 return;
             }
@@ -2158,7 +2158,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                             _ => {
                                 state
                                     .entries
-                                    .push(state::ChatEntry::Diag("session scan failed".into()));
+                                    .push(state::ChatEntry::Error("session scan failed".into()));
                             }
                         }
                     }
@@ -2332,7 +2332,7 @@ async fn import_opencode(
         Ok(Ok(out)) if out.status.success() => out,
         Ok(Ok(out)) => {
             let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            state.entries.push(state::ChatEntry::Diag(format!(
+            state.entries.push(state::ChatEntry::Error(format!(
                 "import failed: {}",
                 if err.is_empty() {
                     format!("exit {:?}", out.status.code())
@@ -2343,7 +2343,7 @@ async fn import_opencode(
             return;
         }
         Ok(Err(e)) => {
-            state.entries.push(state::ChatEntry::Diag(format!(
+            state.entries.push(state::ChatEntry::Error(format!(
                 "import failed to run node: {e}"
             )));
             return;
@@ -2351,7 +2351,7 @@ async fn import_opencode(
         Err(e) => {
             state
                 .entries
-                .push(state::ChatEntry::Diag(format!("import task failed: {e}")));
+                .push(state::ChatEntry::Error(format!("import task failed: {e}")));
             return;
         }
     };
@@ -2495,7 +2495,7 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
         state.is_compacting = false;
         state.expected_tool_calls.clear();
         let abandoned = state.abandon_running_tools("abort did not settle — released");
-        state.entries.push(state::ChatEntry::Diag(format!(
+        state.entries.push(state::ChatEntry::Warn(format!(
             "harness watchdog: abort did not settle after 10s — UI released{}; \
              the pi child may still be finishing in the background. If it stays \
              unresponsive, /quit then relaunch Officina.",
@@ -2518,7 +2518,7 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
     let start_limit = std::time::Duration::from_secs(state.tool_watchdog_secs.min(60).max(15));
     if let Some((id, age)) = state.oldest_expected_tool_call() {
         if age >= start_limit && state.watchdog_fired.insert(format!("expected:{id}")) {
-            state.entries.push(state::ChatEntry::Diag(format!(
+            state.entries.push(state::ChatEntry::Warn(format!(
                 "harness watchdog: tool call {} never started after {}s — cancelling and aborting the turn",
                 id.chars().take(8).collect::<String>(),
                 age.as_secs()
@@ -2534,7 +2534,7 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
             .map(|s| std::time::Duration::from_secs(s.saturating_add(60)))
             .map_or(base, |t| t.max(base));
         if age >= limit && state.watchdog_fired.insert(key) {
-            state.entries.push(state::ChatEntry::Diag(format!(
+            state.entries.push(state::ChatEntry::Warn(format!(
                 "harness watchdog: {name} idle {}s with no result — cancelling and aborting the turn",
                 age.as_secs()
             )));
@@ -2850,7 +2850,7 @@ fn session_tree_lines(tree: &[serde_json::Value]) -> Vec<(String, String)> {
 fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcResponse) -> bool {
     if resp.success != Some(true) {
         if let Some(err) = &resp.error {
-            state.entries.push(state::ChatEntry::Diag(format!(
+            state.entries.push(state::ChatEntry::Error(format!(
                 "rpc {} failed: {}",
                 resp.command.as_deref().unwrap_or("?"),
                 err
@@ -3013,7 +3013,7 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                 })
                 .unwrap_or_default();
             if models.is_empty() {
-                state.entries.push(state::ChatEntry::Diag(
+                state.entries.push(state::ChatEntry::Error(
                     "no models available — check provider/auth".to_string(),
                 ));
                 state.models_open = false;
@@ -3343,7 +3343,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 // the owner saw "compacted and stopped" with no explanation.
                 state
                     .entries
-                    .push(state::ChatEntry::Diag(format!("compaction failed: {}", e)));
+                    .push(state::ChatEntry::Error(format!("compaction failed: {}", e)));
             } else {
                 let result = fields.get("result");
                 let before = result
@@ -3880,7 +3880,9 @@ mod compaction_tests {
             .entries
             .iter()
             .filter_map(|e| match e {
-                state::ChatEntry::Diag(t) => Some(t.clone()),
+                state::ChatEntry::Diag(t)
+                | state::ChatEntry::Warn(t)
+                | state::ChatEntry::Error(t) => Some(t.clone()),
                 _ => None,
             })
             .collect();
@@ -3917,7 +3919,9 @@ mod compaction_tests {
             .entries
             .iter()
             .filter_map(|e| match e {
-                state::ChatEntry::Diag(t) => Some(t.clone()),
+                state::ChatEntry::Diag(t)
+                | state::ChatEntry::Warn(t)
+                | state::ChatEntry::Error(t) => Some(t.clone()),
                 _ => None,
             })
             .collect();

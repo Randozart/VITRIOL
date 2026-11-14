@@ -1,8 +1,10 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 
 const CAPACITY_CODES = new Set(["SEMAPHORE_TIMEOUT", "SEMAPHORE_QUEUE_FULL"]);
+const TRANSIENT_STATUSES = new Set([408, 500, 502, 503, 504, 520, 524, 529]);
 const WAIT_BUDGET_MS = 120_000;
 
 /** Recognize gateway admission errors, never natural-language guesses about quota. */
@@ -42,46 +44,56 @@ async function isCapacityResponse(response: Response): Promise<boolean> {
 }
 
 /** Respect Retry-After without extending the finite admission budget. */
-function retryDelay(response: Response): number {
+function retryDelay(response: Response, retry: number): number {
   const hint = response.headers.get("retry-after");
-  if (!hint) return 1000;
+  if (!hint) return 1000 * 2 ** retry;
   const ms = /^\d+(\.\d+)?$/.test(hint.trim()) ? Number(hint) * 1000 : Date.parse(hint) - Date.now();
   return Number.isFinite(ms) ? Math.max(1000, ms) : 1000;
 }
 
+/** Keep temporary HTTP rejections internal while preserving permanent/unknown errors. */
+async function isRecoverableResponse(response: Response): Promise<boolean> {
+  if (response.headers.get("x-should-retry")?.trim().toLowerCase() === "false") return false;
+  if (TRANSIENT_STATUSES.has(response.status)) return true;
+  return response.status === 429 && await isCapacityResponse(response);
+}
+
 /** Finish rejected admission and wait without holding a response body or ignoring cancellation. */
-async function waitForCapacity(response: Response, deadline: number, signal?: AbortSignal | null): Promise<boolean> {
-  if (!await isCapacityResponse(response)) return false;
-  const waitMs = retryDelay(response);
+async function waitForRecovery(response: Response, deadline: number, retry: number, signal?: AbortSignal | null): Promise<boolean> {
+  if (!await isRecoverableResponse(response)) return false;
+  const waitMs = retryDelay(response, retry);
   if (Date.now() + waitMs >= deadline) return false;
   void response.body?.cancel().catch(() => {});
+  emitHarnessEvent(harnessEvent("lc-route", "gateway-recovery-wait", {
+    detail: `HTTP ${response.status}; retry ${retry + 1}/2; wait ${waitMs}ms`,
+  }));
   await delay(waitMs, undefined, { signal: signal ?? undefined });
   signal?.throwIfAborted();
-  if (Date.now() >= deadline) throw new Error("Caduceus capacity wait budget expired");
+  if (Date.now() >= deadline) throw new Error("Caduceus recovery wait budget expired");
   return true;
 }
 
-/** Rejoin Caduceus's existing queue only after an explicit pre-execution capacity rejection. */
-export function capacityAwareFetch(fetcher: typeof fetch): typeof fetch {
+/** Recover rejected HTTP attempts before they escape into the session; never replay an accepted stream. */
+export function recoveringGatewayFetch(fetcher: typeof fetch): typeof fetch {
   let retries = 0;
   const deadline = Date.now() + WAIT_BUDGET_MS;
   return async (input, init) => {
     while (true) {
       const response = await fetcher(input, init);
-      if (response.status !== 429 || retries >= 2 || typeof init?.body !== "string") return response;
+      if (response.status < 400 || retries >= 2 || typeof init?.body !== "string") return response;
       const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
-      if (!await waitForCapacity(response, deadline, signal)) return response;
+      if (!await waitForRecovery(response, deadline, retries, signal)) return response;
       retries++;
     }
   };
 }
 
-/** Keep two sessions on the same cloud model while the gateway can alternate accepted requests. */
-export const streamCloudWithCapacity: NonNullable<ProviderConfig["streamSimple"]> = (model, context, options) => {
+/** Keep recoverable gateway rejections inside the provider, preserving accepted streams and session state. */
+export const streamCloudWithRecovery: NonNullable<ProviderConfig["streamSimple"]> = (model, context, options) => {
   const api = getApiProvider(model.api);
   if (!api) throw new Error(`No API provider registered for api: ${model.api}`);
   if (model.provider !== "caduceus" || model.api !== "openai-completions" || process.env.OFFICINA_NO_CAPACITY_WAIT === "1") {
     return api.streamSimple(model, context, options);
   }
-  return api.streamSimple(model, context, { ...options, fetch: capacityAwareFetch(options?.fetch ?? globalThis.fetch) });
+  return api.streamSimple(model, context, { ...options, fetch: recoveringGatewayFetch(options?.fetch ?? globalThis.fetch) });
 };

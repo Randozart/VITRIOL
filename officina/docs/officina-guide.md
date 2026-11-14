@@ -430,6 +430,18 @@ sessions. Genuine quota errors and exhausted admission retries follow ordinary
 SDK retry and routing handling. `OFFICINA_NO_CAPACITY_WAIT=1` disables the extra
 capacity retries. Reload extensions in running sessions to activate changes.
 
+The same internal recovery also handles temporary HTTP failures (408, 500,
+502–504, 520, 524 and 529). It shares the two-extra-attempt budget with queue
+recovery, backs off for one then two seconds by default, and respects
+`Retry-After` and `x-should-retry: false`. Successful recovery emits the normal
+answer without intermediate assistant errors. `OFFICINA_NO_CAPACITY_WAIT=1`
+disables this recovery too. Invalid requests, authentication failures and
+unrecognized/quota 429 errors retain ordinary handling. Accepted streams are
+not silently replayed after partial output; final failure still reaches the
+existing session retry/failover path. Recovery cannot create capacity or quota.
+Internal waits leave `lc-route` / `gateway-recovery-wait` records in the harness
+event log with status, retry count and delay; they contain no request bodies.
+
 Local llama.cpp streams request native prefill progress (`return_progress`)
 by default. These events belong to the actual inference request, keeping
 its HTTP response active while the prompt is processed; they are not

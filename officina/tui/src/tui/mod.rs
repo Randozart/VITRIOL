@@ -671,6 +671,7 @@ async fn run_loop(
                             && !state.queued_prompts.is_empty()
                         {
                             let message = state.queued_prompts.remove(0);
+                            state.held_resolve_queued();
                             let _ = bridge
                                 .request(RpcCommand::Prompt {
                                     id: None,
@@ -1759,6 +1760,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.push_user(msg.clone());
             }
             if state.is_streaming {
+                state.held_push(&msg, state::HeldKind::FollowUp);
                 let _ = bridge
                     .request(RpcCommand::FollowUp {
                         id: None,
@@ -2144,6 +2146,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     // the message in memory and never persists it. Deliver it
                     // as a fresh Prompt once this turn settles (watchdog or
                     // normal completion). Images stay staged (I5).
+                    state.held_push(&msg, state::HeldKind::Queued);
                     state.queued_prompts.push(msg);
                     let img_note = if state.pending_images.is_empty() {
                         String::new()
@@ -2156,6 +2159,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     ));
                 } else {
                     let images = images_for_send(state);
+                    state.held_push(&msg, state::HeldKind::Steer);
                     let _ = bridge
                         .request(RpcCommand::Steer {
                             id: None,
@@ -3093,6 +3097,8 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         "agent_start" => {
             state.note_phase(state::UiEvent::AgentStart);
             state.is_streaming = true;
+            // A follow-up typed while idle became this turn.
+            state.held_clear(Some(state::HeldKind::FollowUp));
             state.watchdog_fired.clear();
             state.abort_deadline = None;
             state.expected_tool_calls.clear();
@@ -3101,6 +3107,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.mark_activity();
             state.note_phase(state::UiEvent::AgentEnd);
             state.is_streaming = false;
+            state.held_clear(None);
             state.refresh_ghost();
             state.refresh_answers_notice();
             state.abort_deadline = None;
@@ -3117,6 +3124,11 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                     abandoned + expected
                 )));
             }
+        }
+        "message_start" => {
+            // A steered message is inserted at the next step; the wire
+            // opening a message means it landed (2026-11-13).
+            state.held_clear(Some(state::HeldKind::Steer));
         }
         "message_update" => {
             state.mark_activity();
@@ -3270,12 +3282,14 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         "compaction_start" => {
             state.note_phase(state::UiEvent::CompactionStart);
             state.is_compacting = true;
+            state.compaction_started_at = Some(std::time::Instant::now());
             // Re-arm the one-shot auto-continue for THIS compaction.
             state.compaction_auto_armed = true;
         }
         "compaction_end" => {
             state.note_phase(state::UiEvent::CompactionEnd);
             state.is_compacting = false;
+            state.compaction_started_at = None;
             let reason = fields.get("reason").and_then(|v| v.as_str()).unwrap_or("");
             let will_retry = fields
                 .get("willRetry")
@@ -3915,6 +3929,44 @@ mod phase_wiring_tests {
             "normal turn must not trip the table: {:?}",
             state_diags(&s)
         );
+    }
+
+    #[test]
+    fn compaction_timer_tracks_the_banner() {
+        let mut s = AppState::default();
+        fire(&mut s, "agent_start");
+        assert!(s.compaction_started_at.is_none());
+        fire(&mut s, "compaction_start");
+        assert!(s.is_compacting);
+        assert!(s.compaction_started_at.is_some(), "banner timer armed");
+        fire(&mut s, "compaction_end");
+        assert!(!s.is_compacting);
+        assert!(s.compaction_started_at.is_none(), "banner timer cleared");
+        fire(&mut s, "agent_end");
+    }
+
+    #[test]
+    fn held_messages_are_tracked_until_they_land() {
+        let mut s = AppState::default();
+        s.held_push("steer me", state::HeldKind::Steer);
+        s.held_push("later please", state::HeldKind::FollowUp);
+        s.held_push("behind the tool", state::HeldKind::Queued);
+        let label = s.held_label().expect("held label");
+        assert!(label.contains("steering: “steer me”"), "{label}");
+        assert!(label.contains("(+2 more)"), "{label}");
+        // A message_start means the steer landed.
+        fire(&mut s, "message_start");
+        assert!(!s.held.iter().any(|h| h.kind == state::HeldKind::Steer));
+        // Delivery of the queued prompt resolves exactly one queue entry.
+        s.held_resolve_queued();
+        assert!(!s.held.iter().any(|h| h.kind == state::HeldKind::Queued));
+        assert!(s.held.iter().any(|h| h.kind == state::HeldKind::FollowUp));
+        // A new turn consumes the follow-up; turn end clears everything.
+        fire(&mut s, "agent_start");
+        assert!(s.held.is_empty());
+        s.held_push("late", state::HeldKind::Steer);
+        fire(&mut s, "agent_end");
+        assert!(s.held.is_empty());
     }
 
     #[test]

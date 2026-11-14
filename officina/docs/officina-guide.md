@@ -60,8 +60,17 @@
 - **Scroll**: **PgUp**/**PgDn** (and the wheel) scroll the output. Scrolling
   up **locks the view**: incoming streaming output never drags the lines
   you are reading. A hint row above the prompt shows the lock; click it or
-  press **End** (empty input) to jump back to the live tail. **Home** jumps
-  to the oldest line; sending a message also returns to the tail.
+  press **End** (empty input) to jump back to the live tail (the hint row
+  says "press END to go back to bottom"). **Home** jumps to the oldest
+  line; sending a message also returns to the tail.
+- **Held messages**: anything typed while the agent is busy shows above
+  the prompt as `⏳ held — steering/queued/follow-up: "…"` until the
+  agent actually reaches it (steering lands at the next step; a queued
+  message behind a running tool is delivered when the tool settles;
+  Alt+Enter follow-ups go with the next turn).
+- **Compaction**: a bordered "compacting context" banner above the prompt
+  (with spinner + elapsed) plus a live inline marker — the auto-continue
+  is signalled when the summary lands.
 - **Command recall**: Up/Down recall command
   history; Enter runs a command.
 

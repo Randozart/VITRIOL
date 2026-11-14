@@ -516,6 +516,26 @@ impl Dialog {
 }
 
 #[allow(dead_code)]
+/// A message typed while the agent is busy — shown as held until it
+/// actually enters the conversation (2026-11-13, operator request).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldKind {
+    /// Screened behind a running tool; delivered as a fresh Prompt at settle.
+    Queued,
+    /// Steered into the running turn (inserted at the next step).
+    Steer,
+    /// Alt+Enter follow-up (pi queues it for after the turn).
+    FollowUp,
+}
+
+#[derive(Debug, Clone)]
+pub struct HeldMsg {
+    pub text: String,
+    pub kind: HeldKind,
+    pub at: std::time::Instant,
+}
+
+#[derive(Debug)]
 pub struct AppState {
     pub entries: Vec<ChatEntry>,
     pub is_streaming: bool,
@@ -765,6 +785,11 @@ pub struct AppState {
     /// the turn settles instead of being sent as RPC `Steer` behind a tool
     /// that may never finish (and would then never be persisted).
     pub queued_prompts: Vec<String>,
+    /// Messages typed while busy, visible above the prompt until the
+    /// agent actually reaches them (2026-11-13, operator request).
+    pub held: Vec<HeldMsg>,
+    /// Compaction start (drives the prominent banner's timer).
+    pub compaction_started_at: Option<std::time::Instant>,
     /// Tool calls announced by the assistant turn but not yet observed via
     /// `tool_execution_start`. Covers the failure where pi persists the
     /// assistant tool call and then never starts the tool (the TUI otherwise
@@ -924,6 +949,8 @@ impl Default for AppState {
             watchdog_fired: std::collections::HashSet::new(),
             abort_deadline: None,
             queued_prompts: Vec::new(),
+            held: Vec::new(),
+            compaction_started_at: None,
             expected_tool_calls: std::collections::HashMap::new(),
             sel_anchor: None,
             sel_head: None,
@@ -1990,6 +2017,50 @@ impl AppState {
         }
         self.entries
             .push(ChatEntry::Diag(format!("thinking: expanded {n} trace(s)")));
+    }
+
+    /// Register a message that is held (typed while the agent is busy).
+    pub fn held_push(&mut self, text: &str, kind: HeldKind) {
+        self.held.push(HeldMsg {
+            text: text.to_string(),
+            kind,
+            at: std::time::Instant::now(),
+        });
+    }
+
+    /// Drop held messages: one kind, or all when `kind` is None.
+    pub fn held_clear(&mut self, kind: Option<HeldKind>) {
+        match kind {
+            Some(k) => self.held.retain(|h| h.kind != k),
+            None => self.held.clear(),
+        }
+    }
+
+    /// Resolve the oldest queued delivery (keeps a multi-message queue).
+    pub fn held_resolve_queued(&mut self) {
+        if let Some(pos) = self.held.iter().position(|h| h.kind == HeldKind::Queued) {
+            self.held.remove(pos);
+        }
+    }
+
+    /// One-line description of what is being held, for the prompt row.
+    pub fn held_label(&self) -> Option<String> {
+        let first = self.held.first()?;
+        let mut t = first.text.replace('\n', " ");
+        if t.chars().count() > 48 {
+            t = t.chars().take(47).collect::<String>() + "…";
+        }
+        let kind = match first.kind {
+            HeldKind::Queued => "queued",
+            HeldKind::Steer => "steering",
+            HeldKind::FollowUp => "follow-up",
+        };
+        let more = if self.held.len() > 1 {
+            format!(" (+{} more)", self.held.len() - 1)
+        } else {
+            String::new()
+        };
+        Some(format!("{kind}: “{t}”{more}"))
     }
 
     /// `/cache` command surface. Bare opens the manager modal.

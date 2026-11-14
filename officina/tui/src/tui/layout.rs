@@ -489,11 +489,24 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
     if state.is_compacting {
         // Compaction is a status, not a warning — informational voice.
+        // Spinner + elapsed so it never reads as a freeze (2026-11-13).
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
+        let secs = state
+            .compaction_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
         lines.push(Line::from(Span::styled(
-            format!("  {} compacting context…", theme::GLYPH_ALEMBIC),
+            format!(
+                "  {} {} compacting context… {secs}s",
+                theme::GLYPH_ALEMBIC,
+                frames[f]
+            ),
             theme::info(),
         )));
     }
+    // Trailing status lines have no entry — keep the map aligned (hitboxes).
+    state.line_entries.resize(lines.len(), usize::MAX);
 
     let visible = chat_area.height as usize;
 
@@ -533,26 +546,38 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // between transcript and prompt says the view is locked and offers a
     // one-click jump back to the live tail.
     state.tail_hint_area = None;
-    if state.scroll > 0 && chat_area.height > 0 {
+    if chat_area.height > 0 {
         let hint = Rect {
             y: chat_area.y + chat_area.height,
             height: 1,
             ..chat_area
         };
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(Line::from(Span::styled(
-                format!(
-                    "  {}▲ scrolled back {} rows — click here or press End to jump to the tail",
-                    theme::GLYPH_ALEMBIC,
-                    state
-                        .last_chat_total
-                        .saturating_sub(state.last_start + visible as usize)
-                ),
-                Style::new().fg(theme::MUTED).bg(theme::BG),
-            ))),
-            hint,
-        );
-        state.tail_hint_area = Some(hint);
+        if let Some(held) = state.held_label() {
+            // Held messages (2026-11-13, operator request): what was typed
+            // while the agent is busy, until the agent reaches it.
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                    format!("  ⏳ held — {held} · inserted when the agent reaches it"),
+                    Style::new().fg(theme::GOLD).bg(theme::BG),
+                ))),
+                hint,
+            );
+        } else if state.scroll > 0 {
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(Line::from(Span::styled(
+                    format!(
+                        "  {}▲ scrolled back {} rows — press END to go back to bottom",
+                        theme::GLYPH_ALEMBIC,
+                        state
+                            .last_chat_total
+                            .saturating_sub(state.last_start + visible as usize)
+                    ),
+                    Style::new().fg(theme::MUTED).bg(theme::BG),
+                ))),
+                hint,
+            );
+            state.tail_hint_area = Some(hint);
+        }
     }
 
     // Thinking-block hitboxes (2026-11-13): a left click on any row of a
@@ -612,6 +637,54 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         Vec::new()
     };
+
+    // Compaction banner (2026-11-13, operator request): a bordered card
+    // above the prompt — impossible to miss, works at any scroll depth.
+    if state.is_compacting {
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
+        let secs = state
+            .compaction_started_at
+            .map(|t| t.elapsed().as_secs())
+            .unwrap_or(0);
+        let panel_w = area.width.min(64);
+        let panel_h = 4u16.min(area.height.saturating_sub(2));
+        let panel = Rect {
+            x: area.x + area.width.saturating_sub(panel_w) / 2,
+            y: input_area.y.saturating_sub(panel_h + 1),
+            width: panel_w,
+            height: panel_h,
+        };
+        frame.render_widget(ratatui::widgets::Clear, panel);
+        let edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(edge)
+            .style(Style::new().bg(theme::PANEL))
+            .title(Line::from(Span::styled(
+                format!(" {} compacting context — {secs}s ", frames[f]),
+                Style::new()
+                    .fg(theme::GREEN)
+                    .bg(theme::PANEL)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        let inner = block.inner(panel);
+        frame.render_widget(block, panel);
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "summarizing the session to free context",
+                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                )),
+                Line::from(Span::styled(
+                    "the next turn continues on its own — no action needed",
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                )),
+            ])
+            .style(Style::new().bg(theme::PANEL)),
+            inner,
+        );
+    }
 
     // Question panel (2026-11-13): the ask extension stages question.json;
     // the TUI renders the operator's menu ON TOP OF THE PROMPT — exactly

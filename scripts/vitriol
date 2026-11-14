@@ -1739,6 +1739,7 @@ usage() {
    vitriol caduceus service install|status|remove
                               systemd user unit (boot persistence)
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL
+   vitriol cache-lifetime     read-only Rust audit of KV snapshot retirement
    vitriol settings           interactive settings TUI (engine + Officina)
    vitriol opencode           import/resume OpenCode sessions
    vitriol fiat               Fiat Lux: free-tier merry-go-round (one screen)
@@ -3264,6 +3265,19 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
             PATH="$(dirname "$NODE_BIN"):$PATH"
         fi
         exec node "$SETTINGS_TUI" "$@"
+        ;;
+
+    cache-lifetime)
+        shift
+        CACHE_LIFETIME_BIN="${VITRIOL_CACHE_LIFETIME_BIN:-${HOME}/.local/bin/vitriol-cache-lifetime}"
+        if [[ -z "${VITRIOL_CACHE_LIFETIME_BIN:-}" && ! -x "$CACHE_LIFETIME_BIN" ]]; then
+            CACHE_LIFETIME_BIN="${PROJECT_DIR}/vitriol-core/target/release/vitriol-cache-lifetime"
+        fi
+        if [[ ! -x "$CACHE_LIFETIME_BIN" ]]; then
+            echo "[vitriol] cache-lifetime needs the Rust binary; build with cargo build --release --manifest-path vitriol-core/Cargo.toml" >&2
+            exit 1
+        fi
+        exec "$CACHE_LIFETIME_BIN" "$@"
         ;;
 
     cache-report)

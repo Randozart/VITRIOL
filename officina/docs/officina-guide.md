@@ -411,6 +411,14 @@ TUI only changes routing preferences.
 
 ## Running multiple sessions
 
+With VITRIOL, `vitriol cache-lifetime --disk-dir /path/to/disk-mirror` runs the
+native Rust snapshot-lifetime audit (`--json` gives structured output). It
+reports retained entries and conditional retirement eligibility. Existing
+anonymous mirror files lack session/branch ownership, so this audit retains
+them all. It has no delete mode. Automatic reclamation still requires engine
+ownership and lifecycle acknowledgments; newer session heads alone are not
+enough to discard recurrent rollback states safely.
+
 Local background code reviews require at least two reported engine slots.
 With one slot (or unknown capacity), pending reviews wait rather than replace
 the foreground KV cache. On recurrent models, restoring a displaced cache can

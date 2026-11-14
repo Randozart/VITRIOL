@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "epoch": 42,
+  "referenceCoverageComplete": true,
+  "snapshots": [
+    {
+      "id": "old", "incarnation": 7, "modelKey": "model", "layoutKey": "layout",
+      "bytes": 100, "durable": true, "readers": 0, "writers": 0, "pins": [],
+      "owners": [{ "sessionId": "one", "branchId": "main", "generation": 1 }]
+    },
+    {
+      "id": "new", "incarnation": 7, "modelKey": "model", "layoutKey": "layout",
+      "bytes": 100, "durable": true, "readers": 0, "writers": 0, "pins": [],
+      "owners": [{ "sessionId": "one", "branchId": "main", "generation": 2 }]
+    }
+  ],
+  "retirements": [{
+    "snapshotId": "old", "successorId": "new",
+    "owner": { "sessionId": "one", "branchId": "main", "generation": 1 }
+  }]
+}

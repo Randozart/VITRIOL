@@ -2,7 +2,7 @@
 schema: "codex-work-plan/v1"
 created_at: "2026-11-14T23:43:47+01:00"
 timezone: "Europe/Amsterdam"
-status: "planned"
+status: "completed"
 baseline_commit: "a31249722af46d3b66a4a4b5f48e51b9afef5317"
 supersedes: []
 superseded_by: []
@@ -59,3 +59,5 @@ Record actual outcomes, affected contracts/docs, commits and evidence links as w
 - 2026-11-14T23:43:47+01:00 — Plan created before implementation.
 
 - 2026-11-14T23:58:04+01:00 — Stage1 implemented pure Rust inventory/ownership retirement policy with strict schema, exact owner generations, durable same-layout successors, pins/read/write protection, batch successor protection, epoch/incarnation binding, checked accounting and fail-closed legacy handling. Ten adversarial lifecycle tests added; existing golden vectors retained. Rust test/fmt/Clippy gates passed. Existing Clippy warnings in provider-fact default-field initialization and golden-vector push construction were repaired with equivalent initializers; golden vectors unchanged. Source-scoped Praetor includes policy and lifecycle tests; full final evidence remains pending. No deletion executor or engine changes.
+
+- 2026-11-15T00:03:19+01:00 — Stage2 complete: strict cache_retirement_plan RPC, native vitriol-cache-lifetime audit binary, vitriol cache-lifetime dispatch, declared-inventory fixture and four real subprocess/CLI/RPC tests. All27 Rust tests (including10 lifetime and4 wire tests) pass; fmt/Clippy pass; scoped Praetor over policy, RPC, CLI and new tests has0 failures. ShellCheck baseline/candidate comparison found0 new diagnostics; existing launcher findings remain baseline. Release binaries built offline, installed under ~/.local/bin, and SHA-256 matched build artifacts. Installed command audited the real mirror:15 published snapshots,30,713,587,500 bytes,0 eligible bytes, physical deletion unauthorized. This is expected fail-closed behavior for unowned legacy entries; no files removed and no engine restarts/requests. Fixture audit correctly reported100 conditionally eligible bytes while still denying physical deletion. Combined final gates pending in /tmp/vitriol-cache-lifetime-evidence; automatic synchronized reclamation remains a future engine ownership protocol, not an implemented claim.

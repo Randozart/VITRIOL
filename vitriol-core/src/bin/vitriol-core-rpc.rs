@@ -14,6 +14,7 @@ use std::io::{self, BufRead, Write};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use vitriol_core::cache_lifetime::{self, Inventory};
 
 use vitriol_core::scheduler::{
     is_exhausted, probe_backoff_ms, rate_allow, select_probe_candidate, ProbeFact, ProbeLane,
@@ -215,11 +216,20 @@ fn method_parse_error(params: &Value) -> Result<Value, String> {
     }))
 }
 
+/// Keep the lifetime wire boundary strict and return no decision on malformed facts.
+fn method_cache_retirement(params: &Value) -> Result<Value, String> {
+    let inventory: Inventory = serde_json::from_value(params.clone())
+        .map_err(|error| format!("invalid cache inventory: {error}"))?;
+    let plan = cache_lifetime::plan(&inventory)?;
+    serde_json::to_value(plan).map_err(|error| error.to_string())
+}
+
 fn handle(request: Request) -> Value {
     let result = match request.method.as_str() {
         "admit" => method_admit(&request.params),
         "probe_plan" => method_probe_plan(&request.params),
         "parse_error" => method_parse_error(&request.params),
+        "cache_retirement_plan" => method_cache_retirement(&request.params),
         "ping" => Ok(json!({ "ok": true, "version": env!("CARGO_PKG_VERSION") })),
         other => Err(format!("unknown method: {other}")),
     };

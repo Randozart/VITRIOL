@@ -9,6 +9,7 @@
 //! PROVENANCE: original work, this repo (logic ported from
 //! `officina/.pi/extensions/_shared/gateway-health.ts`, 2026-11-14).
 
+pub mod cache_lifetime;
 pub mod scheduler;
 
 /// Facts extracted from one provider error body.
@@ -44,16 +45,14 @@ fn find_number(text: &str, marker: &str) -> Option<u64> {
 /// Parse one provider error body into facts. Never panics; unknown bodies
 /// simply yield all-`None`.
 pub fn parse_provider_error(text: &str) -> ProviderFacts {
-    let mut facts = ProviderFacts::default();
-
-    // Context limit: two wordings seen in production.
-    facts.context_limit =
-        find_number(text, "maximum context length is").or_else(|| find_number(text, "limit "));
-
-    // Prompt size quoted by overflow errors.
-    facts.overflow_tokens = find_number(text, "value=")
-        .or_else(|| find_number(text, "estimated "))
-        .or_else(|| find_number(text, "prompt contains at least "));
+    let mut facts = ProviderFacts {
+        context_limit: find_number(text, "maximum context length is")
+            .or_else(|| find_number(text, "limit ")),
+        overflow_tokens: find_number(text, "value=")
+            .or_else(|| find_number(text, "estimated "))
+            .or_else(|| find_number(text, "prompt contains at least ")),
+        ..ProviderFacts::default()
+    };
 
     // Credential cooldown.
     if let Some(secs) = find_number(text, "reset_seconds") {

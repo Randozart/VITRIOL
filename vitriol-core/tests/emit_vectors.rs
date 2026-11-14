@@ -137,88 +137,75 @@ fn vectors() -> Value {
         lane("agentrouter/gpt-5.6-sol", "agentrouter"),
     ];
 
-    let mut admission = Vec::new();
-    admission.push(admission_case(
-        100_000,
-        16_384,
-        LaneState::default(),
-        180_000,
-        None,
-        None,
-    ));
-    admission.push(admission_case(
-        170_000,
-        16_384,
-        LaneState::default(),
-        180_000,
-        None,
-        None,
-    ));
-    admission.push(admission_case(
-        100_000,
-        16_384,
-        LaneState {
-            invalid: true,
-            ..Default::default()
-        },
-        180_000,
-        None,
-        None,
-    ));
-    admission.push(admission_case(
-        100_000,
-        16_384,
-        LaneState {
-            cooling: true,
-            ..Default::default()
-        },
-        180_000,
-        None,
-        None,
-    ));
-    admission.push(admission_case(
-        100_000,
-        16_384,
-        LaneState {
-            owner_paused: true,
-            ..Default::default()
-        },
-        180_000,
-        None,
-        None,
-    ));
-    admission.push(admission_case(
-        20_000,
-        16_384,
-        LaneState::default(),
-        180_000,
-        None,
-        Some(56 * 1024),
-    ));
-    admission.push(admission_case(
-        10_000,
-        1_000,
-        LaneState::default(),
-        180_000,
-        None,
-        Some(56 * 1024),
-    ));
-    admission.push(admission_case(
-        150_000,
-        16_384,
-        LaneState::default(),
-        400_000,
-        Some(180_000),
-        None,
-    ));
-    admission.push(admission_case(
-        150_000,
-        16_384,
-        LaneState::default(),
-        400_000,
-        Some(262_144),
-        None,
-    ));
+    let admission = vec![
+        admission_case(100_000, 16_384, LaneState::default(), 180_000, None, None),
+        admission_case(170_000, 16_384, LaneState::default(), 180_000, None, None),
+        admission_case(
+            100_000,
+            16_384,
+            LaneState {
+                invalid: true,
+                ..Default::default()
+            },
+            180_000,
+            None,
+            None,
+        ),
+        admission_case(
+            100_000,
+            16_384,
+            LaneState {
+                cooling: true,
+                ..Default::default()
+            },
+            180_000,
+            None,
+            None,
+        ),
+        admission_case(
+            100_000,
+            16_384,
+            LaneState {
+                owner_paused: true,
+                ..Default::default()
+            },
+            180_000,
+            None,
+            None,
+        ),
+        admission_case(
+            20_000,
+            16_384,
+            LaneState::default(),
+            180_000,
+            None,
+            Some(56 * 1024),
+        ),
+        admission_case(
+            10_000,
+            1_000,
+            LaneState::default(),
+            180_000,
+            None,
+            Some(56 * 1024),
+        ),
+        admission_case(
+            150_000,
+            16_384,
+            LaneState::default(),
+            400_000,
+            Some(180_000),
+            None,
+        ),
+        admission_case(
+            150_000,
+            16_384,
+            LaneState::default(),
+            400_000,
+            Some(262_144),
+            None,
+        ),
+    ];
 
     let mut backoff = Vec::new();
     for fail_count in 1..=9u64 {

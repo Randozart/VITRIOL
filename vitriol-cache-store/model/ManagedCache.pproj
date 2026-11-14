@@ -1,0 +1,5 @@
+<Project>
+  <ProjectName>ManagedCache</ProjectName>
+  <InputFiles><PFile>Protocol.p</PFile></InputFiles>
+  <OutputDir>PGenerated</OutputDir>
+</Project>

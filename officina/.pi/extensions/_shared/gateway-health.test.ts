@@ -14,6 +14,9 @@ import {
   clearOwnerPause,
   markOffered,
   markAlias,
+  markProbe,
+  acquireProbeLease,
+  releaseProbeLease,
   ownerOfLane,
   parseCooldownFromError,
   parseModelNotFound,
@@ -197,5 +200,35 @@ describe("owner pause (400 key circuit)", () => {
     const marks = readGatewayMarks();
     expect(marks.offered["dahl"]).toContain("MiniMaxAI/MiniMax-M2.7");
     expect(marks.aliases["dahl/moonshotai/Kimi-K2.6"]).toBe("dahl/MiniMaxAI/MiniMax-M2.7");
+  });
+});
+
+describe("probe facts + leader lease", () => {
+  it("stores probe results and reads them back", () => {
+    markProbe("dahl/MiniMaxAI/MiniMax-M2.7", {
+      kind: "ok",
+      okAt: Date.now(),
+      latencyMs: 120,
+      failCount: 0,
+      nextProbeAt: Date.now() + 60_000,
+    });
+    const marks = readGatewayMarks();
+    expect(marks.probes["dahl/MiniMaxAI/MiniMax-M2.7"]?.kind).toBe("ok");
+    expect(marks.probes["dahl/MiniMaxAI/MiniMax-M2.7"]?.latencyMs).toBe(120);
+  });
+
+  it("grants one prober and takes over expired leases", () => {
+    process.env.OFFICINA_PROBE_TICK_MS = "0";
+    expect(acquireProbeLease(1111, 20_000)).toBe(true);
+    expect(acquireProbeLease(2222, 20_000)).toBe(false);
+    // Simulate expiry by writing a past lease directly.
+    const path = process.env.OFFICINA_GATEWAY_HEALTH_FILE!;
+    const fs = require("node:fs") as typeof import("node:fs");
+    const doc = JSON.parse(fs.readFileSync(path, "utf8"));
+    doc.probeLease = { pid: 1111, until: Date.now() - 1 };
+    fs.writeFileSync(path, JSON.stringify(doc));
+    expect(acquireProbeLease(2222, 20_000)).toBe(true);
+    releaseProbeLease(2222);
+    expect(readGatewayMarks().probeLease?.pid).not.toBe(2222);
   });
 });

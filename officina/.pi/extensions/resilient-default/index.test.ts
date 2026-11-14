@@ -244,6 +244,38 @@ describe("resilient-default", () => {
     delete process.env.OFFICINA_CLOUD_RETRIES;
   });
 
+  it("prefers a lane with a fresh successful probe", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const dir = mkdtempSync(join(tmpdir(), "gw-verified-"));
+    const path = join(dir, "gateway-health.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        invalid: {},
+        probes: {
+          "second-model": {
+            kind: "ok",
+            okAt: Date.now() - 1_000,
+            failCount: 0,
+            nextProbeAt: Date.now() + 600_000,
+          },
+        },
+      }),
+    );
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "0";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = path;
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
+    const h = harness({ noLocal: true });
+    const route = await h.run("user");
+    expect(route.model.id).toBe("second-model");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("names the real gate when nothing can serve", async () => {
     engine.up = false;
     process.env.OFFICINA_FREE_DAILY_TOKENS = "0";

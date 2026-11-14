@@ -437,11 +437,23 @@ No flags, no per-launch env — the router adapts per session, per turn
   same session file and starts a fresh session (notice printed at
   launch, `/resume` to switch later); repair/quarantine also refuse
   while another TUI owns the store. Locks auto-release on crash.
-- Cache discipline (2026-11-11): the session ledger re-sites at the
-  context TAIL each turn and tool-result stubbing defers until ctx
+- Cache discipline (2026-11-14): the session ledger records durable
+  snapshots at conversation boundaries and tool-result stubbing defers until ctx
   fill ≥ `OFFICINA_CACHE_CLEAR_PCT` (92) — mid-history rewrites used to
   truncate the engine's KV prefix reuse and re-prefill the whole tail
   every turn.
+- Durable context state (2026-11-14): scratchpad, tasks and the AGENTS.md
+  digest and session ledger are recorded before a run and after complete tool-result groups
+  when their contents change. Unchanged snapshots stay in place; recording
+  one does not request another model call. If mid-run compaction discards a
+  snapshot, request-time recovery supplies it until the next safe recording
+  boundary; that recovery can cause one prefix break.
+  Tool-result clearing still defaults to 92% context fill and keeps the
+  newest 12 results. `OFFICINA_CACHE_CLEAR_PCT=85` enables an earlier
+  clearing experiment; `LITTLE_CODER_CLEAR_KEEP` controls the retained
+  result count. Compare engine cached/prompt-evaluated tokens and elapsed
+  task time on equivalent sessions before adopting a lower threshold:
+  fewer context tokens can require more prefill when history changes.
 - Checkpoints/snapshots are session-scoped (2026-11-11): KV autosave/
   restore gate on live peers (slot may be foreign at parallel=1) and
   markers must carry the session stem; git snapshots live under

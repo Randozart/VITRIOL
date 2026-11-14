@@ -2202,6 +2202,7 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if inner.width < 60 || inner.height < 4 {
         return;
     }
+    let now_ms = crate::tui::caduceus::now_ms();
     let Some(report) = state.routes.as_ref() else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -2225,8 +2226,8 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
         format!(
-            "  {:<9}{:<7}{:<6}{:<42}{:<10}{:<7}{:>7}  {:>9}",
-            "time", "tier", "state", "model", "reason", "local", "latency", "tokens"
+            "  {:<9}{:<7}{:<6}{:<40}{:<10}{:<7}{:>7} {:>9}  {:<12}",
+            "time", "tier", "state", "model", "reason", "local", "latency", "tokens", "probe"
         ),
         Style::new().fg(theme::MUTED).bg(theme::PANEL),
     )));
@@ -2259,7 +2260,7 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Span::styled(format!("{:<7}", e.tier), tier_style),
             Span::styled(format!("{:<6}", e.outcome), state_style),
             Span::styled(
-                format!("{:<42}", trunc(&model, 42)),
+                format!("{:<40}", trunc(&model, 40)),
                 Style::new().fg(theme::TEXT).bg(theme::PANEL),
             ),
             Span::styled(
@@ -2276,6 +2277,16 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             ),
             Span::styled(
                 format!("  {:>4}→{:<4}", e.tokens_in, e.tokens_out),
+                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            ),
+            Span::styled(
+                format!(
+                    "  {:<12}",
+                    trunc(
+                        &crate::tui::routes::probe_label(report.probes.get(&e.model), now_ms),
+                        12
+                    )
+                ),
                 Style::new().fg(theme::MUTED).bg(theme::PANEL),
             ),
         ]));
@@ -3990,6 +4001,7 @@ mod render_smoke {
             draw_at(&mut s, w, h);
             s.routes = Some(crate::tui::routes::RouteReport {
                 day: "20261114".into(),
+                probes: Default::default(),
                 entries: vec![crate::tui::routes::RouteEntry {
                     ts: "2026-11-14T09:28:51.223Z".into(),
                     reason: "user".into(),

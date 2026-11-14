@@ -1914,6 +1914,95 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.answers_open_modal();
                 return;
             }
+            // /probe — background cloud-probe status (read-only facts file).
+            if msg == "/probe" {
+                let doc = crate::tui::routes::load_gateway_health();
+                let now = crate::tui::caduceus::now_ms();
+                let total = doc.probes.len();
+                let verified = doc
+                    .probes
+                    .values()
+                    .filter(|p| {
+                        p.kind == "ok"
+                            && p.ok_at
+                                .map(|t| now.saturating_sub(t) < 10 * 60_000)
+                                .unwrap_or(false)
+                    })
+                    .count();
+                let paused = doc.pauses.iter().filter(|(_, p)| p.until > now).count();
+                let leader = doc
+                    .probe_lease
+                    .as_ref()
+                    .map(|l| {
+                        format!(
+                            "pid {} · {}s left",
+                            l.pid,
+                            l.until.saturating_sub(now).div_ceil(1000)
+                        )
+                    })
+                    .unwrap_or_else(|| "none".to_string());
+                let next = doc
+                    .probes
+                    .values()
+                    .filter_map(|p| p.next_probe_at)
+                    .filter(|t| *t > now)
+                    .min()
+                    .map(|t| format!("{}s", (t - now) / 1000))
+                    .unwrap_or_else(|| "—".to_string());
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "probe: leader {leader} · verified {verified}/{total} · invalid {} · paused owners {paused} · next in {next}",
+                    doc.invalid.len()
+                )));
+                let mut lanes: Vec<(&String, &crate::tui::routes::ProbeFact)> =
+                    doc.probes.iter().collect();
+                lanes.sort_by_key(|(lane, _)| lane.to_string());
+                for (lane, fact) in lanes.into_iter().take(12) {
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "  {} — {}",
+                        lane,
+                        crate::tui::routes::probe_label(Some(fact), now)
+                    )));
+                }
+                return;
+            }
+            // /doctor — admission self-check (gateway, probes, pauses, budget).
+            if msg == "/doctor" {
+                let doc = crate::tui::routes::load_gateway_health();
+                let now = crate::tui::caduceus::now_ms();
+                let gateway = match crate::tui::routes::caduceus_gateway_up() {
+                    Some(true) => "up".to_string(),
+                    Some(false) => "DOWN".to_string(),
+                    None => "unknown (no facts file)".to_string(),
+                };
+                let verified = doc.probes.values().filter(|p| p.kind == "ok").count();
+                let cooling = doc
+                    .probes
+                    .values()
+                    .filter(|p| p.kind == "cooling" && p.until.map(|u| u > now).unwrap_or(false))
+                    .count();
+                let paused = doc.pauses.iter().filter(|(_, p)| p.until > now).count();
+                let leader = doc
+                    .probe_lease
+                    .as_ref()
+                    .map(|l| format!("pid {}", l.pid))
+                    .unwrap_or_else(|| "none".to_string());
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "doctor: gateway {gateway} · probe leader {leader} · verified {verified}/{} · cooling {cooling} · paused owners {paused} · invalid lanes {}",
+                    doc.probes.len(),
+                    doc.invalid.len()
+                )));
+                for (owner, pause) in doc.pauses.iter().filter(|(_, p)| p.until > now).take(6) {
+                    let safe = pause
+                        .safe_bytes
+                        .map(|b| format!(" · safe {} KB", b / 1024))
+                        .unwrap_or_default();
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "  paused {owner} — {}m left{safe}",
+                        pause.until.saturating_sub(now).div_ceil(60_000)
+                    )));
+                }
+                return;
+            }
             // /routes — Caduceus decision trail (read-only facts file).
             if msg == "/routes" {
                 state.routes = Some(crate::tui::routes::load_recent(&chrono_day(), 400));

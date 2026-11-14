@@ -15,6 +15,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cooldownCeilingMs } from "./provider-health.ts";
 
+export type ProbeKind = "ok" | "cooling" | "invalid" | "paused" | "no_fit";
+
+export interface ProbeFact {
+  kind: ProbeKind;
+  okAt?: number;
+  failAt?: number;
+  until?: number;
+  latencyMs?: number;
+  failCount: number;
+  nextProbeAt: number;
+}
+
 export interface GatewayMark {
   until: number;
   reason: string;
@@ -40,6 +52,10 @@ export interface GatewayMarksFile {
   offered?: Record<string, string[]>;
   /** Learned remaps: requested full model id -> replacement full model id. */
   aliases?: Record<string, string>;
+  /** Background probe results (cloud-probe, 2026-11-14). */
+  probes?: Record<string, ProbeFact>;
+  /** Single-prober lease across sessions (10 s TTL). */
+  probeLease?: { pid: number; until: number };
 }
 
 export function gatewayHealthPath(env: NodeJS.ProcessEnv = process.env): string {
@@ -65,6 +81,14 @@ function readFileAt(path: string): GatewayMarksFile {
       pauses: (parsed.pauses ?? {}) as Record<string, { until: number; safeBytes?: number; reason: string }>,
       offered: (parsed.offered ?? {}) as Record<string, string[]>,
       aliases: (parsed.aliases ?? {}) as Record<string, string>,
+      probes: (parsed.probes ?? {}) as Record<string, ProbeFact>,
+      probeLease:
+        parsed.probeLease && Number(parsed.probeLease.until) > 0
+          ? {
+              pid: Number(parsed.probeLease.pid) || 0,
+              until: Number(parsed.probeLease.until) || 0,
+            }
+          : undefined,
     };
   } catch {
     return emptyFile(Date.now());
@@ -106,6 +130,10 @@ export interface GatewayMarks {
   offered: Record<string, string[]>;
   /** Learned remaps (requested id -> replacement id). */
   aliases: Record<string, string>;
+  /** Background probe facts per lane. */
+  probes: Record<string, ProbeFact>;
+  /** Active prober lease (undefined when free). */
+  probeLease?: { pid: number; until: number };
 }
 
 /** Lanes/owners currently refused by the gateway (expired marks pruned). */
@@ -129,6 +157,8 @@ export function readGatewayMarks(
     ),
     offered: { ...(file.offered ?? {}) },
     aliases: { ...(file.aliases ?? {}) },
+    probes: { ...(file.probes ?? {}) },
+    probeLease: file.probeLease,
   };
 }
 
@@ -410,6 +440,71 @@ export function markAlias(requested: string, replacement: string): void {
   file.ts = now;
   try {
     mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+}
+
+/** Record one probe outcome (atomic merge). */
+export function markProbe(
+  laneId: string,
+  fact: ProbeFact,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  const id = String(laneId ?? "").trim();
+  if (!id) return;
+  const now = Date.now();
+  const path = gatewayHealthPath(env);
+  const file = prune(readFileAt(path), now);
+  file.probes = file.probes ?? {};
+  file.probes[id] = fact;
+  file.ts = now;
+  try {
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // decoration contract
+  }
+}
+
+/** Acquire the single-prober lease (expired leases are taken over). */
+export function acquireProbeLease(
+  pid: number,
+  ttlMs: number,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const now = Date.now();
+  const path = gatewayHealthPath(env);
+  const file = prune(readFileAt(path), now);
+  const lease = file.probeLease;
+  if (lease && lease.until > now && lease.pid !== pid) return false;
+  file.probeLease = { pid, until: now + Math.max(2_000, ttlMs) };
+  file.ts = now;
+  try {
+    mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
+    renameSync(tmp, path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Release our lease (no-op when another pid holds it). */
+export function releaseProbeLease(pid: number, env: NodeJS.ProcessEnv = process.env): void {
+  const now = Date.now();
+  const path = gatewayHealthPath(env);
+  const file = prune(readFileAt(path), now);
+  if (!file.probeLease || file.probeLease.pid !== pid) return;
+  delete file.probeLease;
+  file.ts = now;
+  try {
     const tmp = `${path}.tmp-${process.pid}`;
     writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { mode: 0o600 });
     renameSync(tmp, path);

@@ -26,6 +26,7 @@ import {
 } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
+import { isVerified } from "../_shared/probe-scheduler.ts";
 import {
   markGatewayCooldown,
   markAlias,
@@ -296,10 +297,17 @@ export default function (pi: ExtensionAPI) {
   /** Lanes allowed by the gateway facts (2026-11-14): invalid, cooling,
    *  paused owners, learned windows and the owner's safe-byte ceiling. */
   const cloudEligible = (tokens: number, now: number): Model[] => {
-    let marks = { invalid: new Set<string>(), models: new Set<string>(), owners: new Set<string>(),
-      pausedOwners: new Set<string>(), safeBytesByOwner: {} as Record<string, number>,
-      limits: {} as Record<string, number>, offered: {} as Record<string, string[]>,
-      aliases: {} as Record<string, string> };
+    let marks = {
+      invalid: new Set<string>(),
+      models: new Set<string>(),
+      owners: new Set<string>(),
+      pausedOwners: new Set<string>(),
+      safeBytesByOwner: {} as Record<string, number>,
+      limits: {} as Record<string, number>,
+      offered: {} as Record<string, string[]>,
+      aliases: {} as Record<string, string>,
+      probes: {} as Record<string, import("../_shared/gateway-health.ts").ProbeFact>,
+    };
     if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
       try {
         marks = readGatewayMarks(now) as typeof marks;
@@ -335,7 +343,23 @@ export default function (pi: ExtensionAPI) {
         remapped.push(chosen);
       }
     }
-    return remapped;
+    // Probe preference (2026-11-14): lanes with a fresh successful probe rank
+    // first; lanes a probe found invalid/paused/cooling are excluded even if
+    // provider-health has not caught up yet.
+    const probeAllowed = remapped.filter((m) => {
+      const fact = marks.probes[m.id];
+      if (!fact) return true;
+      if (fact.kind === "invalid") return false;
+      if ((fact.kind === "cooling" || fact.kind === "paused") && Number(fact.until ?? 0) > now) {
+        return false;
+      }
+      return true;
+    });
+    probeAllowed.sort(
+      (a, b) =>
+        Number(!isVerified(a.id, marks.probes, now)) - Number(!isVerified(b.id, marks.probes, now)),
+    );
+    return probeAllowed;
   };
 
   const pickCloud = (tokens: number, now: number): Model | undefined => {

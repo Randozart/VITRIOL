@@ -35,11 +35,119 @@ pub struct RouteEntry {
     pub outcome: String,
 }
 
+/// Background probe fact (cloud-probe, 2026-11-14).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProbeFact {
+    pub kind: String,
+    #[serde(rename = "okAt")]
+    pub ok_at: Option<u64>,
+    #[serde(rename = "latencyMs")]
+    pub latency_ms: Option<u64>,
+    pub until: Option<u64>,
+    #[serde(rename = "failCount")]
+    pub fail_count: Option<u64>,
+    #[serde(rename = "nextProbeAt")]
+    pub next_probe_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ProbeLease {
+    pub pid: u64,
+    pub until: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PauseFact {
+    pub until: u64,
+    #[serde(rename = "safeBytes")]
+    pub safe_bytes: Option<u64>,
+    pub reason: String,
+}
+
+/// Gateway admission facts (gateway-health.json): probes, lease, pauses.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct GatewayHealthDoc {
+    pub ts: u64,
+    pub probes: std::collections::HashMap<String, ProbeFact>,
+    #[serde(rename = "probeLease")]
+    pub probe_lease: Option<ProbeLease>,
+    pub pauses: std::collections::HashMap<String, PauseFact>,
+    pub invalid: std::collections::HashMap<String, serde_json::Value>,
+}
+
+pub fn gateway_health_path() -> PathBuf {
+    let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("gateway-health.json");
+    p
+}
+
+pub fn load_gateway_health() -> GatewayHealthDoc {
+    load_gateway_health_at(&gateway_health_path())
+}
+
+pub fn load_gateway_health_at(path: &Path) -> GatewayHealthDoc {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_default()
+}
+
+/// Gateway liveness from the caduceus facts file (None = unknown).
+pub fn caduceus_gateway_up() -> Option<bool> {
+    let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    p.push(".vitriol");
+    p.push("officina");
+    p.push("caduceus-state.json");
+    let raw = fs::read_to_string(p).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    doc.get("gateway_up").and_then(|v| v.as_bool())
+}
+
+/// One-word probe status for a lane (None = never probed).
+pub fn probe_label(fact: Option<&ProbeFact>, now_ms: u64) -> String {
+    let Some(fact) = fact else {
+        return "unverified".to_string();
+    };
+    match fact.kind.as_str() {
+        "ok" => match fact.latency_ms {
+            Some(ms) => format!("✓ {ms}ms"),
+            None => "✓ ok".to_string(),
+        },
+        "cooling" => {
+            let until = fact.until.unwrap_or(0);
+            if until > now_ms {
+                format!("cooling {}m", (until - now_ms).div_ceil(60_000))
+            } else {
+                "cooling · expired".to_string()
+            }
+        }
+        "paused" => {
+            let until = fact.until.unwrap_or(0);
+            if until > now_ms {
+                format!("paused {}m", (until - now_ms).div_ceil(60_000))
+            } else {
+                "paused · expired".to_string()
+            }
+        }
+        "invalid" => "invalid".to_string(),
+        "no_fit" => "no fit".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// The last decisions, newest first (ledger order is chronological).
 #[derive(Debug, Clone, Default)]
 pub struct RouteReport {
     pub day: String,
     pub entries: Vec<RouteEntry>,
+    /// Current probe facts, keyed by lane id (owner/model).
+    pub probes: std::collections::HashMap<String, ProbeFact>,
 }
 
 impl RouteReport {
@@ -117,6 +225,7 @@ pub fn load_recent_at(path: &Path, day: &str, limit: usize) -> RouteReport {
     RouteReport {
         day: day.to_string(),
         entries,
+        probes: load_gateway_health().probes,
     }
 }
 

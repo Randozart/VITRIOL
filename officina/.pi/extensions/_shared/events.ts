@@ -31,7 +31,8 @@ export type EventSource =
   | "lc-bg"
   | "lc-scratchpad"
   | "lc-verify"
-  | "lc-agents";
+  | "lc-agents"
+  | "lc-probe";
 
 export interface HarnessEvent {
   ts: number;

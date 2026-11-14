@@ -9,6 +9,8 @@
 //! PROVENANCE: original work, this repo (logic ported from
 //! `officina/.pi/extensions/_shared/gateway-health.ts`, 2026-11-14).
 
+pub mod scheduler;
+
 /// Facts extracted from one provider error body.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderFacts {

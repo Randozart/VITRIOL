@@ -1,5 +1,9 @@
 // Pure Praetor helpers: config, JSON diagnostics parsing, bounded rendering.
 
+import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+
 export interface PraetorConfig {
   enabled: boolean;
   budgetChars: number;
@@ -15,9 +19,12 @@ export interface PraetorDiagnostic {
 }
 
 export function praetorConfig(env: NodeJS.ProcessEnv = process.env): PraetorConfig {
+  // Default ON (2026-11-14, operator request: verify by default). Explicit
+  // OFFICINA_PRAETOR=0 or OFFICINA_NO_PRAETOR=1 still disables it.
   const enabled =
     env.OFFICINA_NO_PRAETOR !== "1" &&
-    (env.OFFICINA_PRAETOR === "1" || env.TRIS_DIAG_PRAETOR === "1");
+    env.OFFICINA_PRAETOR !== "0" &&
+    env.TRIS_DIAG_PRAETOR !== "0";
   const budget = Number(env.OFFICINA_PRAETOR_BUDGET ?? 300);
   const timeout = Number(env.OFFICINA_PRAETOR_TIMEOUT_MS ?? 60_000);
   return {
@@ -73,6 +80,38 @@ export function renderPraetorDiagnostics(
   if (body.length === 0) return head.slice(0, budgetChars);
   const text = `${head}\n${body.join("\n")}`;
   return text.length > budgetChars ? `${text.slice(0, Math.max(0, budgetChars - 1))}…` : text;
+}
+
+/** Validate ONE file (copy into a temp DIR — `--target` needs a directory,
+ *  a file target silently passes). Shared by the per-edit path and the
+ *  explicit `code` tool (2026-11-14). */
+export function validateFile(
+  file: string,
+  timeoutMs: number,
+  execFileSync: (cmd: string, args: string[], opts: Record<string, unknown>) => unknown,
+): PraetorDiagnostic[] {
+  const dir = mkdtempSync(join(tmpdir(), "officina-praetor-"));
+  try {
+    const target = join(dir, basename(file));
+    copyFileSync(file, target);
+    let stdout = "";
+    try {
+      stdout = String(
+        execFileSync("praetor", ["validate", "--warn", "--json", "--target", dir], {
+          timeout: timeoutMs,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      );
+    } catch (error) {
+      stdout = String((error as { stdout?: unknown }).stdout ?? "");
+    }
+    return parsePraetorJson(stdout);
+  } catch {
+    return [];
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export function isPraetorSourceFile(file: string): boolean {

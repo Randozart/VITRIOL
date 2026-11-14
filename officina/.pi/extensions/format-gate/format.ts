@@ -28,6 +28,71 @@ export interface FormatterCommand {
 /** Resolves a bare command name to true when it exists on PATH. Injected. */
 export type Availability = (cmd: string) => boolean;
 
+/**
+ * Resolves the executable to run for `file` (`cmd` is the formatter name).
+ * Returns null when unavailable. Injected so tests need no real binaries.
+ * (2026-11-14: project-local `node_modules/.bin` discovery lives in the
+ * extension; this module stays pure.)
+ */
+export type Resolver = (file: string, cmd: string) => string | null;
+
+/** Rusfmt edition from the nearest Cargo.toml, default 2021. Pure-ish (reads
+ *  through the injected reader so tests are deterministic). */
+export type ReadText = (path: string) => string | null;
+
+function nearestEdition(file: string, readText: ReadText | undefined, dirnameOf: (p: string) => string): string {
+  if (!readText) return "2021";
+  let dir = dirnameOf(file);
+  for (let i = 0; i < 8; i++) {
+    const cargo = `${dir}/Cargo.toml`;
+    const text = readText(cargo);
+    if (text) {
+      const m = /^\s*edition\s*=\s*"([0-9]{4})"/m.exec(text);
+      if (m) return m[1]!;
+      return "2021";
+    }
+    const parent = dirnameOf(dir);
+    if (!parent || parent === dir) break;
+    dir = parent;
+  }
+  return "2021";
+}
+
+/**
+ * Path-aware formatter selection (2026-11-14): same policy as `formatterFor`,
+ * but the resolved executable is injected per file so project-local binaries
+ * (`node_modules/.bin/prettier`) and the local Rust edition work.
+ */
+export function formatterForPath(
+  file: string,
+  resolve: Resolver,
+  opts: { readText?: ReadText; dirname?: (p: string) => string } = {},
+): FormatterCommand | null {
+  const dirname = opts.dirname ?? ((p: string) => { const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\")); return i <= 0 ? "." : p.slice(0, i); });
+  const pick = (cmd: string, argv: (exe: string) => string[], label: string): FormatterCommand | null => {
+    const exe = resolve(file, cmd);
+    return exe ? { argv: argv(exe), label } : null;
+  };
+  if (file.endsWith(".py")) {
+    return pick("ruff", (e) => [e, "format", file], "ruff format")
+      ?? pick("black", (e) => [e, "--quiet", file], "black");
+  }
+  if (PRETTIER_EXTS.test(file)) {
+    return pick("prettier", (e) => [e, "--write", "--log-level", "silent", file], "prettier");
+  }
+  if (file.endsWith(".go")) {
+    return pick("gofmt", (e) => [e, "-w", file], "gofmt");
+  }
+  if (file.endsWith(".rs")) {
+    const edition = nearestEdition(file, opts.readText, dirname);
+    return pick("rustfmt", (e) => [e, "--edition", edition, file], "rustfmt");
+  }
+  if (/\.(c|h|cc|cpp|hpp)$/.test(file)) {
+    return pick("clang-format", (e) => [e, "-i", file], "clang-format");
+  }
+  return null;
+}
+
 const PRETTIER_EXTS = /\.(m|c)?[jt]sx?$|\.jsonc?$|\.css$|\.scss$|\.html?$/;
 
 /**

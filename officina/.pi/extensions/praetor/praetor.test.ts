@@ -7,10 +7,12 @@ import {
 } from "./praetor.ts";
 
 describe("praetorConfig", () => {
-  it("is off by default", () => {
-    expect(praetorConfig({}).enabled).toBe(false);
+  it("is ON by default (2026-11-14) and honours explicit off switches", () => {
+    expect(praetorConfig({}).enabled).toBe(true);
+    expect(praetorConfig({ OFFICINA_PRAETOR: "0" }).enabled).toBe(false);
+    expect(praetorConfig({ OFFICINA_NO_PRAETOR: "1" }).enabled).toBe(false);
   });
-  it("arms from either env alias and honours the kill switch", () => {
+  it("accepts the legacy env alias", () => {
     expect(praetorConfig({ OFFICINA_PRAETOR: "1" }).enabled).toBe(true);
     expect(praetorConfig({ TRIS_DIAG_PRAETOR: "1" }).enabled).toBe(true);
     expect(praetorConfig({ OFFICINA_PRAETOR: "1", OFFICINA_NO_PRAETOR: "1" }).enabled).toBe(false);

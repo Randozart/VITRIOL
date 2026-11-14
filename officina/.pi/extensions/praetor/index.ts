@@ -12,12 +12,13 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { recordToolCheck } from "../_shared/toolchecks.ts";
 import { injectionResult, makeDedupe } from "../_shared/inject.ts";
 import {
   isPraetorSourceFile,
-  parsePraetorJson,
   praetorConfig,
   renderPraetorDiagnostics,
+  validateFile,
   type PraetorDiagnostic,
 } from "./praetor.ts";
 
@@ -40,29 +41,6 @@ function readInstructions(): string {
   }
 }
 
-function runValidate(file: string, timeoutMs: number): PraetorDiagnostic[] {
-  const dir = mkdtempSync(join(tmpdir(), "officina-praetor-"));
-  try {
-    const target = join(dir, basename(file));
-    copyFileSync(file, target);
-    let stdout = "";
-    try {
-      stdout = execFileSync("praetor", ["validate", "--warn", "--json", "--target", dir], {
-        timeout: timeoutMs,
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-    } catch (error) {
-      stdout = String((error as { stdout?: unknown }).stdout ?? "");
-    }
-    return parsePraetorJson(stdout);
-  } catch {
-    return [];
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
 function capReport(text: string): string {
   if (text.length <= REPORT_LIMIT) return text;
   return `${text.slice(0, REPORT_LIMIT)}\n\n[praetor report truncated at ${REPORT_LIMIT} chars]`;
@@ -78,7 +56,7 @@ export default function (pi: ExtensionAPI) {
 
   const instructions = cfg.instructions ? readInstructions() : "";
   const shouldInject = makeDedupe();
-  const pending = new Set<string>();
+  const pending = new Map<string, string | undefined>();
 
   pi.on("before_agent_start", async (event) => {
     if (!instructions) return undefined;
@@ -96,15 +74,27 @@ export default function (pi: ExtensionAPI) {
     if (name !== "edit" && name !== "write") return;
     if (e.isError) return;
     const file = String(e.input?.path ?? e.input?.file ?? "");
-    if (file && isPraetorSourceFile(file)) pending.add(file);
+    if (file && isPraetorSourceFile(file)) {
+      pending.set(file, (e as { toolCallId?: string }).toolCallId);
+    }
   });
 
   pi.on("context", async (event) => {
     if (pending.size === 0) return undefined;
-    const files = [...pending];
+    const files = [...pending.keys()];
+    const calls = new Map(pending);
     pending.clear();
     const diagnostics: PraetorDiagnostic[] = [];
-    for (const file of files) diagnostics.push(...runValidate(file, cfg.timeoutMs));
+    const perCall = new Map<string | undefined, number>();
+    for (const file of files) {
+      const found = validateFile(file, cfg.timeoutMs, (cmd, args, opts) =>
+        execFileSync(cmd, args, opts as Parameters<typeof execFileSync>[2]),
+      );
+      diagnostics.push(...found);
+      const callId = calls.get(file);
+      perCall.set(callId, (perCall.get(callId) ?? 0) + found.length);
+    }
+    for (const [callId, count] of perCall) recordToolCheck(callId, { praetor: { count } });
     const block = renderPraetorDiagnostics(diagnostics, cfg.budgetChars);
     if (!block) return undefined;
     return {

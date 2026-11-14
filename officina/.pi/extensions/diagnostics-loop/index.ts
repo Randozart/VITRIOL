@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { recordToolCheck } from "../_shared/toolchecks.ts";
 import { checkFor, diagConfig, renderDiagnostics, tailCap, type FileDiag } from "./diag.ts";
 
 // diagnostics-loop — after every successful edit/write, run the file's fast
@@ -29,6 +30,9 @@ export default function (pi: ExtensionAPI) {
     const cmd = checkFor(file, cfg);
     if (!cmd) return;
     const diag = runCheck(file, cmd);
+    recordToolCheck((e as { toolCallId?: string }).toolCallId, {
+      syntax: { ok: diag.ok, output: diag.ok ? undefined : diag.output.slice(0, 300) },
+    });
     if (!diag.ok) pending.push(diag);
   });
 

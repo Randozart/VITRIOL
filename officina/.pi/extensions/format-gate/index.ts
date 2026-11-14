@@ -2,7 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
-import { formatConfig, formatterFor, renderFormatNotice, type Availability } from "./format.ts";
+import { resolveFormatterExecutable } from "../_shared/format-resolve.ts";
+import { recordToolCheck } from "../_shared/toolchecks.ts";
+import { formatConfig, formatterForPath, renderFormatNotice } from "./format.ts";
 
 // format-gate — run the project's canonical formatter after every successful
 // edit/write, so the model never spends tokens (or turns) matching style:
@@ -14,23 +16,6 @@ import { formatConfig, formatterFor, renderFormatNotice, type Availability } fro
 // diagnostics-loop pass already validates the result.
 //
 // Kill switch: OFFICINA_NO_FORMAT=1 (Rule 15).
-
-const availCache = new Map<string, boolean>();
-
-/** Cached `command -v` probe — formatters don't appear mid-session. */
-const available: Availability = (cmd) => {
-  let ok = availCache.get(cmd);
-  if (ok === undefined) {
-    try {
-      execFileSync("sh", ["-c", `command -v ${cmd}`], { stdio: "pipe" });
-      ok = true;
-    } catch {
-      ok = false;
-    }
-    availCache.set(cmd, ok);
-  }
-  return ok;
-};
 
 export default function (pi: ExtensionAPI) {
   const cfg = formatConfig();
@@ -45,7 +30,15 @@ export default function (pi: ExtensionAPI) {
     if (e.isError) return;
     const file = String(e.input?.path ?? e.input?.file ?? "");
     if (!file) return;
-    const cmd = formatterFor(file, available);
+    const cmd = formatterForPath(file, resolveFormatterExecutable, {
+      readText: (p) => {
+        try {
+          return readFileSync(p, "utf-8");
+        } catch {
+          return null;
+        }
+      },
+    });
     if (!cmd) return;
     let before: string;
     try {
@@ -64,7 +57,12 @@ export default function (pi: ExtensionAPI) {
     } catch {
       return;
     }
-    if (after !== before) {
+    const changed = after !== before;
+    recordToolCheck(
+      (e as { toolCallId?: string }).toolCallId,
+      { format: { tool: cmd.label, changed } },
+    );
+    if (changed) {
       pending.push({ file, label: cmd.label });
       emitHarnessEvent(harnessEvent("lc-format", "reformatted", { detail: `${cmd.label} ${file}` }));
     }

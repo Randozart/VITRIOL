@@ -19,6 +19,7 @@ import { join } from "node:path";
 export interface RouteLedgerEntry {
   ts: string;
   sessionId?: string;
+  tuiPid?: number;
   reason: string;
   tier: "local" | "cloud";
   provider?: string;
@@ -163,9 +164,12 @@ export function summarizeRoutes(entries: RouteLedgerEntry[]): LedgerSummary {
   return summary;
 }
 
-export function lastRouteEntry(): RouteLedgerEntry | null {
+export function lastRouteEntry(sessionId?: string): RouteLedgerEntry | null {
   const entries = readRouteEntries(2);
-  return entries.length ? entries[entries.length - 1] : null;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (sessionId === undefined || entries[i].sessionId === sessionId) return entries[i];
+  }
+  return null;
 }
 
 export function todaySummary(): LedgerSummary {

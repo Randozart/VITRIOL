@@ -29,6 +29,23 @@ import {
   writeRegistryEntry,
 } from "./routing-registry.ts";
 
+describe("immutable peer identity", () => {
+  it("round-trips start time separately from freshness and retains legacy entries", () => {
+    const c = createCore(100_000);
+    upsertEntry(c, { ts: 99_000, sessionStartedAt: 1, tuiPid: 1, sessionId: "older",
+      tier: "local", model: "llamacpp/Lapis Occultus", ctxTokens: 100 });
+    upsertEntry(c, { ts: 98_000, tuiPid: 2, sessionId: "legacy",
+      tier: "local", model: "llamacpp/Lapis Occultus", ctxTokens: 100 });
+    const loaded = createCore(100_000);
+    deserialize(loaded, serialize(c));
+    const peers = readPeers(loaded, 100_000, 999);
+    expect(peers.map((p) => p.tuiPid)).toEqual([1, 2]);
+    expect(peers[0].sessionStartedAt).toBe(1);
+    expect(peers[1].sessionStartedAt).toBeUndefined();
+    expect(readPeers(loaded, 200_000, 999)).toEqual([]);
+  });
+});
+
 const NOW = 1_000_000_000_000; // fixed "now" for deterministic tests
 
 function core(): RegistryCore {
@@ -85,7 +102,7 @@ describe("upsertEntry", () => {
     }
     for (const e of JSON.parse(blob).entries) {
       for (const k of Object.keys(e)) {
-        expect(["ts", "tuiPid", "sessionId", "tier", "model", "ctxTokens", "slotId", "role"]).toContain(k);
+        expect(["ts", "sessionStartedAt", "tuiPid", "sessionId", "tier", "model", "ctxTokens", "slotId", "role"]).toContain(k);
       }
     }
   });

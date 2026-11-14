@@ -90,6 +90,20 @@ function isChatModel(record: JsonRecord): boolean {
   return endpoints.some((endpoint) => /chat|responses/i.test(endpoint));
 }
 
+/** Clamp catalog windows to limits learned from provider 400s (2026-11-14).
+ *  Pure: ids absent from `limits` keep their declared window. */
+export function clampModelsToLimits<T extends { id: string; contextWindow?: number }>(
+  models: T[],
+  limits: Record<string, number>,
+): T[] {
+  return models.map((m) => {
+    const learned = limits[m.id];
+    if (!Number.isFinite(learned) || learned! <= 0) return m;
+    if ((m.contextWindow ?? 0) <= learned!) return m;
+    return { ...m, contextWindow: learned! };
+  });
+}
+
 export function extractCatalogModels(body: unknown): unknown[] {
   if (Array.isArray(body)) return body;
   const record = asRecord(body);

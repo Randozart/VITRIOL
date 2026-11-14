@@ -11,10 +11,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { budgetStatus } from "../_shared/budget.ts";
 import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
-import { classifyConnections, type GatewayConnection } from "../_shared/lane-health.ts";
+import { readGatewayMarks } from "../_shared/gateway-health.ts";
+import {
+  applyModelHealth,
+  classifyConnections,
+  type GatewayConnection,
+  type ProviderHealthFact,
+} from "../_shared/lane-health.ts";
 import {
   extractCatalogModels,
   filterCatalogByProviders,
+  clampModelsToLimits,
   mapCatalogModels,
   toolCandidates,
   type PiModelEntry,
@@ -304,52 +311,94 @@ function writeCache(baseUrl: string, data: unknown[]): void {
   }
 }
 
-async function fetchActiveProviders(baseUrl: string): Promise<Set<string> | null> {
+/** Gateway connection list. New gateways expose `/api/providers`
+ *  ({connections}); `/api/provider-health` was removed in v16 (404) —
+ *  2026-11-14 drift. Legacy path stays as a fallback for older vendors. */
+async function fetchConnections(
+  baseUrl: string,
+): Promise<GatewayConnection[] | null> {
+  if (!existsSync(VENDOR_API_MODULE)) return null;
+  const origin = new URL(baseUrl).origin;
+  try {
+    const mod = await import(pathToFileURL(VENDOR_API_MODULE).href);
+    const res = await mod.apiFetch("/api/providers?limit=5000", { baseUrl: origin, timeout: 5_000 });
+    if (res.ok) {
+      const body = await res.json();
+      const list = Array.isArray(body) ? body : body?.connections ?? [];
+      if (Array.isArray(list)) return list as GatewayConnection[];
+    }
+    const legacy = await mod.apiFetch("/api/provider-health?limit=5000", {
+      baseUrl: origin,
+      timeout: 5_000,
+    });
+    if (!legacy.ok) return null;
+    const body = await legacy.json();
+    const list = Array.isArray(body) ? body : body?.providers ?? body?.connections ?? [];
+    return Array.isArray(list) ? (list as GatewayConnection[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Gateway model-health (circuit breakers, per-connection state). */
+async function fetchModelHealthFacts(
+  baseUrl: string,
+): Promise<ProviderHealthFact[] | null> {
   if (!existsSync(VENDOR_API_MODULE)) return null;
   try {
     const mod = await import(pathToFileURL(VENDOR_API_MODULE).href);
-    const res = await mod.apiFetch("/api/provider-health?limit=5000", {
+    const res = await mod.apiFetch("/api/monitoring/model-health", {
       baseUrl: new URL(baseUrl).origin,
       timeout: 5_000,
     });
     if (!res.ok) return null;
     const body = await res.json();
-    const list = Array.isArray(body) ? body : body?.providers ?? body?.connections ?? [];
-    if (!Array.isArray(list)) return null;
-    return new Set(
-      list
-        .filter((connection) => connection?.isActive !== false)
-        .map((connection) => String(connection?.provider ?? "").trim().toLowerCase())
-        .filter(Boolean),
-    );
+    const list = Array.isArray(body) ? body : body?.providers ?? [];
+    return Array.isArray(list) ? (list as ProviderHealthFact[]) : null;
   } catch {
     return null;
   }
+}
+
+async function fetchActiveProviders(baseUrl: string): Promise<Set<string> | null> {
+  const list = await fetchConnections(baseUrl);
+  if (!list) return null;
+  return new Set(
+    list
+      .filter((connection) => (connection as { isActive?: boolean })?.isActive !== false)
+      .map((connection) => String((connection as { provider?: string })?.provider ?? "").trim().toLowerCase())
+      .filter(Boolean),
+  );
 }
 
 /** Connection health buckets for the state file; null = gateway unreachable. */
 async function fetchConnectionBuckets(
   baseUrl: string,
 ): Promise<{ active: string[]; backoff: string[]; hard_down: string[] } | null> {
-  if (!existsSync(VENDOR_API_MODULE)) return null;
+  const list = await fetchConnections(baseUrl);
+  if (!list) return null;
+  const h = classifyConnections(list);
+  // Smart probing (2026-11-14): the gateway's circuit breaker and
+  // rate-limit state live in /api/monitoring/model-health; fold them in so
+  // a temporarily refused owner is demoted before the first wasted turn.
+  const facts = await fetchModelHealthFacts(baseUrl);
+  if (facts) applyModelHealth(h, facts);
+  return {
+    active: [...h.active].sort(),
+    backoff: [...h.backoff].sort(),
+    hard_down: [...h.hardDown].sort(),
+  };
+}
+
+/** Liveness is /api/health (200, unauthenticated); buckets are optional. */
+async function probeGatewayHealth(baseUrl: string): Promise<boolean> {
   try {
-    const mod = await import(pathToFileURL(VENDOR_API_MODULE).href);
-    const res = await mod.apiFetch("/api/provider-health?limit=5000", {
-      baseUrl: new URL(baseUrl).origin,
-      timeout: 5_000,
+    const res = await fetch(`${new URL(baseUrl).origin}/api/health`, {
+      signal: AbortSignal.timeout(2_000),
     });
-    if (!res.ok) return null;
-    const body = await res.json();
-    const list = Array.isArray(body) ? body : body?.providers ?? body?.connections ?? [];
-    if (!Array.isArray(list)) return null;
-    const h = classifyConnections(list as GatewayConnection[]);
-    return {
-      active: [...h.active].sort(),
-      backoff: [...h.backoff].sort(),
-      hard_down: [...h.hardDown].sort(),
-    };
+    return res.ok;
   } catch {
-    return null;
+    return false;
   }
 }
 
@@ -459,6 +508,7 @@ export default async function (pi: ExtensionAPI) {
   const writeState = async (allowCatalogFetch = true): Promise<void> => {
     try {
       const buckets = await fetchConnectionBuckets(baseUrl);
+      const gatewayUp = await probeGatewayHealth(baseUrl);
       const cache = readCache(baseUrl);
       const budget = budgetStatus();
       const prefs = readPrefs();
@@ -482,6 +532,7 @@ export default async function (pi: ExtensionAPI) {
             context_window: c.contextWindow,
             max_tokens: c.maxTokens,
             free: c.free,
+            free_tier: c.freeTier,
           });
         }
       }
@@ -499,7 +550,7 @@ export default async function (pi: ExtensionAPI) {
         STATE_FILE,
         buildCaduceusState({
           base_url: baseUrl,
-          gateway_up: buckets !== null,
+          gateway_up: gatewayUp,
           catalog_count: cache?.data.length ?? 0,
           catalog_fetched_at: cache?.fetchedAt ?? "",
           connections: buckets ?? { active: [], backoff: [], hard_down: [] },
@@ -568,7 +619,10 @@ export default async function (pi: ExtensionAPI) {
     return mapped;
   };
 
-  pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, models, refreshModels));
+  // Learned windows (2026-11-14): a provider 400 taught us the real limit;
+  // clamp the registered window so pi's compaction budget matches reality.
+  const clampedModels = clampModelsToLimits(models, readGatewayMarks().limits);
+  pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, clampedModels, refreshModels));
 
   if (!needsNetwork) {
     void fetchCatalog(baseUrl, apiKey)

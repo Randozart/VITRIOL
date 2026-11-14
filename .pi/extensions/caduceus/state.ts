@@ -53,6 +53,8 @@ export interface CandidateRow {
   context_window: number;
   max_tokens: number;
   free: boolean;
+  /** No paid plan required (free-tier lane, 2026-11-14). */
+  free_tier?: boolean;
 }
 
 export interface CatalogProviderFact {

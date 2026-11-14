@@ -1,3 +1,4 @@
+import { chooseSummarizer, estimateMessagesTokens, shrinkMessages } from "./lane.ts";
 import { describe, expect, it } from "vitest";
 import { buildSummaryText, laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
 
@@ -57,5 +58,67 @@ describe("laneCompactionOutcome", () => {
     expect(laneCompactionOutcome("   \n  ")).toBe("fallback");
     expect(laneCompactionOutcome(null)).toBe("fallback");
     expect(laneCompactionOutcome(undefined)).toBe("fallback");
+  });
+});
+
+describe("estimateMessagesTokens", () => {
+  it("counts text, thinking and tool arguments at chars/4", () => {
+    const msgs = [
+      { content: "abcd".repeat(25) }, // 100 chars
+      { content: [{ type: "thinking", thinking: "x".repeat(200) }] },
+      { content: [{ type: "toolCall", input: { a: "b".repeat(100) } }] },
+    ];
+    const est = estimateMessagesTokens(msgs);
+    expect(est).toBeGreaterThanOrEqual(90);
+    expect(est).toBeLessThanOrEqual(130);
+  });
+});
+
+describe("chooseSummarizer", () => {
+  const models = [
+    { provider: "caduceus", id: "freeinference/qwen3.6-35b", contextWindow: 128000 },
+    { provider: "caduceus", id: "agentrouter/gpt-5.6-sol", contextWindow: 1050000 },
+    { provider: "llamacpp", id: "Lapis Occultus", contextWindow: 262144 },
+  ];
+
+  it("picks the largest window that fits estimate + reserve", () => {
+    expect(chooseSummarizer(models, 183_106)?.id).toBe("agentrouter/gpt-5.6-sol");
+    expect(chooseSummarizer(models, 20_000)?.id).toBe("agentrouter/gpt-5.6-sol");
+  });
+
+  it("returns undefined when nothing fits", () => {
+    expect(chooseSummarizer(models, 2_000_000)).toBeUndefined();
+  });
+
+  it("prefers cloud on equal windows", () => {
+    const tie = [
+      { provider: "llamacpp", id: "Lapis Occultus", contextWindow: 262144 },
+      { provider: "caduceus", id: "caduceus/other", contextWindow: 262144 },
+    ];
+    expect(chooseSummarizer(tie, 50_000)?.provider).toBe("caduceus");
+  });
+});
+
+describe("shrinkMessages", () => {
+  it("keeps the newest messages within the budget and digests the rest", () => {
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: i % 2 ? "assistant" : "user",
+      content: `message ${i} ${"x".repeat(100)}`,
+    }));
+    const out = shrinkMessages(messages, 450);
+    expect(out.omitted).toBeGreaterThan(0);
+    expect(out.messages.length).toBeLessThan(messages.length);
+    expect(out.digest).toContain("omitted");
+    expect(out.digest).toContain("message 0");
+    // The kept window is the newest tail.
+    const last = out.messages[out.messages.length - 1] as { content: string };
+    expect(last.content).toContain("message 9");
+  });
+
+  it("is a no-op when everything fits", () => {
+    const messages = [{ role: "user", content: "hi" }];
+    const out = shrinkMessages(messages, 10_000);
+    expect(out.omitted).toBe(0);
+    expect(out.messages).toEqual(messages);
   });
 });

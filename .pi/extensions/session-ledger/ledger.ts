@@ -1,26 +1,7 @@
-// session-ledger — a single, deterministic orientation line kept in the
-// conversation. The ledger message is RELOCATED TO THE TAIL on every
-// context pass: the previous copy is removed and a fresh one is appended
-// after the latest exchange.
-//
-// Why tail and not in-place upsert (2026-11-11): the engine reuses its KV
-// cache only on exact token-prefix continuation — ONE changed token
-// truncates reuse from that point. An in-place-updated ledger sits at its
-// original near-top injection position and changes every turn, so reuse
-// stopped there and the whole conversation tail re-prefilled every turn.
-// With the ledger always last, the break point is the ledger itself and
-// the shared prefix grows with the conversation; the only extra cost over
-// no ledger is the ~10-token ledger block. Same contract as
-// _shared/inject.ts (tail-append custom messages; never system-prompt).
-//
-// Gives a small model a stable "where am I" anchor (message count, ~token
-// estimate, files touched) without spending a read on state.
-//
-// Kill switch: OFFICINA_NO_LEDGER=1 (Rule 15).
-//
-// Provenance: original work, this repo (First-Party Mandate). Plan:
-// .opencode/plans/officina-algorithmic-support-2026-08-31.md (P6);
-// tail relocation: .opencode/plans/officina-multisession-hardening-2026-11-11.md (I4).
+// Session orientation statistics are recorded as durable append-only snapshots.
+// Boundary updates retain every earlier snapshot for exact prefix reuse;
+// statistics exclude earlier ledgers so the ledger does not count itself.
+// Kill switch: OFFICINA_NO_LEDGER=1.
 
 export const LEDGER_CUSTOM_TYPE = "lc-ledger";
 
@@ -38,9 +19,9 @@ export function ledgerConfig(env: NodeJS.ProcessEnv = process.env): LedgerConfig
 }
 
 export interface LedgerStats {
-  /** Number of messages in the outgoing context. */
+  /** Number of non-system, non-ledger messages at the snapshot boundary. */
   messages: number;
-  /** Rough token estimate over the whole outgoing context (chars / 4). */
+  /** Rough text token estimate at that boundary, excluding system/ledger (chars / 4). */
   approxTokens: number;
   /** Recently touched files, most recent last. */
   files: string[];
@@ -88,27 +69,4 @@ export function contextChars(messages: Array<{ content?: unknown }>): number {
 export function isLedgerMessage(m: unknown): boolean {
   const x = m as { role?: string; customType?: string };
   return x.role === "custom" && x.customType === LEDGER_CUSTOM_TYPE;
-}
-
-/**
- * Relocate the ledger to the tail of a message list: drop every existing
- * ledger message (wherever it sits) and append a fresh one after the
- * latest exchange. Preserves the identity of all non-ledger messages so
- * the engine's prefix cache keeps the conversation up to the ledger
- * position. Pure — never mutates inputs, never accumulates.
- */
-export function relocateLedger(
-  messages: unknown[],
-  block: string,
-): unknown[] {
-  const kept = messages.filter((m) => !isLedgerMessage(m));
-  kept.push({
-    role: "custom" as const,
-    customType: LEDGER_CUSTOM_TYPE,
-    content: "\n\n" + block,
-    display: false,
-    details: {},
-    timestamp: Date.now(),
-  });
-  return kept;
 }

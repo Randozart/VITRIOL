@@ -1,0 +1,5 @@
+{"event":"agent_start","fields":{}}
+{"event":"compaction_start","fields":{"reason":"threshold"}}
+{"event":"compaction_end","fields":{"reason":"threshold","aborted":false,"willRetry":false}}
+{"event":"agent_end","fields":{}}
+{"event":"agent_settled","fields":{"aborted":false}}

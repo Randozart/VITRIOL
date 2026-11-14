@@ -170,12 +170,21 @@ export function recordFailure(
   save(file);
 }
 
+/** Cooldown ceiling (2026-11-14, operator decision): providers sometimes send
+ *  Retry-After measured in hours; a single 429 must not kill a lane for the
+ *  day when lane-spread can route around it. */
+export function cooldownCeilingMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(env.OFFICINA_LANE_COOLDOWN_MAX_MS);
+  return Number.isFinite(n) && n > 0 ? Math.max(60_000, Math.min(24 * 3600_000, Math.floor(n))) : 1_800_000;
+}
+
 export function recordRetryAfter(provider: string, model: string, headers: Record<string, string> | undefined): number | undefined {
   const hint = headers?.["retry-after"] ?? headers?.["Retry-After"];
   if (!hint) return undefined;
-  if (/^\d+$/.test(hint.trim())) return Math.min(24 * 3600_000, Math.max(60_000, Number(hint) * 1000));
+  const ceiling = cooldownCeilingMs();
+  if (/^\d+$/.test(hint.trim())) return Math.min(ceiling, Math.max(60_000, Number(hint) * 1000));
   const at = Date.parse(hint);
-  return Number.isFinite(at) ? Math.min(24 * 3600_000, Math.max(60_000, at - Date.now())) : undefined;
+  return Number.isFinite(at) ? Math.min(ceiling, Math.max(60_000, at - Date.now())) : undefined;
 }
 
 export function healthSnapshot(): HealthFile {

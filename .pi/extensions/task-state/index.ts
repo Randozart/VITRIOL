@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { currentContextState, registerContextState } from "../_shared/context-state.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,17 +8,11 @@ import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import { requestSidebarUpdate } from "../_shared/sidebar.ts";
 import { renderTaskBlock, taskStateConfig, validateTasks, type TaskItem } from "./state.ts";
 
-// task-state — external task list (R2.4 / REPORT-02 step 9, Claude Code
-// TodoWrite pattern). The list lives in .officina/tasks/<session>.json (written
-// by a tool call, never by conversation) and is re-injected as a tail message
-// before EVERY LLM call — so it survives mid-run compaction by construction:
-// it is re-read from disk, not from history.
-//
-// Cache safety (Rule 7): we only ever APPEND to event.messages — the existing
-// prefix stays byte-identical, KV cache intact. A copy is skipped when the
-// last injected copy already carries the identical block (no pile-up on
-// unchanged state); when the list CHANGES we inject the new tail, leaving the
-// stale copy in history — never mutate or delete what is already cached.
+// task-state — session-scoped external tasks. Durable snapshots append before
+// a run and after complete tool-result groups when state changes. Unchanged
+// snapshots remain in their original position for KV prefix reuse. If compaction
+// removes one mid-run, request-time recovery supplies current disk state until
+// the next safe persistence boundary. Full session history remains append-only.
 //
 // Hermes-facing note (2026-08-29 audit): the gateway does NOT read this
 // directory yet — cross-session task visibility is PLANNED (queue:
@@ -211,33 +206,14 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("context", async (event) => {
-    // Guard: session_start hasn't fired yet → sessionState.file is still the
-    // module-init default. Don't inject stale tasks from a previous session's
-    // default.json — return nothing so the model starts with a clean slate.
+  registerContextState(pi, CUSTOM_TYPE, () => {
+    // Session initialization/teardown must not expose another session's state.
     if (sessionState.file.endsWith("/default.json")) return undefined;
-    const block = renderTaskBlock(readTasks(), cfg.maxItems);
-    if (!block) return undefined;
-    if (lastCopyIsCurrent(event.messages, block)) return undefined;
-    const tail = {
-      role: "custom" as const,
-      customType: CUSTOM_TYPE,
-      content: block,
-      display: false,
-      details: {},
-      timestamp: Date.now(),
-    };
-    return { messages: [...event.messages, tail] };
+    return renderTaskBlock(readTasks(), cfg.maxItems);
   });
 }
 
 /** True when the most recent injected copy already carries exactly `block`. */
 export function lastCopyIsCurrent(messages: unknown[], block: string): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i] as { role?: string; customType?: string; content?: unknown };
-    if (m.role === "custom" && m.customType === CUSTOM_TYPE) {
-      return String(m.content ?? "") === block;
-    }
-  }
-  return false; // never injected this session yet
+  return currentContextState(messages, CUSTOM_TYPE, block);
 }

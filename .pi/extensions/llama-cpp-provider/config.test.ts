@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  aliasRetryDelay,
   applyEnvOverrides,
   fillModelDefaults,
   loadProviders,
@@ -452,5 +453,18 @@ describe("windowChange", () => {
   });
   it("surfaces a first-known window even when nothing was registered yet", () => {
     expect(windowChange(undefined, 32768)).toEqual({ from: undefined, to: 32768 });
+  });
+});
+
+describe("aliasRetryDelay", () => {
+  it("backs off exponentially from 2s to a 60s ceiling", () => {
+    expect(aliasRetryDelay(1)).toBe(2_000);
+    expect(aliasRetryDelay(2)).toBe(4_000);
+    expect(aliasRetryDelay(3)).toBe(8_000);
+    expect(aliasRetryDelay(4)).toBe(16_000);
+    expect(aliasRetryDelay(5)).toBe(32_000);
+    expect(aliasRetryDelay(6)).toBe(60_000);
+    expect(aliasRetryDelay(99)).toBe(60_000);
+    expect(aliasRetryDelay(0)).toBe(2_000);
   });
 });

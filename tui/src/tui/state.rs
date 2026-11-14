@@ -3760,6 +3760,8 @@ impl AppState {
     /// Shorts stay ≤ ~40 cols; longs carry the full usage.
     pub const LOCAL_COMMANDS: &[(&str, &str, &str)] = &[
         ("cost", "routing ledger", "/cost — today's route ledger: requests, tokens in/out, failures per provider/model + budget bars (read-only)"),
+        ("probe", "cloud probe status", "/probe — background probe: leader lease, verified/total lanes, invalid lanes, owner pauses, next probe"),
+        ("doctor", "self-check", "/doctor — gateway + probe admission, paused owners, session-format check, Rust-core sidecar presence"),
         ("routes", "caduceus decisions", "/routes — the latest routing decisions: tier, provider, model, reason, local state, latency, outcome (newest first; read-only)"),
         ("sessions", "all projects", "/sessions — search + resume sessions across every project store (foreign projects are read-only hints; I4)"),
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),

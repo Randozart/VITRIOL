@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const busy = { current: true };
 const engineUp = { current: true };
@@ -91,7 +94,7 @@ describe("adaptive-router wiring", () => {
     // Never honour the operator's routing prefs in tests (panel I1).
     process.env.OFFICINA_CADUCEUS_PREFS_FILE = "/tmp/officina-caduceus-prefs-none.json";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-adaptive-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-adaptive-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
     // These fixtures configure SYNTHETIC explicit lanes ("caduceus/small")
@@ -175,7 +178,7 @@ describe("manual latch", () => {
     process.env.OFFICINA_OVERFLOW = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/opencode-go/deepseek-v4.1-flash";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-adaptive-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-adaptive-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
     process.env.OFFICINA_OVERFLOW_FREE_ONLY = "0";
@@ -213,4 +216,18 @@ describe("manual latch", () => {
     expect(setModel).toHaveBeenCalledTimes(1);
     expect(setModel.mock.calls[0][0]).toMatchObject({ provider: "caduceus" });
   });
+});
+
+// Synthetic routes must never publish into the operator's live registry.
+let testRegistry = "";
+let originalRegistry: string | undefined;
+beforeEach(() => {
+  originalRegistry = process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  testRegistry = mkdtempSync(join(tmpdir(), "officina-router-registry-"));
+  process.env.OFFICINA_ROUTING_REGISTRY_DIR = testRegistry;
+});
+afterEach(() => {
+  if (originalRegistry === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  else process.env.OFFICINA_ROUTING_REGISTRY_DIR = originalRegistry;
+  rmSync(testRegistry, { recursive: true, force: true });
 });

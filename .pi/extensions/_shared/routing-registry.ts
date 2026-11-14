@@ -17,7 +17,9 @@ import { dirname, join } from "node:path";
 export const DEFAULT_TTL_MS = 60_000;
 
 export interface PeerEntry {
+  /** Freshness heartbeat, never used as seniority when immutable identity is available. */
   ts: number;
+  sessionStartedAt?: number;
   tuiPid: number;
   sessionId: string;
   tier: "local" | "cloud";
@@ -51,7 +53,7 @@ export function upsertEntry(core: RegistryCore, entry: PeerEntry): void {
 
 /**
  * Live peers (not the caller, not expired), sorted oldest-first
- * (ts ascending, tuiPid tiebreak) so index 0 is the most senior.
+ * (immutable start time, tuiPid tiebreak) so heartbeat refreshes do not change seniority.
  */
 export function readPeers(
   core: RegistryCore,
@@ -65,7 +67,7 @@ export function readPeers(
     if (now - e.ts > ttlMs) continue;
     out.push(e);
   }
-  out.sort((a, b) => a.ts - b.ts || a.tuiPid - b.tuiPid);
+  out.sort((a, b) => (a.sessionStartedAt ?? a.ts) - (b.sessionStartedAt ?? b.ts) || a.tuiPid - b.tuiPid);
   return out;
 }
 
@@ -95,6 +97,13 @@ export function serialize(core: RegistryCore): string {
 
 const REQUIRED: Array<keyof PeerEntry> = ["ts", "tuiPid", "sessionId", "tier", "model", "ctxTokens"];
 
+/** Validate optional immutable identity independently of the freshness timestamp. */
+function sessionIdentity(value: unknown): Pick<PeerEntry, "sessionStartedAt"> {
+  if (typeof value !== "number") return {};
+  if (!Number.isFinite(value)) return {};
+  return { sessionStartedAt: value };
+}
+
 /** Load entries into the core; garbage input yields an empty core, never a throw. */
 export function deserialize(core: RegistryCore, json: string): void {
   core.entries.clear();
@@ -116,6 +125,7 @@ export function deserialize(core: RegistryCore, json: string): void {
     if (typeof e.ctxTokens !== "number") continue;
     if (e.tier !== "local" && e.tier !== "cloud") continue;
     const entry: PeerEntry = {
+      ...sessionIdentity(e.sessionStartedAt),
       ts: e.ts,
       tuiPid: e.tuiPid,
       sessionId: e.sessionId,
@@ -233,6 +243,16 @@ export function removeRegistryShard(tuiPid: number): void {
     unlinkSync(join(registryDir(), `${tuiPid}.json`));
   } catch {
     // absent already / unreadable dir — nothing to do
+  }
+}
+
+/** Refresh the current publisher's decision without changing its tier or seniority. */
+export function heartbeatRegistryEntry(tuiPid: number, now: number = Date.now()): void {
+  const core = loadFile(join(registryDir(), `${tuiPid}.json`));
+  for (const entry of core.entries.values()) {
+    if (entry.tuiPid !== tuiPid) continue;
+    writeRegistryEntry({ ...entry, ts: now }, undefined, now);
+    return;
   }
 }
 

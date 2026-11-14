@@ -1,5 +1,7 @@
-// Free-only budget firewall. Automatic routing never selects paid models;
-// caps apply to free tokens so a misconfigured provider cannot burn quota.
+// Billed-only budget firewall (2026-11-14, operator decision). Automatic
+// routing never selects paid models, so the caps guard ACTUALLY BILLED
+// usage: zero-cost lanes (free tiers, zero-marginal subscription plans) are
+// exempt — otherwise a heavy free-tier day (9M tokens) locks every lane.
 
 import { readRouteEntries, summarizeRoutes, type RouteLedgerEntry } from "./route-ledger.ts";
 
@@ -29,6 +31,7 @@ export function budgetStatus(entries?: RouteLedgerEntry[]): BudgetStatus {
   let monthly = 0;
   for (const e of rows) {
     if (e.tier !== "cloud") continue; // local tokens are free
+    if ((e.costEstimate ?? 0) <= 0) continue; // zero-cost lanes never count
     const tokens = (e.tokensIn ?? 0) + (e.tokensOut ?? 0) + (e.cacheRead ?? 0) + (e.cacheWrite ?? 0);
     if (e.ts.slice(0, 10) === today) daily += tokens;
     if (e.ts.slice(0, 7) === month) monthly += tokens;
@@ -51,5 +54,5 @@ export function canSpendCloud(): boolean {
 
 export function budgetSummaryText(): string {
   const b = budgetStatus();
-  return `free tokens today ${b.dailyTokens}/${b.dailyCap} · month ${b.monthlyTokens}/${b.monthlyCap} · paid ${b.paidAllowed ? "allowed (manual)" : "never"}`;
+  return `billed tokens today ${b.dailyTokens}/${b.dailyCap} · month ${b.monthlyTokens}/${b.monthlyCap} · paid ${b.paidAllowed ? "allowed (manual)" : "never"}`;
 }

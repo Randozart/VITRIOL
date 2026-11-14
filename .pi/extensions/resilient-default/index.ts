@@ -25,7 +25,26 @@ import {
   canSpendCloud,
 } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import { routingPresence } from "../_shared/routing-presence.ts";
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
+import { isVerified } from "../_shared/probe-scheduler.ts";
+import { admitLane, effectiveWindow } from "../_shared/admission.ts";
+import { coreAdmissions, coreEnabled } from "../_shared/core-rpc.ts";
+import {
+  markGatewayCooldown,
+  markAlias,
+  markGatewayInvalid,
+  markModelLimit,
+  markOffered,
+  markOwnerPause,
+  ownerOfLane,
+  parseContextLimit,
+  parseCooldownFromError,
+  parseOverflowPromptTokens,
+  parseModelNotFound,
+  parseOwnerPause,
+  readGatewayMarks,
+} from "../_shared/gateway-health.ts";
 import { formatLanes, getLaneHealth, type LaneRow } from "../_shared/lane-health.ts";
 import {
   cooldownRemaining,
@@ -72,6 +91,8 @@ interface LapisState {
   switches: number;
   turnsOnTier: number;
   failoverActive: boolean;
+  /** Cloud attempts spent in the current turn (retry budget, 2026-11-14). */
+  cloudRetries?: number;
 }
 
 /** Nimbus lane state — cloud-only, no arbitration bookkeeping needed. */
@@ -80,6 +101,7 @@ interface NimbusState {
 }
 
 interface LastDecision {
+  sessionId: string;
   reason: string;
   tier: Tier;
   provider: string;
@@ -87,6 +109,8 @@ interface LastDecision {
   profile: RoutingProfile;
   localState: "up" | "down" | "busy" | "unknown";
   startedAt: number;
+  /** Why other lanes were not chosen (ledger observability, 2026-11-14). */
+  skipped: string[];
 }
 
 const CLOUD_RESERVE_TOKENS = 16_384;
@@ -106,6 +130,7 @@ const initial = (): LapisState => ({
   switches: 0,
   turnsOnTier: 0,
   failoverActive: false,
+  cloudRetries: 0,
 });
 
 function messageText(content: unknown): string {
@@ -120,6 +145,26 @@ function messageText(content: unknown): string {
       return "";
     })
     .join("\n");
+}
+
+/** chars/4 estimate over the request messages (text, thinking, tool args). */
+function estimatePromptTokens(messages: ReadonlyArray<unknown>): number {
+  let chars = 0;
+  for (const raw of messages) {
+    const m = raw as { content?: unknown };
+    const content = m?.content;
+    if (typeof content === "string") {
+      chars += content.length;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        const p = part as { text?: unknown; thinking?: unknown; input?: unknown };
+        if (typeof p?.text === "string") chars += p.text.length;
+        else if (typeof p?.thinking === "string") chars += p.thinking.length;
+        else if (p?.input !== undefined) chars += JSON.stringify(p.input).length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
 }
 
 function latestUserText(messages: readonly unknown[]): string {
@@ -139,8 +184,8 @@ export default function (pi: ExtensionAPI) {
     .filter((s): s is { provider: string; id: string } => !!s);
 
   // P3 identity — stable for this TUI process (mirrors adaptive-router).
-  const sessionStartedAt = Date.now();
   const tuiPid = process.pid;
+  const sessionStartedAt = routingPresence(pi, tuiPid);
   const sessionRole: SelfView["role"] =
     process.env.OFFICINA_SESSION_ROLE === "subagent" ? "subagent" : "main";
 
@@ -150,6 +195,7 @@ export default function (pi: ExtensionAPI) {
   let healthSig = ""; // gateway lane-health marking the pool was built against
   let activeCloud: Model | undefined;
   let lastDecision: LastDecision | null = null;
+  let lastSkipReasons: string[] = [];
 
   startEnginePolling();
   onEngineUpdate(() => {
@@ -250,12 +296,148 @@ export default function (pi: ExtensionAPI) {
     ).map((c) => c.model);
   };
 
-  const pickCloud = (tokens: number, now: number): Model | undefined => {
-    const eligible = cloudCandidates.filter(
-      (m) =>
-        tokens + CLOUD_RESERVE_TOKENS < (m.contextWindow ?? 0) &&
-        !healthCooling(m.provider, m.id, now),
+  const maxCloudRetries = (): number => {
+    const n = Number(process.env.OFFICINA_CLOUD_RETRIES);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 2;
+  };
+
+  /** Admission inputs for the Rust sidecar (same facts as cloudEligible). */
+  const admissionLanesForCore = (
+    now: number,
+  ): Array<{
+    id: string;
+    invalid: boolean;
+    cooling: boolean;
+    ownerPaused: boolean;
+    declared: number;
+    learned: number | null;
+    safeBytes: number | null;
+  }> => {
+    let marks = {
+      invalid: new Set<string>(),
+      models: new Set<string>(),
+      owners: new Set<string>(),
+      pausedOwners: new Set<string>(),
+      safeBytesByOwner: {} as Record<string, number>,
+      limits: {} as Record<string, number>,
+    };
+    if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
+      try {
+        const full = readGatewayMarks(now);
+        marks = {
+          invalid: full.invalid,
+          models: full.models,
+          owners: full.owners,
+          pausedOwners: full.pausedOwners,
+          safeBytesByOwner: full.safeBytesByOwner,
+          limits: full.limits,
+        };
+      } catch {
+        // fail-open
+      }
+    }
+    return cloudCandidates.map((m) => {
+      const owner = ownerOfLane(m.id);
+      return {
+        id: m.id,
+        invalid: marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner),
+        cooling: healthCooling(m.provider, m.id, now),
+        ownerPaused: marks.pausedOwners.has(owner),
+        declared: Number(m.contextWindow ?? 0),
+        learned: marks.limits[m.id] ?? null,
+        safeBytes: marks.safeBytesByOwner[owner] ?? null,
+      };
+    });
+  };
+
+  /** Lanes allowed by the gateway facts (2026-11-14): invalid, cooling,
+   *  paused owners, learned windows and the owner's safe-byte ceiling. */
+  const cloudEligible = (
+    tokens: number,
+    now: number,
+    override?: Map<string, string> | null,
+  ): Model[] => {
+    lastSkipReasons = [];
+    let marks = {
+      invalid: new Set<string>(),
+      models: new Set<string>(),
+      owners: new Set<string>(),
+      pausedOwners: new Set<string>(),
+      safeBytesByOwner: {} as Record<string, number>,
+      limits: {} as Record<string, number>,
+      offered: {} as Record<string, string[]>,
+      aliases: {} as Record<string, string>,
+      probes: {} as Record<string, import("../_shared/gateway-health.ts").ProbeFact>,
+    };
+    if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
+      try {
+        marks = readGatewayMarks(now) as typeof marks;
+      } catch {
+        // fail-open
+      }
+    }
+    const admitted = (m: Model): boolean => {
+      const why = ((): string | undefined => {
+        const core = override?.get(m.id);
+        if (core) return core === "admit" ? undefined : core;
+        const owner = ownerOfLane(m.id);
+        const verdict = admitLane({
+          promptTokens: tokens,
+          reserveTokens: CLOUD_RESERVE_TOKENS,
+          lane: {
+            invalid: marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner),
+            cooling: healthCooling(m.provider, m.id, now),
+            ownerPaused: marks.pausedOwners.has(owner),
+          },
+          declared: Number(m.contextWindow ?? 0),
+          learned: marks.limits[m.id] ?? null,
+          safeBytes: marks.safeBytesByOwner[owner] ?? null,
+        });
+        return verdict === "admit" ? undefined : verdict;
+      })();
+      if (why) {
+        if (lastSkipReasons.length < 8) lastSkipReasons.push(`${m.id}: ${why}`);
+        return false;
+      }
+      return true;
+    };
+    const eligible = cloudCandidates.filter(admitted);
+    // Learned remaps: prefer the offered replacement when it is admitted.
+    const seen = new Set<string>();
+    const remapped: Model[] = [];
+    for (const m of eligible) {
+      const rep = marks.aliases[m.id];
+      const chosen = rep ? eligible.find((x) => x.id === rep) ?? m : m;
+      if (!seen.has(chosen.id)) {
+        seen.add(chosen.id);
+        remapped.push(chosen);
+      }
+    }
+    // Probe preference (2026-11-14): lanes with a fresh successful probe rank
+    // first; lanes a probe found invalid/paused/cooling are excluded even if
+    // provider-health has not caught up yet.
+    const probeAllowed = remapped.filter((m) => {
+      const fact = marks.probes[m.id];
+      if (!fact) return true;
+      if (fact.kind === "invalid") return false;
+      if ((fact.kind === "cooling" || fact.kind === "paused") && Number(fact.until ?? 0) > now) {
+        return false;
+      }
+      return true;
+    });
+    probeAllowed.sort(
+      (a, b) =>
+        Number(!isVerified(a.id, marks.probes, now)) - Number(!isVerified(b.id, marks.probes, now)),
     );
+    return probeAllowed;
+  };
+
+  const pickCloud = (
+    tokens: number,
+    now: number,
+    override?: Map<string, string> | null,
+  ): Model | undefined => {
+    const eligible = cloudEligible(tokens, now, override);
     // Multi-session quota spread (2026-11-14): never stampede the same free
     // lane the other live sessions are already turning on; the registry is
     // written by adaptive-router and expires in 60 s.
@@ -289,6 +471,7 @@ export default function (pi: ExtensionAPI) {
       writeRegistryEntry(
         {
           ts: now,
+          sessionStartedAt: sessionStartedAt(),
           tuiPid,
           sessionId,
           tier,
@@ -326,7 +509,14 @@ export default function (pi: ExtensionAPI) {
     await loadCandidates(ctx);
     const now = Date.now();
     const profile = readProfile();
-    const local = ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
+    // Local resolution (2026-11-14): the engine ignores the request's model
+    // id (verified: stale and bogus ids both complete), so ANY registered
+    // llamacpp model is routable. Alias first, then the first available
+    // llamacpp model — stale sessions stay usable after an engine restart
+    // even when the startup alias probe failed.
+    const local =
+      ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ??
+      ctx.modelRegistry.getAvailable().find((m) => m.provider === "llamacpp");
     const snap = getEngineSnapshot();
     const localDown = cfg.failover && snap.polled && !snap.up;
     const load = {
@@ -336,9 +526,26 @@ export default function (pi: ExtensionAPI) {
       stalled: snap.polled && snap.stalled,
       gpuLoad: snap.gpuLoad,
     };
-    const tokens = ctx.getContextUsage()?.tokens ?? 0;
+    // Prompt size, not just session usage (2026-11-14): during overflow
+    // recovery the session counter lags the request (171k prompt read as
+    // ~165k), so a lane that cannot fit was still selected. Use the larger
+    // of the reported usage and a message estimate.
+    const failedMessage = request.failed?.message as { errorMessage?: string } | undefined;
+    const failureText = failedMessage?.errorMessage;
+    const overflowTokens = parseOverflowPromptTokens(failureText);
+    const learnedLimit = parseContextLimit(failureText);
+    const estimated = estimatePromptTokens(request.messages);
+    const tokens = Math.max(ctx.getContextUsage()?.tokens ?? 0, estimated, overflowTokens ?? 0);
+    // Phase-2 sidecar (2026-11-14): one batched admission call per decision.
+    // Fail-open — a missing/broken sidecar yields undefined and the TS
+    // implementation below decides (gate I1).
+    const coreOverride = coreEnabled()
+      ? await coreAdmissions(tokens, CLOUD_RESERVE_TOKENS, admissionLanesForCore(now))
+      : undefined;
     const candidate =
-      profileAllowsCloud(profile) && canSpendCloud() ? pickCloud(tokens, now) : undefined;
+      profileAllowsCloud(profile) && canSpendCloud()
+        ? pickCloud(tokens, now, coreOverride)
+        : undefined;
     const previous = request.previous?.model;
     const failed = request.failed?.model;
     const cls = latestUserText(request.messages)
@@ -353,6 +560,7 @@ export default function (pi: ExtensionAPI) {
       : null;
     const privacy = cls ? cls.privacy : "safe";
     let state = request.state ?? initial();
+    if (request.reason === "user") state = { ...state, cloudRetries: 0 };
     let tier: Tier = state.tier;
 
     const remember = (chosen: Model, chosenTier: Tier): void => {
@@ -362,6 +570,7 @@ export default function (pi: ExtensionAPI) {
           ? "busy"
           : "up";
       lastDecision = {
+        sessionId: ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`,
         reason: request.reason,
         tier: chosenTier,
         provider: chosen.provider,
@@ -369,24 +578,111 @@ export default function (pi: ExtensionAPI) {
         profile,
         localState: stateKind,
         startedAt: now,
+        skipped: lastSkipReasons.slice(),
       };
       publishPeerDecision(chosenTier, chosen, tokens, ctx, now);
     };
 
     if (request.reason === "continuation" && previous && previous.id !== "lapis") {
       // Never leave the current physical model mid tool-loop.
-      remember(previous, previous.provider === "llamacpp" ? "local" : "cloud");
+      const physicalTier = previous.provider === "llamacpp" ? "local" : "cloud";
+      remember(previous, physicalTier);
+      setRouteWidget(ctx, physicalTier, previous, profile);
       return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
     }
 
+    if (learnedLimit && failed) markModelLimit(failed.id, learnedLimit);
+
     if (request.reason === "retry") {
+      // Retry budget (2026-11-14): a turn must not walk the pool one 429 at a
+      // time. After N cloud attempts, local (or one actionable error).
+      if ((state.cloudRetries ?? 0) >= maxCloudRetries()) {
+        if (local) {
+          activeCloud = undefined;
+          remember(local, "local");
+          setRouteWidget(ctx, "local", undefined, profile);
+          return {
+            model: local,
+            thinkingLevel: request.thinkingLevel,
+            state: { ...state, tier: "local", failoverActive: true },
+          };
+        }
+        throw new Error(
+          `Lapis Occultus: cloud retry budget exhausted (${maxCloudRetries()}) and no local model is routable`,
+        );
+      }
+      // Context overflow (2026-11-14): another cloud lane that fits is a
+      // lottery; the local stone has 262k and is the deterministic answer
+      // when the prompt no longer fits the failed lane.
+      if ((overflowTokens || learnedLimit) && local && local.provider === "llamacpp") {
+        if (state.tier !== "local") {
+          ctx.ui?.notify?.(
+            "route: local (Lapis Occultus) after context overflow — the first turn re-prefills",
+            "info",
+          );
+        }
+        activeCloud = undefined;
+        remember(local, "local");
+        setRouteWidget(ctx, "local", undefined, profile);
+        return {
+          model: local,
+          thinkingLevel: request.thinkingLevel,
+          state: { ...state, tier: "local", failoverActive: true },
+        };
+      }
       if (failed && failed.provider === "llamacpp") {
         recordFailure(failed.provider, failed.id, undefined, { errorClass: "local_retry" });
         tier = candidate ? "cloud" : "local";
         state = { ...state, failoverActive: true };
       } else if (failed && failed.provider === "caduceus") {
-        recordFailure(failed.provider, failed.id, undefined, { errorClass: "cloud_retry" });
-        const next = pickCloud(tokens, now);
+        // The gateway puts its cooldown in the 429 BODY (reset_seconds /
+        // retry_after / reset_at), not in a header — record it once, cap it,
+        // and share the mark with every other session.
+        const errorText = failureText;
+        const pause = parseOwnerPause(errorText);
+        const cooldownMs = parseCooldownFromError(errorText, now);
+        const notFound = parseModelNotFound(errorText);
+        recordFailure(failed.provider, failed.id, undefined, {
+          errorClass: notFound ? "model_not_found" : cooldownMs ? "model_cooldown" : "cloud_retry",
+          retryAfterMs: cooldownMs,
+        });
+        if (cooldownMs) {
+          markGatewayCooldown({
+            model: failed.id,
+            owner: ownerOfLane(failed.id),
+            untilMs: now + cooldownMs,
+            reason: "gateway 429 body",
+          });
+        }
+        if (notFound) {
+          // Self-heal (2026-11-14): the catalog advertised an id the upstream
+          // does not offer. Exclude that exact lane for hours (shared with
+          // every session), remember the owner's offered ids, and fail over
+          // to a free offered alternative IN THIS TURN when one is admitted.
+          markGatewayInvalid({
+            model: failed.id,
+            reason: `not offered; upstream: ${notFound.alternatives.join(", ").slice(0, 200) || "unknown"}`,
+          });
+          const owner = ownerOfLane(failed.id);
+          markOffered(owner, notFound.alternatives);
+          const offered = notFound.alternatives.map((alt) => `${owner}/${alt}`);
+          const eligibleNow = cloudEligible(tokens, now, coreOverride);
+          const replacement = eligibleNow.find((m) => offered.includes(m.id));
+          if (replacement) {
+            markAlias(failed.id, replacement.id);
+            const next = { ...state, cloudRetries: (state.cloudRetries ?? 0) + 1 };
+            activeCloud = replacement;
+            remember(replacement, "cloud");
+            setRouteWidget(ctx, "cloud", replacement, profile);
+            return { model: replacement, thinkingLevel: request.thinkingLevel, state: next };
+          }
+        }
+        if (pause) {
+          // A 400 key circuit is OWNER-wide (operator decision): bench every
+          // model of that owner for the stated pause and honour safe bytes.
+          markOwnerPause(ownerOfLane(failed.id), pause, "400 key pause");
+        }
+        const next = pickCloud(tokens, now, coreOverride);
         tier = next ? "cloud" : "local";
         if (next) state = { ...state, failoverActive: true };
       } else {
@@ -405,7 +701,7 @@ export default function (pi: ExtensionAPI) {
       const peerContext = peersUsable
         ? {
             self: {
-              ts: sessionStartedAt,
+              ts: sessionStartedAt(),
               tuiPid,
               ctxTokens: tokens,
               role: sessionRole,
@@ -468,9 +764,19 @@ export default function (pi: ExtensionAPI) {
       activeCloud = candidate;
       remember(candidate, "cloud");
       setRouteWidget(ctx, "cloud", candidate, profile);
-      return { model: candidate, thinkingLevel: request.thinkingLevel, state };
+      return {
+        model: candidate,
+        thinkingLevel: request.thinkingLevel,
+        state: { ...state, cloudRetries: (state.cloudRetries ?? 0) + 1 },
+      };
     }
     if (local) {
+      if (state.tier !== "local") {
+        ctx.ui?.notify?.(
+          "route: local (Lapis Occultus) — switching back re-prefills the prompt",
+          "info",
+        );
+      }
       activeCloud = undefined;
       remember(local, "local");
       setRouteWidget(ctx, "local", undefined, profile);
@@ -480,18 +786,40 @@ export default function (pi: ExtensionAPI) {
       activeCloud = candidate;
       remember(candidate, "cloud");
       setRouteWidget(ctx, "cloud", candidate, profile);
-      return { model: candidate, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "cloud" } };
+      return {
+        model: candidate,
+        thinkingLevel: request.thinkingLevel,
+        state: {
+          ...state,
+          tier: "cloud",
+          cloudRetries: (state.cloudRetries ?? 0) + 1,
+        },
+      };
     }
-    // Honest failure (2026-11-12): "both unavailable" hid the actual gate —
-    // budget-exhausted afternoons made this look like an outage.
+    // Honest failure (2026-11-14): name the gate that actually refused.
     const budget = budgetStatus();
     const cloudWhy = !profileAllowsCloud(profile)
       ? `profile '${profile}' is local-only`
       : !canSpendCloud()
-        ? `cloud budget exhausted (daily ${budget.dailyTokens}/${budget.dailyCap}, monthly ${budget.monthlyTokens}/${budget.monthlyCap})`
-        : "no free cloud lane fits or all cooling";
+        ? `cloud budget exhausted (billed daily ${budget.dailyTokens}/${budget.dailyCap}, monthly ${budget.monthlyTokens}/${budget.monthlyCap})`
+        : (() => {
+            const coolingMs = cloudCandidates
+              .map((m) => cooldownRemaining(m.provider, m.id, now))
+              .filter((ms) => ms > 0);
+            return coolingMs.length > 0
+              ? `every candidate lane is cooling (earliest in ${Math.ceil(Math.min(...coolingMs) / 60_000)}m)`
+              : "no free cloud lane fits this context";
+          })();
+    const registered = ctx.modelRegistry
+      .getAll()
+      .filter((m) => m.provider === "llamacpp")
+      .map((m) => m.id);
+    const localWhy =
+      registered.length > 0
+        ? `local model not registered in this session (engine alias not probed; registered: ${registered.slice(0, 3).join(", ")})`
+        : "no local model configured (models.json has no llamacpp entries)";
     throw new Error(
-      `Lapis Occultus: no physical model available — engine ${localDown ? "down" : "unavailable"}; ${cloudWhy}`,
+      `Lapis Occultus: no physical model available — ${local ? "local ready" : localWhy}; engine ${snap.up ? "up" : "down"}; ${cloudWhy}`,
     );
   };
 
@@ -526,6 +854,8 @@ export default function (pi: ExtensionAPI) {
     const usage = msg.usage ?? {};
     const entry: RouteLedgerEntry = {
       ts: new Date().toISOString(),
+      sessionId: decision.sessionId,
+      tuiPid,
       reason: decision.reason,
       tier: decision.tier,
       provider: decision.provider,
@@ -540,6 +870,7 @@ export default function (pi: ExtensionAPI) {
       costEstimate: 0,
       outcome: failed ? "error" : "ok",
       errorClass: failed ? "completion_error" : undefined,
+      candidatesSkipped: decision.skipped.length > 0 ? decision.skipped : undefined,
     };
     recordRoute(entry);
     lastDecision = null;
@@ -563,8 +894,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("route-why", {
     description: "Explain the last routing decision",
-    handler: async (_args: string, ctx: { ui: any }) => {
-      const last = lastRouteEntry();
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      const sessionId = ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`;
+      const last = lastDecision ? { ...lastDecision, outcome: "in flight" } : lastRouteEntry(sessionId);
       if (!last) {
         await ctx.ui.notify?.("why: no routing entries yet", "info");
         return;
@@ -670,6 +1002,7 @@ export default function (pi: ExtensionAPI) {
     }
     activeCloud = candidate;
     lastDecision = {
+      sessionId: ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`,
       reason: request.reason,
       tier: "cloud",
       provider: candidate.provider,
@@ -677,6 +1010,7 @@ export default function (pi: ExtensionAPI) {
       profile: readProfile(),
       localState: getEngineSnapshot().up ? "up" : "down",
       startedAt: now,
+      skipped: lastSkipReasons.slice(),
     };
     publishPeerDecision("cloud", candidate, tokens, ctx, now);
     setRouteWidget(ctx, "cloud", candidate, readProfile(), "nimbus");

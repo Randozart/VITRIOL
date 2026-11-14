@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { rmSync } from "node:fs";
+import { recordFailure } from "../_shared/provider-health.ts";
+import { lastRouteEntry, recordRoute } from "../_shared/route-ledger.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { writeRegistryEntry } from "../_shared/routing-registry.ts";
 
 // Gateway lane health — static marking the tests can mutate per case.
 const laneHealthState = {
@@ -14,7 +19,7 @@ vi.mock("../_shared/lane-health.ts", () => ({
   EMPTY_HEALTH: () => ({ hardDown: new Set(), backoff: new Set(), active: new Set(), checkedAt: 0 }),
 }));
 
-const engine = { up: true, busy: false };
+const engine = { up: true, busy: false, slots: [] as Array<{ id: number }> };
 vi.mock("../_shared/engine.ts", () => ({
   startEnginePolling: () => undefined,
   onEngineUpdate: () => undefined,
@@ -26,6 +31,8 @@ vi.mock("../_shared/engine.ts", () => ({
     queueWaitMs: engine.busy ? 2500 : 0,
     stalled: false,
     gpuLoad: 0.1,
+    slots: engine.slots,
+    slotsSeen: engine.slots.length > 0,
   }),
 }));
 
@@ -41,21 +48,32 @@ const cloud = { provider: "caduceus", id: "test-model", api: "openai-completions
 const cloud2 = { provider: "caduceus", id: "second-model", api: "openai-completions", contextWindow: 500000 };
 const previous = { provider: "caduceus", id: "previous-model", api: "openai-completions", contextWindow: 1000000 };
 
-function harness(opts: { tokens?: number } = {}) {
+function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boolean } = {}) {
   const virtuals: Record<string, any> = {};
+  const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+  const commands = new Map<string, { handler: (args: string, ctx: any) => unknown }>();
   const pi = {
-    on: () => undefined,
-    registerCommand: () => undefined,
+    on: (event: string, fn: (event: any, ctx: any) => unknown) => {
+      const list = handlers.get(event) ?? [];
+      list.push(fn);
+      handlers.set(event, list);
+      return () => undefined;
+    },
+    registerCommand: (name: string, command: { handler: (args: string, ctx: any) => unknown }) => commands.set(name, command),
     registerVirtualModel: (m: any) => {
       virtuals[m.id] = m;
     },
   };
   register(pi as never);
   if (!virtuals["lapis"]) throw new Error("lapis virtual model not registered");
+  const staleLocal = { ...local, id: "Qwen3.8-27B-Q3_K_M.gguf" };
+  const localList = opts.noLocal ? [] : opts.localId === null ? [staleLocal] : [local];
   const ctx = {
     modelRegistry: {
+      getAll: () => (opts.noLocal ? [] : localList),
+      getAvailable: () => localList,
       find: (provider: string, id: string) => {
-        if (provider === "llamacpp") return local;
+        if (provider === "llamacpp") return opts.noLocal || opts.localId === null ? undefined : local;
         if (id === "test-model") return cloud;
         if (id === "second-model") return cloud2;
         if (id === "previous-model") return previous;
@@ -68,7 +86,7 @@ function harness(opts: { tokens?: number } = {}) {
       contextWindow: 262144,
       percent: 19,
     }),
-    ui: { setStatus: () => undefined, setWidget: () => undefined },
+    ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
   };
   const run = (reason: string, prompt = "do work", extra: Record<string, unknown> = {}) =>
     virtuals["lapis"].route(
@@ -94,23 +112,32 @@ function harness(opts: { tokens?: number } = {}) {
       },
       ctx,
     );
-  return { run, runLane, virtual: virtuals["lapis"], virtuals };
+  const fire = async (event: string, payload: any): Promise<void> => {
+    for (const fn of handlers.get(event) ?? []) await fn(payload, ctx);
+  };
+  const command = (name: string) => commands.get(name)!.handler("", ctx);
+  return { run, runLane, fire, ctx, command, virtual: virtuals["lapis"], virtuals };
 }
 
 describe("resilient-default", () => {
   beforeEach(() => {
     engine.up = true;
     engine.busy = false;
+    engine.slots = [];
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model";
     // Never honour the operator's routing prefs in tests (panel I1).
     process.env.OFFICINA_CADUCEUS_PREFS_FILE = "/tmp/officina-caduceus-prefs-none.json";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-resilient-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-resilient-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-resilient-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     // Deterministic picks: never consult the operator's live peer registry.
     process.env.OFFICINA_NO_LANE_SPREAD = "1";
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "1";
+    // Never touch the operator's live provider-health file.
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = join(tmpdir(), "officina-resilient-health-test.json");
+    rmSync(process.env.OFFICINA_PROVIDER_HEALTH_FILE, { force: true });
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
   });
   afterEach(() => {
@@ -119,6 +146,10 @@ describe("resilient-default", () => {
     delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
     delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
     delete process.env.OFFICINA_NO_LANE_SPREAD;
+    delete process.env.OFFICINA_NO_GATEWAY_MARKS;
+    delete process.env.OFFICINA_GATEWAY_HEALTH_FILE;
+    delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
+    delete process.env.OFFICINA_CLOUD_RETRIES;
     delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
     delete process.env.OFFICINA_NO_LANE_SPREAD;
@@ -136,6 +167,40 @@ describe("resilient-default", () => {
     expect(route.model).toMatchObject({ provider: "llamacpp", id: "Lapis Occultus" });
   });
 
+  it("yields a busy single slot to the older session despite its newer heartbeat", async () => {
+    const now = Date.now();
+    const date = vi.spyOn(Date, "now").mockReturnValue(now);
+    const h = harness();
+    engine.busy = true;
+    engine.slots = [{ id: 0 }];
+    date.mockReturnValue(now + 2000);
+    writeRegistryEntry({ ts: now + 1500, sessionStartedAt: now - 10_000,
+      tuiPid: process.pid + 1000, sessionId: "senior", tier: "local",
+      model: "llamacpp/Lapis Occultus", ctxTokens: 100_000 });
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("caduceus");
+    date.mockRestore();
+  });
+
+  it("restores the physical backend badge on sticky cloud continuations", async () => {
+    const h = harness();
+    await h.run("continuation", "continue", { previous: { model: previous } });
+    expect(h.ctx.ui.setStatus).toHaveBeenCalledWith("overflow", expect.stringContaining("previous-model"));
+    await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } });
+    expect(lastRouteEntry()).toMatchObject({ tuiPid: process.pid, sessionId: `tui-${process.pid}` });
+  });
+
+  it("explains this session's pending/completed route instead of another session's latest record", async () => {
+    const h = harness();
+    await h.run("user");
+    await h.command("route-why");
+    expect(h.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("in flight"), "info");
+    await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } });
+    recordRoute({ ts: new Date(Date.now() + 100).toISOString(), sessionId: "someone-else", reason: "user", tier: "cloud", model: "other-session" });
+    await h.command("route-why");
+    expect(h.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("llamacpp/Lapis Occultus"), "info");
+  });
+
   it("routes to cloud when the engine is down", async () => {
     engine.up = false;
     const h = harness();
@@ -148,6 +213,149 @@ describe("resilient-default", () => {
     const route = await h.run("continuation", "continue", { previous: { model: previous } });
     expect(route.model).toBe(previous);
     expect(route.state).toBeUndefined();
+  });
+
+  it("routes local through a stale registered id when the alias was never probed", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const h = harness({ localId: null });
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp");
+    expect(route.model.id).toBe("Qwen3.8-27B-Q3_K_M.gguf");
+  });
+
+  it("skips a lane the gateway marked invalid (model_not_found)", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const dir = mkdtempSync(join(tmpdir(), "gw-invalid-"));
+    const path = join(dir, "gateway-health.json");
+    const until = Date.now() + 3600_000;
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        invalid: { "test-model": { until, reason: "not offered" } },
+      }),
+    );
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "0";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = path;
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp"); // first candidate skipped
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("routes local after a context-overflow retry (no fit lottery)", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const h = harness();
+    const overflow = {
+      model: { provider: "caduceus", id: "test-model" },
+      message: {
+        errorMessage:
+          "[400]: This model's maximum context length is 180000 tokens. However, you requested 8192 output tokens and your prompt contains at least 171809 input tokens (parameter=input_tokens, value=171809)",
+      },
+    };
+    const route = await h.run("retry", "continue", { failed: overflow });
+    expect(route.model.provider).toBe("llamacpp");
+  });
+
+  it("skips a paused owner (400 key circuit) and routes local", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const dir = mkdtempSync(join(tmpdir(), "gw-paused-"));
+    const path = join(dir, "gateway-health.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        invalid: {},
+        pauses: { "test-model": { until: Date.now() + 5 * 60_000, safeBytes: 56 * 1024 } },
+      }),
+    );
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "0";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = path;
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("respects the cloud retry budget (0 => local immediately)", async () => {
+    engine.up = true;
+    engine.busy = false;
+    process.env.OFFICINA_CLOUD_RETRIES = "0";
+    const h = harness();
+    const route = await h.run("retry", "continue", {
+      failed: { model: { provider: "caduceus", id: "test-model" }, message: { errorMessage: "429" } },
+    });
+    expect(route.model.provider).toBe("llamacpp");
+    delete process.env.OFFICINA_CLOUD_RETRIES;
+  });
+
+  it("prefers a lane with a fresh successful probe", async () => {
+    engine.up = true;
+    engine.busy = false;
+    const dir = mkdtempSync(join(tmpdir(), "gw-verified-"));
+    const path = join(dir, "gateway-health.json");
+    writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        invalid: {},
+        probes: {
+          "second-model": {
+            kind: "ok",
+            okAt: Date.now() - 1_000,
+            failCount: 0,
+            nextProbeAt: Date.now() + 600_000,
+          },
+        },
+      }),
+    );
+    process.env.OFFICINA_NO_GATEWAY_MARKS = "0";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = path;
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
+    const h = harness({ noLocal: true });
+    const route = await h.run("user");
+    expect(route.model.id).toBe("second-model");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("records admission skip reasons in the route ledger", async () => {
+    engine.up = true;
+    engine.busy = false;
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
+    const healthDir = mkdtempSync(join(tmpdir(), "gw-ledger-health-"));
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = join(healthDir, "health.json");
+    recordFailure("caduceus", "test-model", 429, { retryAfterMs: 120_000 });
+    const h = harness({ noLocal: true });
+    await h.run("user");
+    await h.fire("message_end", {
+      message: { role: "assistant", stopReason: "end_turn", usage: { input: 10, output: 5 } },
+    });
+    const entry = lastRouteEntry();
+    expect(entry?.model).toBe("second-model");
+    expect(entry?.candidatesSkipped?.some((s: string) => s.includes("test-model"))).toBe(true);
+    rmSync(healthDir, { recursive: true, force: true });
+    delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
+  });
+
+  it("names the real gate when nothing can serve", async () => {
+    engine.up = false;
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "0";
+    const h = harness({ noLocal: true });
+    await expect(h.run("user")).rejects.toThrow(/no local model configured/);
+    await expect(h.run("user")).rejects.toThrow(/cloud budget exhausted/);
   });
 
   it("fails over to cloud on a local retry", async () => {
@@ -167,7 +375,7 @@ describe("nimbus (cloud-only lane)", () => {
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-nimbus-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-nimbus-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -238,7 +446,7 @@ describe("nimbus lane health (gateway-marked endpoints)", () => {
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-nimbus-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-nimbus-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -271,4 +479,18 @@ describe("nimbus lane health (gateway-marked endpoints)", () => {
     const route = await h.runLane("nimbus")("user");
     expect(route.model).toMatchObject({ id: "second-model" });
   });
+});
+
+// Synthetic routes must never publish into the operator's live registry.
+let testRegistry = "";
+let originalRegistry: string | undefined;
+beforeEach(() => {
+  originalRegistry = process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  testRegistry = mkdtempSync(join(tmpdir(), "officina-router-registry-"));
+  process.env.OFFICINA_ROUTING_REGISTRY_DIR = testRegistry;
+});
+afterEach(() => {
+  if (originalRegistry === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  else process.env.OFFICINA_ROUTING_REGISTRY_DIR = originalRegistry;
+  rmSync(testRegistry, { recursive: true, force: true });
 });

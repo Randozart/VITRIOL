@@ -19,6 +19,7 @@ import {
   type SlotOpResult,
 } from "./client.ts";
 import { readLivePeers } from "../_shared/routing-registry.ts";
+import { quarantineRecoveryMarker, shouldQuarantineRestore } from "./recovery.ts";
 
 // vitriol-checkpoint — scaffold trigger for engine slot save/restore (§2.2,
 // step 4). Endpoints exist in this fork (POST /slots/<id>?action=save|restore,
@@ -123,9 +124,15 @@ export default function (pi: ExtensionAPI) {
     const r = await slotOp("restore", marker.filename);
     if (r.ok) {
       ctx.ui.notify(`vitriol-checkpoint: restored warm KV from ${marker.filename} (turn ${marker.turn})`, "info");
-      clearMarker(); // restored; keep only if engine refused (stale slot file)
+      clearMarker();
     } else {
-      ctx.ui.notify(`vitriol-checkpoint: restore failed (${r.error}) — continuing cold`, "warning");
+      const backup = shouldQuarantineRestore(r)
+        ? quarantineRecoveryMarker(markerPath(cfg.sessionDir, sessionStem), raw)
+        : undefined;
+      const recovery = backup
+        ? `automatic retry stopped; recovery marker preserved at ${backup}`
+        : "recovery marker kept for a later retry";
+      ctx.ui.notify(`vitriol-checkpoint: restore failed (${r.error}) — continuing cold; ${recovery}`, "warning");
     }
   });
 

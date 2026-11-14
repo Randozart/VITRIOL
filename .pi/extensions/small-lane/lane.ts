@@ -67,3 +67,117 @@ export function buildSummaryText(conversationText: string, previousSummary?: str
 export function laneCompactionOutcome(summary: string | null | undefined): "use" | "fallback" {
   return summary && summary.trim() ? "use" : "fallback";
 }
+
+/** chars/4 estimate over the messages a compaction must summarize. */
+export function estimateMessagesTokens(messages: ReadonlyArray<unknown>): number {
+  let chars = 0;
+  for (const raw of messages) {
+    const m = raw as { content?: unknown };
+    const content = m?.content;
+    if (typeof content === "string") {
+      chars += content.length;
+    } else if (Array.isArray(content)) {
+      for (const part of content) {
+        const p = part as { text?: unknown; thinking?: unknown; input?: unknown };
+        if (typeof p?.text === "string") chars += p.text.length;
+        else if (typeof p?.thinking === "string") chars += p.thinking.length;
+        else if (p?.input !== undefined) chars += JSON.stringify(p.input).length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
+
+export interface SummarizerCandidate {
+  provider: string;
+  id: string;
+  contextWindow: number;
+}
+
+/**
+ * Fit-aware summarizer choice (2026-11-14): compaction requests carry the
+ * WHOLE transcript, so the summarizer must have a window >= estimate +
+ * reserve. Picks the largest window (cloud first for speed; local ties as
+ * the safe fallback). Pure.
+ */
+export function orderSummarizers(
+  candidates: ReadonlyArray<SummarizerCandidate>,
+  estimateTokens: number,
+  reserveTokens = 4096,
+): SummarizerCandidate[] {
+  const need = estimateTokens + reserveTokens;
+  const fit = candidates.filter((c) => Number(c.contextWindow) >= need);
+  fit.sort((a, b) => {
+    const byWindow = Number(b.contextWindow) - Number(a.contextWindow);
+    if (byWindow !== 0) return byWindow;
+    const localA = a.provider === "llamacpp" ? 1 : 0;
+    const localB = b.provider === "llamacpp" ? 1 : 0;
+    if (localA !== localB) return localA - localB; // cloud first on ties
+    return a.id.localeCompare(b.id);
+  });
+  return fit;
+}
+
+/**
+ * Deterministic input shrink for compaction (2026-11-14): when nothing fits
+ * the full transcript, keep the newest messages within `budgetChars` and
+ * prepend a digest of what was dropped. Compaction must never fail on size.
+ */
+export function shrinkMessages<T>(
+  messages: ReadonlyArray<T>,
+  budgetChars: number,
+): { messages: T[]; digest: string; omitted: number } {
+  const items = [...messages];
+  const kept: T[] = [];
+  let chars = 0;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const size = JSON.stringify(items[i]).length;
+    if (kept.length > 0 && chars + size > budgetChars) {
+      return {
+        messages: kept,
+        omitted: i + 1,
+        digest: digestOf(items.slice(0, i + 1)),
+      };
+    }
+    kept.unshift(items[i]);
+    chars += size;
+  }
+  return { messages: kept, omitted: 0, digest: "" };
+}
+
+function digestOf(messages: ReadonlyArray<unknown>): string {
+  const lines: string[] = [];
+  let chars = 0;
+  for (const raw of messages) {
+    const m = raw as { role?: string; content?: unknown };
+    const content = m?.content;
+    const text =
+      typeof content === "string"
+        ? content
+        : Array.isArray(content)
+          ? content
+              .map((p) => {
+                const part = p as { text?: unknown; thinking?: unknown };
+                return typeof part?.text === "string" ? part.text : "";
+              })
+              .join(" ")
+          : "";
+    const one = `${m?.role ?? "?"}: ${text.replace(/\s+/g, " ").trim()}`.slice(0, 180);
+    if (one.length <= 8) continue;
+    if (chars + one.length > 3000) break;
+    lines.push(`- ${one}`);
+    chars += one.length + 3;
+  }
+  return [
+    `Earlier conversation was omitted to make compaction fit (${messages.length} message(s)).`,
+    ...lines,
+  ].join("\n");
+}
+
+export function chooseSummarizer(
+  candidates: ReadonlyArray<SummarizerCandidate>,
+  estimateTokens: number,
+  reserveTokens = 4096,
+): SummarizerCandidate | undefined {
+  return orderSummarizers(candidates, estimateTokens, reserveTokens)[0];
+}

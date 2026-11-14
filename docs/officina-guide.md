@@ -37,6 +37,22 @@
   "verify", paths, tier:"cheap"|"full"})` and returns a ✓/⚠/✗ report.
   Write/edit blocks show the code (syntax-highlighted) and the diff; click
   cycles closed → formatted → full.
+- **AGENTS.md aware** (2026-11-14): Officina reads the `AGENTS.md` files of
+  the project (cwd and ancestors), injects a compact digest (headings +
+  bullets, ~3k chars) once per session, and reloads it when a file changes
+  (checked at each turn boundary). `/agents-md` shows what it sees. The full
+  file stays on disk; tuning: `OFFICINA_AGENTS_DIGEST_CHARS`,
+  `OFFICINA_AGENTS_FILES`, kill switch `OFFICINA_NO_AGENTS_MD=1`.
+- **Learned context limits + aware compaction** (2026-11-14): a provider 400
+  ("maximum context length is N tokens" or "estimated N input tokens, limit
+  L") is recorded per model (shared facts file), the registered window is
+  clamped to it on refresh, and lane selection plans with the ACTUAL request
+  size (message estimate) — the catalog can overstate windows. On an
+  overflow retry the router goes straight to local (262k) instead of
+  gambling on another cloud lane. Compaction's summarizer is chosen by fit
+  (whole transcript + reserve): the small lane first when enabled, then the
+  largest fitting windows, always including the local stone, retrying past
+  429/403 summarizers before falling back to pi's default.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
@@ -65,6 +81,22 @@
   "verify", paths, tier:"cheap"|"full"})` and returns a ✓/⚠/✗ report.
   Write/edit blocks show the code (syntax-highlighted) and the diff; click
   cycles closed → formatted → full.
+- **AGENTS.md aware** (2026-11-14): Officina reads the `AGENTS.md` files of
+  the project (cwd and ancestors), injects a compact digest (headings +
+  bullets, ~3k chars) once per session, and reloads it when a file changes
+  (checked at each turn boundary). `/agents-md` shows what it sees. The full
+  file stays on disk; tuning: `OFFICINA_AGENTS_DIGEST_CHARS`,
+  `OFFICINA_AGENTS_FILES`, kill switch `OFFICINA_NO_AGENTS_MD=1`.
+- **Learned context limits + aware compaction** (2026-11-14): a provider 400
+  ("maximum context length is N tokens" or "estimated N input tokens, limit
+  L") is recorded per model (shared facts file), the registered window is
+  clamped to it on refresh, and lane selection plans with the ACTUAL request
+  size (message estimate) — the catalog can overstate windows. On an
+  overflow retry the router goes straight to local (262k) instead of
+  gambling on another cloud lane. Compaction's summarizer is chosen by fit
+  (whole transcript + reserve): the small lane first when enabled, then the
+  largest fitting windows, always including the local stone, retrying past
+  429/403 summarizers before falling back to pi's default.
 - **Colour semantics** (2026-11-14): cyan = active (running tools, working),
   green = success/healthy, gold = completed work/accents, amber = observation
   worth a look (watchdog HUNG, warnings — no longer red-looking), red = real
@@ -186,6 +218,16 @@ vitriol caduceus recover-session       # offline only; refuses while TUI runs
 ```
 The TUI holds `~/.vitriol/officina/tui.lock` and quarantines corrupt
 sessions (`.corrupt-*`) at startup instead of resuming them.
+
+If the engine rejects a saved KV checkpoint, Officina continues cold and
+moves its recovery marker into `.pi/ckpt/failed-restores/` (under
+`TRIS_CKPT_DIR` when set), preserving the original marker in a unique
+backup directory. This stops repeated automatic restore attempts. The
+engine's "No available space in KV cache or invalid slot save file" error
+is ambiguous; the backup allows manual retry after correcting the cause.
+Network failures, authentication errors, rate limits and server outages
+keep the active marker for a later retry. A successful subsequent autosave
+creates a fresh active marker normally.
 
 Bulk key import (one file, one pass):
 
@@ -378,6 +420,16 @@ No flags, no per-launch env — the router adapts per session, per turn
   Shards are written independently, so concurrent TUIs never overwrite
   each other's entries. The legacy single
   `routing-registry.json` is no longer written.
+- Session age and heartbeat freshness are separate (2026-11-14): activity
+  cannot make an older session appear younger. Active runs refresh their
+  shard every 10 seconds through the existing engine poller, including
+  during long prefill; settled sessions expire normally and shutdown
+  removes the shard. Reload extensions in both TUIs to adopt the fix.
+- `/route-why` describes this session's requested physical backend while
+  a request is in flight, or its last completed route. It does not borrow
+  another session's latest ledger entry. A local request may still be
+  queued; this is not proof of slot ownership. The route badge is refreshed
+  on continuations too, and new ledger rows carry session and process IDs.
 - The arbitration lives in **resilient-default** (lapis is the default
   model); adaptive-router mirrors it for non-virtual selections.
   All sessions start local-first (Lapis Occultus). When every engine slot
@@ -405,11 +457,23 @@ No flags, no per-launch env — the router adapts per session, per turn
   same session file and starts a fresh session (notice printed at
   launch, `/resume` to switch later); repair/quarantine also refuse
   while another TUI owns the store. Locks auto-release on crash.
-- Cache discipline (2026-11-11): the session ledger re-sites at the
-  context TAIL each turn and tool-result stubbing defers until ctx
+- Cache discipline (2026-11-14): the session ledger records durable
+  snapshots at conversation boundaries and tool-result stubbing defers until ctx
   fill ≥ `OFFICINA_CACHE_CLEAR_PCT` (92) — mid-history rewrites used to
   truncate the engine's KV prefix reuse and re-prefill the whole tail
   every turn.
+- Durable context state (2026-11-14): scratchpad, tasks and the AGENTS.md
+  digest and session ledger are recorded before a run and after complete tool-result groups
+  when their contents change. Unchanged snapshots stay in place; recording
+  one does not request another model call. If mid-run compaction discards a
+  snapshot, request-time recovery supplies it until the next safe recording
+  boundary; that recovery can cause one prefix break.
+  Tool-result clearing still defaults to 92% context fill and keeps the
+  newest 12 results. `OFFICINA_CACHE_CLEAR_PCT=85` enables an earlier
+  clearing experiment; `LITTLE_CODER_CLEAR_KEEP` controls the retained
+  result count. Compare engine cached/prompt-evaluated tokens and elapsed
+  task time on equivalent sessions before adopting a lower threshold:
+  fewer context tokens can require more prefill when history changes.
 - Checkpoints/snapshots are session-scoped (2026-11-11): KV autosave/
   restore gate on live peers (slot may be foreign at parallel=1) and
   markers must carry the session stem; git snapshots live under

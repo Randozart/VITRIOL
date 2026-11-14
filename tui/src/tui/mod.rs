@@ -11,6 +11,7 @@ pub mod paste;
 pub mod question;
 pub mod review;
 pub mod routes;
+pub mod session_check;
 pub mod state;
 
 use std::io::{self, IsTerminal};
@@ -1914,6 +1915,146 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                 state.answers_open_modal();
                 return;
             }
+            // /probe — background cloud-probe status (read-only facts file).
+            if msg == "/probe" {
+                let doc = crate::tui::routes::load_gateway_health();
+                let now = crate::tui::caduceus::now_ms();
+                let total = doc.probes.len();
+                let verified = doc
+                    .probes
+                    .values()
+                    .filter(|p| {
+                        p.kind == "ok"
+                            && p.ok_at
+                                .map(|t| now.saturating_sub(t) < 10 * 60_000)
+                                .unwrap_or(false)
+                    })
+                    .count();
+                let paused = doc.pauses.iter().filter(|(_, p)| p.until > now).count();
+                let leader = doc
+                    .probe_lease
+                    .as_ref()
+                    .map(|l| {
+                        format!(
+                            "pid {} · {}s left",
+                            l.pid,
+                            l.until.saturating_sub(now).div_ceil(1000)
+                        )
+                    })
+                    .unwrap_or_else(|| "none".to_string());
+                let next = doc
+                    .probes
+                    .values()
+                    .filter_map(|p| p.next_probe_at)
+                    .filter(|t| *t > now)
+                    .min()
+                    .map(|t| format!("{}s", (t - now) / 1000))
+                    .unwrap_or_else(|| "—".to_string());
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "probe: leader {leader} · verified {verified}/{total} · invalid {} · paused owners {paused} · next in {next}",
+                    doc.invalid.len()
+                )));
+                let mut lanes: Vec<(&String, &crate::tui::routes::ProbeFact)> =
+                    doc.probes.iter().collect();
+                lanes.sort_by_key(|(lane, _)| lane.to_string());
+                for (lane, fact) in lanes.into_iter().take(12) {
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "  {} — {}",
+                        lane,
+                        crate::tui::routes::probe_label(Some(fact), now)
+                    )));
+                }
+                return;
+            }
+            // /doctor — admission self-check (gateway, probes, pauses, budget).
+            if msg == "/doctor" {
+                let doc = crate::tui::routes::load_gateway_health();
+                let now = crate::tui::caduceus::now_ms();
+                let gateway = match crate::tui::routes::caduceus_gateway_up() {
+                    Some(true) => "up".to_string(),
+                    Some(false) => "DOWN".to_string(),
+                    None => "unknown (no facts file)".to_string(),
+                };
+                let verified = doc.probes.values().filter(|p| p.kind == "ok").count();
+                let cooling = doc
+                    .probes
+                    .values()
+                    .filter(|p| p.kind == "cooling" && p.until.map(|u| u > now).unwrap_or(false))
+                    .count();
+                let paused = doc.pauses.iter().filter(|(_, p)| p.until > now).count();
+                let leader = doc
+                    .probe_lease
+                    .as_ref()
+                    .map(|l| format!("pid {}", l.pid))
+                    .unwrap_or_else(|| "none".to_string());
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "doctor: gateway {gateway} · probe leader {leader} · verified {verified}/{} · cooling {cooling} · paused owners {paused} · invalid lanes {}",
+                    doc.probes.len(),
+                    doc.invalid.len()
+                )));
+                // Session-format self-check (2026-11-14).
+                let session = crate::tui::session_check::check_current_session(&state.cwd);
+                if let Some(path) = &session.path {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let verdict = if session.ok() {
+                        "format ok".to_string()
+                    } else {
+                        format!(
+                            "{} issue(s): {}",
+                            session.issues.len(),
+                            session.issues.join("; ")
+                        )
+                    };
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "  session {name} — {} entries · {} messages · {}/{} tool pairs · {verdict}",
+                        session.entries,
+                        session.messages,
+                        session.tool_calls,
+                        session.tool_results
+                    )));
+                } else {
+                    state.entries.push(state::ChatEntry::Diag(
+                        "  session — none found for this cwd yet".to_string(),
+                    ));
+                }
+                // Rust core sidecar presence (fail-open by design).
+                let core_mode = std::env::var("OFFICINA_ROUTER_CORE").unwrap_or_default();
+                let core_bin = std::env::var("OFFICINA_CORE_BIN").ok().unwrap_or_else(|| {
+                    let mut p =
+                        std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                    p.push(".local");
+                    p.push("bin");
+                    p.push("vitriol-core-rpc");
+                    p.to_string_lossy().to_string()
+                });
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "  core: mode {} · binary {}",
+                    if core_mode.eq_ignore_ascii_case("rust") {
+                        "rust"
+                    } else {
+                        "ts (set OFFICINA_ROUTER_CORE=rust to try the sidecar)"
+                    },
+                    if std::path::Path::new(&core_bin).exists() {
+                        format!("present ({core_bin})")
+                    } else {
+                        "missing (fallback active)".to_string()
+                    }
+                )));
+                for (owner, pause) in doc.pauses.iter().filter(|(_, p)| p.until > now).take(6) {
+                    let safe = pause
+                        .safe_bytes
+                        .map(|b| format!(" · safe {} KB", b / 1024))
+                        .unwrap_or_default();
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "  paused {owner} — {}m left{safe}",
+                        pause.until.saturating_sub(now).div_ceil(60_000)
+                    )));
+                }
+                return;
+            }
             // /routes — Caduceus decision trail (read-only facts file).
             if msg == "/routes" {
                 state.routes = Some(crate::tui::routes::load_recent(&chrono_day(), 400));
@@ -3128,7 +3269,41 @@ const CONTINUE_PROMPT: &str = "Continue the open work — pick up exactly where 
 
 /// Handle one agent event. Returns true when the run loop should submit
 /// the compaction auto-continue (see CONTINUE_PROMPT).
+/// Optional wire-event trace (2026-11-14, conformance harness): with
+/// OFFICINA_TRACE_EVENTS=1 every pi event is appended as one JSON line to
+/// ~/.vitriol/officina/traces/events-<pid>.jsonl (bounded to 20 MB). These
+/// traces become replay fixtures for `handle_event` conformance tests.
+fn capture_event(event_type: &str, fields: &serde_json::Value) {
+    if std::env::var_os("OFFICINA_TRACE_EVENTS").is_none() {
+        return;
+    }
+    let mut dir = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    dir.push(".vitriol");
+    dir.push("officina");
+    dir.push("traces");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    let path = dir.join(format!("events-{}.jsonl", std::process::id()));
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 20 * 1024 * 1024)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let line = serde_json::json!({"event": event_type, "fields": fields});
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
 fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Value) -> bool {
+    capture_event(event_type, fields);
     match event_type {
         "agent_start" => {
             state.note_phase(state::UiEvent::AgentStart);
@@ -4044,6 +4219,126 @@ mod phase_wiring_tests {
             "normal turn must not trip the table: {:?}",
             state_diags(&s)
         );
+    }
+
+    fn replay_fixture(name: &str, text: &str) -> AppState {
+        let mut s = AppState::default();
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            let value: serde_json::Value = serde_json::from_str(line).expect("fixture line json");
+            let event = value["event"].as_str().expect("fixture event");
+            handle_event(&mut s, event, &value["fields"]);
+        }
+        assert!(!s.is_streaming, "{name}: settles streaming");
+        assert!(!s.has_running_tool(), "{name}: no running tools at settle");
+        assert!(s.held.is_empty(), "{name}: held messages cleared");
+        assert!(!s.is_compacting, "{name}: compaction cleared");
+        assert!(
+            s.compaction_started_at.is_none(),
+            "{name}: compaction timer cleared"
+        );
+        s
+    }
+
+    #[test]
+    fn recorded_fixtures_replay_to_a_clean_settle() {
+        replay_fixture("full_turn", include_str!("fixtures/full_turn.jsonl"));
+        replay_fixture("abort_turn", include_str!("fixtures/abort_turn.jsonl"));
+        replay_fixture(
+            "compaction_turn",
+            include_str!("fixtures/compaction_turn.jsonl"),
+        );
+        let error = replay_fixture("error_turn", include_str!("fixtures/error_turn.jsonl"));
+        let errors = error
+            .entries
+            .iter()
+            .filter(|e| matches!(e, state::ChatEntry::Error(_)))
+            .count();
+        assert_eq!(errors, 1, "model error surfaced exactly once");
+    }
+
+    #[test]
+    fn full_turn_lifecycle_is_conformant() {
+        let mk = |v: serde_json::Value| v;
+        let mut s = AppState::default();
+        s.push_user("do the work".into());
+        handle_event(&mut s, "agent_start", &mk(serde_json::json!({})));
+        assert!(s.is_streaming, "agent_start streams");
+        handle_event(&mut s, "message_start", &mk(serde_json::json!({})));
+        handle_event(
+            &mut s,
+            "message_update",
+            &mk(serde_json::json!({"delta": "working"})),
+        );
+        handle_event(
+            &mut s,
+            "tool_execution_start",
+            &mk(serde_json::json!({
+                "toolCallId": "t1", "toolName": "bash", "args": {"command": "ls"}
+            })),
+        );
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Tool { running: true, .. }))
+                .count(),
+            1,
+            "tool running"
+        );
+        handle_event(
+            &mut s,
+            "tool_execution_end",
+            &mk(serde_json::json!({
+                "toolCallId": "t1", "toolName": "bash", "isError": false,
+                "result": {"content": [{"type": "text", "text": "ok"}]}
+            })),
+        );
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Tool { running: true, .. }))
+                .count(),
+            0,
+            "tool settled"
+        );
+        handle_event(
+            &mut s,
+            "message_end",
+            &mk(serde_json::json!({
+                "message": {"role": "assistant", "stopReason": "end_turn",
+                            "content": [{"type": "text", "text": "done"}]}
+            })),
+        );
+        handle_event(&mut s, "agent_end", &mk(serde_json::json!({})));
+        assert!(!s.is_streaming, "agent_end settles the turn");
+        handle_event(
+            &mut s,
+            "agent_settled",
+            &mk(serde_json::json!({"aborted": false})),
+        );
+        assert!(s.held.is_empty(), "no held message survives a settle");
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Tool { running: true, .. }))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn aborted_settle_never_leaves_streaming_or_held() {
+        let mk = |v: serde_json::Value| v;
+        let mut s = AppState::default();
+        s.held_push("steer me", state::HeldKind::Steer);
+        handle_event(&mut s, "agent_start", &mk(serde_json::json!({})));
+        assert!(s.is_streaming);
+        handle_event(
+            &mut s,
+            "agent_settled",
+            &mk(serde_json::json!({"aborted": true})),
+        );
+        assert!(!s.is_streaming, "abort settles streaming");
+        assert!(s.held.is_empty(), "abort clears held messages");
     }
 
     #[test]

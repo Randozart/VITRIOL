@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
+  aliasRetryDelay,
   fillModelDefaults,
   formatContextWindow,
   loadProviders,
@@ -266,7 +267,76 @@ export default async function (pi: ExtensionAPI) {
       }, 5000);
     };
 
+    // Alias discovery is separate from model SELECTION (2026-11-14): the
+    // bounded session_start sync gives up after ~60 s, so a session started
+    // while the engine was down never registered the engine alias for its
+    // whole lifetime (owner incident: "Lapis Occultus can't connect").
+    // Re-probe once per turn while the alias is missing — cheap, and the
+    // router can then resolve the local lane without a restart.
+    const discoverAliasOnce = async (): Promise<boolean> => {
+      const lc = llamacpp!;
+      if (lc.engineAlias) return true;
+      try {
+        const resp = await fetch(modelsUrlFor(lc.baseUrl), {
+          signal: AbortSignal.timeout(3000),
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        const alias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
+        if (!alias) return false;
+        if (!lc.models.some((m) => m.id === alias)) {
+          lc.models = [
+            ...lc.models,
+            fillModelDefaults(
+              { id: alias, name: alias, contextWindow: lc.registeredCtx },
+              "llamacpp",
+              lc.models.length,
+            ),
+          ];
+          pi.registerProvider("llamacpp", {
+            baseUrl: lc.baseUrl,
+            apiKey: lc.apiKey,
+            api: lc.api,
+            models: lc.models,
+          });
+        }
+        lc.engineAlias = alias;
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    // Alias WATCHER (2026-11-14): one probe per turn is not sufficient — a
+    // turn can end before the engine finishes booting, or the engine can
+    // come up mid-turn. Retry with exponential backoff (2s → 60s) for up to
+    // 30 minutes per arming; each agent_start re-arms a fresh window, so a
+    // long outage heals on the first turn after the engine returns.
+    const ALIAS_WATCH_MS = 30 * 60_000;
+    let aliasTimer: ReturnType<typeof setTimeout> | undefined;
+    let aliasAttempt = 0;
+    let aliasDeadline = 0;
+
+    const armAliasWatch = (): void => {
+      if (!llamacpp || llamacpp.engineAlias) return;
+      if (aliasTimer) return; // already watching
+      aliasDeadline = Date.now() + ALIAS_WATCH_MS;
+      aliasAttempt = 0;
+      const step = async (): Promise<void> => {
+        aliasTimer = undefined;
+        if (!llamacpp || llamacpp.engineAlias) return;
+        if (Date.now() >= aliasDeadline) return; // ambient re-arm on next turn
+        if (await discoverAliasOnce()) return;
+        aliasAttempt += 1;
+        aliasTimer = setTimeout(() => void step(), aliasRetryDelay(aliasAttempt));
+      };
+      void step();
+    };
+
+    pi.on("agent_start", () => armAliasWatch());
+
     pi.on("session_start", (_event, ctx) => {
+      armAliasWatch();
       armSync(ctx as SyncCtx);
     });
   }

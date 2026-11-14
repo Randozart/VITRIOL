@@ -1,7 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { generateSummaryWithUsage } from "@earendil-works/pi-coding-agent";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
-import { laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
+import { readGatewayMarks, ownerOfLane } from "../_shared/gateway-health.ts";
+import {
+  estimateMessagesTokens,
+  orderSummarizers,
+  shrinkMessages,
+  laneCompactionOutcome,
+  resolveLaneConfig,
+} from "./lane.ts";
 
 // Small-lane compaction (M1, docs/CRUSH-MINING-PLAN-2026-08-31.md, 2026-08-31).
 //
@@ -25,9 +32,11 @@ import { laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
 
 export default function (pi: ExtensionAPI) {
   const lane = resolveLaneConfig();
-  if (!lane.enabled) return; // disabled — register nothing (Rule 15)
+  const smartFallback = process.env.OFFICINA_NO_SMART_COMPACTION !== "1";
+  if (!lane.enabled && !smartFallback) return; // nothing to do (Rule 15)
 
-  pi.registerProvider("small-lane", {
+  if (lane.enabled) {
+    pi.registerProvider("small-lane", {
     baseUrl: lane.baseUrl,
     apiKey: "none", // local llama-server; the header is required, the value is not
     api: "openai-completions",
@@ -42,71 +51,171 @@ export default function (pi: ExtensionAPI) {
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       },
     ],
-  });
+    });
+  }
 
   pi.on("session_before_compact", async (event, ctx) => {
     const { preparation, signal } = event;
     const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
 
-    const model = ctx.modelRegistry.find("small-lane", lane.modelId);
-    if (!model) {
-      ctx.ui.notify("small-lane: model not registered, using default compaction", "warning");
-      return;
-    }
-    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-    if (!auth.ok) {
-      ctx.ui.notify(`small-lane: auth failed (${auth.error}), using default compaction`, "warning");
-      return;
-    }
-
-    const headers = auth.headers
-      ? Object.entries(auth.headers).reduce<Record<string, string>>((acc, [key, value]) => {
-          if (value !== null) acc[key] = value;
-          return acc;
-        }, {})
-      : undefined;
-
-    try {
-      const { text, usage } = await generateSummaryWithUsage(
-        [...messagesToSummarize, ...turnPrefixMessages],
-        model,
-        0, // reserveTokens — the lane summarizes into its own window, not the master's
-        auth.apiKey,
-        headers,
-        signal,
-        undefined, // customInstructions — pi's battle-tested summary prompt
-        previousSummary,
-        undefined, // thinkingLevel — mellum2 has no thinking mode
-        undefined, // streamFn
-        auth.env,
-      );
-
-      if (laneCompactionOutcome(text) === "fallback") {
-        if (!signal.aborted) {
-          ctx.ui.notify("small-lane: empty summary, falling back to default compaction", "warning");
-          emitHarnessEvent(harnessEvent("lc-lane", "fallback", { detail: "empty-summary" }));
-        }
-        return;
+    const messages = [...messagesToSummarize, ...turnPrefixMessages];
+    // Fit-aware summarizer (2026-11-14): compaction hands the WHOLE
+    // transcript to the summarizer. The configured small lane (when enabled)
+    // is tiny and often unreachable; pi's default uses the current model,
+    // which may be a 128k cloud lane while the transcript is 180k+. Choose a
+    // model that actually fits the request.
+    let estimate = estimateMessagesTokens(messages);
+    // Admission-aware candidates (2026-11-14): skip lanes the gateway has
+    // cooled, invalidated, or paused (owner-wide), and honour learned limits.
+    const marks = (() => {
+      try {
+        return readGatewayMarks();
+      } catch {
+        return undefined;
       }
+    })();
+    const candidates = ctx.modelRegistry
+      .getAll()
+      .filter((m) => {
+        if (m.provider === "small-lane") return false;
+        if (!ctx.modelRegistry.hasConfiguredAuth(m)) return false;
+        if (m.provider === "caduceus" && marks) {
+          const owner = ownerOfLane(m.id);
+          if (
+            marks.invalid.has(m.id) ||
+            marks.models.has(m.id) ||
+            marks.owners.has(owner) ||
+            marks.pausedOwners.has(owner)
+          ) {
+            return false;
+          }
+        }
+        return Number(m.contextWindow ?? 0) > 0;
+      })
+      .map((m) => ({
+        provider: m.provider,
+        id: m.id,
+        contextWindow: Math.min(
+          Number(m.contextWindow ?? 0),
+          marks?.limits[m.id] ?? Number.POSITIVE_INFINITY,
+        ),
+      }));
+    let order = orderSummarizers(candidates, estimate);
+    let summaryMessages = messages;
 
-      emitHarnessEvent(
-        harnessEvent("lc-lane", "compact", {
-          detail: `${lane.modelId} summarized (${tokensBefore} tok in, ${usage?.output ?? "?"} tok summary)`,
-        }),
-      );
-      return {
-        compaction: {
-          summary: text,
-          firstKeptEntryId,
-          tokensBefore,
-          usage,
-        },
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      ctx.ui.notify(`small-lane: ${message} — falling back to default compaction on the main model`, "warning");
-      emitHarnessEvent(harnessEvent("lc-lane", "fallback", { detail: message }));
-      return; // pi default compaction — the task still gets done
+    // Compaction must not fail on size (2026-11-14): if nothing fits the whole
+    // transcript, shrink deterministically to the largest admitted window and
+    // retry once.
+    if (order.length === 0) {
+      const largest = candidates.reduce((max, c) => Math.max(max, c.contextWindow), 0);
+      if (largest > 0) {
+        const budgetChars = Math.max(20_000, Math.floor(largest * 4 * 0.6));
+        const shrunk = shrinkMessages(messages, budgetChars);
+        summaryMessages = shrunk.digest
+          ? [
+              {
+                role: "user",
+                content: shrunk.digest,
+                timestamp: Date.now(),
+              } as never,
+              ...shrunk.messages,
+            ]
+          : shrunk.messages;
+        estimate = estimateMessagesTokens(summaryMessages);
+        order = orderSummarizers(candidates, estimate);
+      }
     }
+
+    // Candidate chain: the dedicated lane first (when enabled), then every
+    // fitting model by descending window, cloud before local on ties. A 429
+    // or quota 403 on one summarizer must not end compaction — try the next
+    // one, down to the local stone.
+    const maxTries = Math.max(1, Number(process.env.OFFICINA_COMPACTION_MAX_TRIES) || 6);
+    const full: Array<{ provider: string; id: string }> = [];
+    if (lane.enabled) full.push({ provider: "small-lane", id: lane.modelId });
+    for (const c of order) full.push({ provider: c.provider, id: c.id });
+    // Bound the attempts; always keep the local stone in the chain — it is
+    // the one summarizer whose window and availability we control.
+    const localCand = order.find((c) => c.provider === "llamacpp");
+    const chain = full.slice(0, maxTries);
+    if (localCand && !chain.some((c) => c.provider === "llamacpp")) {
+      chain.push({ provider: localCand.provider, id: localCand.id });
+    }
+
+    if (chain.length === 0) {
+      ctx.ui.notify(
+        `compaction: no model fits ${estimate} tokens — using default compaction`,
+        "warning",
+      );
+      return;
+    }
+
+    let lastError = "";
+    for (const cand of chain) {
+      const model = ctx.modelRegistry.find(cand.provider, cand.id);
+      if (!model) continue;
+      const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!auth.ok) {
+        lastError = `auth ${auth.error}`;
+        continue;
+      }
+      const headers = auth.headers
+        ? Object.entries(auth.headers).reduce<Record<string, string>>((acc, [key, value]) => {
+            if (value !== null) acc[key] = value;
+            return acc;
+          }, {})
+        : undefined;
+      try {
+        const { text, usage } = await generateSummaryWithUsage(
+          summaryMessages as never,
+          model,
+          0, // reserveTokens — the summarizer owns its own window
+          auth.apiKey,
+          headers,
+          signal,
+          undefined, // customInstructions — pi's battle-tested summary prompt
+          previousSummary,
+          undefined, // thinkingLevel
+          undefined, // streamFn
+          auth.env,
+        );
+        if (laneCompactionOutcome(text) === "fallback") {
+          lastError = "empty summary";
+          continue;
+        }
+        if (model.provider !== "small-lane") {
+          ctx.ui.notify(
+            `compaction: summarized by ${model.provider}/${model.id} (est. ${estimate} tok)`,
+            "info",
+          );
+        }
+        emitHarnessEvent(
+          harnessEvent("lc-lane", "compact", {
+            detail: `${model.provider}/${model.id} summarized (${tokensBefore} tok in, ${usage?.output ?? "?"} tok summary)`,
+          }),
+        );
+        return {
+          compaction: {
+            summary: text,
+            firstKeptEntryId,
+            tokensBefore,
+            usage,
+          },
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (signal.aborted) return;
+        // Try the next fitting summarizer.
+      }
+    }
+
+    if (!signal.aborted) {
+      ctx.ui.notify(
+        `compaction: every summarizer failed (${lastError}) — falling back to default compaction`,
+        "warning",
+      );
+      emitHarnessEvent(harnessEvent("lc-lane", "fallback", { detail: lastError }));
+    }
+    return; // pi default compaction — the task still gets done
   });
 }

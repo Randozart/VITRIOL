@@ -36,6 +36,7 @@ export interface SelfView {
 /** A peer session, as published in the routing registry. */
 export interface PeerView {
   ts: number;
+  sessionStartedAt?: number;
   tuiPid: number;
   sessionId: string;
   tier: Tier;
@@ -81,7 +82,7 @@ function localParticipants(self: SelfView, peers: PeerView[]): Participant[] {
   ];
   for (const peer of peers) {
     if (peer.tier !== "local") continue;
-    list.push({ ts: peer.ts, tuiPid: peer.tuiPid, ctxTokens: peer.ctxTokens, isSelf: false });
+    list.push({ ts: peer.sessionStartedAt ?? peer.ts, tuiPid: peer.tuiPid, ctxTokens: peer.ctxTokens, isSelf: false });
   }
   list.sort((a, b) => a.ts - b.ts || b.ctxTokens - a.ctxTokens || a.tuiPid - b.tuiPid);
   return list;

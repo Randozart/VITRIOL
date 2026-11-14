@@ -80,6 +80,40 @@ export function classifyConnections(connections: GatewayConnection[]): LaneHealt
   return out;
 }
 
+/** Gateway model-health fact (from /api/monitoring/model-health). */
+export interface ProviderHealthFact {
+  provider?: string;
+  canExecute?: boolean;
+  circuitBreakerState?: string;
+  connections?: Array<{ state?: string; testStatus?: string }>;
+}
+
+/**
+ * Merge gateway model-health into the connection buckets (2026-11-14):
+ * circuit OPEN / canExecute=false / a rate-limited connection is a TEMPORARY
+ * refusal — demote to backoff (never hardDown, that is for disabled
+ * accounts). Pure; unknown providers are ignored.
+ */
+export function applyModelHealth(
+  health: LaneHealth,
+  providers: ReadonlyArray<ProviderHealthFact>,
+): LaneHealth {
+  const blockedStates = new Set(["RATE_LIMITED", "MODEL_LOCKED", "BLOCKED", "CIRCUIT_OPEN", "COOLDOWN"]);
+  for (const fact of providers ?? []) {
+    const owner = String(fact.provider ?? "").trim().toLowerCase();
+    if (!owner) continue;
+    const circuit = String(fact.circuitBreakerState ?? "").toUpperCase();
+    const stateBlocked = (fact.connections ?? []).some((c) =>
+      blockedStates.has(String(c.state ?? "").toUpperCase()),
+    );
+    if (fact.canExecute === false || circuit === "OPEN" || stateBlocked) {
+      if (!health.hardDown.has(owner)) health.backoff.add(owner);
+      health.active.delete(owner);
+    }
+  }
+  return health;
+}
+
 export const EMPTY_HEALTH = (): LaneHealth => ({
   hardDown: new Set(),
   backoff: new Set(),

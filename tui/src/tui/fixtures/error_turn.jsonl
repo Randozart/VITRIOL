@@ -1,0 +1,5 @@
+{"event":"agent_start","fields":{}}
+{"event":"message_start","fields":{}}
+{"event":"message_end","fields":{"message":{"role":"assistant","stopReason":"error","errorMessage":"[400]: maximum context length is 180000 tokens (parameter=input_tokens, value=171809)","content":[]}}}
+{"event":"agent_end","fields":{}}
+{"event":"agent_settled","fields":{"aborted":false}}

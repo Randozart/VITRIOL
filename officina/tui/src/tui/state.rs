@@ -284,7 +284,12 @@ const NO_OUTPUT_HINT_SECS: u64 = 30;
 pub enum ChatEntry {
     User(String),
     Assistant(String),
-    Thinking(String),
+    /// Thinking block (2026-11-13): a left click toggles `collapsed`
+    /// (close/open the trace); the text survives collapse.
+    Thinking {
+        text: String,
+        collapsed: bool,
+    },
     Tool {
         tool_call_id: Option<String>,
         name: String,
@@ -611,6 +616,13 @@ pub struct AppState {
     /// Thinking display (2026-11-13): hide thinking blocks behind a collapsed
     /// marker line; persisted at ~/.vitriol/officina/tui-thinking.
     pub hide_thinking: bool,
+    /// Line → entry map of the last chat_lines output. The renderer also
+    /// derives clickable thinking-block row ranges from it (2026-11-13).
+    pub line_entries: Vec<usize>,
+    /// Visible thinking blocks as screen rows: (y0, y1, entry idx).
+    /// Filled by layout each frame; a left click inside a range toggles
+    /// the block's collapsed state (2026-11-13).
+    pub thinking_hitboxes: Vec<(u16, u16, usize)>,
     /// Latest structured watchdog facts (card + countdown).
     pub watchdog: Option<WatchdogDoc>,
     /// Injectable watchdog facts path (tests must never read the
@@ -905,6 +917,8 @@ impl Default for AppState {
             scroll: 0,
             scroll_max: 0,
             md_cache: HashMap::new(),
+            line_entries: Vec::new(),
+            thinking_hitboxes: Vec::new(),
         }
     }
 }
@@ -2060,9 +2074,28 @@ impl AppState {
     pub fn push_thinking_delta(&mut self, delta: &str) {
         self.stream_heat = (self.stream_heat + 0.4).min(1.6);
         match self.entries.last_mut() {
-            Some(ChatEntry::Thinking(t)) => t.push_str(delta),
-            _ => self.entries.push(ChatEntry::Thinking(delta.to_string())),
+            Some(ChatEntry::Thinking { text, .. }) => text.push_str(delta),
+            _ => self.entries.push(ChatEntry::Thinking {
+                text: delta.to_string(),
+                collapsed: false,
+            }),
         }
+    }
+
+    /// Left-click on a thinking block: toggle it. Returns true when the
+    /// click landed on a block (2026-11-13).
+    pub fn thinking_toggle_at(&mut self, row: u16) -> bool {
+        let idx = self
+            .thinking_hitboxes
+            .iter()
+            .find(|(y0, y1, _)| row >= *y0 && row <= *y1)
+            .map(|(_, _, idx)| *idx);
+        let Some(idx) = idx else { return false };
+        if let Some(ChatEntry::Thinking { collapsed, .. }) = self.entries.get_mut(idx) {
+            *collapsed = !*collapsed;
+            return true;
+        }
+        false
     }
 
     pub fn push_user(&mut self, text: String) {
@@ -2694,6 +2727,7 @@ impl AppState {
             self.md_cache.clear();
         }
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut line_entries: Vec<usize> = Vec::new();
         let total = self.entries.len();
         let mut liveness = self.liveness_suffix();
         if let Some(secs) = self.watchdog_countdown() {
@@ -2752,9 +2786,10 @@ impl AppState {
                         lines.push(Line::from(spans));
                     }
                 }
-                ChatEntry::Thinking(text) => {
-                    if self.hide_thinking {
-                        let n = text.chars().count();
+                ChatEntry::Thinking { text, collapsed } => {
+                    let n = text.chars().count();
+                    let collapsed = self.hide_thinking || *collapsed;
+                    if collapsed {
                         // Liveliness (2026-11-13): while this block is the
                         // live tail and the session is streaming, the marker
                         // animates — visible proof the model is thinking,
@@ -2776,11 +2811,16 @@ impl AppState {
                         let label = if growing {
                             "thinking…"
                         } else {
-                            "thinking hidden"
+                            "thinking collapsed"
+                        };
+                        let hint = if self.hide_thinking {
+                            "/thinking-view show"
+                        } else {
+                            "click to expand"
                         };
                         lines.push(Line::from(Span::styled(
                             format!(
-                                "  ·    {spinner}{label} ({}) — /thinking-view show",
+                                "  ·    {spinner}{label} ({}) — {hint}",
                                 if n >= 1000 {
                                     format!("{:.1}k chars", n as f64 / 1000.0)
                                 } else {
@@ -2789,18 +2829,37 @@ impl AppState {
                             ),
                             count_style,
                         )));
-                        continue;
-                    }
-                    for seg in wrap_text(text, width.saturating_sub(8)) {
-                        lines.push(Line::from(vec![
-                            Span::styled("  ·    ", Style::default().fg(theme::MUTED)),
-                            Span::styled(
-                                seg,
-                                Style::default()
-                                    .fg(theme::MUTED)
-                                    .add_modifier(ratatui::style::Modifier::ITALIC),
-                            ),
-                        ]));
+                    } else {
+                        // Markdown-formatted thinking (2026-11-13, operator
+                        // request): same renderer + cache as assistant
+                        // replies, dimmed italic so it still reads as
+                        // reasoning rather than output. Click to close.
+                        let key = (idx, n, width);
+                        let md = if let Some(cached) = self.md_cache.get(&key) {
+                            cached.clone()
+                        } else {
+                            let rendered = crate::markdown::render(text, width.saturating_sub(8));
+                            self.md_cache.insert(key, rendered.clone());
+                            rendered
+                        };
+                        let mut first = true;
+                        for ml in md {
+                            let mut spans: Vec<Span> = Vec::with_capacity(ml.spans.len() + 1);
+                            spans.push(Span::styled(
+                                if first { "  ·    " } else { "        " },
+                                Style::default().fg(theme::MUTED),
+                            ));
+                            for sp in ml.spans {
+                                spans.push(Span::styled(
+                                    sp.content,
+                                    sp.style
+                                        .fg(theme::MUTED)
+                                        .add_modifier(ratatui::style::Modifier::ITALIC),
+                                ));
+                            }
+                            lines.push(Line::from(spans));
+                            first = false;
+                        }
                     }
                 }
                 ChatEntry::Tool {
@@ -3079,7 +3138,11 @@ impl AppState {
                     lines.push(Line::from(""));
                 }
             }
+            for _ in before..lines.len() {
+                line_entries.push(idx);
+            }
         }
+        self.line_entries = line_entries;
         lines
     }
 
@@ -4094,6 +4157,85 @@ mod tests {
         let long = "x".repeat(101);
         s.apply_notify(&long, "info");
         assert!(matches!(s.entries.last(), Some(ChatEntry::Notice(_))));
+    }
+
+    #[test]
+    fn thinking_renders_markdown_and_maps_lines_to_entries() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.push_thinking_delta("**bold** reasoning and `code` here");
+        let lines = s.chat_lines(80);
+        assert!(!lines.is_empty());
+        assert_eq!(
+            s.line_entries.len(),
+            lines.len(),
+            "line→entry map must cover every rendered line"
+        );
+        assert!(s.line_entries.iter().all(|i| *i == 0));
+        let bold = lines.iter().flat_map(|l| l.spans.iter()).any(|sp| {
+            sp.content.contains("bold")
+                && sp
+                    .style
+                    .add_modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+        });
+        assert!(bold, "markdown bold must survive the thinking renderer");
+        assert!(lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|sp| sp.content.contains("reasoning")));
+    }
+
+    #[test]
+    fn thinking_click_toggles_collapse_and_reopen() {
+        let mut s = AppState::default();
+        s.hide_thinking = false;
+        s.push_thinking_delta("line one\n\nline two");
+        let expanded = s.chat_lines(80);
+        assert!(expanded.len() > 1, "expanded block spans rows");
+        s.thinking_hitboxes = vec![(10, 12, 0)];
+        assert!(s.thinking_toggle_at(10), "click inside block toggles");
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Thinking {
+                collapsed: true,
+                ..
+            }
+        ));
+        let collapsed = s.chat_lines(80);
+        assert_eq!(collapsed.len(), 1, "collapsed block is one marker row");
+        assert!(collapsed[0]
+            .spans
+            .iter()
+            .any(|sp| sp.content.contains("click to expand")));
+        assert_eq!(s.line_entries.len(), collapsed.len());
+        assert!(s.thinking_toggle_at(12), "click again reopens");
+        assert!(matches!(
+            s.entries[0],
+            ChatEntry::Thinking {
+                collapsed: false,
+                ..
+            }
+        ));
+        assert!(
+            !s.thinking_toggle_at(99),
+            "click outside all blocks is a miss"
+        );
+    }
+
+    #[test]
+    fn thinking_hidden_still_maps_lines_to_entries() {
+        let mut s = AppState::default();
+        s.hide_thinking = true;
+        s.push_thinking_delta("hidden reasoning");
+        s.push_user("hello".into());
+        let lines = s.chat_lines(80);
+        assert_eq!(s.line_entries.len(), lines.len());
+        assert!(
+            s.line_entries.iter().any(|i| *i == 0),
+            "hidden thinking marker maps to its entry (plus the blank)"
+        );
+        assert!(s.line_entries.iter().any(|i| *i == 1));
     }
 
     #[test]

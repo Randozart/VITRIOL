@@ -20,7 +20,13 @@
   directly on top of the prompt (options list; the RPC path stages it as
   a facts file, so it works on every lane and can never hang the wire).
   No response in 10 minutes fail-opens; esc cancels.
+- **Thinking traces**: rendered as dimmed markdown (headings, bold,
+  code, lists). Click any thinking block to close it — it collapses to a
+  one-line marker with its character count; click again to reopen.
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
+- **Thinking traces**: rendered as dimmed markdown (headings, bold,
+  code, lists). Click any thinking block to close it — it collapses to a
+  one-line marker with its character count; click again to reopen.
 - **Thinking display**: `/thinking-view hide|show` collapses thinking
   blocks to a one-line marker (char count) or shows them again. Display
   only — the model's thinking *level* remains pi's `/thinking`.

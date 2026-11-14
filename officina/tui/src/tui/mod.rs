@@ -2630,6 +2630,11 @@ async fn handle_mouse(m: crossterm::event::MouseEvent, state: &mut AppState) {
         // Text selection (owner request 2026-09-03): left-drag across the
         // transcript anchors a row range; ^c copies it. Plain click clears.
         MouseEventKind::Down(MouseButton::Left) => {
+            // Thinking blocks (2026-11-13): a click inside a block closes
+            // or reopens the trace instead of starting a selection.
+            if !over_sidebar(state, m.column, m.row) && state.thinking_toggle_at(m.row) {
+                return;
+            }
             state.clear_selection();
             if let Some(a) = state.last_chat_area {
                 if m.row >= a.y && m.row < a.y + a.height {
@@ -3126,7 +3131,7 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                     let text = content_text(content);
                     let have_streamed = matches!(&state.entries.last(), Some(e)
                         if matches!(e, state::ChatEntry::Assistant(t) if !t.is_empty())
-                            || matches!(e, state::ChatEntry::Thinking(t) if !t.is_empty()));
+                            || matches!(e, state::ChatEntry::Thinking { text: t, .. } if !t.is_empty()));
                     if !text.is_empty() && !have_streamed {
                         state.entries.push(state::ChatEntry::Assistant(text));
                     }

@@ -15,7 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::ansi;
-use super::state::{AppState, DialogKind};
+use super::state::{AppState, ChatEntry, DialogKind};
 use crate::theme;
 
 const SIDEBAR_W: u16 = 42;
@@ -509,6 +509,34 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
     let start = total.saturating_sub(visible + state.scroll as usize);
     let view: Vec<Line> = lines.into_iter().skip(start).collect();
+
+    // Thinking-block hitboxes (2026-11-13): a left click on any row of a
+    // block toggles collapse. Rows are screen coords of the visible
+    // window; rebuilt every frame from the line→entry map.
+    state.thinking_hitboxes.clear();
+    if visible > 0 {
+        let last_visible = (start + visible - 1).min(state.line_entries.len().saturating_sub(1));
+        let mut i = 0usize;
+        while i < state.line_entries.len() {
+            let idx = state.line_entries[i];
+            let mut j = i;
+            while j + 1 < state.line_entries.len() && state.line_entries[j + 1] == idx {
+                j += 1;
+            }
+            if matches!(state.entries.get(idx), Some(ChatEntry::Thinking { .. })) {
+                let lo = i.max(start);
+                let hi = j.min(last_visible);
+                if lo <= hi {
+                    state.thinking_hitboxes.push((
+                        chat_area.y + (lo - start) as u16,
+                        chat_area.y + (hi - start) as u16,
+                        idx,
+                    ));
+                }
+            }
+            i = j + 1;
+        }
+    }
 
     // Composer flames (owner request 2026-09-02): braille alchemical fire
     // rising from the editor's top edge; intensity = GPU load (low-passed

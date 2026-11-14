@@ -19,9 +19,9 @@ function hasCapacityCode(text: string): boolean {
 }
 
 /** Bound inspection of an error body; unknown, oversized or stalled bodies retain normal handling. */
-async function isCapacityResponse(response: Response): Promise<boolean> {
+async function readErrorText(response: Response): Promise<string | undefined> {
   const reader = response.clone().body?.getReader();
-  if (!reader) return false;
+  if (!reader) return undefined;
   let expired = false;
   const timer = setTimeout(() => { expired = true; void reader.cancel().catch(() => {}); }, 1000);
   const chunks: Uint8Array[] = [];
@@ -31,16 +31,34 @@ async function isCapacityResponse(response: Response): Promise<boolean> {
       const part = await reader.read();
       if (part.done) break;
       size += part.value.byteLength;
-      if (size > 16_384) return false;
+      if (size > 16_384) return undefined;
       chunks.push(part.value);
     }
-    return !expired && hasCapacityCode(Buffer.concat(chunks).toString("utf8"));
-  } catch { return false; }
+    return expired ? undefined : Buffer.concat(chunks).toString("utf8");
+  } catch { return undefined; }
   finally {
     clearTimeout(timer);
     // A tee's cancellation promise can wait for its other branch: never await it here.
     void reader.cancel().catch(() => {});
   }
+}
+
+/** Preserve retry classification and cooldown hints when the SDK retains only error.message. */
+async function normalizeModelCooldown(response: Response): Promise<Response> {
+  if (response.status !== 429 || response.headers.get("x-omniroute-local-cooldown") !== "model") return response;
+  const text = await readErrorText(response);
+  try {
+    const body = JSON.parse(text ?? "");
+    if (body?.error?.code !== "model_cooldown" || typeof body.error.message !== "string") return response;
+    const hints = { reset_seconds: body.error.reset_seconds, retry_after: body.error.retry_after };
+    body.error.message = `429 model_cooldown: ${body.error.message}\n${JSON.stringify(hints)}`;
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    headers.set("content-type", "application/json");
+    void response.body?.cancel().catch(() => {});
+    return new Response(JSON.stringify(body), { status: response.status, statusText: response.statusText, headers });
+  } catch { return response; }
 }
 
 /** Respect Retry-After without extending the finite admission budget. */
@@ -55,7 +73,9 @@ function retryDelay(response: Response, retry: number): number {
 async function isRecoverableResponse(response: Response): Promise<boolean> {
   if (response.headers.get("x-should-retry")?.trim().toLowerCase() === "false") return false;
   if (TRANSIENT_STATUSES.has(response.status)) return true;
-  return response.status === 429 && await isCapacityResponse(response);
+  if (response.status !== 429) return false;
+  const text = await readErrorText(response);
+  return text !== undefined && hasCapacityCode(text);
 }
 
 /** Finish rejected admission and wait without holding a response body or ignoring cancellation. */
@@ -79,7 +99,7 @@ export function recoveringGatewayFetch(fetcher: typeof fetch): typeof fetch {
   const deadline = Date.now() + WAIT_BUDGET_MS;
   return async (input, init) => {
     while (true) {
-      const response = await fetcher(input, init);
+      const response = await normalizeModelCooldown(await fetcher(input, init));
       if (response.status < 400 || retries >= 2 || typeof init?.body !== "string") return response;
       const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
       if (!await waitForRecovery(response, deadline, retries, signal)) return response;

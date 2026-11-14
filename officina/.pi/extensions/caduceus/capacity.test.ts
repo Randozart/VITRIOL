@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeContext } from "@earendil-works/pi-ai";
+import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
+import { parseCooldownFromError } from "../_shared/gateway-health.ts";
 import { recoveringGatewayFetch, streamCloudWithRecovery } from "./capacity.ts";
 
 const recoveryEvents = vi.hoisted(() => [] as Array<{ detail?: string }>);
@@ -144,6 +146,28 @@ const model = { api: "openai-completions" as const, provider: "caduceus", id: "s
   contextWindow: 262144, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const context = (name: string) => normalizeContext({ messages: [{ role: "user", content: name, timestamp: 1 }] });
 const answer = (name: string) => `data: ${JSON.stringify({ id: name, choices: [{ index: 0, delta: { role: "assistant", content: name }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ id: name, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`;
+
+it("preserves the exact gateway model-cooldown error as retryable after SDK normalization", async () => {
+  const message = "All credentials for model aion-labs/aion-3.0 are cooling down";
+  const body = { error: { code: "model_cooldown", type: "rate_limit_error", message, reset_seconds: 120 } };
+  const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify(body), {
+    status: 429, headers: { "content-type": "application/json", "x-omniroute-local-cooldown": "model", "retry-after": "120" },
+  }));
+  const result = await streamCloudWithRecovery(model, context("hello"), { apiKey: "test", fetch: fetcher, maxRetries: 0 }).result();
+  expect(result.errorMessage).toContain(message);
+  expect(isRetryableAssistantError(result)).toBe(true);
+  expect(parseCooldownFromError(result.errorMessage)).toBe(120_000);
+  expect(isRetryableAssistantError({ ...result, errorMessage: message })).toBe(false);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+});
+
+it.each(["insufficient_quota", "unknown_error"])("does not relabel %s even with a local cooldown header", async (code) => {
+  const response = new Response(JSON.stringify({ error: { code, message: "unavailable" } }), {
+    status: 429, headers: { "x-omniroute-local-cooldown": "model" },
+  });
+  expect(await recoveringGatewayFetch(vi.fn().mockResolvedValue(response))("http://gateway", request)).toBe(response);
+  expect(await response.text()).not.toContain("429 model_cooldown");
+});
 
 it("keeps temporary failures out of SDK events while preserving the payload hook", async () => {
   vi.useFakeTimers();

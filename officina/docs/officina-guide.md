@@ -442,6 +442,14 @@ existing session retry/failover path. Recovery cannot create capacity or quota.
 Internal waits leave `lc-route` / `gateway-recovery-wait` records in the harness
 event log with status, retry count and delay; they contain no request bodies.
 
+Gateway model-cooldown refusals retain an explicit `429 model_cooldown` signal
+and reset hints through SDK error normalization. Nimbus uses that failure to
+exclude the failed lane and select another admitted cloud model, even when the
+SDK emits no response callback for HTTP errors. It never resurrects a cooling
+lane merely because its context window fits. If every candidate is unavailable,
+or the configured cloud retry budget is spent, Nimbus reports the final refusal
+and remains cloud-only. Running extensions need `/reload` to apply this behavior.
+
 Local llama.cpp streams request native prefill progress (`return_progress`)
 by default. These events belong to the actual inference request, keeping
 its HTTP response active while the prompt is processed; they are not

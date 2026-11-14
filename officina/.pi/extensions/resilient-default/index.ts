@@ -98,6 +98,7 @@ interface LapisState {
 /** Nimbus lane state — cloud-only, no arbitration bookkeeping needed. */
 interface NimbusState {
   turnsOnTier: number;
+  cloudRetries?: number;
 }
 
 interface LastDecision {
@@ -542,7 +543,7 @@ export default function (pi: ExtensionAPI) {
     const coreOverride = coreEnabled()
       ? await coreAdmissions(tokens, CLOUD_RESERVE_TOKENS, admissionLanesForCore(now))
       : undefined;
-    const candidate =
+    let candidate =
       profileAllowsCloud(profile) && canSpendCloud()
         ? pickCloud(tokens, now, coreOverride)
         : undefined;
@@ -666,7 +667,7 @@ export default function (pi: ExtensionAPI) {
           const owner = ownerOfLane(failed.id);
           markOffered(owner, notFound.alternatives);
           const offered = notFound.alternatives.map((alt) => `${owner}/${alt}`);
-          const eligibleNow = cloudEligible(tokens, now, coreOverride);
+          const eligibleNow = cloudEligible(tokens, now);
           const replacement = eligibleNow.find((m) => offered.includes(m.id));
           if (replacement) {
             markAlias(failed.id, replacement.id);
@@ -682,7 +683,8 @@ export default function (pi: ExtensionAPI) {
           // model of that owner for the stated pause and honour safe bytes.
           markOwnerPause(ownerOfLane(failed.id), pause, "400 key pause");
         }
-        const next = pickCloud(tokens, now, coreOverride);
+        const next = pickCloud(tokens, now);
+        candidate = next;
         tier = next ? "cloud" : "local";
         if (next) state = { ...state, failoverActive: true };
       } else {
@@ -980,21 +982,22 @@ export default function (pi: ExtensionAPI) {
   ): Promise<ModelRoute<NimbusState>> => {
     await loadCandidates(ctx);
     const now = Date.now();
-    const tokens = ctx.getContextUsage()?.tokens ?? 0;
+    const failureText = (request.failed?.message as { errorMessage?: string } | undefined)?.errorMessage;
+    const tokens = Math.max(ctx.getContextUsage()?.tokens ?? 0, estimatePromptTokens(request.messages), parseOverflowPromptTokens(failureText) ?? 0);
     const previous = request.previous?.model;
     // Mid tool-loop: never swap the physical model under the agent.
     if (request.reason === "continuation" && previous && previous.id !== "nimbus") {
       return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
     }
-    // Health-aware pick first (cooling / recently-failed lanes skipped),
-    // then a last-resort fit-only pick so the lane dies only when NO free
-    // candidate fits the context at all.
-    let candidate = pickCloud(tokens, now);
-    if (!candidate) {
-      candidate = cloudCandidates.find(
-        (m) => tokens + CLOUD_RESERVE_TOKENS < (m.contextWindow ?? 0),
-      );
+    const cloudRetries = request.reason === "user" ? 0 : request.state?.cloudRetries ?? 0;
+    if (request.reason === "retry" && request.failed?.model.provider === "caduceus") {
+      const failed = request.failed.model;
+      const cooldownMs = parseCooldownFromError(failureText, now) ?? 60_000;
+      recordFailure(failed.provider, failed.id, undefined, { retryAfterMs: cooldownMs, errorClass: "cloud_retry" });
+      markGatewayCooldown({ model: failed.id, untilMs: now + cooldownMs, reason: "Nimbus failed cloud attempt" });
+      if (cloudRetries >= maxCloudRetries()) throw new Error(`Nimbus: cloud retry budget exhausted (${maxCloudRetries()})`);
     }
+    const candidate = pickCloud(tokens, now);
     if (!candidate) {
       throw new Error(
         "Nimbus: no free cloud lane fits this context (candidates cooling or too small) — switch to officina/lapis for the local engine",
@@ -1017,7 +1020,7 @@ export default function (pi: ExtensionAPI) {
     return {
       model: candidate,
       thinkingLevel: request.thinkingLevel,
-      state: { turnsOnTier: (request.state?.turnsOnTier ?? 0) + 1 },
+      state: { turnsOnTier: (request.state?.turnsOnTier ?? 0) + 1, cloudRetries: cloudRetries + 1 },
     };
   };
 

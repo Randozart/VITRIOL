@@ -411,6 +411,24 @@ TUI only changes routing preferences.
 
 ## Running multiple sessions
 
+Local llama.cpp streams request native prefill progress (`return_progress`)
+by default. These events belong to the actual inference request, keeping
+its HTTP response active while the prompt is processed; they are not
+assistant text and generate no extra model tokens. This prevents a healthy
+long prefill from becoming a silent stream that hits the transport's
+inactivity timeout. Cloud transports and timeout limits are unchanged;
+cancellation, genuine stream failures and silent stalls still work normally.
+`OFFICINA_NO_PREFILL_PROGRESS=1` restores the previous local streaming path.
+The server must support `return_progress`; queued requests that have not
+started processing remain subject to normal transport timeouts. Reload
+extensions or restart Officina to apply the adapter; no engine restart is
+required for servers that already support the flag.
+The engine also supports SSE comment keepalives, so a timeout alone does
+not establish why a live stream went silent. Local completion transport
+errors now record their raw code (such as `UND_ERR_BODY_TIMEOUT`) as
+`lc-local-http` events in `~/.vitriol/officina/state/events.jsonl`, with
+process and endpoint identity but no request headers or prompt content.
+
 No flags, no per-launch env — the router adapts per session, per turn
 (multi-session routing, 2026-11-10; hardening 2026-11-11):
 

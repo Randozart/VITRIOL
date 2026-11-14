@@ -18,6 +18,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { streamLocalWithProgress } from "./progress.ts";
 import {
   aliasRetryDelay,
   fillModelDefaults,
@@ -112,6 +113,7 @@ export default async function (pi: ExtensionAPI) {
     }
 
     pi.registerProvider(name, {
+      streamSimple: name === "llamacpp" ? streamLocalWithProgress : undefined,
       baseUrl: entry.baseUrl,
       apiKey: entry.apiKey,
       api: entry.api,
@@ -154,6 +156,7 @@ export default async function (pi: ExtensionAPI) {
       lc.models = withContextWindow(lc.models, change.to);
       lc.registeredCtx = change.to;
       pi.registerProvider("llamacpp", {
+        streamSimple: streamLocalWithProgress,
         baseUrl: lc.baseUrl,
         apiKey: lc.apiKey,
         api: lc.api,
@@ -207,6 +210,7 @@ export default async function (pi: ExtensionAPI) {
                 contextWindow: lc.registeredCtx,
               }, "llamacpp", lc.models.length)];
               pi.registerProvider("llamacpp", {
+                streamSimple: streamLocalWithProgress,
                 baseUrl: lc.baseUrl,
                 apiKey: lc.apiKey,
                 api: lc.api,
@@ -294,6 +298,7 @@ export default async function (pi: ExtensionAPI) {
             ),
           ];
           pi.registerProvider("llamacpp", {
+            streamSimple: streamLocalWithProgress,
             baseUrl: lc.baseUrl,
             apiKey: lc.apiKey,
             api: lc.api,

@@ -13,6 +13,7 @@
 // Tuning: OFFICINA_AGENTS_FILES (colon-separated), OFFICINA_AGENTS_DIGEST_CHARS.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { registerContextState } from "../_shared/context-state.ts";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import {
   agentsSignature,
@@ -28,7 +29,6 @@ export default function (pi: ExtensionAPI) {
   let files: AgentsFile[] = [];
   let signature = "";
   let digest = "";
-  let pending = false;
   let lastNotice = "";
   let cwd = process.cwd();
 
@@ -38,7 +38,6 @@ export default function (pi: ExtensionAPI) {
     const built = buildDigest(files, { maxChars, cwd });
     digest = built.text;
     signature = agentsSignature(files);
-    pending = digest.length > 0;
     const summary = digestSummary(files, built.rules, digest.length);
     if (summary !== lastNotice) {
       lastNotice = summary;
@@ -64,23 +63,7 @@ export default function (pi: ExtensionAPI) {
     reload((text, kind) => ctx.ui?.notify?.(text, kind as never), "changed");
   });
 
-  pi.on("context", (event) => {
-    if (!pending || !digest) return undefined;
-    pending = false;
-    return {
-      messages: [
-        ...event.messages,
-        {
-          role: "custom" as const,
-          customType: "agents-md",
-          content: `\n\n${digest}`,
-          display: false,
-          details: {},
-          timestamp: Date.now(),
-        },
-      ],
-    } as never;
-  });
+  registerContextState(pi, "agents-md", () => digest ? `\n\n${digest}` : "");
 
   pi.registerCommand("agents-md", {
     description: "Show how Officina sees AGENTS.md (files, rule count, digest)",

@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { currentContextState, registerContextState } from "../_shared/context-state.ts";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "@sinclair/typebox";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -23,12 +24,12 @@ import { sessionFileStem } from "../task-state/index.ts";
 // holds the VOLATILE working register — evidence, open leads, ruled-out
 // dead ends — that mid-run compaction would otherwise destroy and force
 // expensive re-reads to recover. Same survival mechanism: persisted by a
-// tool call, parsed from disk and re-injected as a tail message before
-// EVERY LLM call, so it survives compaction by construction.
+// tool call, then recorded as a snapshot at safe conversation boundaries.
+// Request-time recovery supplies it when compaction discards the snapshot.
 //
 // Cache safety (Rule 7, same as task-state): we only ever APPEND to
-// event.messages — the existing prefix stays byte-identical, KV cache
-// intact. Injection is skipped when the last copy already carries the
+// history — ordinary continuations retain the snapshot's position for KV
+// reuse. Injection is skipped when the last copy already carries the
 // identical block. Pruning is model-driven: a section named in a write is
 // replaced wholesale, so "no longer relevant" means "leave it out of the
 // next write of that section".
@@ -204,32 +205,14 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("context", async (event) => {
-    // Guard: session_start hasn't fired yet → docState.file is still the
-    // module-init default. Don't inject stale project-level notes.
+  registerContextState(pi, CUSTOM_TYPE, () => {
+    // Session initialization/teardown must not expose another session's state.
     if (docState.file.endsWith("/SCRATCHPAD.md")) return undefined;
-    const block = renderScratchpadBlock(readDoc(), cfg.cap);
-    if (!block) return undefined;
-    if (lastCopyIsCurrent(event.messages, block)) return undefined;
-    const tail = {
-      role: "custom" as const,
-      customType: CUSTOM_TYPE,
-      content: block,
-      display: false,
-      details: {},
-      timestamp: Date.now(),
-    };
-    return { messages: [...event.messages, tail] };
+    return renderScratchpadBlock(readDoc(), cfg.cap);
   });
 }
 
 /** True when the most recent injected copy already carries exactly `block`. */
 export function lastCopyIsCurrent(messages: unknown[], block: string): boolean {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i] as { role?: string; customType?: string; content?: unknown };
-    if (m.role === "custom" && m.customType === CUSTOM_TYPE) {
-      return String(m.content ?? "") === block;
-    }
-  }
-  return false; // never injected this session yet
+  return currentContextState(messages, CUSTOM_TYPE, block);
 }

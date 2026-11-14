@@ -25,6 +25,7 @@ import {
   canSpendCloud,
 } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import { formatLanes, getLaneHealth, type LaneRow } from "../_shared/lane-health.ts";
 import {
   cooldownRemaining,
@@ -249,12 +250,25 @@ export default function (pi: ExtensionAPI) {
     ).map((c) => c.model);
   };
 
-  const pickCloud = (tokens: number, now: number): Model | undefined =>
-    cloudCandidates.find(
+  const pickCloud = (tokens: number, now: number): Model | undefined => {
+    const eligible = cloudCandidates.filter(
       (m) =>
         tokens + CLOUD_RESERVE_TOKENS < (m.contextWindow ?? 0) &&
         !healthCooling(m.provider, m.id, now),
     );
+    // Multi-session quota spread (2026-11-14): never stampede the same free
+    // lane the other live sessions are already turning on; the registry is
+    // written by adaptive-router and expires in 60 s.
+    let busy = new Set<string>();
+    if (process.env.OFFICINA_NO_LANE_SPREAD !== "1") {
+      try {
+        busy = busyPeerLanes(readLivePeers(process.ppid, { now }));
+      } catch {
+        // registry unavailable → plain priority order
+      }
+    }
+    return spreadPick(eligible, busy);
+  };
 
   // Publish this lane's decision so peer sessions can rank against us
   // (P1/I7 shard registry). Best-effort: a failed write never breaks a

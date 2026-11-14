@@ -109,6 +109,8 @@ describe("resilient-default", () => {
     process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-resilient-ledger-test";
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-resilient-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
+    // Deterministic picks: never consult the operator's live peer registry.
+    process.env.OFFICINA_NO_LANE_SPREAD = "1";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
   });
   afterEach(() => {
@@ -116,8 +118,10 @@ describe("resilient-default", () => {
     delete process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK;
     delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
     delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
+    delete process.env.OFFICINA_NO_LANE_SPREAD;
     delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
+    delete process.env.OFFICINA_NO_LANE_SPREAD;
     delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
   });
 
@@ -167,6 +171,7 @@ describe("nimbus (cloud-only lane)", () => {
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
+    process.env.OFFICINA_NO_LANE_SPREAD = "1";
     // Provider-health persists across runs — a 429 from an earlier run
     // must not cool test-model into this one.
     rmSync("/tmp/officina-nimbus-health-test.json", { force: true });

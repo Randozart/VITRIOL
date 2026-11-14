@@ -75,6 +75,8 @@ interface EngineState {
   listeners: Set<Listener>;
   snap: EngineSnapshot;
   nvidiaMissing: boolean;
+  /** Consecutive nvidia-smi failures (spawn storm guard, 2026-11-14). */
+  nvidiaFailures: number;
   gpuLoadLatest: number | null;
   before: ReturnType<typeof parseMetrics>;
   lastPoll: number;
@@ -113,6 +115,7 @@ const state: EngineState =
       gpuLoad: null,
     },
     nvidiaMissing: false,
+    nvidiaFailures: 0,
     gpuLoadLatest: null,
     before: null,
     lastPoll: 0,
@@ -138,9 +141,20 @@ function pollNvidiaSmi(): void {
     { timeout: 1500 },
     (err, stdout) => {
       if (err) {
-        if ((err as NodeJS.ErrnoException).code === "ENOENT") state.nvidiaMissing = true;
+        // A present-but-broken driver (unlocked module skew, 2026-08/11
+        // incident: every spawn burns CPU until its 1.5 s timeout) must
+        // latch off like ENOENT after a short grace. Multiple sessions each
+        // polling every 700 ms otherwise spawn a continuous storm.
+        state.nvidiaFailures += 1;
+        if (
+          (err as NodeJS.ErrnoException).code === "ENOENT" ||
+          state.nvidiaFailures >= 3
+        ) {
+          state.nvidiaMissing = true;
+        }
         return;
       }
+      state.nvidiaFailures = 0;
       let load = 0;
       let saw = false;
       for (const line of stdout.split("\n")) {

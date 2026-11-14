@@ -11,6 +11,7 @@ pub mod paste;
 pub mod question;
 pub mod review;
 pub mod routes;
+pub mod session_check;
 pub mod state;
 
 use std::io::{self, IsTerminal};
@@ -1990,6 +1991,57 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     "doctor: gateway {gateway} · probe leader {leader} · verified {verified}/{} · cooling {cooling} · paused owners {paused} · invalid lanes {}",
                     doc.probes.len(),
                     doc.invalid.len()
+                )));
+                // Session-format self-check (2026-11-14).
+                let session = crate::tui::session_check::check_current_session(&state.cwd);
+                if let Some(path) = &session.path {
+                    let name = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let verdict = if session.ok() {
+                        "format ok".to_string()
+                    } else {
+                        format!(
+                            "{} issue(s): {}",
+                            session.issues.len(),
+                            session.issues.join("; ")
+                        )
+                    };
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "  session {name} — {} entries · {} messages · {}/{} tool pairs · {verdict}",
+                        session.entries,
+                        session.messages,
+                        session.tool_calls,
+                        session.tool_results
+                    )));
+                } else {
+                    state.entries.push(state::ChatEntry::Diag(
+                        "  session — none found for this cwd yet".to_string(),
+                    ));
+                }
+                // Rust core sidecar presence (fail-open by design).
+                let core_mode = std::env::var("OFFICINA_ROUTER_CORE").unwrap_or_default();
+                let core_bin = std::env::var("OFFICINA_CORE_BIN").ok().unwrap_or_else(|| {
+                    let mut p =
+                        std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+                    p.push(".local");
+                    p.push("bin");
+                    p.push("vitriol-core-rpc");
+                    p.to_string_lossy().to_string()
+                });
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "  core: mode {} · binary {}",
+                    if core_mode.eq_ignore_ascii_case("rust") {
+                        "rust"
+                    } else {
+                        "ts (set OFFICINA_ROUTER_CORE=rust to try the sidecar)"
+                    },
+                    if std::path::Path::new(&core_bin).exists() {
+                        format!("present ({core_bin})")
+                    } else {
+                        "missing (fallback active)".to_string()
+                    }
                 )));
                 for (owner, pause) in doc.pauses.iter().filter(|(_, p)| p.until > now).take(6) {
                     let safe = pause

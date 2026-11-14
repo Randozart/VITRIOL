@@ -4136,6 +4136,91 @@ mod phase_wiring_tests {
     }
 
     #[test]
+    fn full_turn_lifecycle_is_conformant() {
+        let mk = |v: serde_json::Value| v;
+        let mut s = AppState::default();
+        s.push_user("do the work".into());
+        handle_event(&mut s, "agent_start", &mk(serde_json::json!({})));
+        assert!(s.is_streaming, "agent_start streams");
+        handle_event(&mut s, "message_start", &mk(serde_json::json!({})));
+        handle_event(
+            &mut s,
+            "message_update",
+            &mk(serde_json::json!({"delta": "working"})),
+        );
+        handle_event(
+            &mut s,
+            "tool_execution_start",
+            &mk(serde_json::json!({
+                "toolCallId": "t1", "toolName": "bash", "args": {"command": "ls"}
+            })),
+        );
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Tool { running: true, .. }))
+                .count(),
+            1,
+            "tool running"
+        );
+        handle_event(
+            &mut s,
+            "tool_execution_end",
+            &mk(serde_json::json!({
+                "toolCallId": "t1", "toolName": "bash", "isError": false,
+                "result": {"content": [{"type": "text", "text": "ok"}]}
+            })),
+        );
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Tool { running: true, .. }))
+                .count(),
+            0,
+            "tool settled"
+        );
+        handle_event(
+            &mut s,
+            "message_end",
+            &mk(serde_json::json!({
+                "message": {"role": "assistant", "stopReason": "end_turn",
+                            "content": [{"type": "text", "text": "done"}]}
+            })),
+        );
+        handle_event(&mut s, "agent_end", &mk(serde_json::json!({})));
+        assert!(!s.is_streaming, "agent_end settles the turn");
+        handle_event(
+            &mut s,
+            "agent_settled",
+            &mk(serde_json::json!({"aborted": false})),
+        );
+        assert!(s.held.is_empty(), "no held message survives a settle");
+        assert_eq!(
+            s.entries
+                .iter()
+                .filter(|e| matches!(e, state::ChatEntry::Tool { running: true, .. }))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn aborted_settle_never_leaves_streaming_or_held() {
+        let mk = |v: serde_json::Value| v;
+        let mut s = AppState::default();
+        s.held_push("steer me", state::HeldKind::Steer);
+        handle_event(&mut s, "agent_start", &mk(serde_json::json!({})));
+        assert!(s.is_streaming);
+        handle_event(
+            &mut s,
+            "agent_settled",
+            &mk(serde_json::json!({"aborted": true})),
+        );
+        assert!(!s.is_streaming, "abort settles streaming");
+        assert!(s.held.is_empty(), "abort clears held messages");
+    }
+
+    #[test]
     fn model_error_is_surfaced_and_deduplicated() {
         let ev = |v: serde_json::Value| v;
         let mut s = AppState::default();

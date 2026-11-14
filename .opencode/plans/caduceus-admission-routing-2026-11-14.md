@@ -116,3 +116,18 @@ becomes authoritative.
 Parsers (fuzz + fixtures), admission matrix, retry budget, 404 remap,
 compaction shrink, Rust parser/admission tests + golden vectors.
 `npm test`, `npm run typecheck`, `cargo test` (vitriol-core), `cargo fmt --check`.
+
+
+## Pi-guarantee program status (2026-11-14 20:55)
+
+- Provider-body property tests: SHIPPED — deterministic mutations (truncation,
+  digit flips, control chars) over the production 400/404/429 bodies; parsers
+  never throw and keep values within their caps.
+- Structural validation: SHIPPED — `_shared/provider-validate.ts` (completion
+  + stream chunk shapes, usage numbers, finish reasons) with typed violations;
+  `provider-guard` extension reports violations as `lc-guard` events and one
+  warning per code per minute (advisory, kill switch).
+- Turn-lifecycle conformance: SHIPPED — full-turn and abort-settle tests pin
+  streaming/tool/held transitions.
+- Still open: record/replay of real RPC traces as fixtures; `/doctor` session
+  format check.

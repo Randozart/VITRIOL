@@ -232,3 +232,57 @@ describe("probe facts + leader lease", () => {
     expect(readGatewayMarks().probeLease?.pid).not.toBe(2222);
   });
 });
+
+describe("provider-body robustness (property-style)", () => {
+  const bodies = [
+    "[400]: This model's maximum context length is 180000 tokens. However, you requested 8192 output tokens and your prompt contains at least 171809 input tokens (parameter=input_tokens, value=171809)",
+    "[400]: This model's maximum context length is 180000 tokens, and this request may not fit. Several requests from this key went over the limit, so requests that may not fit are paused for 11 minutes. Requests under about 56 KB still go through",
+    '429: {"message":"All credentials for model deepseek-v4-flash are cooling down","code":"model_cooldown","reset_seconds":20054,"retry_after":"2026-11-14T23:59:59.660Z"}',
+    '[404]: This model is not currently offered: moonshotai/Kimi-K2.6. Available models: MiniMaxAI/MiniMax-M2.7, deepseek-ai/DeepSeek-V4-Flash-0731, zai-org/GLM-5.3-Flash.',
+    "Input exceeds context window for freeinference/qwen3.6-35b: estimated 183106 input tokens, limit 128000.",
+  ];
+
+  function rng(seed: number): () => number {
+    let state = seed >>> 0;
+    return () => {
+      state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  }
+
+  it("never throws and keeps values bounded under mutations", () => {
+    const random = rng(0x5eed);
+    const cap = 1_800_000;
+    for (const body of bodies) {
+      const variants: string[] = [body, body.slice(0, Math.floor(body.length / 3)), "", "\u0000\uffff"];
+      for (let i = 0; i < 40; i += 1) {
+        const at = Math.floor(random() * body.length);
+        const digit = String(Math.floor(random() * 10));
+        variants.push(`${body.slice(0, at)}${digit}${body.slice(at + 1)}`);
+        variants.push(`${body.slice(0, at)}${body.slice(at + 2)}`);
+      }
+      for (const text of variants) {
+        expect(() => parseCooldownFromError(text, Date.now())).not.toThrow();
+        expect(() => parseContextLimit(text)).not.toThrow();
+        expect(() => parseOverflowPromptTokens(text)).not.toThrow();
+        expect(() => parseOwnerPause(text)).not.toThrow();
+        expect(() => parseModelNotFound(text)).not.toThrow();
+        const cooldown = parseCooldownFromError(text, Date.now());
+        if (cooldown !== undefined) {
+          expect(cooldown).toBeGreaterThanOrEqual(60_000);
+          expect(cooldown).toBeLessThanOrEqual(cap);
+        }
+        const limit = parseContextLimit(text);
+        if (limit !== undefined) {
+          expect(limit).toBeGreaterThanOrEqual(1024);
+          expect(limit).toBeLessThan(10_000_000);
+        }
+        const pause = parseOwnerPause(text);
+        if (pause?.pauseMs !== undefined) {
+          expect(pause.pauseMs).toBeGreaterThanOrEqual(60_000);
+          expect(pause.pauseMs).toBeLessThanOrEqual(3_600_000);
+        }
+      }
+    }
+  });
+});

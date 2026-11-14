@@ -18,6 +18,7 @@ import {
 } from "../_shared/caduceus-prefs.ts";
 import { canSpendCloud } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import { routingPresence } from "../_shared/routing-presence.ts";
 import { getLaneHealth } from "../_shared/lane-health.ts";
 import type { PeerView, SelfView } from "./peer-policy.ts";
 import {
@@ -63,8 +64,8 @@ export default function (pi: ExtensionAPI) {
 
   const cfg: OverflowConfig = configFromEnv();
   // P3 multi-session identity: stable for the lifetime of this TUI process.
-  const sessionStartedAt = Date.now();
   const tuiPid = process.pid;
+  const sessionStartedAt = routingPresence(pi, tuiPid);
   const sessionRole: SelfView["role"] =
     process.env.OFFICINA_SESSION_ROLE === "subagent" ? "subagent" : "main";
   const cloudEnv = (process.env.OFFICINA_OVERFLOW_CLOUD || "free").trim();
@@ -328,7 +329,7 @@ export default function (pi: ExtensionAPI) {
     const peerContext = peersUsable
       ? {
           self: {
-            ts: sessionStartedAt,
+            ts: sessionStartedAt(),
             tuiPid,
             ctxTokens: usage?.tokens ?? 0,
             role: sessionRole,
@@ -373,6 +374,7 @@ export default function (pi: ExtensionAPI) {
       writeRegistryEntry(
         {
           ts: now,
+          sessionStartedAt: sessionStartedAt(),
           tuiPid,
           sessionId,
           tier: decision.tier,

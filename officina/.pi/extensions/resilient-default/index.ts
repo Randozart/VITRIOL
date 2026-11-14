@@ -25,6 +25,7 @@ import {
   canSpendCloud,
 } from "../_shared/budget.ts";
 import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import { routingPresence } from "../_shared/routing-presence.ts";
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import { isVerified } from "../_shared/probe-scheduler.ts";
 import { admitLane, effectiveWindow } from "../_shared/admission.ts";
@@ -100,6 +101,7 @@ interface NimbusState {
 }
 
 interface LastDecision {
+  sessionId: string;
   reason: string;
   tier: Tier;
   provider: string;
@@ -182,8 +184,8 @@ export default function (pi: ExtensionAPI) {
     .filter((s): s is { provider: string; id: string } => !!s);
 
   // P3 identity — stable for this TUI process (mirrors adaptive-router).
-  const sessionStartedAt = Date.now();
   const tuiPid = process.pid;
+  const sessionStartedAt = routingPresence(pi, tuiPid);
   const sessionRole: SelfView["role"] =
     process.env.OFFICINA_SESSION_ROLE === "subagent" ? "subagent" : "main";
 
@@ -469,6 +471,7 @@ export default function (pi: ExtensionAPI) {
       writeRegistryEntry(
         {
           ts: now,
+          sessionStartedAt: sessionStartedAt(),
           tuiPid,
           sessionId,
           tier,
@@ -567,6 +570,7 @@ export default function (pi: ExtensionAPI) {
           ? "busy"
           : "up";
       lastDecision = {
+        sessionId: ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`,
         reason: request.reason,
         tier: chosenTier,
         provider: chosen.provider,
@@ -581,7 +585,9 @@ export default function (pi: ExtensionAPI) {
 
     if (request.reason === "continuation" && previous && previous.id !== "lapis") {
       // Never leave the current physical model mid tool-loop.
-      remember(previous, previous.provider === "llamacpp" ? "local" : "cloud");
+      const physicalTier = previous.provider === "llamacpp" ? "local" : "cloud";
+      remember(previous, physicalTier);
+      setRouteWidget(ctx, physicalTier, previous, profile);
       return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
     }
 
@@ -695,7 +701,7 @@ export default function (pi: ExtensionAPI) {
       const peerContext = peersUsable
         ? {
             self: {
-              ts: sessionStartedAt,
+              ts: sessionStartedAt(),
               tuiPid,
               ctxTokens: tokens,
               role: sessionRole,
@@ -848,6 +854,8 @@ export default function (pi: ExtensionAPI) {
     const usage = msg.usage ?? {};
     const entry: RouteLedgerEntry = {
       ts: new Date().toISOString(),
+      sessionId: decision.sessionId,
+      tuiPid,
       reason: decision.reason,
       tier: decision.tier,
       provider: decision.provider,
@@ -886,8 +894,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("route-why", {
     description: "Explain the last routing decision",
-    handler: async (_args: string, ctx: { ui: any }) => {
-      const last = lastRouteEntry();
+    handler: async (_args: string, ctx: ExtensionContext) => {
+      const sessionId = ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`;
+      const last = lastDecision ? { ...lastDecision, outcome: "in flight" } : lastRouteEntry(sessionId);
       if (!last) {
         await ctx.ui.notify?.("why: no routing entries yet", "info");
         return;
@@ -993,6 +1002,7 @@ export default function (pi: ExtensionAPI) {
     }
     activeCloud = candidate;
     lastDecision = {
+      sessionId: ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`,
       reason: request.reason,
       tier: "cloud",
       provider: candidate.provider,

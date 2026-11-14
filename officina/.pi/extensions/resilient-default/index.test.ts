@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordFailure } from "../_shared/provider-health.ts";
-import { lastRouteEntry } from "../_shared/route-ledger.ts";
+import { lastRouteEntry, recordRoute } from "../_shared/route-ledger.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeRegistryEntry } from "../_shared/routing-registry.ts";
 
 // Gateway lane health — static marking the tests can mutate per case.
 const laneHealthState = {
@@ -18,7 +19,7 @@ vi.mock("../_shared/lane-health.ts", () => ({
   EMPTY_HEALTH: () => ({ hardDown: new Set(), backoff: new Set(), active: new Set(), checkedAt: 0 }),
 }));
 
-const engine = { up: true, busy: false };
+const engine = { up: true, busy: false, slots: [] as Array<{ id: number }> };
 vi.mock("../_shared/engine.ts", () => ({
   startEnginePolling: () => undefined,
   onEngineUpdate: () => undefined,
@@ -30,6 +31,8 @@ vi.mock("../_shared/engine.ts", () => ({
     queueWaitMs: engine.busy ? 2500 : 0,
     stalled: false,
     gpuLoad: 0.1,
+    slots: engine.slots,
+    slotsSeen: engine.slots.length > 0,
   }),
 }));
 
@@ -48,6 +51,7 @@ const previous = { provider: "caduceus", id: "previous-model", api: "openai-comp
 function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boolean } = {}) {
   const virtuals: Record<string, any> = {};
   const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+  const commands = new Map<string, { handler: (args: string, ctx: any) => unknown }>();
   const pi = {
     on: (event: string, fn: (event: any, ctx: any) => unknown) => {
       const list = handlers.get(event) ?? [];
@@ -55,7 +59,7 @@ function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boo
       handlers.set(event, list);
       return () => undefined;
     },
-    registerCommand: () => undefined,
+    registerCommand: (name: string, command: { handler: (args: string, ctx: any) => unknown }) => commands.set(name, command),
     registerVirtualModel: (m: any) => {
       virtuals[m.id] = m;
     },
@@ -82,7 +86,7 @@ function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boo
       contextWindow: 262144,
       percent: 19,
     }),
-    ui: { setStatus: () => undefined, setWidget: () => undefined },
+    ui: { setStatus: vi.fn(), setWidget: vi.fn(), notify: vi.fn() },
   };
   const run = (reason: string, prompt = "do work", extra: Record<string, unknown> = {}) =>
     virtuals["lapis"].route(
@@ -111,19 +115,21 @@ function harness(opts: { tokens?: number; localId?: string | null; noLocal?: boo
   const fire = async (event: string, payload: any): Promise<void> => {
     for (const fn of handlers.get(event) ?? []) await fn(payload, ctx);
   };
-  return { run, runLane, fire, virtual: virtuals["lapis"], virtuals };
+  const command = (name: string) => commands.get(name)!.handler("", ctx);
+  return { run, runLane, fire, ctx, command, virtual: virtuals["lapis"], virtuals };
 }
 
 describe("resilient-default", () => {
   beforeEach(() => {
     engine.up = true;
     engine.busy = false;
+    engine.slots = [];
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model";
     // Never honour the operator's routing prefs in tests (panel I1).
     process.env.OFFICINA_CADUCEUS_PREFS_FILE = "/tmp/officina-caduceus-prefs-none.json";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-resilient-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-resilient-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-resilient-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     // Deterministic picks: never consult the operator's live peer registry.
@@ -159,6 +165,40 @@ describe("resilient-default", () => {
     const h = harness();
     const route = await h.run("user");
     expect(route.model).toMatchObject({ provider: "llamacpp", id: "Lapis Occultus" });
+  });
+
+  it("yields a busy single slot to the older session despite its newer heartbeat", async () => {
+    const now = Date.now();
+    const date = vi.spyOn(Date, "now").mockReturnValue(now);
+    const h = harness();
+    engine.busy = true;
+    engine.slots = [{ id: 0 }];
+    date.mockReturnValue(now + 2000);
+    writeRegistryEntry({ ts: now + 1500, sessionStartedAt: now - 10_000,
+      tuiPid: process.pid + 1000, sessionId: "senior", tier: "local",
+      model: "llamacpp/Lapis Occultus", ctxTokens: 100_000 });
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("caduceus");
+    date.mockRestore();
+  });
+
+  it("restores the physical backend badge on sticky cloud continuations", async () => {
+    const h = harness();
+    await h.run("continuation", "continue", { previous: { model: previous } });
+    expect(h.ctx.ui.setStatus).toHaveBeenCalledWith("overflow", expect.stringContaining("previous-model"));
+    await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } });
+    expect(lastRouteEntry()).toMatchObject({ tuiPid: process.pid, sessionId: `tui-${process.pid}` });
+  });
+
+  it("explains this session's pending/completed route instead of another session's latest record", async () => {
+    const h = harness();
+    await h.run("user");
+    await h.command("route-why");
+    expect(h.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("in flight"), "info");
+    await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } });
+    recordRoute({ ts: new Date(Date.now() + 100).toISOString(), sessionId: "someone-else", reason: "user", tier: "cloud", model: "other-session" });
+    await h.command("route-why");
+    expect(h.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("llamacpp/Lapis Occultus"), "info");
   });
 
   it("routes to cloud when the engine is down", async () => {
@@ -335,7 +375,7 @@ describe("nimbus (cloud-only lane)", () => {
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-nimbus-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-nimbus-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -406,7 +446,7 @@ describe("nimbus lane health (gateway-marked endpoints)", () => {
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-nimbus-health-test.json";
-    process.env.OFFICINA_ROUTE_LEDGER_DIR = "/tmp/officina-nimbus-ledger-test";
+    process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -439,4 +479,18 @@ describe("nimbus lane health (gateway-marked endpoints)", () => {
     const route = await h.runLane("nimbus")("user");
     expect(route.model).toMatchObject({ id: "second-model" });
   });
+});
+
+// Synthetic routes must never publish into the operator's live registry.
+let testRegistry = "";
+let originalRegistry: string | undefined;
+beforeEach(() => {
+  originalRegistry = process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  testRegistry = mkdtempSync(join(tmpdir(), "officina-router-registry-"));
+  process.env.OFFICINA_ROUTING_REGISTRY_DIR = testRegistry;
+});
+afterEach(() => {
+  if (originalRegistry === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  else process.env.OFFICINA_ROUTING_REGISTRY_DIR = originalRegistry;
+  rmSync(testRegistry, { recursive: true, force: true });
 });

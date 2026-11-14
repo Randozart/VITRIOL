@@ -420,6 +420,16 @@ No flags, no per-launch env — the router adapts per session, per turn
   Shards are written independently, so concurrent TUIs never overwrite
   each other's entries. The legacy single
   `routing-registry.json` is no longer written.
+- Session age and heartbeat freshness are separate (2026-11-14): activity
+  cannot make an older session appear younger. Active runs refresh their
+  shard every 10 seconds through the existing engine poller, including
+  during long prefill; settled sessions expire normally and shutdown
+  removes the shard. Reload extensions in both TUIs to adopt the fix.
+- `/route-why` describes this session's requested physical backend while
+  a request is in flight, or its last completed route. It does not borrow
+  another session's latest ledger entry. A local request may still be
+  queued; this is not proof of slot ownership. The route badge is refreshed
+  on continuations too, and new ledger rows carry session and process IDs.
 - The arbitration lives in **resilient-default** (lapis is the default
   model); adaptive-router mirrors it for non-virtual selections.
   All sessions start local-first (Lapis Occultus). When every engine slot

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeContext } from "@earendil-works/pi-ai";
+// SDK loading belongs to fixture setup, outside transport assertion deadlines.
+import "@earendil-works/pi-ai/api/openai-completions";
 import { isRetryableAssistantError } from "@earendil-works/pi-ai/utils/retry";
 import { parseCooldownFromError } from "../_shared/gateway-health.ts";
 import { recoveringGatewayFetch, streamCloudWithRecovery } from "./capacity.ts";

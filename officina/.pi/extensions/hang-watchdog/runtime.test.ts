@@ -20,6 +20,7 @@ const response = (content: string) => new Response(JSON.stringify({ choices: [{ 
 beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(1_800_000_000_000);
   home = mkdtempSync(join(tmpdir(), "officina-watchdog-"));
+  vi.stubEnv("OFFICINA_WATCHDOG_DECISION_URL", "");
   vi.stubEnv("HOME", home); vi.stubEnv("OFFICINA_CADUCEUS_API_KEY", "test");
   vi.stubEnv("OFFICINA_NO_HANG_WATCHDOG", "0");
   handlers = new Map(); notify = vi.fn();
@@ -40,6 +41,15 @@ function availableCatalog(): void {
 }
 
 describe("watchdog runtime", () => {
+  it("uses an explicit typed endpoint without cloud fallback when it abstains", async () => {
+    availableCatalog();
+    vi.stubEnv("OFFICINA_WATCHDOG_DECISION_URL", "http://127.0.0.1:8000/v1/systemone");
+    fetcher.mockResolvedValue(new Response(JSON.stringify({ answers: {} })));
+    start(); await vi.advanceTimersByTimeAsync(180_000);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(String(fetcher.mock.calls[0][0])).toContain("/v1/systemone");
+    expect(facts().verdict).toBe("UNKNOWN");
+  });
   it("surfaces notices in RPC/headless contexts and never turns malformed replies into health", async () => {
     availableCatalog(); start(); fetcher.mockResolvedValue(response("not a verdict"));
     await vi.advanceTimersByTimeAsync(180_000);

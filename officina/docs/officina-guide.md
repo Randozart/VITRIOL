@@ -350,6 +350,32 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   This advisory extension never kills or aborts. The Rust harness's existing
   hard-recovery deadlines remain separate; Esc is the operator's abort control.
 
+  Optional typed judge: set `OFFICINA_WATCHDOG_DECISION_URL` to an independently
+  served Laya-compatible `POST /v1/systemone` URL (for example
+  `http://127.0.0.1:8000/v1/systemone`). Optional bearer authentication uses
+  `OFFICINA_WATCHDOG_DECISION_KEY`; keep it outside source control. The adapter
+  sends only the bounded command/output evidence and a fixed ALIVE/HUNG/UNKNOWN
+  question. `OFFICINA_WATCHDOG_DECISION_MIN_SCORE` defaults to `0.9` for both
+  answer and action scores. Truncated coverage, collapsed options, abstention,
+  invalid scores and service failures remain UNKNOWN; they do not add a cloud
+  retry. Without the URL, the existing free-cloud judge remains selected.
+  Both paths share the 30-second deadline, episode budget and stale-result guards.
+  A high answer score is not measured watchdog accuracy; no checkpoint has been
+  qualified for VITRIOL here. This setting does not install or load a model.
+
+  Opportunistic preparation currently has an **offline admission policy only**
+  ([source](../.pi/extensions/hang-watchdog/preparation.ts),
+  [test matrix](../.pi/extensions/hang-watchdog/preparation.test.ts)); no background
+  scheduler or GPU warmup is enabled. It requires fresh resource facts (at most
+  two seconds old), no foreground prefill/queue, explicit decode-overlap
+  qualification, bounded work, explicit model/tokenizer/schema identities, and
+  memory headroom including a reserve. GPU utilization must be at most 50% and
+  the decision model must already be resident; CPU preparation has a separate
+  load/memory check. Missing telemetry denies admission. These are conservative
+  candidate rules, not measured latency guarantees. See the
+  [source assessment](../../.opencode/plans/2026-11-15-143726-watchdog-decision-warmup.md)
+  for runtime qualification and encoder/KV limitations.
+
 - **Settings**: `/fire`, `/glimmer` (alias `/shimmer`), `/sidebar`, `/thinking`,
   `/thinking-view`, and `/diag` open small choice menus. Up/Down selects, Enter
   applies, Escape cancels. `/settings` opens the settings list; explicit arguments

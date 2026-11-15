@@ -9,6 +9,7 @@ import {
   observeToolOutput, parseVerdict, pickJudgeModel, SOFT_S_DEFAULT, TICK_S, tickCall,
   type TickAction, type WatchedCall,
 } from "./judge.ts";
+import { judgeWithDecision } from "./decision.ts";
 import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
 
 const JUDGE_TIMEOUT_MS = 30_000;
@@ -112,9 +113,15 @@ export default function (pi: ExtensionAPI) {
     let onAbort: () => void = () => {};
     const cancelled = new Promise<null>((resolve) => { onAbort = () => resolve(null); controller.signal.addEventListener("abort", onAbort, { once: true }); });
     try {
-      const reply = await Promise.race([judgeWithLane(call, controller.signal), cancelled]);
+      const request = async () => {
+        const decision = await judgeWithDecision(call, controller.signal);
+        if (decision) return decision;
+        const reply = await judgeWithLane(call, controller.signal);
+        return reply === null ? { alive: null, reason: "judge unavailable — liveness unknown" } : parseVerdict(reply);
+      };
+      const result = await Promise.race([request(), cancelled]);
       if (!current()) return;
-      const verdict = reply === null ? { alive: null, reason: "judge unavailable — liveness unknown" } : parseVerdict(reply);
+      const verdict = result ?? { alive: null, reason: "judge deadline exceeded — liveness unknown" };
       const label = verdict.alive === null ? "UNKNOWN" : verdict.alive ? "ALIVE" : "HUNG";
       call.lastVerdict = label;
       const capped = call.judgments >= MAX_JUDGMENTS_PER_CALL;

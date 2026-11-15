@@ -2,7 +2,7 @@
 schema: "codex-work-plan/v1"
 created_at: "2026-11-15T10:29:07+01:00"
 timezone: "Europe/Amsterdam"
-status: "planned"
+status: "active"
 baseline_commit: "c3be904973f209028663b0271837094d8b814163"
 supersedes: []
 superseded_by: []
@@ -62,3 +62,5 @@ Baseline HEAD c3be904; clean source matches prior checkpoint. Existing full Offi
 ## Tradeoffs and affected contracts
 
 Use existing vitriol-governor library instead of policy duplication. A separate small crate keeps emulation/cost models out of hot inference paths. First replay models whole snapshot entries and declared linear prefill/restore costs, not tensor instruction timing, dynamic KV allocation or cross-GPU overlap; report these omissions. NVML Injection and Accel-Sim are documented optional integrations, not bundled dependencies or deployed services. Kernels changed since a captured trace need representative new validation; no third-party implementation is copied.
+
+- 2026-11-15T10:39:56+01:00 — Stage 1 implemented: independent Rust library/CLI, deterministic completion-before-arrival replay, FIFO/free-slot affinity, bounded two-tier LRU/value cache with protected/reader exclusion, explicit rewind/model/layout gates, per-device memory estimate checks and policy sweeps. Governor replay calls the actual existing library and executes zero actions. Fifteen tests pass, Clippy -D warnings passes and explicit source/test Praetor has zero blocking findings. Both documented synthetic examples execute successfully. Evidence: /tmp/vitriol-optimization-lab-evidence/stage1-*. No runtime engine or governor changes.

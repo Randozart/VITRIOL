@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "provenance": {
+    "origin": "synthetic",
+    "costs": "assumed",
+    "engine_fingerprint": "fixture-engine-v1",
+    "hardware_fingerprint": "fixture-heterogeneous-pair-v1"
+  },
+  "config": {},
+  "ticks": [
+    {
+      "at_secs": 0,
+      "free_mib_per_gpu": [
+        500,
+        8000
+      ],
+      "foreign_tenant": true,
+      "engine_up": true
+    },
+    {
+      "at_secs": 10,
+      "free_mib_per_gpu": [
+        500,
+        8000
+      ],
+      "foreign_tenant": true,
+      "engine_up": true
+    },
+    {
+      "at_secs": 11,
+      "free_mib_per_gpu": [
+        500,
+        8000
+      ],
+      "foreign_tenant": true,
+      "engine_up": true
+    },
+    {
+      "at_secs": 71,
+      "free_mib_per_gpu": [
+        500,
+        8000
+      ],
+      "foreign_tenant": true,
+      "engine_up": true
+    },
+    {
+      "at_secs": 72,
+      "free_mib_per_gpu": [
+        500,
+        8000
+      ],
+      "foreign_tenant": true,
+      "engine_up": true
+    },
+    {
+      "at_secs": 252,
+      "free_mib_per_gpu": [
+        500,
+        8000
+      ],
+      "foreign_tenant": true,
+      "engine_up": true
+    },
+    {
+      "at_secs": 253,
+      "free_mib_per_gpu": [
+        5000,
+        8000
+      ],
+      "foreign_tenant": false,
+      "engine_up": true
+    },
+    {
+      "at_secs": 1000,
+      "free_mib_per_gpu": [
+        5000,
+        8000
+      ],
+      "foreign_tenant": false,
+      "engine_up": true
+    }
+  ]
+}

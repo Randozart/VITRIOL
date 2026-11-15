@@ -1,0 +1,179 @@
+{
+  "trace": {
+    "version": 1,
+    "provenance": {
+      "origin": "synthetic",
+      "costs": "assumed",
+      "engine_fingerprint": "fixture-engine-v1",
+      "hardware_fingerprint": "fixture-heterogeneous-pair-v1"
+    },
+    "gpus": [
+      {
+        "id": "small",
+        "capacity_bytes": 100,
+        "fixed_bytes": 30,
+        "slot_bytes": 40,
+        "external_bytes": 0
+      },
+      {
+        "id": "large",
+        "capacity_bytes": 200,
+        "fixed_bytes": 50,
+        "slot_bytes": 40,
+        "external_bytes": 0
+      }
+    ],
+    "requests": [
+      {
+        "id": "a1",
+        "at_us": 0,
+        "session": "a",
+        "branch": "main",
+        "model": "model-a",
+        "layout": "layout-a",
+        "prefix_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "state_prefix_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "snapshot_bytes": 40,
+        "protected": false,
+        "prefill_us_per_token": 10,
+        "decode_us": 10,
+        "ram_restore_us": 2,
+        "disk_restore_us": 15
+      },
+      {
+        "id": "b1",
+        "at_us": 70,
+        "session": "b",
+        "branch": "main",
+        "model": "model-a",
+        "layout": "layout-a",
+        "prefix_ids": [
+          9,
+          8,
+          7,
+          6
+        ],
+        "state_prefix_ids": [
+          9,
+          8,
+          7,
+          6
+        ],
+        "snapshot_bytes": 40,
+        "protected": false,
+        "prefill_us_per_token": 10,
+        "decode_us": 10,
+        "ram_restore_us": 2,
+        "disk_restore_us": 15
+      },
+      {
+        "id": "a2",
+        "at_us": 140,
+        "session": "a",
+        "branch": "main",
+        "model": "model-a",
+        "layout": "layout-a",
+        "prefix_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "state_prefix_ids": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "snapshot_bytes": 40,
+        "protected": false,
+        "prefill_us_per_token": 10,
+        "decode_us": 10,
+        "ram_restore_us": 2,
+        "disk_restore_us": 15
+      },
+      {
+        "id": "b2",
+        "at_us": 210,
+        "session": "b",
+        "branch": "main",
+        "model": "model-a",
+        "layout": "layout-a",
+        "prefix_ids": [
+          9,
+          8,
+          7,
+          6,
+          5
+        ],
+        "state_prefix_ids": [
+          9,
+          8,
+          7,
+          6,
+          5
+        ],
+        "snapshot_bytes": 40,
+        "protected": false,
+        "prefill_us_per_token": 10,
+        "decode_us": 10,
+        "ram_restore_us": 2,
+        "disk_restore_us": 15
+      },
+      {
+        "id": "a3",
+        "at_us": 280,
+        "session": "a",
+        "branch": "main",
+        "model": "model-a",
+        "layout": "layout-a",
+        "prefix_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "state_prefix_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "snapshot_bytes": 40,
+        "protected": false,
+        "prefill_us_per_token": 10,
+        "decode_us": 10,
+        "ram_restore_us": 2,
+        "disk_restore_us": 15
+      }
+    ]
+  },
+  "candidates": [
+    {
+      "name": "ram-cache",
+      "slots": 1,
+      "ram_bytes": 80,
+      "disk_bytes": 0,
+      "max_entries": 64,
+      "eviction": "lru",
+      "dispatch": "fifo",
+      "rewind_tokens": 0
+    }
+  ]
+}

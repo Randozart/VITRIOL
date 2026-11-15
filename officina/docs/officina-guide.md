@@ -346,7 +346,8 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   Fresh output rearms the episode. Tool completion, progress and session changes
   invalidate pending old judgments. Facts live under
   `~/.vitriol/officina/watchdog/<session-id>.json`; cards retain their own call's
-  facts. Countdown leases cover the next check and remain bounded to six minutes.
+  facts carried in each notification, so queued events cannot read a newer call's
+  file snapshot. Countdown leases cover the next check and remain bounded to six minutes.
   This advisory extension never kills or aborts. The Rust harness's existing
   hard-recovery deadlines remain separate; Esc is the operator's abort control.
 

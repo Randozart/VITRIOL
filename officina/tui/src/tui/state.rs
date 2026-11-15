@@ -2084,10 +2084,7 @@ impl AppState {
             .watchdog_file
             .clone()
             .unwrap_or_else(|| watchdog_path(&self.session_id));
-        let doc = load_watchdog_doc_at(&path).filter(|doc| {
-            self.session_id.is_empty()
-                || doc.session_id.as_deref() == Some(self.session_id.as_str())
-        });
+        let (message, doc) = watchdog_notice(message, &path, &self.session_id);
         let replacement = doc.as_ref().and_then(|next| {
             self.entries
                 .iter()
@@ -7460,6 +7457,25 @@ fn watchdog_path_in(root: &std::path::Path, session: &str) -> std::path::PathBuf
     root.join("watchdog").join(format!("{safe}.json"))
 }
 
+/// Decode wire evidence independently of card coalescing; malformed payloads never read newer facts.
+fn watchdog_notice<'a>(
+    message: &'a str,
+    path: &std::path::Path,
+    session: &str,
+) -> (&'a str, Option<WatchdogDoc>) {
+    let (message, doc) = match message.split_once("\n<officina-watchdog-v1>") {
+        Some((text, payload)) => (text, serde_json::from_str::<WatchdogDoc>(payload).ok()),
+        None => (message, load_watchdog_doc_at(path)),
+    };
+    let doc = doc.filter(|doc| {
+        watchdog_fresh(doc, crate::tui::caduceus::now_ms())
+            && (session.is_empty() || doc.session_id.as_deref() == Some(session))
+            && (doc.session_id.is_none()
+                || doc.tool_call_id.as_ref().is_some_and(|id| !id.is_empty()))
+    });
+    (message, doc)
+}
+
 fn watchdog_fresh(doc: &WatchdogDoc, now: u64) -> bool {
     if doc.version != 1 || doc.ts > now.saturating_add(5000) {
         return false;
@@ -7756,6 +7772,54 @@ mod watchdog_ownership_tests {
             .join("\n");
         assert!(!text.contains("foreign-build"), "{text}");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queued_notifications_own_snapshots_even_after_file_overwrite() {
+        let mut state = AppState {
+            session_id: "session-a".into(),
+            watchdog_file: Some(std::path::PathBuf::from("/nonexistent/watchdog-test")),
+            ..Default::default()
+        };
+        for (call, command, verdict) in [
+            ("one", "first-build", "UNKNOWN"),
+            ("two", "second-build", "HUNG"),
+        ] {
+            let message = format!(
+                "hang-watchdog: observed\n<officina-watchdog-v1>{}",
+                document("session-a", call, command, verdict)
+            );
+            state.apply_notify(&message, "warning");
+        }
+        assert_eq!(state.entries.len(), 2);
+        let text = state
+            .chat_lines(100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("first-build") && text.contains("second-build"),
+            "{text}"
+        );
+        assert!(text.contains("UNKNOWN") && text.contains("HUNG"), "{text}");
+        assert!(
+            !text.contains("officina-watchdog-v1"),
+            "metadata is not visible prose"
+        );
+        state.apply_notify(
+            "hang-watchdog: malformed\n<officina-watchdog-v1>{bad}",
+            "warning",
+        );
+        assert!(state.watchdog.is_none());
+        state.apply_notify(
+            &format!(
+                "hang-watchdog: foreign\n<officina-watchdog-v1>{}",
+                document("other", "foreign", "private-command", "ALIVE")
+            ),
+            "warning",
+        );
+        assert!(state.watchdog.is_none());
     }
 
     #[test]

@@ -58,6 +58,8 @@ describe("watchdog runtime", () => {
     expect(facts().kind).toBe("unavailable");
     expect(facts().next_check_at).toBeGreaterThan(Date.now());
     expect(facts().session_id).toBe("session-a");
+    const snapshot = JSON.parse(notify.mock.calls.at(-1)![0].split("\n<officina-watchdog-v1>")[1]);
+    expect(snapshot).toEqual(facts());
   });
 
   it("tracks object-shaped, constant-length output and suppresses duplicate callbacks", async () => {

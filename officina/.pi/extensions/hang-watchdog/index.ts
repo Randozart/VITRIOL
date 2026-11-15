@@ -97,9 +97,10 @@ export default function (pi: ExtensionAPI) {
   const publish = (call: WatchedCall, status: Pick<WatchdogDoc, "kind" | "verdict" | "reason" | "next_check_at" | "phase">, message: string) => {
     const now = Date.now();
     call.surfaced = true;
-    writeWatchdog({ version: 1, ts: now, valid_until: Math.min(now + 360_000, Math.max(now + 120_000, status.next_check_at + 30_000)), session_id: session, tool_call_id: call.toolCallId, command: call.command,
-      elapsed_s: Math.floor((now - call.startedAt) / 1000), stalled_s: Math.floor((now - (call.stalledSince ?? now)) / 1000), ...status });
-    try { ui?.notify(message, status.verdict === "ALIVE" ? "info" : "warning"); } catch { /* advisory */ }
+    const doc: WatchdogDoc = { version: 1, ts: now, valid_until: Math.min(now + 360_000, Math.max(now + 120_000, status.next_check_at + 30_000)), session_id: session, tool_call_id: call.toolCallId, command: call.command,
+      elapsed_s: Math.floor((now - call.startedAt) / 1000), stalled_s: Math.floor((now - (call.stalledSince ?? now)) / 1000), ...status };
+    writeWatchdog(doc);
+    try { ui?.notify(`${message}\n<officina-watchdog-v1>${JSON.stringify(doc)}`, status.verdict === "ALIVE" ? "info" : "warning"); } catch { /* advisory */ }
   };
 
   const runJudge = async (call: WatchedCall): Promise<void> => {

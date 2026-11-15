@@ -2982,26 +2982,32 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             return true;
         }
         Some("get_state") => {
-            state.apply_state(
-                data.get("model")
+            state.apply_state(crate::rpc::protocol::RpcSessionState {
+                model: data
+                    .get("model")
                     .and_then(|m| serde_json::from_value(m.clone()).ok()),
-                data.get("thinkingLevel")
+                thinking_level: data
+                    .get("thinkingLevel")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                data.get("isStreaming")
+                is_streaming: data
+                    .get("isStreaming")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                data.get("isCompacting")
+                is_compacting: data
+                    .get("isCompacting")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                data.get("sessionId")
+                session_id: data
+                    .get("sessionId")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                data.get("sessionName")
+                session_name: data
+                    .get("sessionName")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                data.get("messageCount").and_then(|v| v.as_u64()),
-            );
+                message_count: data.get("messageCount").and_then(|v| v.as_u64()),
+            });
         }
         Some("get_messages") => {
             // Full-fidelity replay (owner bug 2026-09-03: "resumed a

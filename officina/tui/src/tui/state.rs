@@ -316,6 +316,16 @@ const TOOL_OUTPUT_PREVIEW: usize = 30;
 /// from the chair that reads as a hang, so after this window we say so.
 const NO_OUTPUT_HINT_SECS: u64 = 30;
 
+/// Cache ownership is separate so ordinary chat entries stay compact.
+#[derive(Debug, Clone)]
+pub struct ToolRenderCache {
+    width: usize,
+    generation: u64,
+    output_len: usize,
+    tick: u64,
+    lines: Vec<Line<'static>>,
+}
+
 /// One rendered chat entry.
 #[derive(Debug, Clone)]
 pub enum ChatEntry {
@@ -331,7 +341,7 @@ pub enum ChatEntry {
         tool_call_id: Option<String>,
         name: String,
         summary: String,
-        args: Option<serde_json::Value>,
+        args: Option<Box<serde_json::Value>>,
         /// Click override (2026-11-14): the operator cycles
         /// closed (line) → formatted (block) → full → closed. None follows
         /// the /tools config until the first click.
@@ -341,7 +351,7 @@ pub enum ChatEntry {
         /// `write` overwrite: file content captured before the tool ran.
         pre_content: Option<String>,
         /// Post-call check outcomes (format / syntax / praetor facts file).
-        checks: Option<ToolChecks>,
+        checks: Option<Box<ToolChecks>>,
         output: Vec<String>,
         output_truncated: bool,
         running: bool,
@@ -356,8 +366,7 @@ pub enum ChatEntry {
         /// Invalidated when any component changes — streaming output grows,
         /// config toggles bump tools_gen, and the elapsed tick advances
         /// once per second while the tool is running.
-        #[allow(clippy::type_complexity)]
-        render_cache: Option<(usize, u64, usize, u64, Vec<Line<'static>>)>,
+        render_cache: Option<Box<ToolRenderCache>>,
     },
     /// Informational notice (neutral, 2026-11-14): settings/janitor/scan
     /// reports and other ordinary output. Never rendered in the failure red.
@@ -631,7 +640,6 @@ impl Dialog {
     }
 }
 
-#[allow(dead_code)]
 /// A message typed while the agent is busy — shown as held until it
 /// actually enters the conversation (2026-11-13, operator request).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -863,8 +871,6 @@ pub struct AppState {
     /// widget — drives the header mode chip (owner request 2026-09-02).
     pub agent_mode_label: Option<String>,
     pub agent_mode_glyph: Option<String>,
-    #[allow(dead_code)]
-    pub agent_modes: Vec<String>,
 
     // UI state
     pub should_quit: bool,
@@ -1066,7 +1072,6 @@ impl Default for AppState {
             agent_mode: None,
             agent_mode_label: None,
             agent_mode_glyph: None,
-            agent_modes: Vec::new(),
             should_quit: false,
             glimmer: crate::watermark::GlimmerMode::Shimmer,
             fire_on: true,
@@ -2371,16 +2376,16 @@ impl AppState {
         }
     }
 
-    pub fn apply_state(
-        &mut self,
-        model: Option<Model>,
-        thinking_level: Option<String>,
-        is_streaming: bool,
-        is_compacting: bool,
-        session_id: Option<String>,
-        session_name: Option<String>,
-        message_count: Option<u64>,
-    ) {
+    pub fn apply_state(&mut self, snapshot: crate::rpc::protocol::RpcSessionState) {
+        let crate::rpc::protocol::RpcSessionState {
+            model,
+            thinking_level,
+            is_streaming,
+            is_compacting,
+            session_id,
+            session_name,
+            message_count,
+        } = snapshot;
         if let Some(m) = model {
             self.model = Some(m);
         }
@@ -2505,7 +2510,7 @@ impl AppState {
             tool_call_id: tool_call_id.map(String::from),
             name: name.to_string(),
             summary,
-            args: Some(args.clone()),
+            args: Some(Box::new(args.clone())),
             click_mode: None,
             diff: None,
             pre_content,
@@ -2626,7 +2631,7 @@ impl AppState {
                     } = e
                     {
                         if checks.is_some() {
-                            *slot = checks;
+                            *slot = checks.map(Box::new);
                             *render_cache = None;
                         }
                     }
@@ -3443,7 +3448,7 @@ impl AppState {
                         } else {
                             ("✓", Style::default().fg(theme::GREEN).bg(theme::BG))
                         };
-                        if let Some((title, cmd)) = bash_title_and_cmd(name, args.as_ref()) {
+                        if let Some((title, cmd)) = bash_title_and_cmd(name, args.as_deref()) {
                             // The model's purpose is the primary scan target;
                             // command is secondary (owner request 2026-11-10:
                             // title and command must be different colors).
@@ -3512,35 +3517,45 @@ impl AppState {
                         } else {
                             0
                         };
-                        let fresh = matches!(render_cache,
-                            Some((w, g, o, tk, _)) if *w == body_w && *g == gen && *o == olen && *tk == tick);
+                        let fresh = render_cache.as_ref().is_some_and(|cache| {
+                            cache.width == body_w
+                                && cache.generation == gen
+                                && cache.output_len == olen
+                                && cache.tick == tick
+                        });
                         if !fresh {
                             let elapsed = started_at.map(|t| t.elapsed().as_secs());
                             let no_output_hint = *running
                                 && output.is_empty()
                                 && elapsed.is_some_and(|s| s >= NO_OUTPUT_HINT_SECS);
-                            let block = render_tool_block(
+                            let block = render_tool_block(ToolBlock {
                                 mode,
                                 name,
                                 summary,
-                                args.as_ref(),
+                                args: args.as_deref(),
                                 output,
-                                *output_truncated,
-                                *running,
-                                *error,
-                                body_w,
+                                truncated: *output_truncated,
+                                running: *running,
+                                error: *error,
+                                width: body_w,
                                 elapsed,
-                                *timeout_s,
+                                timeout_s: *timeout_s,
                                 no_output_hint,
-                                liveness.clone(),
-                                diff.as_deref(),
-                                pre_content.as_deref(),
-                                checks.as_ref(),
-                            );
-                            *render_cache = Some((body_w, gen, olen, tick, block));
+                                liveness: liveness.clone(),
+                                diff: diff.as_deref(),
+                                pre_content: pre_content.as_deref(),
+                                checks: checks.as_deref(),
+                            });
+                            *render_cache = Some(Box::new(ToolRenderCache {
+                                width: body_w,
+                                generation: gen,
+                                output_len: olen,
+                                tick,
+                                lines: block,
+                            }));
                         }
-                        if let Some((_, _, _, _, block)) = render_cache.as_ref() {
-                            for bl in block {
+                        if let Some(cache) = render_cache.as_ref() {
+                            for bl in &cache.lines {
                                 lines.push(Line::from(
                                     std::iter::once(Span::raw("  "))
                                         .chain(bl.spans.iter().cloned())
@@ -4497,16 +4512,28 @@ fn edit_diff_from_args(path: &str, args: &serde_json::Value) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-fn push_diff_block(
-    out: &mut Vec<Line<'static>>,
-    text: &str,
-    label: &str,
-    cap: usize,
+#[derive(Clone, Copy)]
+struct PanelStyle {
     width: usize,
-    surf: ratatui::style::Color,
+    surface: ratatui::style::Color,
     border: Style,
     muted: Style,
-) {
+}
+
+struct DiffPreview<'a> {
+    text: &'a str,
+    label: &'a str,
+    cap: usize,
+}
+
+fn push_diff_block(out: &mut Vec<Line<'static>>, preview: DiffPreview<'_>, style: PanelStyle) {
+    let DiffPreview { text, label, cap } = preview;
+    let PanelStyle {
+        width,
+        surface: surf,
+        border,
+        muted,
+    } = style;
     if text.trim().is_empty() {
         return;
     }
@@ -4559,13 +4586,17 @@ fn code_view_lines(
         if let Some(text) = computed {
             push_diff_block(
                 &mut out,
-                &text,
-                "diff",
-                if full { 200 } else { 24 },
-                width,
-                surf,
-                border,
-                muted,
+                DiffPreview {
+                    text: &text,
+                    label: "diff",
+                    cap: if full { 200 } else { 24 },
+                },
+                PanelStyle {
+                    width,
+                    surface: surf,
+                    border,
+                    muted,
+                },
             );
         }
         return out;
@@ -4582,13 +4613,17 @@ fn code_view_lines(
         if let Some(text) = overwrite_diff.as_deref() {
             push_diff_block(
                 &mut out,
-                text,
-                "diff (overwrite)",
-                24,
-                width,
-                surf,
-                border,
-                muted,
+                DiffPreview {
+                    text,
+                    label: "diff (overwrite)",
+                    cap: 24,
+                },
+                PanelStyle {
+                    width,
+                    surface: surf,
+                    border,
+                    muted,
+                },
             );
             return out;
         }
@@ -4643,25 +4678,29 @@ fn code_view_lines(
         if let Some(text) = overwrite_diff.as_deref() {
             push_diff_block(
                 &mut out,
-                text,
-                "diff (overwrite)",
-                80,
-                width,
-                surf,
-                border,
-                muted,
+                DiffPreview {
+                    text,
+                    label: "diff (overwrite)",
+                    cap: 80,
+                },
+                PanelStyle {
+                    width,
+                    surface: surf,
+                    border,
+                    muted,
+                },
             );
         }
     }
     out
 }
 
-fn render_tool_block(
+struct ToolBlock<'a> {
     mode: ToolVerbosity,
-    name: &str,
-    summary: &str,
-    args: Option<&serde_json::Value>,
-    output: &[String],
+    name: &'a str,
+    summary: &'a str,
+    args: Option<&'a serde_json::Value>,
+    output: &'a [String],
     truncated: bool,
     running: bool,
     error: bool,
@@ -4670,10 +4709,30 @@ fn render_tool_block(
     timeout_s: Option<u64>,
     no_output_hint: bool,
     liveness: Option<(String, bool)>,
-    diff: Option<&str>,
-    pre_content: Option<&str>,
-    checks: Option<&ToolChecks>,
-) -> Vec<Line<'static>> {
+    diff: Option<&'a str>,
+    pre_content: Option<&'a str>,
+    checks: Option<&'a ToolChecks>,
+}
+
+fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
+    let ToolBlock {
+        mode,
+        name,
+        summary,
+        args,
+        output,
+        truncated,
+        running,
+        error,
+        width,
+        elapsed,
+        timeout_s,
+        no_output_hint,
+        liveness,
+        diff,
+        pre_content,
+        checks,
+    } = view;
     let full = mode == ToolVerbosity::Full;
     // The panel is an OPAQUE PLATE (owner request 2026-09-03: fire must
     // not interrupt it — "it stands apart from the background"). Every
@@ -6990,25 +7049,35 @@ mod panel_tests {
     /// renders AROUND it, never through it. Every line fills its width and
     /// every span carries the PANEL surface.
     #[test]
-    fn tool_block_is_an_opaque_panel() {
-        let lines = render_tool_block(
-            ToolVerbosity::Block,
-            "edit",
-            "/home/x/docs/GUARDS.md",
-            Some(&serde_json::json!({ "path": "/home/x/docs/GUARDS.md", "edits": [1] })),
-            &["Successfully replaced 1 block(s).".to_string()],
-            false,
-            false,
-            false,
-            40,
-            Some(7),
-            Some(30),
-            false,
-            None,
-            None,
-            None,
-            None,
+    fn transcript_entries_have_a_bounded_inline_footprint() {
+        let bytes = std::mem::size_of::<ChatEntry>();
+        eprintln!("ChatEntry inline storage: {bytes} bytes (baseline 352)");
+        assert!(
+            bytes <= 224,
+            "ordinary transcript entries reserve {bytes} bytes each"
         );
+    }
+
+    #[test]
+    fn tool_block_is_an_opaque_panel() {
+        let lines = render_tool_block(ToolBlock {
+            mode: ToolVerbosity::Block,
+            name: "edit",
+            summary: "/home/x/docs/GUARDS.md",
+            args: Some(&serde_json::json!({ "path": "/home/x/docs/GUARDS.md", "edits": [1] })),
+            output: &["Successfully replaced 1 block(s).".to_string()],
+            truncated: false,
+            running: false,
+            error: false,
+            width: 40,
+            elapsed: Some(7),
+            timeout_s: Some(30),
+            no_output_hint: false,
+            liveness: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+        });
         assert!(
             lines.len() >= 4,
             "header + args + out + status: {}",
@@ -7025,24 +7094,24 @@ mod panel_tests {
 
     #[test]
     fn running_tool_block_is_also_opaque() {
-        let lines = render_tool_block(
-            ToolVerbosity::Full,
-            "bash",
-            "",
-            Some(&serde_json::json!({ "command": "cargo test" })),
-            &[],
-            false,
-            true,
-            false,
-            40,
-            Some(90),
-            Some(1800),
-            true,
-            None,
-            None,
-            None,
-            None,
-        );
+        let lines = render_tool_block(ToolBlock {
+            mode: ToolVerbosity::Full,
+            name: "bash",
+            summary: "",
+            args: Some(&serde_json::json!({ "command": "cargo test" })),
+            output: &[],
+            truncated: false,
+            running: true,
+            error: false,
+            width: 40,
+            elapsed: Some(90),
+            timeout_s: Some(1800),
+            no_output_hint: true,
+            liveness: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+        });
         for l in &lines {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(w, 40);
@@ -7055,24 +7124,24 @@ mod panel_tests {
     /// timeout, and a pipe-buffer hint once output stays empty.
     #[test]
     fn running_tool_shows_elapsed_timeout_and_buffer_hint() {
-        let lines = render_tool_block(
-            ToolVerbosity::Full,
-            "bash",
-            "",
-            Some(&serde_json::json!({ "command": "cargo test", "timeout": 1800 })),
-            &[],
-            false,
-            true,
-            false,
-            60,
-            Some(93),
-            Some(1800),
-            true,
-            None,
-            None,
-            None,
-            None,
-        );
+        let lines = render_tool_block(ToolBlock {
+            mode: ToolVerbosity::Full,
+            name: "bash",
+            summary: "",
+            args: Some(&serde_json::json!({ "command": "cargo test", "timeout": 1800 })),
+            output: &[],
+            truncated: false,
+            running: true,
+            error: false,
+            width: 60,
+            elapsed: Some(93),
+            timeout_s: Some(1800),
+            no_output_hint: true,
+            liveness: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+        });
         let text = lines
             .iter()
             .map(|l| l.to_string())

@@ -137,6 +137,19 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
 }
 
 /// Pushdown state for the markdown event walk.
+struct StackedField<'a> {
+    prefix: &'a str,
+    label: &'a str,
+    value: &'a str,
+    label_width: usize,
+}
+
+struct FieldStyles {
+    label: Style,
+    value: Style,
+    muted: Style,
+}
+
 struct Renderer {
     /// Final wrapped lines.
     out: Vec<Line<'static>>,
@@ -601,7 +614,19 @@ impl Renderer {
                 if value.trim().is_empty() || value.trim() == label.trim() {
                     continue;
                 }
-                self.render_stacked_field(label, &value, label_w, head_style, body_style);
+                self.render_stacked_field(
+                    StackedField {
+                        prefix: "▸ ",
+                        label,
+                        value: &value,
+                        label_width: label_w,
+                    },
+                    FieldStyles {
+                        label: head_style,
+                        value: body_style,
+                        muted,
+                    },
+                );
             }
             return;
         }
@@ -619,43 +644,36 @@ impl Renderer {
                 }
                 let style = body_style;
                 let prefix = if first_written { "  " } else { "▸ " };
-                self.render_stacked_field_with_prefix(
-                    prefix, label, value, label_w, head_style, style, muted,
+                self.render_stacked_field(
+                    StackedField {
+                        prefix,
+                        label,
+                        value,
+                        label_width: label_w,
+                    },
+                    FieldStyles {
+                        label: head_style,
+                        value: style,
+                        muted,
+                    },
                 );
                 first_written = true;
             }
         }
     }
 
-    fn render_stacked_field(
-        &mut self,
-        label: &str,
-        value: &str,
-        label_w: usize,
-        label_style: Style,
-        value_style: Style,
-    ) {
-        self.render_stacked_field_with_prefix(
-            "▸ ",
+    fn render_stacked_field(&mut self, field: StackedField<'_>, styles: FieldStyles) {
+        let StackedField {
+            prefix,
             label,
             value,
-            label_w,
-            label_style,
-            value_style,
-            theme::muted(),
-        );
-    }
-
-    fn render_stacked_field_with_prefix(
-        &mut self,
-        prefix: &str,
-        label: &str,
-        value: &str,
-        label_w: usize,
-        label_style: Style,
-        value_style: Style,
-        muted: Style,
-    ) {
+            label_width: label_w,
+        } = field;
+        let FieldStyles {
+            label: label_style,
+            value: value_style,
+            muted,
+        } = styles;
         let prefix_w = prefix.chars().count();
         let head_w = prefix_w + label_w + 2; // ": "
         let value_w = self.width.saturating_sub(head_w).max(1);

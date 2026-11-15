@@ -19,6 +19,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { streamLocalWithProgress } from "./progress.ts";
+import { registerCacheOwners } from "./owner.ts";
 import {
   aliasRetryDelay,
   fillModelDefaults,
@@ -36,6 +37,7 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(here, "..", "..", "..");
 export default async function (pi: ExtensionAPI) {
+  registerCacheOwners(pi);
   const result = loadProviders(pkgRoot);
 
   for (const src of result.sources) {

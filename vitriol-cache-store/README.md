@@ -9,12 +9,14 @@ Rust callers use exclusive mutable access. No KV bytes pass through JSON/FFI.
 reserves budget and a unique staging directory. The engine writes opaque state
 there, then `commit` fsyncs the bytes, publishes a non-overwriting hard link and
 durably records its identity. Successful `finish` acknowledges a branch frontier;
-failed requests do not. Two distinct durable generations per branch remain
+failed requests do not. Two distinct durable generations per session, branch,
+model and layout remain
 rollback anchors. Shared readers add their own ownership references, and active
 requests/file leases/explicit pins prevent reclamation.
 
-Old writers are rejected once a newer acknowledged snapshot supersedes their
-generation. Aborting a ticket revokes publication rights before removing its
+RAM restores attach borrowing owners even while their backing publication is
+pending. Old writers are rejected once every attached owner has a newer
+acknowledged snapshot for the same model/layout. Aborting a ticket revokes publication rights before removing its
 staging directory, so a delayed writer cannot recreate its path. Identifiers
 are never reused. Persisted epoch ranges prevent an old process's audit epoch
 from being mistaken for a new owner's epoch.
@@ -25,6 +27,10 @@ tombstones, unlinks files and durably clears tombstones. Restart obtains the OS
 lock before recovering abandoned tickets/tombstones. It cannot delete unknown
 incarnations. Storage failures disable managed effects; they do not authorize a
 new empty ledger. Existing anonymous mirror files are outside this namespace.
+Collection runs after successful completion/publication or an explicit collect
+command; dropping observational read leases does not trigger deletion. `list`
+reports the configured reclamation mode and file/byte bounds separately from
+the pure policy's conditional eligibility report.
 
 The protocol assumes a cooperating engine, exclusive directory ownership and
 local POSIX fsync/rename/link semantics. It does not defend against a privileged

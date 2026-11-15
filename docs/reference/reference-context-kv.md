@@ -56,6 +56,45 @@ the slot's state into the cache, then tries to load the *best-matching*
 state. The similarity metric was biased for short prompts
 (lcp/tokens_new explodes when tokens_new is small) — hence H1's absolute-gate.
 
+## Engine-owned disk snapshot retirement (opt-in)
+
+Build with CMake `-DVITRIOL_CACHE_STORE=ON`, or set
+`VITRIOL_BUILD_CACHE_STORE=1` for `scripts/build-llama-server.sh`. This requires
+POSIX, GCC 16 and Cargo with the locked dependencies available offline. The Rust
+library and C++26 contracts apply to server host code; CUDA compilation is unchanged.
+
+On that rebuilt engine, `VITRIOL_KV_OWNED_CACHE=1` enables tracking in the private
+`owned-kv-v1` subdirectory of the configured disk mirror. Officina's local provider
+adds persisted session/branch tags; reload extensions to register them. Tree
+navigation creates a new branch frontier. Metadata is stored as a non-message
+session entry and never enters the model prompt. `OFFICINA_NO_CACHE_OWNERS=1`
+disables this adapter independently of prefill progress reporting.
+
+Tracking defaults to dry-run. `VITRIOL_KV_OWNED_RECLAIM=1` additionally enables
+physical deletion after successful completion/publication: at most two eligible
+files and at most the managed namespace's byte budget per collection. The byte
+budget uses the existing disk-trim multiplier times the RAM cache cap and
+includes pending reservations. A full budget skips new managed disk writes;
+RAM inference can continue. Legacy and managed namespaces each retain their own
+budget, so enabling managed storage can increase the combined disk footprint.
+
+Inspect `/cache` → `managed`: `enabled`, `available`, `store.reclamationEnabled`,
+`store.limits`, and `store.audit` distinguish actual mode from conditional
+eligibility. The pure audit keeps `deletionAuthorized=false`; it never unlinks
+files. Only the synchronized engine owner can do that after fresh identity and
+epoch checks. Read leases, active requests, shared owners, explicit pins and two
+acknowledged rollback generations per session/branch/model/layout retain files.
+Cancelled/failed requests cannot advance retirement. A late writer is fenced
+unless an attached borrower still needs its state.
+
+Untagged requests, multi-completion/child tasks, multimodal and LoRA requests
+continue on the existing path. Anonymous legacy files are never reclassified as
+owned. Storage/ledger faults stop managed effects; they do not authorize deleting
+unknown files. See the [runtime contract](../../vitriol-cache-store/README.md)
+for POSIX durability assumptions and tests. Activating a rebuilt binary and these
+environment variables requires a normal engine restart; merely reloading
+Officina does not enable engine reclamation.
+
 ## Checkpoints (VITRIOL)
 
 `-ctx-checkpoints N` (per-slot cap, default 32) · `-cpent N` (spacing during

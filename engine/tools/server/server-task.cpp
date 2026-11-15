@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <dirent.h>
 #include <thread>
+#include <limits>
 #include <sys/stat.h>
 #include <sys/time.h>
 
@@ -1987,6 +1988,11 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
         /*.prompt =*/ {
             /*.tokens      =*/ prompt.tokens.clone(),
             /*.checkpoints =*/ prompt.checkpoints,
+#ifdef VITRIOL_CACHE_STORE
+            /*.cache_owner =*/ prompt.cache_owner,
+            /*.cache_read =*/ {},
+            /*.cache_source =*/ {},
+#endif
         },
         /*.data   =*/ {
             /*.main =*/ std::make_shared<std::vector<uint8_t>>(std::move(state_data_tgt)),
@@ -2107,6 +2113,11 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             // matchable; server_tokens is move-assign only, hence clone()
             prompt.tokens       = it_best->prompt.tokens.clone();
             prompt.checkpoints  = it_best->prompt.checkpoints;
+#ifdef VITRIOL_CACHE_STORE
+            prompt.cache_owner  = it_best->prompt.cache_owner;
+            prompt.cache_read   = it_best->prompt.cache_read;
+            prompt.cache_source = it_best->prompt.cache_source;
+#endif
         } else {
             prompt = std::move(it_best->prompt);
 
@@ -2270,17 +2281,9 @@ static std::string server_prompt_cache_disk_name(const server_tokens & tokens, u
     return std::string(buf);
 }
 
-static bool server_prompt_cache_disk_write(const std::string & path,
-        const server_prompt_cache_identity & identity, const server_tokens & tokens,
+static bool server_prompt_cache_disk_write_bytes(const std::string & path,
+        const server_prompt_cache_identity & identity, const std::vector<char> & packed,
         const std::vector<uint8_t> & data_main, const std::vector<uint8_t> & data_drft) {
-    std::vector<char> packed;
-    try {
-        packed = tokens.serialize();
-    } catch (const std::exception & e) {
-        SRV_WRN(" - disk spill: failed to serialize tokens: %s\n", e.what());
-        return false;
-    }
-
     FILE * f = fopen((path + ".tmp").c_str(), "wb");
     if (f == nullptr) {
         return false;
@@ -2311,6 +2314,17 @@ static bool server_prompt_cache_disk_write(const std::string & path,
     }
 
     return rename((path + ".tmp").c_str(), path.c_str()) == 0;
+}
+
+static bool server_prompt_cache_disk_write(const std::string & path,
+        const server_prompt_cache_identity & identity, const server_tokens & tokens,
+        const std::vector<uint8_t> & data_main, const std::vector<uint8_t> & data_drft) {
+    try {
+        return server_prompt_cache_disk_write_bytes(path, identity, tokens.serialize(), data_main, data_drft);
+    } catch (const std::exception & error) {
+        SRV_WRN(" - disk spill: failed to serialize tokens: %s\n", error.what());
+        return false;
+    }
 }
 
 // reads the header + token blob only; skips the KV bytes with fseek.
@@ -2430,6 +2444,10 @@ struct server_prompt_cache_disk_file {
     time_t mtime;
     size_t size;
     std::string name;
+    bool managed = false;
+#ifdef VITRIOL_CACHE_STORE
+    std::shared_ptr<server_owned_read> lease = {};
+#endif
 };
 
 static size_t server_prompt_cache_disk_scan(const std::string & dir,
@@ -2463,6 +2481,27 @@ static size_t server_prompt_cache_disk_scan(const std::string & dir,
         return a.name < b.name;
     });
     return total;
+}
+
+std::vector<server_prompt_cache_disk_file> server_prompt_cache::disk_files() const {
+    std::vector<server_prompt_cache_disk_file> files;
+    server_prompt_cache_disk_scan(disk_dir, files);
+#ifdef VITRIOL_CACHE_STORE
+    if (!owned) { return files; }
+    json listing;
+    auto status = owned->call(json{{"op", "list"}}, listing);
+    if (!status) { return files; }
+    for (const auto & item : listing.at("snapshots")) {
+        const std::string id = item.at("id").get<std::string>();
+        auto lease = owned->read(id);
+        if (!lease) { continue; }
+        const std::string path = owned->directory + "/" + id;
+        struct stat metadata;
+        if (stat(path.c_str(), &metadata) != 0) { continue; }
+        files.push_back({metadata.st_mtime, static_cast<size_t>(metadata.st_size), "owned-kv-v1/" + id, true, std::move(*lease)});
+    }
+#endif
+    return files;
 }
 
 // mirror cap = multiplier x RAM pool. Was 8x; at cram=12288 the live mirror sat
@@ -2515,11 +2554,100 @@ static void server_prompt_cache_disk_trim(const std::string & dir, size_t limit_
             n_removed, bytes_removed / 1073741824.0, total / 1073741824.0);
 }
 
-void server_prompt_cache::disk_spill(const server_prompt & prompt,
+#ifdef VITRIOL_CACHE_STORE
+void server_prompt_cache::owned_init() {
+    if (disk_dir.empty() || limit_size == 0 || !server_prompt_cache_env_flag("VITRIOL_KV_OWNED_CACHE", false)) { return; }
+    const size_t maximum = server_prompt_cache_disk_trim_limit(limit_size);
+    if (maximum == 0) { return; }
+    auto runtime = server_owned_runtime::open(disk_dir + "owned-kv-v1", json{
+        {"maxBytes", maximum}, {"reclaim", server_prompt_cache_env_flag("VITRIOL_KV_OWNED_RECLAIM", false)},
+        {"maxGcFiles", 2}, {"maxGcBytes", maximum}});
+    if (runtime) { owned = std::move(*runtime); }
+}
+
+std::shared_ptr<server_owned_request> server_prompt_cache::owned_begin(const std::string & session, const std::string & branch) {
+    if (!owned || session.empty() || branch.empty()) { return {}; }
+    auto request = owned->begin(session, branch);
+    if (!request) { return {}; }
+    return std::move(*request);
+}
+
+json server_prompt_cache::owned_info() const {
+    if (!owned) { return json{{"enabled", false}}; }
+    json state;
+    auto status = owned->call(json{{"op", "list"}}, state);
+    if (!status) { return json{{"enabled", true}, {"available", false}}; }
+    return json{{"enabled", true}, {"available", true}, {"spills", owned->spills.load(std::memory_order_relaxed)}, {"store", state}};
+}
+
+struct server_prompt_cache_owned_write {
+    std::shared_ptr<server_owned_runtime> runtime;
+    std::shared_ptr<server_owned_request> owner;
+    server_prompt_cache_identity identity;
+    std::vector<char> packed;
+    json publication;
+    std::shared_ptr<std::vector<uint8_t>> main;
+    std::shared_ptr<std::vector<uint8_t>> draft;
+
+    void run() const {
+        const auto ticket = publication.at("ticket").get<uint64_t>();
+        try {
+            const std::vector<uint8_t> empty;
+            const auto path = publication.at("path").get<std::string>();
+            const bool written = server_prompt_cache_disk_write_bytes(path, identity, packed, *main, draft ? *draft : empty);
+            json result;
+            auto committed = runtime->call(json{{"op", written ? "commit" : "abort"}, {"ticket", ticket}}, result);
+            if (written && committed) {
+                runtime->spills.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+        } catch (const std::exception & error) { SRV_WRN(" - managed disk writer failed: %s\n", error.what()); }
+        // Failed publications release their reservation; storage faults retain recovery intent.
+        try { json ignored; (void)runtime->call(json{{"op", "abort"}, {"ticket", ticket}}, ignored); } catch (...) {}
+    }
+};
+
+bool server_prompt_cache::disk_spill_owned(server_prompt & prompt,
+        std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft) {
+    if (!owned || !prompt.cache_owner || prompt.cache_owner->runtime != owned) { return false; }
+    uint64_t prepared_ticket = 0;
+    try {
+        auto packed = prompt.tokens.serialize();
+        const size_t header = 2 * sizeof(uint32_t) + sizeof(identity) + 3 * sizeof(uint64_t);
+        size_t bytes = header;
+        for (size_t size : {data_main->size(), data_drft ? data_drft->size() : 0, packed.size()}) {
+            if (size > std::numeric_limits<size_t>::max() - bytes) { return true; }
+            bytes += size;
+        }
+        const std::string model = string_format("%016llx", static_cast<unsigned long long>(identity.model_key));
+        const std::string layout = string_format("%016llx-%u-%u-%u-%u", static_cast<unsigned long long>(identity.build_key), identity.n_ctx, identity.type_k, identity.type_v, identity.n_stream);
+        json publication;
+        auto status = owned->call(json{{"op", "prepare"}, {"generation", prompt.cache_owner->generation}, {"model", model}, {"layout", layout}, {"bytes", bytes}}, publication);
+        if (!status) { return true; }
+        prepared_ticket = publication.at("ticket").get<uint64_t>();
+        prompt.cache_source = publication.at("id").get<std::string>();
+        // Keep the generation's completion status alive until the detached publication finishes.
+        server_prompt_cache_owned_write write{owned, prompt.cache_owner, identity, std::move(packed), std::move(publication), data_main, data_drft};
+        std::thread([write = std::move(write)]() { write.run(); }).detach();
+    } catch (const std::exception & error) {
+        if (prepared_ticket != 0) {
+            try { json ignored; (void)owned->call(json{{"op", "abort"}, {"ticket", prepared_ticket}}, ignored); } catch (...) {}
+            prompt.cache_source.clear();
+        }
+        SRV_WRN(" - managed disk publication skipped: %s\n", error.what());
+    }
+    return true;
+}
+#endif
+
+void server_prompt_cache::disk_spill(server_prompt & prompt,
         std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft) {
     if (disk_dir.empty() || prompt.tokens.has_mtmd || !data_main) {
         return;
     }
+#ifdef VITRIOL_CACHE_STORE
+    if (disk_spill_owned(prompt, data_main, data_drft)) { return; }
+#endif
 
     const size_t spill_size = data_main->size() + (data_drft ? data_drft->size() : 0);
 
@@ -2548,8 +2676,7 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
         return false;
     }
 
-    std::vector<server_prompt_cache_disk_file> files;
-    server_prompt_cache_disk_scan(disk_dir, files);
+    auto files = disk_files();
     // newest first: an evolved prefix beats its ancestors on ties
     std::sort(files.begin(), files.end(), [](const auto & a, const auto & b) {
         if (a.mtime != b.mtime) {
@@ -2580,7 +2707,7 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
         uint32_t version = 0;
         if (!server_prompt_cache_disk_read_tokens(path, cand, n_main, n_drft, id, version)) {
             n_disk_damaged++;
-            if (prune) {
+            if (prune && !file.managed) {
                 remove(path.c_str());
                 n_disk_pruned++;
             }
@@ -2598,7 +2725,7 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
             }
             SRV_WRN(" - disk fetch: skip %s (identity mismatch, key %016llx)\n",
                     file.name.c_str(), (unsigned long long) id.model_key);
-            if (prune) {
+            if (prune && !file.managed) {
                 remove(path.c_str());
                 n_disk_pruned++;
             }
@@ -2665,12 +2792,23 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
 
 bool server_prompt_cache::disk_read_best(const std::string & path, float f_keep) {
     server_prompt_cache_state st;
+#ifdef VITRIOL_CACHE_STORE
+    const bool managed = owned && path.rfind(owned->directory + "/", 0) == 0;
+    if (managed) {
+        st.prompt.cache_source = path.substr(owned->directory.size() + 1);
+        auto lease = owned->read(st.prompt.cache_source);
+        if (!lease) { return false; }
+        st.prompt.cache_read = std::move(*lease);
+    }
+#else
+    const bool managed = false;
+#endif
     server_prompt_cache_identity id {};
     uint32_t version = 0;
     if (!server_prompt_cache_disk_read(path, st, id, version)) {
         SRV_WRN(" - disk fetch: damaged state %s\n", path.c_str());
         n_disk_damaged++;
-        remove(path.c_str());
+        if (!managed) { remove(path.c_str()); }
         return false;
     }
 
@@ -2697,7 +2835,7 @@ bool server_prompt_cache::disk_read_best(const std::string & path, float f_keep)
     n_disk_fetched++;
 
     // refresh mtime so the oldest-first trim prefers least-recently-fetched
-    utimes(path.c_str(), nullptr);
+    if (!managed) { utimes(path.c_str(), nullptr); }
 
     return true;
 }
@@ -2717,8 +2855,7 @@ void server_prompt_cache::disk_load() {
         return;
     }
 
-    std::vector<server_prompt_cache_disk_file> files;
-    server_prompt_cache_disk_scan(disk_dir, files);
+    auto files = disk_files();
 
     // newest first: evolved (longer) prefixes load before their ancestors
     std::sort(files.begin(), files.end(), [](const auto & a, const auto & b) {
@@ -2739,7 +2876,7 @@ void server_prompt_cache::disk_load() {
         uint32_t version = 0;
         if (!server_prompt_cache_disk_read(disk_dir + file.name, st, id, version)) {
             SRV_WRN(" - disk load: removing damaged state %s\n", file.name.c_str());
-            remove((disk_dir + file.name).c_str());
+            if (!file.managed) { remove((disk_dir + file.name).c_str()); }
             n_disk_damaged++;
             n_dropped++;
             continue;
@@ -2754,7 +2891,7 @@ void server_prompt_cache::disk_load() {
             }
             SRV_WRN(" - disk load: skip %s (identity mismatch, key %016llx)\n",
                     file.name.c_str(), (unsigned long long) id.model_key);
-            if (prune) {
+            if (prune && !file.managed) {
                 remove((disk_dir + file.name).c_str());
                 n_disk_pruned++;
             }
@@ -2787,6 +2924,12 @@ void server_prompt_cache::disk_load() {
             continue;
         }
 
+#ifdef VITRIOL_CACHE_STORE
+        if (file.managed) {
+            st.prompt.cache_read = file.lease;
+            st.prompt.cache_source = file.name.substr(std::string("owned-kv-v1/").size());
+        }
+#endif
         states.push_back(std::move(st));
         n_disk_restored++;
         n_loaded++;
@@ -2804,8 +2947,7 @@ std::vector<server_prompt_cache_disk_info> server_prompt_cache::disk_list() cons
         return out;
     }
 
-    std::vector<server_prompt_cache_disk_file> files;
-    server_prompt_cache_disk_scan(disk_dir, files);
+    auto files = disk_files();
 
     for (const auto & file : files) {
         server_prompt_cache_disk_info info;

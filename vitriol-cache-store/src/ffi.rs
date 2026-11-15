@@ -51,6 +51,10 @@ enum Command {
     ReleaseRead {
         lease: u64,
     },
+    Attach {
+        id: String,
+        generation: u64,
+    },
     Pin {
         id: String,
         pin: Pin,
@@ -90,6 +94,10 @@ fn dispatch(store: &mut Store, command: Command) -> Result<Value, String> {
             Ok(json!(true))
         }
         Command::AcquireRead { id, generation } => Ok(json!(store.acquire_read(&id, generation)?)),
+        Command::Attach { id, generation } => {
+            store.attach(&id, generation)?;
+            Ok(json!(true))
+        }
         Command::ReleaseRead { lease } => {
             store.release_read(lease)?;
             Ok(json!(true))

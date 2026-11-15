@@ -12,6 +12,9 @@
 
 // TODO: prevent including the whole server-common.h as we only use server_tokens
 #include "server-common.h"
+#ifdef VITRIOL_CACHE_STORE
+#include "vitriol-owned-cache.h"
+#endif
 
 
 enum server_task_type {
@@ -57,6 +60,10 @@ struct task_params {
     bool cache_prompt    = true; // remember the prompt to avoid reprocessing all prompt
     bool return_tokens   = false;
     bool return_progress = false;
+#ifdef VITRIOL_CACHE_STORE
+    std::string cache_owner_session;
+    std::string cache_owner_branch;
+#endif
 
     int32_t sse_ping_interval = 30; // seconds between SSE comment pings while the stream stays silent, -1 disables
 
@@ -605,10 +612,20 @@ struct server_prompt {
     server_tokens tokens;
 
     std::list<common_prompt_checkpoint> checkpoints;
+#ifdef VITRIOL_CACHE_STORE
+    std::shared_ptr<server_owned_request> cache_owner;
+    std::shared_ptr<server_owned_read> cache_read;
+    std::string cache_source;
+#endif
 
     void clear() {
         tokens.clear();
         checkpoints.clear();
+#ifdef VITRIOL_CACHE_STORE
+        cache_owner.reset();
+        cache_read.reset();
+        cache_source.clear();
+#endif
     }
 
     int n_tokens() const {
@@ -619,6 +636,11 @@ struct server_prompt {
         return server_prompt {
             tokens.clone(),
             checkpoints,
+#ifdef VITRIOL_CACHE_STORE
+            cache_owner,
+            cache_read,
+            cache_source,
+#endif
         };
     }
 };
@@ -678,6 +700,7 @@ struct server_prompt_cache_disk_info {
     int         verdict = 0;
 };
 
+struct server_prompt_cache_disk_file;
 struct server_prompt_cache {
     // disk_dir enables the VITRIOL Optane tier: states admitted to the RAM
     // cache are mirrored under disk_dir and reloaded on boot, so a restart
@@ -696,9 +719,19 @@ struct server_prompt_cache {
     size_t limit_tokens = 0;
 
     std::string disk_dir;
+#ifdef VITRIOL_CACHE_STORE
+    std::shared_ptr<server_owned_runtime> owned;
+    void owned_init();
+    std::shared_ptr<server_owned_request> owned_begin(const std::string & session, const std::string & branch);
+    json owned_info() const;
+#endif
+    std::vector<server_prompt_cache_disk_file> disk_files() const;
 
     // mirror one admitted state to disk via a detached writer thread
-    void disk_spill(const server_prompt & prompt, std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft);
+    void disk_spill(server_prompt & prompt, std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft);
+#ifdef VITRIOL_CACHE_STORE
+    bool disk_spill_owned(server_prompt & prompt, std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft);
+#endif
 
     // load cached states from disk_dir into states, newest first
     void disk_load();

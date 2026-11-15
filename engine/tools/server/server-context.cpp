@@ -336,7 +336,7 @@ struct server_slot {
 
         // VITRIOL Optane tier: mirror the admitted state so a restart reloads
         // it instead of re-prefilling. Detached writer: dispatch never blocks.
-        prompt_cache.disk_spill(prompt, cur->data.main, cur->data.drft);
+        prompt_cache.disk_spill(cur->prompt, cur->data.main, cur->data.drft);
 
         return true;
     }
@@ -610,6 +610,9 @@ struct server_slot {
             GGML_ASSERT(task);
 
             SLT_INF(*this, "stop processing: n_tokens = %d, truncated = %d\n", prompt.n_tokens(), truncated);
+#ifdef VITRIOL_CACHE_STORE
+            if (prompt.cache_owner) { prompt.cache_owner->finish(false); }
+#endif
 
             t_last_used = ggml_time_us();
 
@@ -947,6 +950,9 @@ public:
 #endif
         if (prompt_cache) {
             m.n_kv_cache_spills       = prompt_cache->n_disk_spills.load();
+#ifdef VITRIOL_CACHE_STORE
+            if (prompt_cache->owned) { m.n_kv_cache_spills += prompt_cache->owned->spills.load(std::memory_order_relaxed); }
+#endif
             m.n_kv_cache_disk_restored   = prompt_cache->n_disk_restored.load();
             m.n_kv_cache_disk_fetched    = prompt_cache->n_disk_fetched.load();
             m.n_kv_cache_disk_miss       = prompt_cache->n_disk_miss.load();
@@ -1009,6 +1015,9 @@ public:
         res["disk"]       = disk;
         res["disk_bytes"] = disk_bytes;
         res["disk_dir"]   = prompt_cache->disk_dir;
+#ifdef VITRIOL_CACHE_STORE
+        res["managed"] = prompt_cache->owned_info();
+#endif
 
         return res;
     }
@@ -1574,6 +1583,9 @@ private:
             }
 
             // VITRIOL Optane tier: reload states mirrored by a previous run
+#ifdef VITRIOL_CACHE_STORE
+            prompt_cache->owned_init();
+#endif
             prompt_cache->disk_load();
         } else {
             SRV_TRC("%s", "prompt cache is disabled - use `--cache-ram N` to enable it\n");
@@ -2054,6 +2066,17 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+#ifdef VITRIOL_CACHE_STORE
+        slot.prompt.cache_owner.reset();
+        if (prompt_cache && slot.task->type == SERVER_TASK_TYPE_COMPLETION &&
+                !slot.task->is_child() && slot.task->params.n_cmpl == 1 && slot.lora.empty() && !slot.prompt.tokens.has_mtmd) {
+            slot.prompt.cache_owner = prompt_cache->owned_begin(slot.task->params.cache_owner_session, slot.task->params.cache_owner_branch);
+            if (slot.prompt.cache_owner && !slot.prompt.cache_source.empty()) {
+                json ignored;
+                (void)slot.prompt.cache_owner->runtime->call(json{{"op", "attach"}, {"id", slot.prompt.cache_source}, {"generation", slot.prompt.cache_owner->generation}}, ignored);
+            }
+        }
+#endif
 
         // restored states (disk mirror, slot file, idle-slot cache) carry no checkpoint ring,
         // so the do_reset gate would force a full re-prefill on the first request after the
@@ -2396,6 +2419,9 @@ private:
         res->generation_params = slot.task->params; // copy the parameters
 
         queue_results.send(std::move(res));
+#ifdef VITRIOL_CACHE_STORE
+        if (slot.prompt.cache_owner) { slot.prompt.cache_owner->finish(true); }
+#endif
     }
 
     void send_embedding(const server_slot & slot, const llama_batch & batch) {

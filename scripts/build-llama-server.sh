@@ -173,6 +173,13 @@ if [ "${VITRIOL_LLGUIDANCE:-0}" = "1" ]; then
     echo "llguidance: ON (structured output via guidance-ai/llguidance)"
 fi
 
+# Managed KV ownership is an explicit host-only Rust/C++26 build option.
+case "${VITRIOL_BUILD_CACHE_STORE:-0}" in
+    0) CMAKE_ARGS="$CMAKE_ARGS -DVITRIOL_CACHE_STORE=OFF" ;;
+    1) CMAKE_ARGS="$CMAKE_ARGS -DVITRIOL_CACHE_STORE=ON" ;;
+    *) echo "Error: VITRIOL_BUILD_CACHE_STORE must be 0 or 1"; exit 1 ;;
+esac
+
 echo "CMake args: $CMAKE_ARGS"
 cmake .. $CMAKE_ARGS
 make -j"$(nproc)" llama-server

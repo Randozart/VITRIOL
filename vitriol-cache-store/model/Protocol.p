@@ -23,7 +23,6 @@ machine CacheOwner {
         on eRelease do (client: machine) {
             assert readers > 0, "release without lease";
             readers = readers - 1;
-            Collect();
             send client, eAck;
         }
         on eNewDurable do (client: machine) {

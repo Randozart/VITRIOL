@@ -30,6 +30,18 @@ std::vector<std::unique_ptr<field>> make_llama_cmpl_schema(const common_params &
 
     add((new field_bool("cache_prompt", params.cache_prompt))
         ->set_desc("Re-use KV cache from a previous request if possible. This way the common prefix does not have to be re-processed, only the suffix that differs between the requests"));
+#ifdef VITRIOL_CACHE_STORE
+    add((new field_str("cache_owner_session"))
+        ->set_desc("Opaque local session identity for managed KV ownership")
+        ->set_handler([](field_eval_context & ctx, const json & data) {
+            ctx.params.cache_owner_session = data.at("cache_owner_session").get<std::string>();
+        }));
+    add((new field_str("cache_owner_branch"))
+        ->set_desc("Opaque branch identity for managed KV ownership")
+        ->set_handler([](field_eval_context & ctx, const json & data) {
+            ctx.params.cache_owner_branch = data.at("cache_owner_branch").get<std::string>();
+        }));
+#endif
 
     add((new field_bool("return_tokens", params.return_tokens))
         ->set_desc("Return the raw generated token ids in the `tokens` field"));

@@ -162,7 +162,7 @@ impl Store {
             .ok_or("unknown request generation")?
             .owner
             .clone();
-        if self.ledger.frontier(&owner) > generation {
+        if self.ledger.frontier(&owner, model, layout) > generation {
             return Err("stale publication generation".into());
         }
         if self
@@ -205,7 +205,7 @@ impl Store {
             .get(&ticket)
             .ok_or("unknown publication ticket")?
             .clone();
-        if self.ledger.frontier(&pending.owner) > pending.owner.generation {
+        if pending.superseded(&self.ledger) {
             self.abort(ticket)?;
             return Err("stale publication fenced".into());
         }
@@ -305,13 +305,50 @@ impl Store {
         Ok(self.read_next)
     }
 
+    /// RAM restores attach before a writer finishes publishing their backing state.
+    pub fn attach(&mut self, id: &str, generation: u64) -> Result<(), String> {
+        self.healthy()?;
+        let owner = self
+            .tags
+            .get(&generation)
+            .ok_or("unknown request generation")?
+            .owner
+            .clone();
+        let mut ledger = self.ledger.clone();
+        let owners = if let Some(record) = ledger.records.get_mut(id) {
+            self.directory
+                .verify(id, &record.identity)
+                .inspect_err(|_| self.faulted = true)?;
+            record.snapshot.owners.as_mut().ok_or("unknown owners")?
+        } else {
+            let digits = id
+                .strip_prefix("cache-")
+                .and_then(|s| s.strip_suffix(".bin"))
+                .ok_or("invalid managed id")?;
+            let ticket = u64::from_str_radix(digits, 16).map_err(|_| "invalid managed id")?;
+            let pending = ledger
+                .pending
+                .get_mut(&ticket)
+                .filter(|pending| pending.id == id)
+                .ok_or("snapshot no longer available")?;
+            if pending.owner == owner {
+                return Ok(());
+            }
+            &mut pending.borrowers
+        };
+        if owners.contains(&owner) {
+            return Ok(());
+        }
+        owners.push(owner);
+        self.save(ledger)
+    }
+
     pub fn release_read(&mut self, lease: u64) -> Result<(), String> {
         self.healthy()?;
         if self.reads.remove(&lease).is_none() {
             return Err("unknown read lease".into());
         }
         self.bump()?;
-        self.collect_if_enabled()?;
         Ok(())
     }
 
@@ -432,6 +469,7 @@ impl Store {
         let audit = self.audit()?;
         Ok(
             json!({"epoch":self.epoch,"directory":self.directory.path(),"audit":audit,
+            "reclamationEnabled":self.config.reclaim,"limits":self.config,
             "snapshots":self.ledger.records.values().map(|r| &r.snapshot).collect::<Vec<_>>() }),
         )
     }

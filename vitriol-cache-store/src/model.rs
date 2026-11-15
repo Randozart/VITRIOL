@@ -50,6 +50,8 @@ pub struct Pending {
     pub layout_key: String,
     pub reserved_bytes: u64,
     pub file_identity: Option<FileIdentity>,
+    #[serde(default)]
+    pub borrowers: Vec<Owner>,
 }
 
 impl Pending {
@@ -61,6 +63,7 @@ impl Pending {
             layout_key: layout.into(),
             reserved_bytes: bytes,
             file_identity: None,
+            borrowers: Vec::new(),
         }
     }
 
@@ -72,10 +75,25 @@ impl Pending {
         {
             return Err("invalid pending identity".into());
         }
-        valid_label(&self.owner.session_id)?;
-        valid_label(&self.owner.branch_id)?;
+        valid_owner(&self.owner, next_id)?;
+        let mut owners = HashSet::from([&self.owner]);
+        for owner in &self.borrowers {
+            valid_owner(owner, next_id)?;
+            if !owners.insert(owner) {
+                return Err("invalid pending borrower".into());
+            }
+        }
         valid_label(&self.model_key)?;
         valid_label(&self.layout_key)
+    }
+
+    /// A shared pending publication stays valid until every attached owner moves on.
+    pub fn superseded(&self, ledger: &Ledger) -> bool {
+        std::iter::once(&self.owner)
+            .chain(&self.borrowers)
+            .all(|owner| {
+                ledger.frontier(owner, &self.model_key, &self.layout_key) > owner.generation
+            })
     }
 }
 
@@ -89,6 +107,9 @@ pub struct Record {
 
 impl Record {
     pub fn published(pending: Pending, incarnation: u64, identity: FileIdentity) -> Self {
+        let owners = std::iter::once(pending.owner.clone())
+            .chain(pending.borrowers)
+            .collect();
         Self {
             producer: pending.owner.clone(),
             snapshot: Snapshot {
@@ -98,7 +119,7 @@ impl Record {
                 layout_key: pending.layout_key,
                 bytes: identity.bytes,
                 durable: true,
-                owners: Some(vec![pending.owner]),
+                owners: Some(owners),
                 pins: vec![],
                 readers: 0,
                 writers: 0,
@@ -111,9 +132,8 @@ impl Record {
         self.validate_identity(id, next_id)?;
         let mut owners = HashSet::new();
         for owner in self.snapshot.owners.iter().flatten() {
-            valid_label(&owner.session_id)?;
-            valid_label(&owner.branch_id)?;
-            if owner.generation == 0 || owner.generation > next_id || !owners.insert(owner) {
+            valid_owner(owner, next_id)?;
+            if !owners.insert(owner) {
                 return Err("invalid managed owner reference".into());
             }
         }
@@ -173,9 +193,18 @@ pub fn valid_label(label: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn owner_key(owner: &Owner) -> String {
+fn valid_owner(owner: &Owner, next_id: u64) -> Result<(), String> {
+    valid_label(&owner.session_id)?;
+    valid_label(&owner.branch_id)?;
+    if owner.generation == 0 || owner.generation > next_id {
+        return Err("invalid managed owner generation".into());
+    }
+    Ok(())
+}
+
+fn owner_key(owner: &Owner, model: &str, layout: &str) -> String {
     // Tuple encoding cannot collide when labels contain separators or Unicode.
-    serde_json::to_string(&(&owner.session_id, &owner.branch_id))
+    serde_json::to_string(&(&owner.session_id, &owner.branch_id, model, layout))
         .expect("string tuple serialization")
 }
 
@@ -204,9 +233,9 @@ impl Ledger {
             })
     }
 
-    pub fn frontier(&self, owner: &Owner) -> u64 {
+    pub fn frontier(&self, owner: &Owner, model: &str, layout: &str) -> u64 {
         self.heads
-            .get(&owner_key(owner))
+            .get(&owner_key(owner, model, layout))
             .and_then(|ids| ids.first())
             .and_then(|id| self.records.get(id))
             .map(|record| record.producer.generation)
@@ -224,11 +253,21 @@ impl Ledger {
             return Ok(());
         };
         let owner = record.producer.clone();
-        if self.frontier(&owner) > generation {
+        if self.frontier(
+            &owner,
+            &record.snapshot.model_key,
+            &record.snapshot.layout_key,
+        ) > generation
+        {
             return Ok(());
         }
         let id = record.snapshot.id.clone();
-        let heads = self.heads.entry(owner_key(&owner)).or_default();
+        let key = owner_key(
+            &owner,
+            &record.snapshot.model_key,
+            &record.snapshot.layout_key,
+        );
+        let heads = self.heads.entry(key).or_default();
         heads.retain(|id| self.records[id].producer.generation != generation);
         heads.insert(0, id);
         heads.truncate(2);
@@ -244,7 +283,14 @@ impl Ledger {
             .values()
             .flat_map(|record| {
                 record.snapshot.owners.iter().flatten().filter_map(|owner| {
-                    let next = self.heads.get(&owner_key(owner))?.first()?;
+                    let next = self
+                        .heads
+                        .get(&owner_key(
+                            owner,
+                            &record.snapshot.model_key,
+                            &record.snapshot.layout_key,
+                        ))?
+                        .first()?;
                     let successor = self.records.get(next)?;
                     (successor.producer.generation > owner.generation).then(|| Retirement {
                         snapshot_id: record.snapshot.id.clone(),
@@ -287,10 +333,13 @@ impl Ledger {
             if ids.len() > 2 || ids.iter().any(|id| !self.records.contains_key(id)) {
                 return Err("invalid branch frontier".into());
             }
-            if ids
-                .iter()
-                .any(|id| owner_key(&self.records[id].producer) != *key)
-            {
+            if ids.iter().any(|id| {
+                owner_key(
+                    &self.records[id].producer,
+                    &self.records[id].snapshot.model_key,
+                    &self.records[id].snapshot.layout_key,
+                ) != *key
+            }) {
                 return Err("branch frontier owner mismatch".into());
             }
         }

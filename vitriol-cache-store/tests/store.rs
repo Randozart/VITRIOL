@@ -129,6 +129,8 @@ fn active_read_lease_prevents_unlink_until_release() {
     acknowledged(&mut store, "s", "main");
     assert!(fixture.owned().join(&first).exists());
     store.release_read(lease).unwrap();
+    let epoch = store.audit().unwrap().inventory_epoch;
+    store.collect(epoch, false).unwrap();
     assert!(!fixture.owned().join(first).exists());
 }
 
@@ -346,4 +348,47 @@ fn failed_publication_collision_never_removes_an_unknown_existing_file() {
     drop(store);
     assert!(Store::open(&fixture.owned(), config(false)).is_err());
     assert_eq!(fs::read(foreign).unwrap(), b"unowned-existing-file");
+}
+
+#[test]
+fn a_pending_ram_borrower_keeps_publication_live_after_the_producer_advances() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open(true);
+    let producer = store.begin("producer", "main").unwrap();
+    store.finish(producer.generation, true).unwrap();
+    let publication = store
+        .prepare(producer.generation, "model", "layout", 4)
+        .unwrap();
+    fs::write(&publication.path, [4u8; 4]).unwrap();
+    let borrower = store.begin("borrower", "fork").unwrap();
+    store.attach(&publication.id, borrower.generation).unwrap();
+    store.finish(borrower.generation, true).unwrap();
+    acknowledged(&mut store, "producer", "main");
+    acknowledged(&mut store, "producer", "main");
+    let id = store.commit(publication.ticket).unwrap();
+    assert!(fixture.owned().join(&id).exists());
+    acknowledged(&mut store, "borrower", "fork");
+    assert!(!fixture.owned().join(id).exists());
+}
+
+#[test]
+fn rollback_anchors_and_retirement_are_partitioned_by_model_and_layout() {
+    let fixture = Fixture::new();
+    let mut store = fixture.open(false);
+    for (model, layout) in [
+        ("model-a", "layout-a"),
+        ("model-b", "layout-a"),
+        ("model-a", "layout-b"),
+    ]
+    .repeat(3)
+    {
+        let grant = store.begin("s", "main").unwrap();
+        store.finish(grant.generation, true).unwrap();
+        let publication = store.prepare(grant.generation, model, layout, 4).unwrap();
+        fs::write(&publication.path, [4u8; 4]).unwrap();
+        store.commit(publication.ticket).unwrap();
+    }
+    let audit = store.audit().unwrap();
+    assert_eq!(audit.eligible_bytes, 12);
+    assert_eq!(audit.decisions.iter().filter(|d| !d.eligible).count(), 6);
 }

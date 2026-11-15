@@ -202,7 +202,7 @@ pub fn render(
         let from_base = (rows - 1 - r) as f64 + 0.5;
         let mut map_row: Vec<Option<ratatui::style::Color>> = vec![None; w];
         let mut spans: Vec<Span> = Vec::with_capacity(w);
-        for x in 0..w {
+        for (x, cell) in map_row.iter_mut().enumerate() {
             // Column envelope — the fire CLIMBS THE SIDES (owner request):
             // dead in the middle band, full burn at the edges, soft
             // shoulder so the inner falloff isn't a hard cliff.
@@ -230,7 +230,7 @@ pub fn render(
                         // Sparks are cool: silver/gold, barely there.
                         let heat = 0.25 + 0.2 * hash01(x as u32, 888, ember_step);
                         let c = style.color(heat, phase_ms);
-                        map_row[x] = Some(c);
+                        *cell = Some(c);
                         spans.push(Span::styled(
                             "⠁".to_string(),
                             Style::new().fg(c).bg(theme::BG),
@@ -252,7 +252,7 @@ pub fn render(
             let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
             let ch = DENSITY[idx.min(DENSITY.len() - 1)];
             let c = style.color(heat, phase_ms);
-            map_row[x] = Some(c);
+            *cell = Some(c);
             spans.push(Span::styled(
                 ch.to_string(),
                 Style::new().fg(c).bg(theme::BG),

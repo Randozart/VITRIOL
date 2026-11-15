@@ -88,7 +88,7 @@ fn officina_extensions_to_carry(cli_path: &Path, cwd: &Path) -> Vec<PathBuf> {
         .filter(|p| p.is_dir() && p.join("index.ts").is_file())
         .filter(|p| {
             let name = p.file_name().map(|n| n.to_string_lossy().to_string());
-            name.as_deref() != Some("_shared") && name.map_or(true, |n| !shadowed.contains(&n))
+            name.as_deref() != Some("_shared") && name.is_none_or(|n| !shadowed.contains(&n))
         })
         .collect();
     dirs.sort();
@@ -195,7 +195,7 @@ impl RpcBridge {
         // Crash black-box (2026-11-13): the panic hook reads this ring via
         // the process-global (crashlog.rs) — registered here because the
         // diag log lives exactly once per bridge.
-        let _ = crate::tui::crashlog::set_diag(diag.clone());
+        crate::tui::crashlog::set_diag(diag.clone());
 
         // Stdin writer task
         let (stdin_tx, mut stdin_rx) = mpsc::unbounded_channel::<String>();

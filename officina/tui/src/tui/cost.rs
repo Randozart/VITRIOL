@@ -78,11 +78,6 @@ pub fn ledger_path(day: &str) -> PathBuf {
     p
 }
 
-pub fn today_stamp(now: &str) -> String {
-    // now = chrono-free: pass e.g. "2026-11-12" from the caller (Local date).
-    now.to_string()
-}
-
 pub fn parse_line(line: &str) -> Option<LedgerEntry> {
     serde_json::from_str(line).ok()
 }

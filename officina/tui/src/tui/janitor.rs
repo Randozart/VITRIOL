@@ -474,7 +474,7 @@ mod tests {
         // corrupt quarantine must never be planned
         let corrupt = "s.jsonl.repaired-2.jsonl.corrupt-9";
         write_file(&store.join(corrupt), "q", 40);
-        let now = SystemTime::now();
+        let _now = SystemTime::now();
         let now = SystemTime::now();
         let p = plan(&roots, now);
         let names: Vec<String> = p
@@ -503,7 +503,7 @@ mod tests {
         write_file(&store.join("s.jsonl.repaired-1.jsonl"), "old", 10);
         write_file(&store.join("s.jsonl.repaired-2.jsonl"), "new", 1);
         write_file(&store.join("s.jsonl.repaired-3.jsonl"), "mid", 9);
-        let now = SystemTime::now();
+        let _now = SystemTime::now();
         let now = SystemTime::now();
         let p = plan(&roots, now);
         let names: Vec<String> = p

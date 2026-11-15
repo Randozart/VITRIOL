@@ -491,7 +491,7 @@ fn suspend_external(
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty argv"));
     }
     if !io::stdout().is_terminal() {
-        return Err(io::Error::new(io::ErrorKind::Other, "not a TTY"));
+        return Err(io::Error::other("not a TTY"));
     }
     disable_raw_mode()?;
     execute!(
@@ -579,7 +579,7 @@ async fn run_loop(
                         }
                         if let Some((argv, tmp, original)) = state.editor_suspend.take() {
                             let spawn_ok = suspend_external(terminal, &argv).is_ok();
-                            let mut note: Option<(String, String)> = None;
+                            let note: Option<(String, String)>;
                             match std::fs::read_to_string(&tmp) {
                                 Ok(text) => {
                                     let edited =
@@ -2620,7 +2620,7 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
     // Stage 0: an assistant turn announced a tool call, but pi never emitted
     // `tool_execution_start`. That is the exact "persisted tool call, nothing
     // happened" failure; it has no running tool entry to age out.
-    let start_limit = std::time::Duration::from_secs(state.tool_watchdog_secs.min(60).max(15));
+    let start_limit = std::time::Duration::from_secs(state.tool_watchdog_secs.clamp(15, 60));
     if let Some((id, age)) = state.oldest_expected_tool_call() {
         if age >= start_limit && state.watchdog_fired.insert(format!("expected:{id}")) {
             state.entries.push(state::ChatEntry::Warn(format!(

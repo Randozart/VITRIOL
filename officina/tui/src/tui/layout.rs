@@ -223,11 +223,10 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         area.width.saturating_sub(right_w)
     };
-    let cols =
-        Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w.max(0))]).split(Rect {
-            width: area.width,
-            ..area
-        });
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w)]).split(Rect {
+        width: area.width,
+        ..area
+    });
 
     let mut mid_spans = left;
     if !model.is_empty() {
@@ -675,8 +674,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // the TUI renders the operator's menu ON TOP OF THE PROMPT — exactly
     // where their eyes already are. Enter answers, esc cancels, digits
     // quick-pick. Disappears the moment the answer is written.
-    if state.question.is_some() {
-        let q = state.question.as_ref().unwrap();
+    if let Some(q) = state.question.as_ref() {
         let panel_w = area.width.min(72);
         let opt_h = q.options.len() as u16;
         let panel_h = (opt_h + 5).min(area.height.saturating_sub(4));
@@ -687,7 +685,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             height: panel_h,
         };
         frame.render_widget(ratatui::widgets::Clear, panel);
-        let edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
+        let _edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
@@ -711,7 +709,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     Style::new().fg(theme::TEXT).bg(theme::PANEL),
                 )));
             }
-            let visible_opts = inner
+            let _visible_opts = inner
                 .height
                 .saturating_sub(qlines.len() as u16)
                 .min(opt_h.max(1));
@@ -969,11 +967,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(input_block, input_area);
 
     let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
-    let line = if state.input.is_empty() && state.prompt_ghost.is_some() {
+    let line = if let Some(ghost) = state
+        .prompt_ghost
+        .as_ref()
+        .filter(|_| state.input.is_empty())
+    {
         // Voice-suggestion ghost (stage 2): dimmed gold, cursor block on the
         // first glyph — same shape as the motto, but a suggestion you can
         // accept with →. Render-only; nothing is ever pre-sent (I1).
-        let ghost = state.prompt_ghost.as_ref().unwrap();
         let budget = (inner.width as usize).saturating_sub(2);
         let text: String = ghost.text.chars().take(budget).collect();
         let mut chars = text.chars();
@@ -1035,12 +1036,10 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     );
 }
 
-/// Extension dialog modal (`confirm` / `select` / `input` / `editor`).
-
 /// /permissions modal: ask / auto / yolo with the protected-roots note.
 fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let h = (AppState::PERM_MODES.len() as u16 + 5).min(area.height.saturating_sub(2));
-    let w = area.width.min(78).max(30);
+    let w = area.width.clamp(30, 78);
     let modal = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -1139,7 +1138,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         DialogKind::Editor => 12,
     };
     let h = wanted.min(area.height.saturating_sub(2)).max(5);
-    let w = area.width.min(82).max(30);
+    let w = area.width.clamp(30, 82);
     let modal = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -1203,11 +1202,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         DialogKind::Select => {
             let visible = body.height as usize;
             let sel = dialog.selected;
-            let skip = if sel + 1 > visible {
-                sel + 1 - visible
-            } else {
-                0
-            };
+            let skip = (sel + 1).saturating_sub(visible);
             for (i, option) in dialog.options.iter().enumerate().skip(skip) {
                 if lines.len() >= visible {
                     break;
@@ -1453,11 +1448,7 @@ fn render_command_popup(
     );
 
     let visible = rows_rect.height as usize;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let cands = &cands[skip.min(total)..];
     let mut lines: Vec<Line> = Vec::new();
     for (i, c) in cands.iter().enumerate() {
@@ -1591,11 +1582,7 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let visible = inner.height as usize;
     let filtered = state.filtered_resume_entries();
     let sel = state.resume_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
 
     let mut lines: Vec<Line> = Vec::new();
     if filtered.is_empty() {
@@ -1726,11 +1713,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let width = list.width as usize;
     let sel = state.models_sel;
     let visible = list.height as usize;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
 
     let name_w = (width * 34 / 100).clamp(12, 32);
     let prov_w = (width * 16 / 100).clamp(8, 16);
@@ -1869,11 +1852,7 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.tree_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let width = inner.width as usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -2458,11 +2437,7 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.xsessions_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let mut lines: Vec<Line> = Vec::new();
     if view.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -3116,9 +3091,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
     let visible = chunks[2].height as usize;
-    let start = if visible == 0 {
-        0
-    } else if page.sel < visible {
+    let start = if visible == 0 || page.sel < visible {
         0
     } else {
         (page.sel + 1).saturating_sub(visible)
@@ -3239,7 +3212,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         footer.push(Line::from(Span::styled(
             format!(
                 "  ARMED: press {} again to confirm engine {} (any other key cancels)",
-                arm.chars().next().unwrap_or('?').to_string(),
+                arm.chars().next().unwrap_or('?'),
                 arm
             ),
             Style::new().fg(theme::ORANGE).bg(theme::PANEL),
@@ -3332,11 +3305,7 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let width = list.width as usize;
     let visible = list.height as usize;
     let sel = state.cache_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let age_w = 5usize;
     let size_w = 10usize;
     let name_w = width.saturating_sub(2 + age_w + 1 + size_w);
@@ -3441,11 +3410,7 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.tools_modal_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
 
     let mut lines: Vec<Line> = Vec::new();
     for row in skip..row_count {
@@ -3534,7 +3499,6 @@ fn motto_for(width: usize) -> Option<String> {
     }
 }
 
-/// Carved ink — the same faint cut as the watermark stone.
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Braille left-column bits for one quicksilver gauge row. The mercury
@@ -3590,11 +3554,7 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.help_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let label_w = 16usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -3817,11 +3777,10 @@ mod motto_tests {
 // text still ran off the right edge. These tests pin the fix: row count is
 // derived from WRAPPED rows, and the rendered buffer proves the text
 // actually lands on a second physical row.
+#[cfg(test)]
 mod composer_wrap_tests {
     use super::*;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Widget;
+    use ratatui::{buffer::Buffer, widgets::Widget};
 
     #[test]
     fn short_input_is_one_row() {

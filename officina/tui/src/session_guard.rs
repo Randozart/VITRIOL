@@ -26,7 +26,7 @@ pub fn lock_path() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    lock_path_in(&PathBuf::from(home()?))
+    lock_path_in(&home()?)
 }
 
 /// Test-injected variant (2026-11-12): tests must never touch the real
@@ -49,22 +49,8 @@ pub(crate) fn lock_path_in(home: &Path) -> Option<PathBuf> {
 // jsonl (the top corruption driver; see
 // .opencode/plans/officina-multisession-hardening-2026-11-11.md, I2/I3).
 
-fn lock_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("OFFICINA_LOCK_DIR") {
-        let p = PathBuf::from(dir);
-        if !p.as_os_str().is_empty() {
-            return Some(p);
-        }
-    }
-    lock_dir_in(&PathBuf::from(home()?))
-}
-
 fn lock_dir_in(home: &Path) -> Option<PathBuf> {
     Some(home.join(".vitriol").join("officina").join("locks"))
-}
-
-fn store_lock_path(store: &Path) -> Option<PathBuf> {
-    store_lock_path_in(&PathBuf::from(home()?), store)
 }
 
 fn store_lock_path_in(home: &Path, store: &Path) -> Option<PathBuf> {
@@ -79,7 +65,7 @@ pub struct SessionLock {
     /// None when a live peer owns the store, or when the lock filesystem
     /// misbehaved (enforcement degrades to the old behavior rather than
     /// blocking every startup).
-    file: Option<File>,
+    _file: Option<File>,
     /// The store this process locked (None when it did not acquire).
     store: Option<PathBuf>,
 }
@@ -112,7 +98,7 @@ impl Drop for SessionLock {
 /// lock with `locked_store() == None` when a live peer already holds the
 /// store (the caller must then not resume or mutate that store's files).
 pub fn acquire_session_lock(cwd: &Path) -> SessionLock {
-    acquire_session_lock_in(&PathBuf::from(home().unwrap_or_default()), cwd)
+    acquire_session_lock_in(&home().unwrap_or_default(), cwd)
 }
 
 pub(crate) fn acquire_session_lock_in(home: &Path, cwd: &Path) -> SessionLock {
@@ -132,7 +118,7 @@ pub(crate) fn acquire_session_lock_in(home: &Path, cwd: &Path) -> SessionLock {
                 if f.try_lock().is_err() {
                     // A live peer owns this store — we hold NOTHING.
                     return SessionLock {
-                        file: None,
+                        _file: None,
                         store: None,
                     };
                 }
@@ -159,14 +145,7 @@ pub(crate) fn acquire_session_lock_in(home: &Path, cwd: &Path) -> SessionLock {
             }
         }
     }
-    SessionLock { file, store }
-}
-
-/// True when ANOTHER live process holds the flock for `store`'s lock file.
-/// This process's own lock never counts as busy. Best-effort: an unreadable
-/// lock path counts as free (degraded, not wedged).
-fn store_lock_busy(store: &Path, own_store: Option<&Path>) -> bool {
-    store_lock_busy_in(&PathBuf::from(home().unwrap_or_default()), store, own_store)
+    SessionLock { _file: file, store }
 }
 
 fn store_lock_busy_in(home: &Path, store: &Path, own_store: Option<&Path>) -> bool {
@@ -180,11 +159,6 @@ fn store_lock_busy_in(home: &Path, store: &Path, own_store: Option<&Path>) -> bo
         return false; // no lock file yet -> nobody holds it
     };
     f.try_lock().is_err()
-}
-
-/// Refusal note when a live peer holds the store that `path` lives in.
-fn peer_holds_store(path: &Path, own: &SessionLock) -> Option<String> {
-    peer_holds_store_in(&PathBuf::from(home().unwrap_or_default()), path, own)
 }
 
 fn peer_holds_store_in(home: &Path, path: &Path, own: &SessionLock) -> Option<String> {
@@ -318,10 +292,6 @@ pub fn peer_fenced_notice(path: &Path) -> Option<String> {
     }
 }
 
-pub fn session_dir_for(cwd: &Path) -> Option<PathBuf> {
-    session_dir_for_in(&PathBuf::from(home()?), cwd)
-}
-
 /// Test-injected variant: encodes the store under the GIVEN home.
 pub(crate) fn session_dir_for_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
     let text = cwd.to_string_lossy();
@@ -340,10 +310,6 @@ fn is_session_file(name: &str) -> bool {
         && !name.contains(".corrupt-")
         && !name.contains(".recovered-")
         && !name.contains(".tmp-")
-}
-
-pub fn latest_session(cwd: &Path) -> Option<PathBuf> {
-    latest_session_in(&PathBuf::from(home()?), cwd)
 }
 
 pub(crate) fn latest_session_in(home: &Path, cwd: &Path) -> Option<PathBuf> {
@@ -788,7 +754,7 @@ pub fn prepare_session_args(
     own_lock: &SessionLock,
 ) -> (Vec<String>, Option<String>) {
     prepare_session_args_in(
-        &PathBuf::from(home().unwrap_or_default()),
+        &home().unwrap_or_default(),
         cwd,
         explicit_session,
         new_session,
@@ -1143,7 +1109,7 @@ mod tests {
             ],
         );
         let peer_path = store_lock_path_in(&tmp, &store_a).unwrap();
-        let mut peer = OpenOptions::new()
+        let peer = OpenOptions::new()
             .create(true)
             .truncate(false)
             .write(true)
@@ -1248,7 +1214,7 @@ mod peer_fence_tests {
         let now = stamp();
         let mine = u64::from(std::process::id());
         // Fresh peer shard, expired peer shard, our own fresh entry.
-        writeFileSync(
+        write_file_sync(
             &shards.join("500.json"),
             &serde_json::json!({"entries": [
                 {"ts": now, "tuiPid": 500, "sessionId": "peer-active", "tier": "local", "model": "m", "ctxTokens": 1},
@@ -1256,7 +1222,7 @@ mod peer_fence_tests {
             ]})
             .to_string(),
         );
-        writeFileSync(
+        write_file_sync(
             &shards.join("501.json"),
             &serde_json::json!({"entries": [
                 {"ts": now - 5_000, "tuiPid": 501, "sessionId": "peer-two", "tier": "local", "model": "m", "ctxTokens": 1}
@@ -1265,7 +1231,7 @@ mod peer_fence_tests {
         );
         // Legacy single file: fresh OUR-pid entry (must be excluded) + a
         // fresh foreign one (must be included — transition compat).
-        writeFileSync(
+        write_file_sync(
             &tmp.join("legacy.json"),
             &serde_json::json!({"entries": [
                 {"ts": now, "tuiPid": mine, "sessionId": "mine-own", "tier": "local", "model": "m", "ctxTokens": 1},
@@ -1304,7 +1270,7 @@ mod peer_fence_tests {
         let _ = fs::remove_dir_all(&tmp);
     }
 
-    fn writeFileSync(path: &Path, body: &str) {
+    fn write_file_sync(path: &Path, body: &str) {
         use std::io::Write;
         let mut f = File::create(path).unwrap();
         f.write_all(body.as_bytes()).unwrap();

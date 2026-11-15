@@ -88,12 +88,12 @@ impl ToolOverride {
 
     /// Parse "block!" / "block+" / "block-"
     pub fn parse(s: &str) -> Option<ToolOverride> {
-        let (mode_s, suffix) = if s.ends_with('!') {
-            (&s[..s.len() - 1], '!')
-        } else if s.ends_with('+') {
-            (&s[..s.len() - 1], '+')
-        } else if s.ends_with('-') {
-            (&s[..s.len() - 1], '-')
+        let (mode_s, suffix) = if let Some(mode) = s.strip_suffix('!') {
+            (mode, '!')
+        } else if let Some(mode) = s.strip_suffix('+') {
+            (mode, '+')
+        } else if let Some(mode) = s.strip_suffix('-') {
+            (mode, '-')
         } else {
             (s, '+') // bare mode = at-least (the user's default)
         };
@@ -510,24 +510,13 @@ pub struct GhostSuggestion {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct SuggestionFile {
     version: u32,
     id: String,
     text: String,
     source: String,
     expires: u64,
-}
-
-impl Default for SuggestionFile {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            id: String::new(),
-            text: String::new(),
-            source: String::new(),
-            expires: 0,
-        }
-    }
 }
 
 /// One staged clipboard image (codex-qol stage 9).
@@ -659,7 +648,6 @@ pub enum HeldKind {
 pub struct HeldMsg {
     pub text: String,
     pub kind: HeldKind,
-    pub at: std::time::Instant,
 }
 
 #[derive(Debug)]
@@ -1572,6 +1560,7 @@ impl AppState {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn clamp_resume_sel(&mut self) {
         let n = self.filtered_resume_entries().len();
         if self.resume_sel >= n {
@@ -1583,6 +1572,7 @@ impl AppState {
     /// stage 4). Testable core: `editor` is the raw $VISUAL/$EDITOR string.
     /// The draft is written to a temp file and kept verbatim in the request,
     /// so a failed spawn/reload never loses text (I4).
+    #[cfg(test)]
     pub fn stage_editor(&mut self, editor: &str) {
         if self.editor_suspend.is_some() {
             return;
@@ -2212,7 +2202,6 @@ impl AppState {
         self.held.push(HeldMsg {
             text: text.to_string(),
             kind,
-            at: std::time::Instant::now(),
         });
     }
 
@@ -2749,6 +2738,7 @@ impl AppState {
     }
 
     /// Insert or update a widget block by key.
+    #[cfg(test)]
     pub fn set_widget(&mut self, key: &str, lines: Vec<String>) {
         self.set_widget_placed(key, lines, None);
     }
@@ -3247,7 +3237,6 @@ impl AppState {
                     c.praetor.as_ref().map(|p| p.count).hash(&mut h);
                 }
             }
-            _ => {}
         }
         h.finish()
     }
@@ -3647,7 +3636,7 @@ impl AppState {
                     let edge = Style::new().fg(edge_color).bg(theme::BG);
                     let body = Style::new().fg(theme::TEXT).bg(theme::BG);
                     let muted = Style::new().fg(theme::MUTED).bg(theme::BG);
-                    let span_w = width.saturating_sub(4) as usize;
+                    let span_w = width.saturating_sub(4);
                     let (chip, chip_style) = match wd.as_ref().map(|d| d.verdict.as_str()) {
                         Some("ALIVE") => (
                             " ALIVE ",
@@ -4797,11 +4786,8 @@ fn render_tool_block(
             } else {
                 status_line_style(ol, text_st)
             };
-            for (i, seg) in wrap_text(ol, width.saturating_sub(5))
-                .into_iter()
-                .enumerate()
-            {
-                let prefix = if i == 0 { "│   " } else { "│   " };
+            for seg in wrap_text(ol, width.saturating_sub(5)) {
+                let prefix = "│   ";
                 lines.push(Line::from(vec![
                     Span::styled(prefix, border),
                     Span::styled(seg, line_st),
@@ -4971,9 +4957,6 @@ fn fmt_elapsed(total: u64) -> String {
     }
 }
 
-/// Pretty-JSON line colorized into spans: `"key":` cyan, braces muted,
-/// scalar values text-colored. Truncated to `width` chars.
-
 /// Char-count truncation with ellipsis.
 fn trunc_str(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
@@ -5052,9 +5035,11 @@ mod tests {
 
     #[test]
     fn thinking_renders_markdown_and_maps_lines_to_entries() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("**bold** reasoning and `code` here");
         let lines = s.chat_lines(80);
         assert!(!lines.is_empty());
@@ -5080,9 +5065,11 @@ mod tests {
 
     #[test]
     fn thinking_click_toggles_collapse_and_reopen() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("line one\n\nline two");
         let expanded = s.chat_lines(80);
         assert!(expanded.len() > 1, "expanded block spans rows");
@@ -5118,25 +5105,29 @@ mod tests {
 
     #[test]
     fn thinking_hidden_still_maps_lines_to_entries() {
-        let mut s = AppState::default();
-        s.hide_thinking = true;
+        let mut s = AppState {
+            hide_thinking: true,
+            ..Default::default()
+        };
         s.push_thinking_delta("hidden reasoning");
         s.push_user("hello".into());
         let lines = s.chat_lines(80);
         assert_eq!(s.line_entries.len(), lines.len());
         assert!(
-            s.line_entries.iter().any(|i| *i == 0),
+            s.line_entries.contains(&0),
             "hidden thinking marker maps to its entry (plus the blank)"
         );
-        assert!(s.line_entries.iter().any(|i| *i == 1));
+        assert!(s.line_entries.contains(&1));
     }
 
     #[test]
     fn scroll_lock_freezes_the_view_and_releases_at_the_tail() {
-        let mut s = AppState::default();
-        s.last_start = 100;
-        s.last_chat_total = 200;
-        s.scroll_max = 120;
+        let mut s = AppState {
+            last_start: 100,
+            last_chat_total: 200,
+            scroll_max: 120,
+            ..Default::default()
+        };
         s.scroll_up(5);
         assert_eq!(s.scroll_lock, Some(95), "lock pins the top line");
         assert_eq!(s.scroll, 5);
@@ -5160,9 +5151,11 @@ mod tests {
 
     #[test]
     fn new_user_turn_releases_the_scroll_lock() {
-        let mut s = AppState::default();
-        s.last_start = 40;
-        s.scroll_max = 80;
+        let mut s = AppState {
+            last_start: 40,
+            scroll_max: 80,
+            ..Default::default()
+        };
         s.scroll_up(4);
         assert!(s.scroll_lock.is_some());
         s.push_user("hello".into());
@@ -5172,9 +5165,11 @@ mod tests {
 
     #[test]
     fn thinking_default_collapsed_applies_to_new_blocks_and_is_configurable() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = true;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: true,
+            ..Default::default()
+        };
         s.push_thinking_delta("first block");
         assert!(matches!(
             s.entries[0],
@@ -5213,9 +5208,11 @@ mod tests {
 
     #[test]
     fn thinking_collapse_and_expand_all_commands() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("one");
         s.push_text_delta("mid");
         s.push_thinking_delta("two");
@@ -5259,9 +5256,11 @@ mod tests {
 
     #[test]
     fn tool_click_cycles_closed_formatted_full() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.tool_start(
             Some("t1"),
             "bash",
@@ -5322,9 +5321,11 @@ mod tests {
 
     #[test]
     fn tool_and_thinking_hitboxes_are_separate() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("reasoning");
         s.tool_start(Some("t1"), "read", &serde_json::json!({"path": "/tmp/x"}));
         let lines = s.chat_lines(80);
@@ -5455,8 +5456,10 @@ mod tests {
             )
         };
         std::fs::write(&path, doc("ALIVE", "working")).unwrap();
-        let mut s = AppState::default();
-        s.watchdog_file = Some(path.clone());
+        let mut s = AppState {
+            watchdog_file: Some(path.clone()),
+            ..Default::default()
+        };
         s.apply_notify("hang-watchdog: alive check 1", "info");
         s.apply_notify("hang-watchdog: alive check 2", "info");
         let cards = s
@@ -5515,9 +5518,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("write-diff-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "old line\nkeep\n").unwrap();
-        let mut s = AppState::default();
-        s.cwd = dir.clone();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            cwd: dir.clone(),
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("w2"),
             "write",
@@ -5533,8 +5538,10 @@ mod tests {
 
     #[test]
     fn edit_block_shows_diff_from_args_and_canonical_details() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("e1"),
             "edit",
@@ -5592,9 +5599,11 @@ mod tests {
             r#"{"version":1,"ts":1,"format":{"tool":"rustfmt","changed":true},"syntax":{"ok":true},"praetor":{"count":2}}"#,
         )
         .unwrap();
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
-        s.tool_checks_dir = Some(dir.clone());
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            tool_checks_dir: Some(dir.clone()),
+            ..Default::default()
+        };
         s.tool_start(
             Some("c1"),
             "write",
@@ -5610,8 +5619,10 @@ mod tests {
 
     #[test]
     fn code_tool_output_colors_status_lines() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(Some("c2"), "code", &serde_json::json!({}));
         s.tool_end(
             Some("c2"),
@@ -5634,9 +5645,11 @@ mod tests {
 
     #[test]
     fn transcript_cache_is_transparent_and_invalidates() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_user("hello".into());
         s.push_text_delta("answer text\n");
         s.push_thinking_delta("reasoning");
@@ -5677,9 +5690,11 @@ mod tests {
 
     #[test]
     fn streaming_tail_rerenders_per_frame() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_user("go".into());
         s.is_streaming = true;
         s.push_text_delta("first");
@@ -5702,8 +5717,10 @@ mod tests {
 
     #[test]
     fn write_block_renders_markdown_files_as_markdown() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("m1"),
             "write",
@@ -5777,8 +5794,10 @@ mod tests {
     #[test]
     fn editor_staging_preserves_the_draft() {
         // codex-qol stage 4 (I4): staging never loses the draft
-        let mut s = AppState::default();
-        s.input = "refactor the flux capacitor\nsecond line".into();
+        let mut s = AppState {
+            input: "refactor the flux capacitor\nsecond line".into(),
+            ..Default::default()
+        };
         s.stage_editor("nvim -f");
         let (argv, tmp, original) = s.editor_suspend.take().expect("staged");
         assert_eq!(argv[0], "nvim");
@@ -5831,8 +5850,10 @@ mod tests {
     #[test]
     fn watchdog_notifies_get_their_own_block() {
         // 2026-11-13: warnings from the watchdog are observations, not diags
-        let mut s = AppState::default();
-        s.watchdog_file = Some(std::path::PathBuf::from("/nonexistent/watchdog.json"));
+        let mut s = AppState {
+            watchdog_file: Some(std::path::PathBuf::from("/nonexistent/watchdog.json")),
+            ..Default::default()
+        };
         s.apply_notify(
             "hang-watchdog: \"brievc build\" — no output for 61s (61s total)",
             "warning",
@@ -5894,8 +5915,10 @@ mod tests {
             now + 21_000
         ))
         .expect("parses");
-        let mut s = AppState::default();
-        s.watchdog = Some(doc.clone());
+        let mut s = AppState {
+            watchdog: Some(doc.clone()),
+            ..Default::default()
+        };
         let secs = s.watchdog_countdown().expect("countdown armed");
         assert!((20..=21).contains(&secs), "countdown ~21s, got {secs}");
         // facts older than 2 min are ignored
@@ -5911,8 +5934,10 @@ mod tests {
         });
         assert!(s.watchdog_countdown().is_none());
         // the card renders fields, not prose
-        let mut s2 = AppState::default();
-        s2.watchdog_file = Some(std::path::PathBuf::from("/nonexistent/watchdog.json"));
+        let mut s2 = AppState {
+            watchdog_file: Some(std::path::PathBuf::from("/nonexistent/watchdog.json")),
+            ..Default::default()
+        };
         s2.apply_notify("hang-watchdog verdict: HUNG", "warning");
         // apply_notify reloads facts from disk (absent in tests) — inject
         // the parsed doc after, which is the same state production reaches
@@ -5942,9 +5967,11 @@ mod tests {
     fn flames_derive_from_stream_when_engine_telemetry_absent() {
         // 2026-11-13: cloud-lane turns (engine down) get honest flames from
         // token flow — deltas burn, a stalled stream decays to nothing.
-        let mut s = AppState::default();
-        s.fire_on = true;
-        s.is_streaming = true;
+        let mut s = AppState {
+            fire_on: true,
+            is_streaming: true,
+            ..Default::default()
+        };
         s.mark_activity();
         // no engine-fire telemetry ever seen → stream-derived
         s.push_text_delta("token ");
@@ -6010,9 +6037,11 @@ mod tests {
     #[test]
     fn prompt_history_navigation_and_draft_restore() {
         // 2026-11-13: Up/Down through earlier prompts, draft preserved
-        let mut s = AppState::default();
-        s.prompt_history = vec!["first".into(), "second".into(), "third".into()];
-        s.input = "draft in progress".into();
+        let mut s = AppState {
+            prompt_history: vec!["first".into(), "second".into(), "third".into()],
+            input: "draft in progress".into(),
+            ..Default::default()
+        };
         assert!(s.history_prev());
         assert_eq!(s.input, "third");
         assert!(s.history_prev());
@@ -6170,9 +6199,11 @@ mod tests {
 
     #[test]
     fn probe_resets_when_no_tool_runs() {
-        let mut s = AppState::default();
-        s.liveness_cpu_total = 42.0;
-        s.liveness_sampled_at = Some(std::time::Instant::now());
+        let mut s = AppState {
+            liveness_cpu_total: 42.0,
+            liveness_sampled_at: Some(std::time::Instant::now()),
+            ..Default::default()
+        };
         s.probe_liveness(None); // nothing running → reset
         assert_eq!(s.liveness_cpu_total, 0.0);
         assert!(s.liveness_sampled_at.is_none());
@@ -6191,9 +6222,11 @@ mod tests {
             r#"{"version":1,"id":"sug-1","text":"run the full verify suite","source":"llm","expires":0}"#,
         )
         .unwrap();
-        let mut s = AppState::default();
-        s.prompt_suggestion_file = Some(sug.clone());
-        s.ghost_events_file = Some(events.clone());
+        let mut s = AppState {
+            prompt_suggestion_file: Some(sug.clone()),
+            ghost_events_file: Some(events.clone()),
+            ..Default::default()
+        };
         s.refresh_ghost();
         assert_eq!(
             s.prompt_ghost.as_ref().unwrap().text,
@@ -6233,8 +6266,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sug = dir.join("prompt-suggestion.json");
-        let mut s = AppState::default();
-        s.prompt_suggestion_file = Some(sug.clone());
+        let mut s = AppState {
+            prompt_suggestion_file: Some(sug.clone()),
+            ..Default::default()
+        };
         // corrupt
         std::fs::write(&sug, "{nope").unwrap();
         s.refresh_ghost();
@@ -6242,7 +6277,7 @@ mod tests {
         // expired
         std::fs::write(
             &sug,
-            format!(r#"{{"version":1,"id":"e","text":"x","source":"llm","expires":1}}"#),
+            r#"{"version":1,"id":"e","text":"x","source":"llm","expires":1}"#,
         )
         .unwrap();
         s.refresh_ghost();
@@ -6266,17 +6301,19 @@ mod tests {
     #[test]
     fn status_rows_cover_session_facts() {
         // codex-qol stage 2: read-only snapshot content
-        let mut s = AppState::default();
-        s.cwd = std::path::PathBuf::from("/tmp");
-        s.model = Some(crate::rpc::protocol::Model {
-            id: "deepseek-v4.1-flash".into(),
-            name: Some("DeepSeek V4.1 Flash".into()),
-            provider: "caduceus".into(),
-            context_window: Some(1_000_000),
-            max_tokens: None,
-            reasoning: None,
-        });
-        s.perm_mode = "yolo".into();
+        let s = AppState {
+            cwd: std::path::PathBuf::from("/tmp"),
+            model: Some(crate::rpc::protocol::Model {
+                id: "deepseek-v4.1-flash".into(),
+                name: Some("DeepSeek V4.1 Flash".into()),
+                provider: "caduceus".into(),
+                context_window: Some(1_000_000),
+                max_tokens: None,
+                reasoning: None,
+            }),
+            perm_mode: "yolo".into(),
+            ..Default::default()
+        };
         let rows = s.status_rows(
             None,
             Some("free_only=on · per_owner=8 · max=48".into()),
@@ -6330,8 +6367,10 @@ mod tests {
 
     #[test]
     fn ctx_bar_label_formats_fill_and_percent() {
-        let mut s = AppState::default();
-        s.ctx_usage = Some((12_345, 262_144));
+        let s = AppState {
+            ctx_usage: Some((12_345, 262_144)),
+            ..Default::default()
+        };
         assert_eq!(
             s.ctx_bar_label().as_deref(),
             Some("🜖 ctx 12.3k / 262.1k (4.7%)")
@@ -6340,8 +6379,10 @@ mod tests {
 
     #[test]
     fn ctx_bar_label_handles_millions_and_full_window() {
-        let mut s = AppState::default();
-        s.ctx_usage = Some((1_500_000, 2_000_000));
+        let mut s = AppState {
+            ctx_usage: Some((1_500_000, 2_000_000)),
+            ..Default::default()
+        };
         assert_eq!(
             s.ctx_bar_label().as_deref(),
             Some("🜖 ctx 1.5M / 2.0M (75.0%)")
@@ -6355,8 +6396,10 @@ mod tests {
 
     #[test]
     fn ctx_bar_label_ignores_zero_window() {
-        let mut s = AppState::default();
-        s.ctx_usage = Some((1234, 0));
+        let s = AppState {
+            ctx_usage: Some((1234, 0)),
+            ..Default::default()
+        };
         assert_eq!(s.ctx_bar_label(), None);
     }
 
@@ -6669,13 +6712,16 @@ mod tests {
 
     #[test]
     fn slash_completion_uses_hovered_candidate() {
-        let mut s = AppState::default();
-        s.commands = vec![crate::rpc::protocol::SlashCommand {
-            name: "helper".to_string(),
-            description: None,
-            source: None,
-        }];
-        s.input = "/hel".to_string();
+        let mut s = AppState {
+            commands: vec![crate::rpc::protocol::SlashCommand {
+                name: "helper".to_string(),
+                description: None,
+                source: None,
+            }],
+            input: "/hel".to_string(),
+            cand_sel: 1,
+            ..Default::default()
+        };
         // Candidates: /help (local) and /helper (pi), sorted.
         s.cand_sel = 1;
         s.complete_command();
@@ -6696,8 +6742,10 @@ mod tests {
 
     #[test]
     fn sidebar_scroll_clamps_to_content() {
-        let mut s = AppState::default();
-        s.sidebar_scroll_max = 10;
+        let mut s = AppState {
+            sidebar_scroll_max: 10,
+            ..Default::default()
+        };
         s.sidebar_scroll_up(100);
         assert_eq!(s.sidebar_scroll, 10);
         s.sidebar_scroll_down(4);
@@ -6759,8 +6807,10 @@ mod tests {
 
     #[test]
     fn full_mode_shows_all_args_as_key_values() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Full;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Full,
+            ..Default::default()
+        };
         s.tool_start(
             Some("c"),
             "edit",
@@ -6782,8 +6832,10 @@ mod tests {
 
     #[test]
     fn cache_invalidates_on_gen_and_stream() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(Some("c"), "bash", &serde_json::json!({}));
         s.tool_update(Some("c"), "bash", "one\n");
         let g0 = s.tools_gen;
@@ -6881,8 +6933,10 @@ mod tests {
 
     #[test]
     fn scratchpad_block_renders_sections_not_raw_json() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("c"),
             "scratchpad_write",
@@ -6902,8 +6956,10 @@ mod tests {
 
     #[test]
     fn task_block_renders_checklist_not_raw_json() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("c"),
             "update_tasks",
@@ -7137,7 +7193,7 @@ mod transition_tests {
         // agent_settled), so that pair is deliberately legal; a compaction
         // ending with nothing compacting is not.
         assert!(matches!(s.check(UiEvent::AgentEnd), Ok(UiPhase::Idle)));
-        assert!(matches!(s.check(UiEvent::CompactionEnd), Err(_)));
+        assert!(s.check(UiEvent::CompactionEnd).is_err());
         set_phase(&mut s, UiPhase::Streaming);
         // Streaming legitimately allows picker open/close; a compaction_end
         // with nothing compacting is the impossible pair.
@@ -7145,11 +7201,11 @@ mod transition_tests {
             s.check(UiEvent::CloseModal),
             Ok(UiPhase::Streaming)
         ));
-        assert!(matches!(s.check(UiEvent::CompactionEnd), Err(_)));
+        assert!(s.check(UiEvent::CompactionEnd).is_err());
         set_phase(&mut s, UiPhase::Compacting);
         assert!(matches!(s.check(UiEvent::CompactionEnd), Ok(UiPhase::Idle)));
         set_phase(&mut s, UiPhase::Modal);
-        assert!(matches!(s.check(UiEvent::AgentEnd), Err(_)));
+        assert!(s.check(UiEvent::AgentEnd).is_err());
     }
 
     #[test]
@@ -7278,6 +7334,7 @@ fn watchdog_path() -> std::path::PathBuf {
 
 /// Facts are only trusted while fresh (2 min) — a stale card would claim
 /// a countdown for a watchdog that no longer watches.
+#[cfg(test)]
 pub fn load_watchdog_doc() -> Option<WatchdogDoc> {
     load_watchdog_doc_at(&watchdog_path())
 }

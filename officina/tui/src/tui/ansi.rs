@@ -186,11 +186,3 @@ fn bright_color(n: u8) -> Color {
         _ => Color::Reset,
     }
 }
-
-/// Visible cell width of an ANSI-styled string (escapes removed).
-pub fn visible_len(s: &str) -> usize {
-    s.replace('\x1b', "")
-        .chars()
-        .filter(|c| !c.is_control())
-        .count()
-}

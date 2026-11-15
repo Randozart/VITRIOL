@@ -521,12 +521,12 @@ impl Renderer {
             let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
             for li in 0..height {
                 let mut spans: Vec<Span<'static>> = Vec::new();
-                for ci in 0..ncols {
+                for (ci, width) in widths.iter().enumerate().take(ncols) {
                     if ci > 0 {
                         spans.push(Span::styled(" │ ", row_sep_style));
                     }
                     let chunk = cells[ci].get(li).map(String::as_str).unwrap_or("");
-                    let pad = widths[ci].saturating_sub(chunk.chars().count());
+                    let pad = width.saturating_sub(chunk.chars().count());
                     let align = aligns
                         .get(ci)
                         .copied()
@@ -548,11 +548,11 @@ impl Renderer {
             }
             if ri + 1 == header {
                 let mut sep: Vec<Span<'static>> = Vec::new();
-                for ci in 0..ncols {
+                for (ci, width) in widths.iter().enumerate().take(ncols) {
                     if ci > 0 {
                         sep.push(Span::styled("─┼─", sep_style));
                     }
-                    sep.push(Span::styled("─".repeat(widths[ci]), sep_style));
+                    sep.push(Span::styled("─".repeat(*width), sep_style));
                 }
                 self.out.push(Line::from(sep));
             }
@@ -565,7 +565,7 @@ impl Renderer {
         let labels: Vec<String> = (0..ncols)
             .map(|ci| {
                 let from_head = rows
-                    .get(0)
+                    .first()
                     .and_then(|r| r.get(ci))
                     .map(|s| s.trim().to_string())
                     .unwrap_or_default();
@@ -594,7 +594,7 @@ impl Renderer {
             // Header-only table: render one record so nothing vanishes.
             for (ci, label) in labels.iter().enumerate() {
                 let value = rows
-                    .get(0)
+                    .first()
                     .and_then(|r| r.get(ci))
                     .cloned()
                     .unwrap_or_default();
@@ -617,11 +617,7 @@ impl Renderer {
                 if value.is_empty() {
                     continue;
                 }
-                let style = if first_written {
-                    body_style
-                } else {
-                    body_style
-                };
+                let style = body_style;
                 let prefix = if first_written { "  " } else { "▸ " };
                 self.render_stacked_field_with_prefix(
                     prefix, label, value, label_w, head_style, style, muted,
@@ -729,7 +725,7 @@ impl Renderer {
             if self
                 .out
                 .last()
-                .map_or(false, |l: &Line| l.to_string().is_empty())
+                .is_some_and(|l: &Line| l.to_string().is_empty())
             {
                 return;
             }
@@ -1182,7 +1178,7 @@ mod overflow_tests {
 
     #[test]
     fn wide_table_rows_fit_width() {
-        let cells = vec!["a".repeat(15), "b".repeat(15), "c".repeat(15)];
+        let cells = ["a".repeat(15), "b".repeat(15), "c".repeat(15)];
         let md = format!(
             "| {} | {} | {} |\n| --- | --- | --- |\n| x | y | z |\n",
             cells[0], cells[1], cells[2]

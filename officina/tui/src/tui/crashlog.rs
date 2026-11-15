@@ -20,7 +20,8 @@ static DIAG: OnceLock<DiagLog> = OnceLock::new();
 pub fn set_diag(diag: DiagLog) {
     let _ = DIAG.set(diag);
 }
-static DEFAULT_HOOK: OnceLock<Box<dyn Fn(&PanicHookInfo) + Sync + Send>> = OnceLock::new();
+type PanicHook = Box<dyn Fn(&PanicHookInfo) + Sync + Send>;
+static DEFAULT_HOOK: OnceLock<PanicHook> = OnceLock::new();
 
 pub fn crash_log_path() -> PathBuf {
     let mut p = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
@@ -110,13 +111,10 @@ pub fn stamp_clean_exit() {
 pub fn crash_since_clean_exit() -> Option<String> {
     let crash_meta = std::fs::metadata(crash_log_path()).ok()?;
     let crash_t = crash_meta.modified().ok()?;
-    match std::fs::metadata(clean_exit_path()) {
-        Ok(exit_meta) => {
-            if crash_t <= exit_meta.modified().ok()? {
-                return None;
-            }
+    if let Ok(exit_meta) = std::fs::metadata(clean_exit_path()) {
+        if crash_t <= exit_meta.modified().ok()? {
+            return None;
         }
-        Err(_) => {}
     }
     let text = std::fs::read_to_string(crash_log_path()).ok()?;
     text.lines().next().map(|l| l.to_string())
@@ -125,7 +123,6 @@ pub fn crash_since_clean_exit() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     #[test]
     fn crash_entry_and_freshness_logic() {

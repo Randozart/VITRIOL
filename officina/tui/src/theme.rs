@@ -36,10 +36,13 @@ pub const COLD_BLUE: Color = Color::Rgb(0x2E, 0x5F, 0xA3);
 /// Light yellow — capacity ramp start.
 pub const LIGHT_YELLOW: Color = Color::Rgb(0xFF, 0xE0, 0x66);
 /// Deep red — capacity ramp end.
+#[cfg(test)]
 pub const DEEP_RED: Color = Color::Rgb(0x8A, 0x15, 0x15);
 /// Dark teal — activity ramp start.
+#[cfg(test)]
 pub const DARK_TEAL: Color = Color::Rgb(0x0B, 0x5E, 0x4C);
 /// Mercury silver — pulse ramp start.
+#[cfg(test)]
 pub const MERCURY: Color = Color::Rgb(0x55, 0x60, 0x6E);
 /// Bright silver — PLAN mode (the moon metal, owner request 2026-09-02).
 pub const SILVER: Color = Color::Rgb(0xC0, 0xC7, 0xCF);
@@ -69,22 +72,9 @@ pub const GLYPH_USER: &str = "☿";
 pub const GLYPH_CRUCIBLE: &str = "🝥";
 /// Reserved: QUINTESSENCE (U+1F700) — scratchpad label, when wired.
 pub const GLYPH_QUINTESSENCE: &str = "🜀";
-/// Reserved: PHILOSOPHERS SULFUR (U+1F70E) — coupling mark, when wired.
-pub const GLYPH_PHIL_SULFUR: &str = "🜎";
-/// Reserved: NIGHT (U+1F76F) — engine idle, when wired.
-pub const GLYPH_NIGHT: &str = "🝯";
-/// Reserved: HOUR (U+1F76E) — latency displays, when wired.
-pub const GLYPH_HOUR: &str = "🝮";
-/// Reserved: SALT (U+1F714) — files label, when wired.
-pub const GLYPH_SALT: &str = "🜔";
-/// Reserved: DISSOLVE (U+1F761) — abort semantics (footer hint text only).
-pub const GLYPH_DISSOLVE: &str = "🝡";
 
 // ── Elemental glyphs (proven coverage via vitriol-tui) ──────────────────
-pub const GLYPH_GEN: &str = "🜂"; // fire, the forge
 pub const GLYPH_HERM: &str = "🜄"; // water, the sealed flask of memory
-pub const GLYPH_EMBED: &str = "🜁"; // air, spirit
-pub const GLYPH_GPU: &str = "🜃"; // earth, silicon matter
 
 /// Neutral style for body text.
 pub fn text() -> Style {
@@ -111,12 +101,6 @@ pub fn gold_muted() -> Style {
     Style::new().fg(GOLD).bg(BG)
 }
 
-/// Border style for a service panel, coloured by liveness.
-pub fn panel_border(up: bool) -> Style {
-    let c = if up { GREEN } else { RED };
-    Style::new().fg(c)
-}
-
 /// Style for a live/streaming value (solvent cyan).
 pub fn live() -> Style {
     Style::new().fg(CYAN).bg(BG)
@@ -125,11 +109,6 @@ pub fn live() -> Style {
 /// Informational emphasis.
 pub fn info() -> Style {
     Style::new().fg(LIGHT_YELLOW).bg(BG)
-}
-
-/// Warning emphasis.
-pub fn warn() -> Style {
-    Style::new().fg(ORANGE).bg(BG)
 }
 
 /// Substrate/critical emphasis.
@@ -141,6 +120,7 @@ pub fn crit() -> Style {
 
 /// A per-gauge semantic color ramp for braille gradient gauges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(test)]
 pub enum BrailleRamp {
     /// Memory capacity: white → light yellow → orange → red → deep red.
     Capacity,
@@ -156,6 +136,7 @@ pub enum BrailleRamp {
     Velocity,
 }
 
+#[cfg(test)]
 impl BrailleRamp {
     /// Gradient stops, low (t=0) to high (t=1).
     pub fn stops(self) -> &'static [Color] {
@@ -226,6 +207,7 @@ fn rgb(c: Color) -> (u8, u8, u8) {
 
 /// Value-text style for a gauge: bold orange past the warn threshold unless
 /// the ramp already signals danger at its high end.
+#[cfg(test)]
 pub fn gauge_value_style(ramp: BrailleRamp, ratio: f64) -> Style {
     if ratio > 0.8 && !ramp.signals_danger() {
         Style::new().fg(ORANGE).bg(BG).add_modifier(Modifier::BOLD)

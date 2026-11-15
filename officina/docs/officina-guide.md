@@ -570,3 +570,14 @@ does not tell the model to repair the source or count the file as passing. A
 completed nonzero syntax-check exit still produces the normal bounded repair
 message. Successful checks stay silent. Older facts without an availability
 field retain their existing pass/fail display.
+
+### Native frontend verification
+
+From the Officina directory, run `cargo test --locked --manifest-path tui/Cargo.toml`
+and `cargo clippy --locked --all-targets --manifest-path tui/Cargo.toml -- -D warnings`.
+The crate exposes the pinned, golden-tested Pi wire types as
+`officina_tui::protocol`; the terminal client consumes that same schema.
+The unused HTTP client dependency has been removed. On this 64-bit host,
+inline `ChatEntry` storage decreased from 352 to 208 bytes; optional tool JSON,
+check facts and render caches have separate heap ownership. Existing rendering,
+cache invalidation, tool-liveness and wire-contract tests cover behavior parity.

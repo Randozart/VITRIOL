@@ -4,6 +4,11 @@
 // nonexistent path (import fails → previous state kept, never throws).
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   applyModelHealth,
   classifyConnections,
@@ -102,6 +107,34 @@ describe("getLaneHealth fail-open cache", () => {
     delete process.env.OFFICINA_CADUCEUS_VENDOR_API;
     delete process.env.OFFICINA_NO_LANE_HEALTH;
     resetLaneHealthCache();
+  });
+
+  it("loads a vendor module from a path containing spaces and URL-special characters", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "lane health #"));
+    const file = join(dir, "vendor api.mjs");
+    writeFileSync(file, "export async function apiFetch() { return {ok:true,json:async()=>[{provider:'agentrouter',isActive:false}]}; }");
+    process.env.OFFICINA_CADUCEUS_VENDOR_API = file;
+    try {
+      // Exercise Node's actual external-module loader; Vite's test resolver does
+      // not resolve file URLs containing encoded spaces or fragments.
+      const resultFile = join(dir, "result.json");
+      const moduleUrl = pathToFileURL(join(__dirname, "lane-health.ts")).href;
+      const code = `import {getLaneHealth} from ${JSON.stringify(moduleUrl)};
+        const health = await getLaneHealth();
+        (await import('node:fs')).writeFileSync(process.argv[1], JSON.stringify([...health.hardDown]));`;
+      const child = spawn(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code, resultFile], { stdio: "ignore" });
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("native vendor import timed out")); }, 2000);
+        child.once("error", (error) => { clearTimeout(timer); reject(error); });
+        child.once("exit", (code, signal) => {
+          clearTimeout(timer);
+          if (code === 0) resolve(); else reject(new Error(`native import exited: code=${code} signal=${signal}`));
+        });
+      });
+      expect(JSON.parse(readFileSync(resultFile, "utf8"))).toContain("agentrouter");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("returns all-active on a fetch failure (fail-open, no throw)", async () => {

@@ -33,7 +33,11 @@ import {
   shouldDistill,
 } from "./voice.ts";
 import { budgetStatus } from "../_shared/budget.ts";
-import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
+import { traceHooks } from "../_shared/hook-trace.ts";
+import {
+  extractCatalogModels,
+  freeToolCandidates,
+} from "../caduceus/catalog.ts";
 
 const WIDGET_KEY = "composer-prediction";
 const OFFICINA_DIR = join(homedir(), ".vitriol", "officina");
@@ -69,7 +73,10 @@ function bestFreeLane(): string | null {
   }
 }
 
-async function generateDraft(model: string, prompt: string): Promise<string | null> {
+async function generateDraft(
+  model: string,
+  prompt: string,
+): Promise<string | null> {
   const key = String(process.env.OFFICINA_CADUCEUS_API_KEY ?? "").trim();
   if (!key) return null;
   const controller = new AbortController();
@@ -77,7 +84,10 @@ async function generateDraft(model: string, prompt: string): Promise<string | nu
   try {
     const res = await fetch(`${resolveBaseUrl()}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${key}`,
+      },
       body: JSON.stringify({
         model,
         messages: [{ role: "user", content: prompt }],
@@ -87,7 +97,9 @@ async function generateDraft(model: string, prompt: string): Promise<string | nu
       signal: controller.signal,
     });
     if (!res.ok) return null;
-    const doc = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const doc = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
     return doc.choices?.[0]?.message?.content ?? null;
   } catch {
     return null;
@@ -98,7 +110,9 @@ async function generateDraft(model: string, prompt: string): Promise<string | nu
 
 function readVoiceProfile(): string | null {
   try {
-    const doc = JSON.parse(readFileSync(PROFILE_PATH, "utf8")) as { profile?: string };
+    const doc = JSON.parse(readFileSync(PROFILE_PATH, "utf8")) as {
+      profile?: string;
+    };
     return typeof doc.profile === "string" ? doc.profile : null;
   } catch {
     return null;
@@ -107,6 +121,9 @@ function readVoiceProfile(): string | null {
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_NO_PREDICTIONS === "1") return;
+  // Opt-in hook timing (2026-11-15): a message_end handler is on pi's drain
+  // path before a tool executes, so it must never be a silent blocker.
+  traceHooks("composer-predictions", pi);
 
   const suggestEnabled = process.env.OFFICINA_NO_PROMPT_SUGGEST !== "1";
   const learnEnabled = process.env.OFFICINA_NO_VOICE_LEARN !== "1";
@@ -126,7 +143,9 @@ export default function (pi: ExtensionAPI) {
     if (line === lastLine) return;
     lastLine = line;
     try {
-      ui?.setWidget?.(WIDGET_KEY, line ? [line] : [], { placement: "belowEditor" });
+      ui?.setWidget?.(WIDGET_KEY, line ? [line] : [], {
+        placement: "belowEditor",
+      });
     } catch {
       // decoration contract: never break the workshop
     }
@@ -140,7 +159,9 @@ export default function (pi: ExtensionAPI) {
         timeout: 5_000,
       });
       if (res.error || res.status !== 0) return -1;
-      return String(res.stdout ?? "").split("\n").filter((l) => l.trim()).length;
+      return String(res.stdout ?? "")
+        .split("\n")
+        .filter((l) => l.trim()).length;
     } catch {
       return -1;
     }
@@ -150,7 +171,8 @@ export default function (pi: ExtensionAPI) {
    *  is in flight; agent_end arms it IDLE_MS out, any new run cancels it. */
   const armDistill = (): void => {
     if (process.env.OFFICINA_NO_VOICE_LEARN === "1") return;
-    const idleMs = Number(process.env.OFFICINA_VOICE_IDLE_MS) || IDLE_MS_DEFAULT;
+    const idleMs =
+      Number(process.env.OFFICINA_VOICE_IDLE_MS) || IDLE_MS_DEFAULT;
     if (distillTimer) clearTimeout(distillTimer);
     distillTimer = setTimeout(() => {
       distillTimer = null;
@@ -188,7 +210,11 @@ export default function (pi: ExtensionAPI) {
       } catch {
         events = [];
       }
-      const prompt = buildDistillPrompt(profile, safePrompts, acceptedSuggestions);
+      const prompt = buildDistillPrompt(
+        profile,
+        safePrompts,
+        acceptedSuggestions,
+      );
       const reply = await generateDraft(model, prompt);
       const updated = parseProfile(reply);
       if (!updated) return;
@@ -210,7 +236,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     const c = (ctx as { cwd?: string; hasUI?: boolean }).cwd;
     if (c) cwd = c;
-    ui = (ctx as { hasUI?: boolean; ui?: unknown }).hasUI ? (ctx as { ui: any }).ui : null;
+    ui = (ctx as { hasUI?: boolean; ui?: unknown }).hasUI
+      ? (ctx as { ui: any }).ui
+      : null;
     lastLine = "§";
     setPrediction(null);
     lastAssistantTail = "";
@@ -222,7 +250,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event) => {
-    const message = (event as { message?: { role?: string; content?: unknown } }).message;
+    const message = (
+      event as { message?: { role?: string; content?: unknown } }
+    ).message;
     if (!message) return;
     const content = message.content;
     const textOf = (): string => {
@@ -292,7 +322,10 @@ export default function (pi: ExtensionAPI) {
         // draft is skipped — heuristic suggestions are local and still stage.
         const model = budgetStatus().allowed ? bestFreeLane() : null;
         const draft = model
-          ? await generateDraft(model, buildGenPrompt(signals, readVoiceProfile()))
+          ? await generateDraft(
+              model,
+              buildGenPrompt(signals, readVoiceProfile()),
+            )
           : null;
         const resolved = resolveSuggestion(heuristic, draft);
         if (!resolved || inRun) return;

@@ -1643,10 +1643,23 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 /// 2026-11-10). Lists `get_available_models`, marks the active model, and
 /// switches on Enter via `set_model`.
 fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let filtered: Vec<crate::rpc::protocol::Model> =
-        state.filtered_models().into_iter().cloned().collect();
+    // Display rows are group headers + model rows. Selection indexes the
+    // flattened MODEL list, never the headers.
+    let groups = state.filtered_model_groups();
+    let mut flat: Vec<&crate::rpc::protocol::Model> = Vec::new();
+    let mut rows: Vec<(Option<String>, Option<usize>)> = Vec::new();
+    for group in &groups {
+        rows.push((
+            Some(format!("{} · {}", group.title, group.models.len())),
+            None,
+        ));
+        for model in &group.models {
+            flat.push(model);
+            rows.push((None, Some(flat.len() - 1)));
+        }
+    }
     // + borders(2) + search(1) + bottom gap(1)
-    let h = area.height.min((filtered.len() as u16 + 4).max(9));
+    let h = area.height.min((rows.len() as u16 + 4).max(9));
     let w = area.width.min(86);
     let modal = Rect {
         y: area.y + area.height.saturating_sub(h + 1),
@@ -1664,7 +1677,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             format!(
                 " {} select model · {} of {} ",
                 theme::GLYPH_CRUCIBLE,
-                filtered.len(),
+                flat.len(),
                 state.models.len()
             ),
             Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
@@ -1713,7 +1726,19 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let width = list.width as usize;
     let sel = state.models_sel;
     let visible = list.height as usize;
-    let skip = (sel + 1).saturating_sub(visible);
+    let sel_row = rows
+        .iter()
+        .position(|(_, model)| *model == Some(sel))
+        .unwrap_or(0);
+    let start = if rows.len() <= visible {
+        0
+    } else {
+        let mut start = sel_row.saturating_sub(visible / 2);
+        if sel_row >= start + visible {
+            start = sel_row + 1 - visible;
+        }
+        start.min(rows.len() - visible)
+    };
 
     let name_w = (width * 34 / 100).clamp(12, 32);
     let prov_w = (width * 16 / 100).clamp(8, 16);
@@ -1722,7 +1747,27 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let id_w = width.saturating_sub(fixed + 1);
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, m) in filtered.iter().enumerate().skip(skip) {
+    for (header, model_idx) in rows.iter().skip(start).take(visible) {
+        if let Some(header) = header {
+            let rule = width.saturating_sub(header.chars().count() + 2);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {header} "),
+                    Style::new()
+                        .fg(theme::GOLD)
+                        .bg(theme::PANEL)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "─".repeat(rule),
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                ),
+            ]));
+            continue;
+        }
+        let Some(index) = model_idx else { continue };
+        let m = flat[*index];
+        let i = *index;
         let selected = i == sel;
         let current = state
             .model
@@ -1799,7 +1844,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
         lines.push(Line::from(spans));
     }
-    if filtered.is_empty() {
+    if flat.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no matching models",
             Style::new()
@@ -3956,6 +4001,19 @@ mod render_smoke {
             let mut s = base_state();
             s.xsessions_open = true;
             s.xsessions_open_with(Vec::new());
+            draw_at(&mut s, w, h);
+            // model picker (grouped: OFFICINA → OpenCode Go → providers)
+            let mut s = base_state();
+            s.models_open = true;
+            s.models = serde_json::from_value(serde_json::json!([
+                {"id":"lapis","provider":"officina","name":"Lapis Occultus"},
+                {"id":"nimbus","provider":"officina","name":"Nimbus"},
+                {"id":"glm-5.2","provider":"opencode-go","name":"GLM-5.2","contextWindow":1000000},
+                {"id":"glm-5.2","provider":"caduceus","name":"GLM-5.2 gateway","contextWindow":1000000},
+                {"id":"glm-4.6","provider":"zai","name":"GLM 4.6","contextWindow":200000}
+            ]))
+            .unwrap();
+            s.models_sel = 2;
             draw_at(&mut s, w, h);
             // status
             let mut s = base_state();

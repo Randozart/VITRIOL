@@ -388,6 +388,10 @@ pub struct RpcSessionState {
     pub is_compacting: bool,
     #[serde(rename = "sessionId")]
     pub session_id: Option<String>,
+    /// Active session JSONL path — pi returns it from `get_state`
+    /// (rpc-mode.js). Recovery reopens exactly this file.
+    #[serde(rename = "sessionFile")]
+    pub session_file: Option<String>,
     #[serde(rename = "sessionName")]
     pub session_name: Option<String>,
     #[serde(rename = "messageCount")]

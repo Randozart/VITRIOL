@@ -879,6 +879,52 @@ pub(crate) fn prepare_session_args_in(
     (args, None)
 }
 
+/// In-process recovery resume: validate, then repair append-only, then
+/// conservative rewrite. Never silently drops the file when repair fails —
+/// the caller resumes the original and surfaces the health reason.
+pub fn repair_for_resume(path: &Path) -> (Option<PathBuf>, Option<String>) {
+    if !path.is_file() {
+        return (
+            None,
+            Some(format!("session file missing: {}", path.display())),
+        );
+    }
+    let health = validate_session(path);
+    if health.valid {
+        return (Some(path.to_path_buf()), None);
+    }
+    if let Some(patched) = patch_dangling_session(path) {
+        return (
+            Some(patched.clone()),
+            Some(format!(
+                "session patched append-only: {} ({}) -> {}",
+                path.display(),
+                health.reason,
+                patched.display()
+            )),
+        );
+    }
+    if let Some(repaired) = repair_simple_session(path) {
+        return (
+            Some(repaired.clone()),
+            Some(format!(
+                "session repaired: {} ({}) -> {}",
+                path.display(),
+                health.reason,
+                repaired.display()
+            )),
+        );
+    }
+    (
+        Some(path.to_path_buf()),
+        Some(format!(
+            "session needs recovery but no safe repair applied: {} ({})",
+            path.display(),
+            health.reason
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,8 +6,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::text::Span;
 
-use crate::rpc::protocol::{Model, RpcCommand};
+use crate::rpc::protocol::{ImageContent, Model, RpcCommand};
 use crate::theme;
+use crate::tui::heal;
 
 // ── Tool verbosity (owner request 2026-09-03) ────────────────────────────
 
@@ -664,6 +665,116 @@ pub struct HeldMsg {
     pub kind: HeldKind,
 }
 
+/// The last real prompt sent to pi. Recovery uses it for the one-shot,
+/// tool-free replay gate (2026-11-15 self-heal).
+/// One provider/owner section in the /model picker.
+#[derive(Debug, Clone)]
+pub struct ModelGroup<'a> {
+    pub key: String,
+    pub title: String,
+    pub rank: u8,
+    pub models: Vec<&'a Model>,
+}
+
+fn model_tail(id: &str) -> &str {
+    id.rsplit('/').next().unwrap_or(id)
+}
+
+fn title_words(key: &str) -> String {
+    key.split(['-', '_'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn provider_title(key: &str) -> String {
+    match key {
+        "officina" => "OFFICINA".to_string(),
+        "opencode-go" => "OpenCode Go".to_string(),
+        "opencode" => "OpenCode".to_string(),
+        "llamacpp" => "VITRIOL local".to_string(),
+        "zai" => "Z.AI".to_string(),
+        "glm" => "GLM".to_string(),
+        "agentrouter" => "AgentRouter".to_string(),
+        "cloudflare-playground" => "Cloudflare Playground".to_string(),
+        "duckduckgo-web" => "DuckDuckGo".to_string(),
+        "freeinference" => "FreeInference".to_string(),
+        "freemodel-dev" => "FreeModel".to_string(),
+        "api-airforce" => "API Airforce".to_string(),
+        "no-think" => "No-think".to_string(),
+        "kimi-coding" => "Kimi Coding".to_string(),
+        "zai-coding-plan" => "Z.AI Coding Plan".to_string(),
+        "zai-coding-cn" => "Z.AI Coding CN".to_string(),
+        _ => title_words(key),
+    }
+}
+
+/// (key, title, rank). rank 0 = OFFICINA specials, 1 = OpenCode Go,
+/// 2 = every other provider/owner.
+fn model_group_identity(m: &Model) -> (String, String, u8) {
+    if m.provider == "officina" {
+        return ("officina".to_string(), provider_title("officina"), 0);
+    }
+    let owner = if m.provider == "caduceus" {
+        model_tail(
+            m.id.split_once('/')
+                .map(|(owner, _)| owner)
+                .unwrap_or(m.provider.as_str()),
+        )
+    } else {
+        m.provider.as_str()
+    };
+    let key = owner.to_ascii_lowercase();
+    let rank = if key == "opencode-go" { 1 } else { 2 };
+    let title = provider_title(&key);
+    (key, title, rank)
+}
+
+#[derive(Debug, Clone)]
+pub struct LastPrompt {
+    pub text: String,
+    pub images: Option<Vec<ImageContent>>,
+    /// Drives the pre-agent_start hang detector (pi never opened the turn).
+    pub sent_at: std::time::Instant,
+    pub tool_started: bool,
+    pub assistant_output: bool,
+    pub failed: bool,
+    pub replayed: bool,
+    /// A running tool was abandoned without ever producing output, so no side
+    /// effect can have happened and the prompt is safe to replay once
+    /// (2026-11-15 stall recovery).
+    pub stalled_tool: bool,
+}
+
+/// A tool call that has not received its result yet.
+#[derive(Debug, Clone)]
+pub struct RunningTool {
+    /// Stable watchdog key: pi's tool call id, else a name fallback.
+    pub key: String,
+    pub name: String,
+    pub age: std::time::Duration,
+    /// Timeout declared by the model; authoritative when present.
+    pub timeout_s: Option<u64>,
+    /// Not one output line has arrived for this call.
+    pub silent: bool,
+}
+
+impl RunningTool {
+    /// Age budget: a declared timeout wins, never below the watchdog base.
+    pub fn limit(&self, base: std::time::Duration) -> std::time::Duration {
+        self.timeout_s
+            .map(|s| std::time::Duration::from_secs(s.saturating_add(60)))
+            .map_or(base, |t| t.max(base))
+    }
+}
+
 #[derive(Debug)]
 pub struct AppState {
     pub entries: Vec<ChatEntry>,
@@ -672,6 +783,9 @@ pub struct AppState {
     pub model: Option<Model>,
     pub thinking_level: Option<String>,
     pub session_id: String,
+    /// Active session JSONL path from `get_state` (pi's `sessionFile`).
+    /// Recovery reopens exactly this file instead of guessing "latest".
+    pub session_file: Option<std::path::PathBuf>,
     pub session_name: Option<String>,
     pub message_count: u64,
 
@@ -922,6 +1036,23 @@ pub struct AppState {
     pub tool_watchdog_secs: u64,
     /// Tool call ids already watched/aborted once this turn.
     pub watchdog_fired: std::collections::HashSet<String>,
+    /// Tool call ids that already received their one bounded stall grace.
+    pub stall_graced: std::collections::HashSet<String>,
+    /// Per-tool instant before which the stall ladder must not re-evaluate
+    /// (the evidence probe opens a TCP socket; a 90 ms tick must not do that).
+    pub stall_grace_until: std::collections::HashMap<String, std::time::Instant>,
+    /// Wall clock of the last wire message (any response/event/UI request).
+    /// Drives the wire-idle detector (2026-11-15).
+    pub last_wire_at: std::time::Instant,
+    /// Set when an engine probe proved prefill/decode is still active, so
+    /// the wire-idle detector must not kill a legitimate long prefill.
+    pub wire_grace_until: Option<std::time::Instant>,
+    /// Last real prompt (replay gate).
+    pub last_prompt: Option<LastPrompt>,
+    /// Harness recovery state (bounded attempts, pending replay, phase).
+    pub recovery: heal::RecoveryState,
+    /// `/recover` asks the async loop for a manual recovery attempt.
+    pub heal_requested: bool,
     /// Set after a watchdog abort; if the agent has not settled by this
     /// instant the TUI surfaces a restart hint instead of looking hung.
     pub abort_deadline: Option<std::time::Instant>,
@@ -990,6 +1121,7 @@ impl Default for AppState {
             model: None,
             thinking_level: None,
             session_id: String::new(),
+            session_file: None,
             session_name: None,
             message_count: 0,
             widgets: Vec::new(),
@@ -1095,6 +1227,13 @@ impl Default for AppState {
             compaction_auto_armed: false,
             tool_watchdog_secs: 300,
             watchdog_fired: std::collections::HashSet::new(),
+            stall_graced: std::collections::HashSet::new(),
+            stall_grace_until: std::collections::HashMap::new(),
+            last_wire_at: std::time::Instant::now(),
+            wire_grace_until: None,
+            last_prompt: None,
+            recovery: heal::RecoveryState::default(),
+            heal_requested: false,
             abort_deadline: None,
             queued_prompts: Vec::new(),
             held: Vec::new(),
@@ -1451,21 +1590,86 @@ impl AppState {
         ))
     }
 
+    fn model_matches(&self, m: &Model) -> bool {
+        let needle = self.models_filter.trim().to_lowercase();
+        if needle.is_empty() {
+            return true;
+        }
+        let name = m.name.as_deref().unwrap_or("");
+        let hay = format!("{} {} {}", m.provider, m.id, name).to_lowercase();
+        needle.split_whitespace().all(|w| hay.contains(w))
+    }
+
     /// Models matching the picker filter (case-insensitive, AND of words
     /// across provider/id/name). Empty filter = all models.
+    ///
+    /// Ordered for display: OFFICINA first (Lapis, Nimbus, then the rest),
+    /// OpenCode Go next, then every other provider/owner group.
     pub fn filtered_models(&self) -> Vec<&Model> {
-        let needle = self.models_filter.trim().to_lowercase();
-        self.models
-            .iter()
-            .filter(|m| {
-                if needle.is_empty() {
-                    return true;
-                }
-                let name = m.name.as_deref().unwrap_or("");
-                let hay = format!("{} {} {}", m.provider, m.id, name).to_lowercase();
-                needle.split_whitespace().all(|w| hay.contains(w))
-            })
+        self.filtered_model_groups()
+            .into_iter()
+            .flat_map(|g| g.models)
             .collect()
+    }
+
+    /// Grouped picker rows. Caduceus model ids are `owner/model`, so the
+    /// owner becomes the group (opencode-go, glm, zai, agentrouter, …).
+    /// OpenCode Go is deduped in favour of the native provider entry when
+    /// both the native and gateway catalogs expose the same model.
+    pub fn filtered_model_groups(&self) -> Vec<ModelGroup<'_>> {
+        let mut groups: Vec<ModelGroup<'_>> = Vec::new();
+        for m in &self.models {
+            if !self.model_matches(m) {
+                continue;
+            }
+            let (key, title, rank) = model_group_identity(m);
+            let idx = match groups.iter().position(|g| g.key == key) {
+                Some(i) => i,
+                None => {
+                    groups.push(ModelGroup {
+                        key: key.clone(),
+                        title,
+                        rank,
+                        models: Vec::new(),
+                    });
+                    groups.len() - 1
+                }
+            };
+            let group = &mut groups[idx];
+            if key == "opencode-go" {
+                let tail = model_tail(&m.id);
+                if let Some(pos) = group
+                    .models
+                    .iter()
+                    .position(|existing| model_tail(&existing.id) == tail)
+                {
+                    // Prefer the native opencode-go provider (per-model api,
+                    // full capability metadata) over the gateway copy.
+                    if group.models[pos].provider == "caduceus" && m.provider != "caduceus" {
+                        group.models[pos] = m;
+                    }
+                    continue;
+                }
+            }
+            group.models.push(m);
+        }
+        for group in &mut groups {
+            if group.key == "officina" {
+                group.models.sort_by_key(|m| match m.id.as_str() {
+                    "lapis" => 0,
+                    "nimbus" => 1,
+                    _ => 2,
+                });
+            } else {
+                group.models.sort_by(|a, b| {
+                    let an = a.name.as_deref().unwrap_or(&a.id).to_lowercase();
+                    let bn = b.name.as_deref().unwrap_or(&b.id).to_lowercase();
+                    an.cmp(&bn).then_with(|| a.id.cmp(&b.id))
+                });
+            }
+        }
+        groups.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.title.cmp(&b.title)));
+        groups
     }
 
     /// Keep the selection inside the filtered list after a filter edit.
@@ -1903,7 +2107,7 @@ impl AppState {
     /// tree at most every 2 s while a tool runs; flat samples accumulate
     /// `liveness_flat_secs`. No-op when nothing runs.
     pub fn probe_liveness(&mut self, pi_pid: Option<u32>) {
-        if !self.has_running_tool() {
+        if !self.has_running_tool() && !self.is_streaming && !self.is_compacting {
             self.liveness_cpu_total = 0.0;
             self.liveness_prev_total = 0.0;
             self.liveness_delta = 0.0;
@@ -2403,6 +2607,221 @@ impl AppState {
         }
     }
 
+    /// Any wire message proves pi's event loop is alive.
+    pub fn note_wire_activity(&mut self) {
+        self.last_wire_at = std::time::Instant::now();
+        self.wire_grace_until = None;
+    }
+
+    /// A local engine probe saw active prefill/decode. Do not escalate on
+    /// wire silence until this grace expires.
+    pub fn grant_wire_grace(&mut self, grace: std::time::Duration) {
+        self.wire_grace_until = Some(std::time::Instant::now() + grace);
+    }
+
+    /// Remember the prompt the operator actually sent. Slash commands are
+    /// extension invocations, never replayed by recovery.
+    pub fn note_prompt_sent(&mut self, text: &str, images: Option<Vec<ImageContent>>) {
+        if text.trim_start().starts_with('/') {
+            self.last_prompt = None;
+            return;
+        }
+        self.last_wire_at = std::time::Instant::now();
+        self.last_prompt = Some(LastPrompt {
+            text: text.to_string(),
+            images,
+            sent_at: std::time::Instant::now(),
+            tool_started: false,
+            assistant_output: false,
+            failed: false,
+            replayed: false,
+            stalled_tool: false,
+        });
+    }
+
+    pub fn note_prompt_tool_started(&mut self) {
+        if self.recovery.phase == heal::Phase::Rehydrating {
+            return; // historical transcript, not the failed turn
+        }
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.tool_started = true;
+        }
+    }
+
+    pub fn note_prompt_assistant_output(&mut self) {
+        if self.recovery.phase == heal::Phase::Rehydrating {
+            return;
+        }
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.assistant_output = true;
+        }
+    }
+
+    pub fn note_prompt_failed(&mut self) {
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.failed = true;
+        }
+    }
+
+    /// Turn settled cleanly, or the one-shot replay already ran: nothing
+    /// left to replay. A failed first attempt is kept until its replay.
+    pub fn settle_last_prompt(&mut self) {
+        if self
+            .last_prompt
+            .as_ref()
+            .is_some_and(|p| !p.failed || p.replayed)
+        {
+            self.last_prompt = None;
+        }
+    }
+
+    /// Replay gate (I3): failed, tool-free, no assistant output, no images,
+    /// not a slash command, not already replayed. Taking the prompt marks it
+    /// replayed so a recovery cannot loop.
+    ///
+    /// Narrow 2026-11-15 exception: a prompt whose only tool was abandoned
+    /// before it ever produced output (`stalled_tool`) is replayable once even
+    /// though the call started — nothing executed, so nothing can repeat.
+    pub fn take_replayable_prompt(&mut self) -> Option<(String, Option<Vec<ImageContent>>)> {
+        // One gate, no bypasses: the side-effect veto is part of the predicate
+        // so a caller cannot replay a turn that already ran a tool.
+        if !self.last_prompt_replayable() {
+            return None;
+        }
+        let p = self.last_prompt.as_mut()?;
+        p.replayed = true;
+        Some((p.text.clone(), None))
+    }
+
+    pub fn last_prompt_replayable(&self) -> bool {
+        let Some(p) = self.last_prompt.as_ref() else {
+            return false;
+        };
+        if p.replayed
+            || p.text.trim_start().starts_with('/')
+            || p.images.as_ref().is_some_and(|i| !i.is_empty())
+            || self.replay_has_side_effects()
+        {
+            return false;
+        }
+        if p.stalled_tool {
+            return true; // nothing executed, so nothing can repeat
+        }
+        p.failed && !p.tool_started && !p.assistant_output
+    }
+
+    /// Mark the prompt as stalled-before-execution so the recovery ladder may
+    /// replay it once (2026-11-15; see `stall`).
+    pub fn note_stall_unexecuted(&mut self) {
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.stalled_tool = true;
+        }
+    }
+
+    pub fn model_is_lapis(&self) -> bool {
+        heal::is_lapis(&self.model)
+    }
+
+    /// Wire-idle gate: streaming/compacting, no tool watches armed, and no
+    /// grace granted by a live prefill probe.
+    pub fn wire_idle_due(&self, now: std::time::Instant, threshold: std::time::Duration) -> bool {
+        // A prompt sent but never acknowledged (no agent_start) is also a
+        // hang surface — do not wait for the streaming flag forever.
+        let prompt_waiting = self.last_prompt.as_ref().is_some_and(|p| {
+            !p.failed && !p.replayed && now.duration_since(p.sent_at) >= threshold
+        });
+        if threshold.is_zero() || !(self.is_streaming || self.is_compacting || prompt_waiting) {
+            return false;
+        }
+        if self.has_running_tool() || !self.expected_tool_calls.is_empty() {
+            return false;
+        }
+        if self.wire_grace_until.is_some_and(|until| now < until) {
+            return false;
+        }
+        // CPU grace: an active pi tree means real work, not a hang. When
+        // /proc is unavailable, liveness is unknown and must not block the
+        // detector forever.
+        let pi_flat = if self.liveness_unavailable || prompt_waiting {
+            // No turn started yet: pi has nothing to compute, so silence is
+            // itself the evidence. The streaming path keeps the CPU gate.
+            threshold
+        } else {
+            std::time::Duration::from_secs(self.liveness_flat_secs)
+        };
+        heal::wire_idle_escalate(
+            threshold,
+            heal::WireEvidence {
+                idle: now.duration_since(self.last_wire_at),
+                pi_flat,
+                engine_busy: false,
+            },
+        )
+    }
+
+    /// True when the rehydrated transcript contains a tool entry after the
+    /// last user message — replaying that prompt would re-run side effects.
+    pub fn transcript_has_tool_after_last_user(&self) -> bool {
+        for e in self.entries.iter().rev() {
+            match e {
+                ChatEntry::User(_) => return false,
+                ChatEntry::Tool { .. } => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Tool entries after the last user message that actually produced a
+    /// result. Abandoned/errored calls (the stall path) do not count: they ran
+    /// nothing, so replaying the prompt cannot repeat a side effect.
+    pub fn transcript_has_successful_tool_after_last_user(&self) -> bool {
+        for e in self.entries.iter().rev() {
+            match e {
+                ChatEntry::User(_) => return false,
+                ChatEntry::Tool { error, .. } => {
+                    if !*error {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Would replaying the pending prompt repeat a side effect? A tool that
+    /// produced a real result blocks it; a never-executed stall does not
+    /// (2026-11-15 stall replay).
+    pub fn replay_has_side_effects(&self) -> bool {
+        if self.last_prompt.as_ref().is_some_and(|p| p.stalled_tool) {
+            return self.transcript_has_successful_tool_after_last_user();
+        }
+        self.transcript_has_tool_after_last_user()
+    }
+
+    /// Clear the view before a recovery replay. The session file is the
+    /// source of truth; pending replay and the composer survive.
+    pub fn reset_for_rehydrate(&mut self) {
+        self.entries.clear();
+        self.md_cache_clear();
+        self.widgets.clear();
+        self.dialogs.clear();
+        self.held.clear();
+        self.queued_prompts.clear();
+        self.expected_tool_calls.clear();
+        self.abandon_running_tools("harness recovery");
+        self.clear_stall_state();
+        self.is_streaming = false;
+        self.is_compacting = false;
+        self.abort_deadline = None;
+        self.turn_started_at = None;
+        self.watchdog_fired.clear();
+        self.compaction_started_at = None;
+        self.compaction_auto_armed = false;
+        self.ctx_usage = None;
+    }
+
     pub fn apply_state(&mut self, snapshot: crate::rpc::protocol::RpcSessionState) {
         let crate::rpc::protocol::RpcSessionState {
             model,
@@ -2410,6 +2829,7 @@ impl AppState {
             is_streaming,
             is_compacting,
             session_id,
+            session_file,
             session_name,
             message_count,
         } = snapshot;
@@ -2425,6 +2845,9 @@ impl AppState {
         self.is_streaming = is_streaming;
         self.is_compacting = is_compacting;
         self.session_id = session_id.unwrap_or_default();
+        if let Some(path) = session_file {
+            self.session_file = Some(std::path::PathBuf::from(path));
+        }
         self.session_name = session_name;
         self.message_count = message_count.unwrap_or(0);
     }
@@ -2432,6 +2855,7 @@ impl AppState {
     /// Append a text delta to the last assistant entry (or open a new one).
     pub fn push_text_delta(&mut self, delta: &str) {
         self.stream_heat = (self.stream_heat + 0.4).min(1.6);
+        self.note_prompt_assistant_output();
         match self.entries.last_mut() {
             Some(ChatEntry::Assistant(t)) => t.push_str(delta),
             _ => self.entries.push(ChatEntry::Assistant(delta.to_string())),
@@ -2440,6 +2864,7 @@ impl AppState {
 
     /// Append a thinking delta to the last thinking entry (or open a new one).
     pub fn push_thinking_delta(&mut self, delta: &str) {
+        self.note_prompt_assistant_output();
         self.stream_heat = (self.stream_heat + 0.4).min(1.6);
         match self.entries.last_mut() {
             Some(ChatEntry::Thinking { text, .. }) => text.push_str(delta),
@@ -2508,6 +2933,7 @@ impl AppState {
 
     /// Tool execution started — add a running tool entry with full args.
     pub fn tool_start(&mut self, tool_call_id: Option<&str>, name: &str, args: &serde_json::Value) {
+        self.note_prompt_tool_started();
         let summary = summarize_args(name, args);
         // write overwrites: snapshot the old content so the block can show a
         // real diff (2026-11-14). Capped; read failures are silent.
@@ -2668,11 +3094,8 @@ impl AppState {
         }
     }
 
-    /// Oldest still-running tool: stable key, display name, age, declared
-    /// timeout. Used by the stall watchdog.
-    pub fn oldest_running_tool(
-        &self,
-    ) -> Option<(String, String, std::time::Duration, Option<u64>)> {
+    /// Oldest still-running tool with its watchdog facts.
+    pub fn oldest_running_tool(&self) -> Option<RunningTool> {
         let now = std::time::Instant::now();
         self.entries
             .iter()
@@ -2683,17 +3106,61 @@ impl AppState {
                     running: true,
                     started_at,
                     timeout_s,
+                    output,
                     ..
                 } => {
                     let started = started_at.unwrap_or(now);
                     let key = tool_call_id
                         .clone()
                         .unwrap_or_else(|| format!("name:{name}"));
-                    Some((key, name.clone(), now.duration_since(started), *timeout_s))
+                    Some(RunningTool {
+                        key,
+                        name: name.clone(),
+                        age: now.duration_since(started),
+                        timeout_s: *timeout_s,
+                        silent: output.is_empty(),
+                    })
                 }
                 _ => None,
             })
-            .max_by_key(|(_, _, age, _)| *age)
+            .max_by_key(|tool| tool.age)
+    }
+
+    /// True while the ladder for this tool is parked (grace or live evidence).
+    pub fn stall_parked(&self, key: &str, now: std::time::Instant) -> bool {
+        self.stall_grace_until
+            .get(key)
+            .is_some_and(|until| now < *until)
+    }
+
+    /// Park the ladder for one tool so a fast heartbeat cannot repeat the
+    /// evidence probe (and cannot thrash the engine endpoint).
+    pub fn park_stall(&mut self, key: &str, grace: std::time::Duration) {
+        self.stall_grace_until
+            .insert(key.to_string(), std::time::Instant::now() + grace);
+    }
+
+    /// Reset every stall decision for a new turn or a rehydrated view.
+    pub fn clear_stall_state(&mut self) {
+        self.stall_graced.clear();
+        self.stall_grace_until.clear();
+    }
+
+    /// Running tool count; the "no descendant process" fast path is only
+    /// conclusive when exactly one tool is in flight (2026-11-15).
+    pub fn running_tool_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::Tool { running: true, .. }))
+            .count()
+    }
+
+    /// True when no sampled liveness fact contradicts a hang. Unknown samples
+    /// count as flat: they must never buy a stuck tool more time.
+    pub fn pi_is_flat(&self) -> bool {
+        self.liveness_unavailable
+            || self.liveness_sampled_at.is_none()
+            || self.liveness_flat_secs > 0
     }
 
     /// True while any tool call is still awaiting `tool_execution_end`.
@@ -3836,6 +4303,7 @@ impl AppState {
         ("import-opencode", "import an OpenCode session", "/import-opencode [latest|<id>|list] [full] — convert an OpenCode session and switch to it (default: newest ~40k tokens + a digest of older history; full = everything)"),
         ("model", "select a model", "/model [provider/id] — picker from available models; provider/id switches directly"),
         ("new", "new session", "/new — fresh session (old one stays resumable)"),
+        ("recover", "harness recovery", "/recover — restart a hung pi child and restore the session (auto-runs on watchdog failures)"),
         ("quit", "quit the TUI", "/quit — deliberate quit; the only other path is ^esc"),
         ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
         ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare opens choices"),
@@ -3956,7 +4424,9 @@ impl AppState {
     pub fn is_local_command(&self, msg: &str) -> bool {
         let word = msg.split_whitespace().next().unwrap_or("");
         let word = word.trim_start_matches('/');
-        Self::LOCAL_COMMANDS.iter().any(|(n, _, _)| *n == word) || word == "config"
+        Self::LOCAL_COMMANDS.iter().any(|(n, _, _)| *n == word)
+            || word == "heal"
+            || word == "config"
     }
 
     /// Longest common prefix completion for the current command word.
@@ -6689,13 +7159,19 @@ mod tests {
             "bash",
             &serde_json::json!({"command": "ls"}),
         );
-        let (key, name, _, _) = s.oldest_running_tool().expect("running tool");
-        assert_eq!(key, "call-1");
-        assert_eq!(name, "bash");
+        let tool = s.oldest_running_tool().expect("running tool");
+        assert_eq!(tool.key, "call-1");
+        assert_eq!(tool.name, "bash");
+        // No output line ever arrived for either call.
+        assert!(tool.silent);
 
         s.tool_end(Some("call-1"), "bash", "done", false);
-        let (key, _, _, _) = s.oldest_running_tool().expect("still running");
-        assert_eq!(key, "call-2");
+        let tool = s.oldest_running_tool().expect("still running");
+        assert_eq!(tool.key, "call-2");
+        assert_eq!(s.running_tool_count(), 1);
+
+        s.tool_update(Some("call-2"), "bash", "partial");
+        assert!(!s.oldest_running_tool().expect("running").silent);
 
         assert_eq!(s.abandon_running_tools("no result"), 1);
         assert!(s.oldest_running_tool().is_none());
@@ -6710,6 +7186,64 @@ mod tests {
             )
         });
         assert!(failed);
+    }
+
+    #[test]
+    fn stall_park_prevents_repeated_evidence_probes() {
+        let mut s = AppState::default();
+        let now = std::time::Instant::now();
+        assert!(!s.stall_parked("call-1", now));
+        s.park_stall("call-1", std::time::Duration::from_secs(60));
+        assert!(s.stall_parked("call-1", now));
+        assert!(!s.stall_parked("call-2", now), "park is per tool call");
+        s.clear_stall_state();
+        assert!(!s.stall_parked("call-1", now));
+    }
+
+    #[test]
+    fn stall_replay_needs_a_never_executed_tool_and_happens_once() {
+        let mut s = AppState::default();
+        s.note_prompt_sent("finish the audit", None);
+        s.tool_start(
+            Some("call-1"),
+            "bash",
+            &serde_json::json!({"command": "ls /proc"}),
+        );
+        s.note_prompt_tool_started();
+        // Without the stall marker a started tool blocks replay (I3 parity).
+        s.note_prompt_failed();
+        assert!(!s.last_prompt_replayable());
+        assert!(s.take_replayable_prompt().is_none());
+
+        s.note_stall_unexecuted();
+        // Recovery abandons the running call before replaying (abandon marks it
+        // errored, so it is not a side effect).
+        s.abandon_running_tools("harness recovery");
+        assert!(s.last_prompt_replayable());
+        let (text, images) = s.take_replayable_prompt().expect("stall replay");
+        assert_eq!(text, "finish the audit");
+        assert!(images.is_none());
+        assert!(
+            s.take_replayable_prompt().is_none(),
+            "a stall replay must never loop"
+        );
+    }
+
+    #[test]
+    fn stall_replay_is_blocked_by_a_real_tool_result() {
+        let mut s = AppState::default();
+        s.push_user("finish the audit".into());
+        s.note_prompt_sent("finish the audit", None);
+        s.tool_start(
+            Some("call-1"),
+            "bash",
+            &serde_json::json!({"command": "ls"}),
+        );
+        s.tool_end(Some("call-1"), "bash", "ok", false);
+        s.note_prompt_failed();
+        s.note_stall_unexecuted();
+        assert!(s.replay_has_side_effects());
+        assert!(s.take_replayable_prompt().is_none());
     }
 
     #[test]
@@ -7419,6 +7953,24 @@ fn child_pids(pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Live descendant count under `pid` (tool subtrees live there). `None` when
+/// /proc is unavailable: unknown liveness is never read as evidence of life.
+pub fn subtree_process_count(root: u32) -> Option<usize> {
+    stat_cpu_secs(root)?; // proof /proc answers for this pid at all
+    let mut total = 0usize;
+    let mut queue = child_pids(root);
+    let mut visited = 0usize;
+    while let Some(pid) = queue.pop() {
+        visited += 1;
+        if visited > 4096 {
+            break; // bounded walk: a fork storm must not stall the UI
+        }
+        total += 1;
+        queue.extend(child_pids(pid));
+    }
+    Some(total)
+}
+
 /// Total CPU seconds of the whole live subtree rooted at `root` (pi).
 /// Any unreadable node is skipped (a process exiting mid-walk is normal).
 fn subtree_cpu_secs(root: u32) -> Option<f64> {
@@ -7861,5 +8413,210 @@ mod watchdog_ownership_tests {
             root.join("watchdog/session_a__.json")
         );
         assert_eq!(watchdog_path_in(root, ""), root.join("watchdog.json"));
+    }
+}
+
+#[cfg(test)]
+mod self_heal_tests {
+    use super::*;
+
+    fn prompt(s: &mut AppState, text: &str) {
+        s.recovery = heal::RecoveryState::default();
+        s.note_prompt_sent(text, None);
+    }
+
+    #[test]
+    fn replay_gate_requires_failure_without_tools_or_output() {
+        let mut s = AppState::default();
+        prompt(&mut s, "do the work");
+        s.note_prompt_failed();
+        assert!(s.last_prompt_replayable());
+        let taken = s.take_replayable_prompt().expect("replayable");
+        assert_eq!(taken.0, "do the work");
+        assert!(!s.last_prompt_replayable(), "take marks replayed");
+
+        prompt(&mut s, "run tests");
+        s.note_prompt_failed();
+        s.note_prompt_tool_started();
+        assert!(
+            !s.last_prompt_replayable(),
+            "tool-touched turn never replays"
+        );
+
+        prompt(&mut s, "think");
+        s.note_prompt_failed();
+        s.note_prompt_assistant_output();
+        assert!(!s.last_prompt_replayable(), "assistant output is progress");
+    }
+
+    #[test]
+    fn replay_gate_excludes_slash_and_images() {
+        let mut s = AppState::default();
+        prompt(&mut s, "/compact");
+        s.note_prompt_failed();
+        assert!(!s.last_prompt_replayable(), "slash commands never replay");
+
+        let mut s = AppState::default();
+        s.note_prompt_sent(
+            "look",
+            Some(vec![crate::rpc::protocol::ImageContent {
+                content_type: "image".into(),
+                data: "AAAA".into(),
+                mime_type: "image/png".into(),
+            }]),
+        );
+        s.note_prompt_failed();
+        assert!(
+            !s.last_prompt_replayable(),
+            "image prompts are not replayed"
+        );
+    }
+
+    #[test]
+    fn rehydrate_does_not_count_history_as_current_progress() {
+        let mut s = AppState::default();
+        prompt(&mut s, "retry me");
+        s.note_prompt_failed();
+        s.recovery.phase = heal::Phase::Rehydrating;
+        s.note_prompt_tool_started();
+        s.note_prompt_assistant_output();
+        assert!(
+            s.last_prompt_replayable(),
+            "historical transcript replay must not poison the gate"
+        );
+    }
+
+    #[test]
+    fn transcript_tool_after_last_user_blocks_replay() {
+        let mut s = AppState::default();
+        s.push_user("first".into());
+        s.tool_start(Some("t1"), "bash", &serde_json::json!({}));
+        s.tool_end(Some("t1"), "bash", "ok", false);
+        s.push_user("second".into());
+        assert!(!s.transcript_has_tool_after_last_user());
+        s.tool_start(Some("t2"), "bash", &serde_json::json!({}));
+        assert!(s.transcript_has_tool_after_last_user());
+    }
+
+    #[test]
+    fn session_file_is_taken_from_get_state() {
+        let mut s = AppState::default();
+        s.apply_state(crate::rpc::protocol::RpcSessionState {
+            model: None,
+            thinking_level: None,
+            is_streaming: false,
+            is_compacting: false,
+            session_id: Some("s1".into()),
+            session_file: Some("/tmp/live.jsonl".into()),
+            session_name: None,
+            message_count: Some(3),
+        });
+        assert_eq!(
+            s.session_file.as_deref(),
+            Some(std::path::Path::new("/tmp/live.jsonl"))
+        );
+    }
+
+    #[test]
+    fn wire_idle_needs_streaming_flat_cpu_and_no_tool() {
+        let threshold = std::time::Duration::from_secs(300);
+        let mut s = AppState::default();
+        let now = std::time::Instant::now();
+        s.last_wire_at = now - threshold;
+        s.liveness_flat_secs = 300;
+        assert!(!s.wire_idle_due(now, threshold), "idle is not enough");
+        s.is_streaming = true;
+        assert!(s.wire_idle_due(now, threshold));
+        s.liveness_flat_secs = 0;
+        assert!(!s.wire_idle_due(now, threshold), "active pi CPU extends");
+        s.liveness_flat_secs = 300;
+        s.tool_start(Some("t"), "bash", &serde_json::json!({}));
+        assert!(!s.wire_idle_due(now, threshold), "tool watchdog owns this");
+    }
+
+    #[test]
+    fn wire_idle_catches_a_prompt_that_never_started_a_turn() {
+        let threshold = std::time::Duration::from_secs(300);
+        let mut s = AppState::default();
+        s.note_prompt_sent("hello", None);
+        assert!(!s.wire_idle_due(std::time::Instant::now(), threshold));
+        s.last_wire_at = std::time::Instant::now() - threshold;
+        if let Some(p) = s.last_prompt.as_mut() {
+            p.sent_at = s.last_wire_at;
+        }
+        assert!(
+            s.wire_idle_due(std::time::Instant::now(), threshold),
+            "a prompt with no agent_start must escalate"
+        );
+    }
+
+    #[test]
+    fn reset_for_rehydrate_keeps_prompt_and_clears_view() {
+        let mut s = AppState::default();
+        prompt(&mut s, "retry me");
+        s.note_prompt_failed();
+        s.is_streaming = true;
+        s.held_push("held", HeldKind::Queued);
+        s.entries.push(ChatEntry::Diag("stale".into()));
+        s.reset_for_rehydrate();
+        assert!(s.entries.is_empty());
+        assert!(s.held.is_empty());
+        assert!(!s.is_streaming);
+        assert!(s.last_prompt.is_some(), "replay source survives the reset");
+    }
+}
+
+#[cfg(test)]
+mod model_group_tests {
+    use super::*;
+
+    fn model(provider: &str, id: &str, name: &str) -> Model {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "provider": provider, "name": name
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn picker_groups_officina_first_then_opencode_go_then_providers() {
+        let mut s = AppState::default();
+        s.models = vec![
+            model("caduceus", "opencode-go/glm-5.2", "GLM via gateway"),
+            model("opencode-go", "glm-5.2", "GLM-5.2"),
+            model("officina", "nimbus", "Nimbus"),
+            model("officina", "lapis", "Lapis Occultus"),
+            model("zai", "glm-4.6", "GLM 4.6"),
+            model("caduceus", "zai/glm-5", "GLM 5 via gateway"),
+        ];
+        let groups = s.filtered_model_groups();
+        let titles: Vec<&str> = groups.iter().map(|g| g.title.as_str()).collect();
+        assert_eq!(titles, vec!["OFFICINA", "OpenCode Go", "Z.AI"]);
+        let officina: Vec<&str> = groups[0].models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(officina, vec!["lapis", "nimbus"]);
+        // Native OpenCode Go entry wins over the gateway duplicate.
+        assert_eq!(groups[1].models.len(), 1);
+        assert_eq!(groups[1].models[0].provider, "opencode-go");
+        assert_eq!(groups[1].models[0].name.as_deref(), Some("GLM-5.2"));
+        // Flattened order is exactly the rendered order (selection indexes it).
+        let flat: Vec<&str> = s.filtered_models().iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(flat[0], "lapis");
+        assert_eq!(flat[1], "nimbus");
+        assert_eq!(flat[2], "glm-5.2");
+        assert_eq!(flat.len(), 5);
+    }
+
+    #[test]
+    fn filter_keeps_only_matching_groups() {
+        let mut s = AppState::default();
+        s.models = vec![
+            model("officina", "lapis", "Lapis"),
+            model("opencode-go", "grok-4.7", "Grok 4.7"),
+            model("zai", "glm-4.6", "GLM 4.6"),
+        ];
+        s.models_filter = "grok".into();
+        let groups = s.filtered_model_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "OpenCode Go");
+        assert_eq!(s.filtered_models().len(), 1);
     }
 }

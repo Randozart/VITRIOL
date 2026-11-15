@@ -117,12 +117,54 @@ impl DiagLog {
     }
 }
 
+/// Everything needed to spawn the same pi invocation again after a
+/// recovery (2026-11-15 self-heal): the CLI, the project cwd and the
+/// session/extension arguments chosen at startup.
+#[derive(Debug, Clone)]
+pub struct PiLaunch {
+    pub cli_path: PathBuf,
+    pub cwd: PathBuf,
+    pub extra_args: Vec<String>,
+}
+
+/// Arguments for a respawn: drop the startup-only session selectors and
+/// pin the recovery to the file pi was already writing.
+pub fn restart_args(extra: &[String], session: Option<&Path>) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut skip_next = false;
+    for arg in extra {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        match arg.as_str() {
+            "--session" | "--fork" | "--session-id" => {
+                skip_next = true;
+                continue;
+            }
+            _ if arg.starts_with("--session=")
+                || arg.starts_with("--fork=")
+                || arg.starts_with("--session-id=") =>
+            {
+                continue;
+            }
+            _ => out.push(arg.clone()),
+        }
+    }
+    if let Some(path) = session {
+        out.push("--session".to_string());
+        out.push(path.to_string_lossy().to_string());
+    }
+    out
+}
+
 /// Bi-directional RPC bridge to a pi --mode rpc subprocess.
 pub struct RpcBridge {
     child: Child,
     stdin_tx: mpsc::UnboundedSender<String>,
     next_id: AtomicU32,
     pi_path: PathBuf,
+    launch: PiLaunch,
     pub diag: DiagLog,
 }
 
@@ -157,9 +199,18 @@ impl RpcBridge {
     /// context and would poison a foreign project (session-panel only
     /// imports their pure data getters, which stay empty without them).
     pub async fn spawn(cli_path: &Path, cwd: &Path, extra_args: &[String]) -> Result<Self> {
+        let launch = PiLaunch {
+            cli_path: cli_path.to_path_buf(),
+            cwd: cwd.to_path_buf(),
+            extra_args: extra_args.to_vec(),
+        };
+        Self::spawn_launch(launch, None).await
+    }
+
+    async fn spawn_launch(launch: PiLaunch, diag: Option<DiagLog>) -> Result<Self> {
         let mut command = Command::new("node");
         command
-            .arg(cli_path)
+            .arg(&launch.cli_path)
             .arg("--mode")
             .arg("rpc")
             // Structured navigation tools (2026-11-10): read/bash/edit/write
@@ -172,14 +223,26 @@ impl RpcBridge {
         if std::env::var("OFFICINA_TRUST_PROJECT").as_deref() == Ok("1") {
             command.arg("-a");
         }
-        for arg in extra_args {
+        for arg in &launch.extra_args {
             command.arg(arg);
         }
-        for ext in officina_extensions_to_carry(cli_path, cwd) {
+        for ext in officina_extensions_to_carry(&launch.cli_path, &launch.cwd) {
             command.arg("-e").arg(ext);
         }
+        // OpenCode Go models are built into pi but gated on its API key.
+        // Reuse the operator's existing OpenCode auth store at spawn time —
+        // the secret is never copied into Officina config or logs. This is
+        // the model catalog bridge, not a settings import.
+        if std::env::var_os("OPENCODE_API_KEY").is_none() {
+            if let Some(key) = opencode_go_key() {
+                command.env("OPENCODE_API_KEY", key);
+            }
+        }
+        // Own process group (2026-11-15 self-heal): a stuck tool subtree is
+        // terminated as one unit instead of leaving orphans behind.
+        command.process_group(0);
         let mut child = command
-            .current_dir(cwd)
+            .current_dir(&launch.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -191,7 +254,7 @@ impl RpcBridge {
         // Stdout left on child — taken by start_reader().
         let stderr = child.stderr.take().context("no stderr")?;
 
-        let diag = DiagLog::new(500);
+        let diag = diag.unwrap_or_else(|| DiagLog::new(500));
         // Crash black-box (2026-11-13): the panic hook reads this ring via
         // the process-global (crashlog.rs) — registered here because the
         // diag log lives exactly once per bridge.
@@ -225,7 +288,8 @@ impl RpcBridge {
             child,
             stdin_tx,
             next_id: AtomicU32::new(1),
-            pi_path: cli_path.to_path_buf(),
+            pi_path: launch.cli_path.clone(),
+            launch,
             diag,
         })
     }
@@ -323,7 +387,7 @@ impl RpcBridge {
         Ok(())
     }
 
-    /// Kill the subprocess.
+    /// Kill the subprocess (direct child only; recovery uses terminate_tree).
     pub async fn kill(&mut self) -> Result<()> {
         self.child
             .kill()
@@ -331,6 +395,74 @@ impl RpcBridge {
             .context("failed to kill subprocess")?;
         Ok(())
     }
+
+    /// Terminate pi AND every tool it spawned. The child runs in its own
+    /// process group (see spawn_launch), so one signal reaches the whole
+    /// subtree. SIGTERM first for a clean session flush; SIGKILL after 2 s.
+    pub async fn terminate_tree(&mut self) -> Result<()> {
+        let Some(pid) = self.child.id() else {
+            let _ = self.child.wait().await;
+            return Ok(());
+        };
+        signal_group(pid, "TERM");
+        if tokio::time::timeout(std::time::Duration::from_secs(2), self.child.wait())
+            .await
+            .is_err()
+        {
+            signal_group(pid, "KILL");
+            let _ = self.child.kill().await;
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(2), self.child.wait()).await;
+        }
+        Ok(())
+    }
+
+    /// Kill the old tree, append the session pin and spawn a fresh child.
+    /// Returns the new stdout reader channel; the caller must install it in
+    /// its select loop (the old one is dead with the old child).
+    pub async fn respawn(
+        &mut self,
+        session: Option<&Path>,
+    ) -> Result<mpsc::UnboundedReceiver<WireMessage>> {
+        self.terminate_tree().await?;
+        let mut launch = self.launch.clone();
+        launch.extra_args = restart_args(&launch.extra_args, session);
+        let mut fresh = Self::spawn_launch(launch.clone(), Some(self.diag.clone())).await?;
+        std::mem::swap(&mut self.child, &mut fresh.child);
+        self.stdin_tx = fresh.stdin_tx;
+        self.next_id = fresh.next_id;
+        self.pi_path = fresh.pi_path;
+        self.launch = fresh.launch;
+        // `fresh` now owns the reaped old child; kill_on_drop is a no-op.
+        Ok(self.start_reader())
+    }
+}
+
+/// Read the OpenCode Go API key from OpenCode's own auth store. Env first;
+/// XDG_DATA_HOME then ~/.local/share. Never logged or persisted.
+fn opencode_go_key() -> Option<String> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    let text = std::fs::read_to_string(data.join("opencode").join("auth.json")).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let key = doc
+        .get("opencode-go")
+        .and_then(|v| v.get("key"))
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|k| !k.is_empty())?;
+    Some(key.to_string())
+}
+
+/// Signal a whole process group via the system `kill` (negative pgid).
+/// Best-effort: a vanished group is the normal success case.
+fn signal_group(pid: u32, signal: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-s", signal, "--", &format!("-{pid}")])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -376,6 +508,111 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&bare);
         let _ = std::fs::remove_dir_all(&own);
+    }
+
+    #[tokio::test]
+    async fn respawn_restarts_the_child_and_hands_back_a_live_reader() {
+        let dir = std::env::temp_dir().join(format!("officina-respawn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-pi.js");
+        std::fs::write(
+            &script,
+            "process.stdin.resume();\n\
+             process.stdout.write(JSON.stringify({type:'respawn_probe'})+'\\n');\n\
+             setInterval(()=>{}, 1000);\n",
+        )
+        .unwrap();
+
+        let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
+        let mut rx = bridge.start_reader();
+        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("first reader message timed out")
+            .expect("reader closed");
+        match first {
+            WireMessage::Event(e) => assert_eq!(e.event_type, "respawn_probe"),
+            other => panic!("unexpected first message: {other:?}"),
+        }
+
+        let mut fresh = bridge.respawn(None).await.unwrap();
+        let second = tokio::time::timeout(std::time::Duration::from_secs(5), fresh.recv())
+            .await
+            .expect("respawned reader message timed out")
+            .expect("respawned reader closed");
+        match second {
+            WireMessage::Event(e) => assert_eq!(e.event_type, "respawn_probe"),
+            other => panic!("unexpected respawn message: {other:?}"),
+        }
+        bridge.terminate_tree().await.unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn terminate_tree_kills_the_tool_subtree_not_just_pi() {
+        let dir = std::env::temp_dir().join(format!("officina-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-pi-tree.js");
+        std::fs::write(
+            &script,
+            "const {spawn}=require('child_process');\n\
+             const c=spawn('sleep',['30'],{stdio:'ignore'});\n\
+             process.stdin.resume();\n\
+             process.stdout.write(JSON.stringify({type:'grandchild', pid:c.pid})+'\\n');\n\
+             setInterval(()=>{},1000);\n",
+        )
+        .unwrap();
+        let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
+        let mut rx = bridge.start_reader();
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("grandchild message timed out")
+            .expect("reader closed");
+        let pid = match msg {
+            WireMessage::Event(e) => e
+                .fields
+                .get("pid")
+                .and_then(|v| v.as_u64())
+                .expect("pid field") as u32,
+            other => panic!("unexpected message: {other:?}"),
+        };
+        bridge.terminate_tree().await.unwrap();
+        let mut gone = false;
+        for _ in 0..20 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone, "tool subtree pid {pid} survived terminate_tree");
+    }
+
+    #[test]
+    fn restart_args_pin_the_live_session_and_drop_startup_selectors() {
+        let extra = vec![
+            "--session".to_string(),
+            "/old/s.jsonl".to_string(),
+            "--session-id".to_string(),
+            "officina-1".to_string(),
+            "--fork=/old/fork.jsonl".to_string(),
+            "--keep".to_string(),
+            "--session=/old/other.jsonl".to_string(),
+        ];
+        let out = restart_args(&extra, Some(Path::new("/live/s.jsonl")));
+        assert_eq!(
+            out,
+            vec![
+                "--keep".to_string(),
+                "--session".to_string(),
+                "/live/s.jsonl".to_string()
+            ]
+        );
+        // No live file: startup selectors are still gone, never duplicated.
+        let out = restart_args(&extra, None);
+        assert_eq!(out, vec!["--keep".to_string()]);
     }
 
     #[test]

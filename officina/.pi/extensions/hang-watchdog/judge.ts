@@ -26,6 +26,8 @@ export interface WatchedCall {
   tail?: string;
   judging?: boolean;
   surfaced?: boolean;
+  /** One terminal "monitoring" card is published per stalled episode. */
+  monitorPublishedAt?: number;
 }
 
 export interface TickInput {
@@ -43,10 +45,17 @@ export type TickAction =
 /** Extract the normal Pi content envelope as well as legacy text/array updates. */
 export function toolOutputText(partial: unknown): string {
   if (typeof partial === "string") return partial;
-  if (Array.isArray(partial)) return partial.map((part) => typeof part === "string" ? part : (part?.text ?? "")).join("\n");
+  if (Array.isArray(partial))
+    return partial
+      .map((part) => (typeof part === "string" ? part : (part?.text ?? "")))
+      .join("\n");
   if (partial && typeof partial === "object" && "content" in partial) {
     const content = (partial as { content?: unknown }).content;
-    return Array.isArray(content) ? toolOutputText(content) : typeof content === "string" ? content : "";
+    return Array.isArray(content)
+      ? toolOutputText(content)
+      : typeof content === "string"
+        ? content
+        : "";
   }
   return "";
 }
@@ -63,7 +72,11 @@ function markProgress(call: WatchedCall, revision: number, now: number): void {
 }
 
 /** Keep a bounded sample, detecting append growth and changed constant-length tails. */
-export function observeToolOutput(call: WatchedCall, partial: unknown, now: number): boolean {
+export function observeToolOutput(
+  call: WatchedCall,
+  partial: unknown,
+  now: number,
+): boolean {
   const text = toolOutputText(partial);
   if (!text) return false;
   const tail = text.slice(-TAIL_CHARS).split("\n").slice(-40).join("\n");
@@ -76,7 +89,12 @@ export function observeToolOutput(call: WatchedCall, partial: unknown, now: numb
 }
 
 /** Paid judgments are bounded per silent episode; deterministic monitoring continues. */
-export function tickCall(call: WatchedCall, outputRevision: number, tail: string, input: TickInput): TickAction {
+export function tickCall(
+  call: WatchedCall,
+  outputRevision: number,
+  tail: string,
+  input: TickInput,
+): TickAction {
   if (outputRevision > call.lastOutputRevision) {
     markProgress(call, outputRevision, input.now);
     return { kind: "alive" };
@@ -89,20 +107,40 @@ export function tickCall(call: WatchedCall, outputRevision: number, tail: string
     if (stalledS >= input.softS && call.lastVerdict === null) {
       call.lastVerdict = "noticed";
       call.lastNoticeAt = input.now;
-      return { kind: "notice", message: `hang-watchdog: "${short(call.command)}" — no output for ${stalledS}s (${elapsedS}s total)` };
+      return {
+        kind: "notice",
+        message: `hang-watchdog: "${short(call.command)}" — no output for ${stalledS}s (${elapsedS}s total)`,
+      };
     }
     return { kind: "none" };
   }
   if (call.judging) return { kind: "none" };
   const lastCheck = Math.max(call.judgedAt ?? 0, call.lastNoticeAt ?? 0);
-  if (lastCheck > 0 && input.now - lastCheck < REJUDGE_EVERY_S * 1000 && call.judgments > 0) return { kind: "none" };
+  if (
+    lastCheck > 0 &&
+    input.now - lastCheck < REJUDGE_EVERY_S * 1000 &&
+    call.judgments > 0
+  )
+    return { kind: "none" };
   if (call.judgments >= MAX_JUDGMENTS_PER_CALL) {
+    // One terminal card, then silence: the TUI drops cards whose lease expires,
+    // and a countdown that keeps resetting is a card that never tells the truth
+    // (2026-11-15).
+    if (call.monitorPublishedAt !== undefined) return { kind: "none" };
+    call.monitorPublishedAt = input.now;
     call.lastNoticeAt = input.now;
-    return { kind: "notice", message: `hang-watchdog: "${short(call.command)}" — still no output after ${stalledS}s; judge budget exhausted, monitoring continues` };
+    return {
+      kind: "notice",
+      message: `hang-watchdog: "${short(call.command)}" — still no output after ${stalledS}s; judge budget exhausted, monitoring continues (no further cards)`,
+    };
   }
   call.judgments += 1;
   call.judgedAt = input.now;
-  return { kind: "judge", message: `hang-watchdog: judging "${short(call.command)}" (no output ${stalledS}s, ${elapsedS}s total)`, tail };
+  return {
+    kind: "judge",
+    message: `hang-watchdog: judging "${short(call.command)}" (no output ${stalledS}s, ${elapsedS}s total)`,
+    tail,
+  };
 }
 
 export function short(command: string, max = 60): string {
@@ -111,8 +149,16 @@ export function short(command: string, max = 60): string {
 }
 
 /** The judgment prompt: tiny, structured, one-word verdict first. */
-export function buildJudgePrompt(command: string, elapsedS: number, stalledS: number, tail: string): string {
-  const shown = tail.trim() === "" ? "(no output at all — not even a newline)" : tail.slice(-TAIL_CHARS);
+export function buildJudgePrompt(
+  command: string,
+  elapsedS: number,
+  stalledS: number,
+  tail: string,
+): string {
+  const shown =
+    tail.trim() === ""
+      ? "(no output at all — not even a newline)"
+      : tail.slice(-TAIL_CHARS);
   return [
     "You are a build-command liveliness judge. Decide whether a long-running shell command is ALIVE or HUNG.",
     `Command: ${command.slice(0, 300)}`,
@@ -122,23 +168,48 @@ export function buildJudgePrompt(command: string, elapsedS: number, stalledS: nu
     shown,
     "```",
     "Respond with EXACTLY one line: VERDICT: ALIVE or VERDICT: HUNG or VERDICT: UNKNOWN, then one short sentence of evidence.",
+    "Never write the words ALIVE, HUNG or UNKNOWN again in the evidence sentence.",
     "ALIVE = evidence of this command progressing or legitimately performing finite work. Silence alone proves neither health nor a hang.",
     "UNKNOWN = insufficient evidence. Other sessions or GPU activity do not prove this command is alive.",
     "HUNG = waiting on something that will never finish (stdin prompt, deadlock, repeated identical output).",
+    "No output at all, for a command that should have printed immediately, is evidence that it never started: that is HUNG.",
   ].join("\n");
 }
 
 /** Parse the judge's reply: first VERDICT: line wins; UNKNOWN on
- *  ambiguity. An unavailable or malformed judge is never positive health evidence. */
-export function parseVerdict(reply: string): { alive: boolean | null; reason: string } {
-  const matches = [...String(reply ?? "").matchAll(/^\s*VERDICT:\s*(ALIVE|HUNG|UNKNOWN)\b([^\n]*)/gim)];
+ *  ambiguity. A malformed or unavailable judge is never positive health evidence
+ *  — it is reported as NO-JUDGE so "judge broken" cannot masquerade as
+ *  "liveness unknown" (2026-11-15). */
+export function parseVerdict(reply: string): {
+  alive: boolean | null;
+  reason: string;
+  unparsed?: boolean;
+} {
+  const matches = [
+    ...String(reply ?? "").matchAll(
+      /^\s*VERDICT:\s*(ALIVE|HUNG|UNKNOWN)\b([^\n]*)/gim,
+    ),
+  ];
   const m = matches[0];
-  if (matches.length !== 1 || /VERDICT:|\bor\s+(ALIVE|HUNG|UNKNOWN)\b/i.test(m?.[2] ?? "")) {
-    return { alive: null, reason: "judge reply unparseable — liveness unknown" };
+  if (
+    matches.length !== 1 ||
+    /VERDICT:|\bor\s+(ALIVE|HUNG|UNKNOWN)\b/i.test(m?.[2] ?? "")
+  ) {
+    return {
+      alive: null,
+      reason: "judge reply unparseable — no usable VERDICT line (NO-JUDGE)",
+      unparsed: true,
+    };
   }
-  const rest = String(reply ?? "").slice((m.index ?? 0) + m[0].length - m[2].length).trim();
+  const rest = String(reply ?? "")
+    .slice((m.index ?? 0) + m[0].length - m[2].length)
+    .trim();
   const reason = rest.split("\n")[0]?.slice(0, 160) || "(no evidence given)";
-  return { alive: m[1].toUpperCase() === "UNKNOWN" ? null : m[1].toUpperCase() === "ALIVE", reason };
+  return {
+    alive:
+      m[1].toUpperCase() === "UNKNOWN" ? null : m[1].toUpperCase() === "ALIVE",
+    reason,
+  };
 }
 
 /** Best free cloud lane for the judgment call (catalog cache facts). */

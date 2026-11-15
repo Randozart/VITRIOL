@@ -15,6 +15,7 @@ import {
 } from "../subagent/spawn.ts";
 import { SubCoderTracker } from "../subagent/tracker.ts";
 import { PlanStatus } from "./status.ts";
+import { traceHooks } from "../_shared/hook-trace.ts";
 
 // Approved plans are persisted project-locally so they survive the planning
 // session and can be picked up later by the user-initiated /implement command.
@@ -315,10 +316,7 @@ export function handlePlanApproval(deps: PlanApprovalDeps): boolean {
     deps.fs.mkdirSync(planDir, { recursive: true });
     deps.fs.writeFileSync(deps.planFile, planText, "utf-8");
   } catch (err) {
-    deps.ui.notify(
-      `failed to save plan: ${(err as Error).message}`,
-      "warning",
-    );
+    deps.ui.notify(`failed to save plan: ${(err as Error).message}`, "warning");
     return false;
   }
 
@@ -341,10 +339,15 @@ interface ImplementDeps {
   fs: PlanFs;
   pi: ExtensionAPI;
   ctx: any;
-  enterPhase: (pi: ExtensionAPI, ctx: any, phase: "plan" | "action") => Promise<string | undefined>;
-  newSession: (
-    opts?: { setup?: (sm: any) => Promise<void>; withSession?: (ctx: any) => Promise<void> },
-  ) => Promise<{ cancelled: boolean }>;
+  enterPhase: (
+    pi: ExtensionAPI,
+    ctx: any,
+    phase: "plan" | "action",
+  ) => Promise<string | undefined>;
+  newSession: (opts?: {
+    setup?: (sm: any) => Promise<void>;
+    withSession?: (ctx: any) => Promise<void>;
+  }) => Promise<{ cancelled: boolean }>;
 }
 
 /**
@@ -430,10 +433,7 @@ export async function handleImplement(deps: ImplementDeps): Promise<void> {
 
 const OTHER_SENTINEL = "✎ Other (type my own answer)";
 
-async function askQuestions(
-  ctx: any,
-  questions: Question[],
-): Promise<string> {
+async function askQuestions(ctx: any, questions: Question[]): Promise<string> {
   const answered: string[] = [];
 
   for (const q of questions) {
@@ -461,9 +461,7 @@ async function askQuestions(
         typed = undefined;
       }
 
-      answered.push(
-        `Q: ${q.q}\nA: ${typed?.trim() || "(no answer)"}`,
-      );
+      answered.push(`Q: ${q.q}\nA: ${typed?.trim() || "(no answer)"}`);
     } else {
       answered.push(`Q: ${q.q}\nA: ${choice}`);
     }
@@ -641,6 +639,9 @@ async function orchestrate(
 }
 
 export default function (pi: ExtensionAPI) {
+  // Opt-in hook timing (2026-11-15): plan approval runs on agent_end, which is
+  // on pi's drain path — a dialog that is never answered must be visible.
+  traceHooks("plan-mode", pi);
   // ctrl+q toggles plan mode. pi leaves ctrl+q unbound and the emacs-style editor
   // doesn't claim it either (ctrl+y is its yank, so binding there both warned and
   // clobbered paste), so this collides with nothing and shift+tab stays bound to
@@ -682,7 +683,8 @@ export default function (pi: ExtensionAPI) {
       // Canonical first; pre-branding sessions fall back to .pi.
       const canonical = join(ctx.cwd, APPROVED_PLAN_FILE);
       const legacy = join(ctx.cwd, LEGACY_APPROVED_PLAN_FILE);
-      const planFile = existsSync(canonical) || !existsSync(legacy) ? canonical : legacy;
+      const planFile =
+        existsSync(canonical) || !existsSync(legacy) ? canonical : legacy;
 
       await handleImplement({
         cwd: ctx.cwd,
@@ -711,10 +713,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     if (orchestrating) {
-      (ctx as any).ui?.notify?.(
-        "a plan is already in progress…",
-        "warning",
-      );
+      (ctx as any).ui?.notify?.("a plan is already in progress…", "warning");
 
       return {
         action: "handled" as const,
@@ -750,20 +749,14 @@ export default function (pi: ExtensionAPI) {
       `### Research findings\n${digest}\n\n` +
       `### User's answers to clarifying questions\n${answers}`;
 
-    return injectionResult(
-      "lc-plan",
-      block,
-      (event as any).systemPrompt ?? "",
-    );
+    return injectionResult("lc-plan", block, (event as any).systemPrompt ?? "");
   });
 
   // While synthesizing the plan, block any attempt to edit/write files.
   pi.on("tool_call", async (event, ctx) => {
     if (!planGuardActive) return;
 
-    const name = String(
-      (event as any).toolName ?? "",
-    ).toLowerCase();
+    const name = String((event as any).toolName ?? "").toLowerCase();
 
     if (name !== "edit" && name !== "write") {
       return;
@@ -798,21 +791,15 @@ export default function (pi: ExtensionAPI) {
     let choice: string | undefined;
 
     try {
-      choice = await (ctx as any).ui?.select?.(
-        "Plan ready — approve it?",
-        [
-          APPROVE_CHOICE,
-          KEEP_PLANNING_CHOICE,
-        ],
-      );
+      choice = await (ctx as any).ui?.select?.("Plan ready — approve it?", [
+        APPROVE_CHOICE,
+        KEEP_PLANNING_CHOICE,
+      ]);
     } catch {
       choice = undefined;
     }
 
-    const planFile = join(
-      ctx.cwd,
-      APPROVED_PLAN_FILE,
-    );
+    const planFile = join(ctx.cwd, APPROVED_PLAN_FILE);
 
     handlePlanApproval({
       planText,

@@ -5,12 +5,24 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  buildJudgePrompt, MAX_JUDGMENTS_PER_CALL, REJUDGE_EVERY_S, JUDGE_S_DEFAULT,
-  observeToolOutput, parseVerdict, pickJudgeModel, SOFT_S_DEFAULT, TICK_S, tickCall,
-  type TickAction, type WatchedCall,
+  buildJudgePrompt,
+  MAX_JUDGMENTS_PER_CALL,
+  REJUDGE_EVERY_S,
+  JUDGE_S_DEFAULT,
+  observeToolOutput,
+  parseVerdict,
+  pickJudgeModel,
+  SOFT_S_DEFAULT,
+  TICK_S,
+  tickCall,
+  type TickAction,
+  type WatchedCall,
 } from "./judge.ts";
 import { judgeWithDecision } from "./decision.ts";
-import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
+import {
+  extractCatalogModels,
+  freeToolCandidates,
+} from "../caduceus/catalog.ts";
 
 const JUDGE_TIMEOUT_MS = 30_000;
 const directory = () => join(homedir(), ".vitriol", "officina");
@@ -27,35 +39,71 @@ function envInt(name: string, fallback: number): number {
 }
 
 function gatewayBase(): string {
-  if (process.env.OFFICINA_CADUCEUS_URL) return process.env.OFFICINA_CADUCEUS_URL.replace(/\/+$/, "");
-  try { return readFileSync(join(directory(), "gateway-url"), "utf8").trim().replace(/\/+$/, "") || "http://127.0.0.1:20128/v1"; }
-  catch { return "http://127.0.0.1:20128/v1"; }
+  if (process.env.OFFICINA_CADUCEUS_URL)
+    return process.env.OFFICINA_CADUCEUS_URL.replace(/\/+$/, "");
+  try {
+    return (
+      readFileSync(join(directory(), "gateway-url"), "utf8")
+        .trim()
+        .replace(/\/+$/, "") || "http://127.0.0.1:20128/v1"
+    );
+  } catch {
+    return "http://127.0.0.1:20128/v1";
+  }
 }
 
 function bestFreeLane(): string | null {
   try {
-    const raw = JSON.parse(readFileSync(join(directory(), "caduceus-models.json"), "utf8"));
-    return pickJudgeModel(freeToolCandidates(extractCatalogModels(raw)).map((c) => c.id));
-  } catch { return null; }
+    const raw = JSON.parse(
+      readFileSync(join(directory(), "caduceus-models.json"), "utf8"),
+    );
+    return pickJudgeModel(
+      freeToolCandidates(extractCatalogModels(raw)).map((c) => c.id),
+    );
+  } catch {
+    return null;
+  }
 }
 
 /** A bounded separate completion, never the busy actor's turn or local slot. */
-async function judgeWithLane(call: WatchedCall, signal: AbortSignal): Promise<string | null> {
+async function judgeWithLane(
+  call: WatchedCall,
+  signal: AbortSignal,
+): Promise<string | null> {
   const model = bestFreeLane();
   const key = process.env.OFFICINA_CADUCEUS_API_KEY?.trim();
   if (!model || !key) return null;
   try {
     const now = Date.now();
-    const prompt = buildJudgePrompt(call.command, Math.floor((now - call.startedAt) / 1000), Math.floor((now - (call.stalledSince ?? now)) / 1000), call.tail ?? "");
+    const prompt = buildJudgePrompt(
+      call.command,
+      Math.floor((now - call.startedAt) / 1000),
+      Math.floor((now - (call.stalledSince ?? now)) / 1000),
+      call.tail ?? "",
+    );
     const res = await fetch(`${gatewayBase()}/chat/completions`, {
-      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 80, temperature: 0 }), signal,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 80,
+        temperature: 0,
+      }),
+      signal,
     });
     if (!res.ok) return null;
-    const doc = await res.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+    const doc = (await res.json()) as {
+      choices?: Array<{ message?: { content?: unknown } }>;
+    };
     const content = doc.choices?.[0]?.message?.content;
     return typeof content === "string" ? content : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 interface WatchdogDoc {
@@ -68,7 +116,7 @@ interface WatchdogDoc {
   command: string;
   elapsed_s: number;
   stalled_s: number;
-  verdict: "JUDGING" | "ALIVE" | "HUNG" | "UNKNOWN" | "";
+  verdict: "JUDGING" | "ALIVE" | "HUNG" | "UNKNOWN" | "NO-JUDGE" | "";
   reason: string;
   next_check_at: number;
   phase: "soft" | "judge" | "rejudge" | "monitor" | "done";
@@ -81,7 +129,9 @@ function writeWatchdog(doc: WatchdogDoc): void {
     const tmp = `${path}.tmp-${process.pid}`;
     writeFileSync(tmp, JSON.stringify(doc) + "\n", { mode: 0o600 });
     renameSync(tmp, path);
-  } catch { /* Observability must not stop the actor. */ }
+  } catch {
+    /* Observability must not stop the actor. */
+  }
 }
 
 export default function (pi: ExtensionAPI) {
@@ -91,16 +141,44 @@ export default function (pi: ExtensionAPI) {
   const watched = new Map<string, WatchedCall>();
   const pending = new Map<string, AbortController>();
   let session = `process-${process.pid}`;
-  let ui: { notify(message: string, level?: "info" | "warning" | "error"): unknown } | undefined;
+  let ui:
+    | { notify(message: string, level?: "info" | "warning" | "error"): unknown }
+    | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
 
-  const publish = (call: WatchedCall, status: Pick<WatchdogDoc, "kind" | "verdict" | "reason" | "next_check_at" | "phase">, message: string) => {
+  const publish = (
+    call: WatchedCall,
+    status: Pick<
+      WatchdogDoc,
+      "kind" | "verdict" | "reason" | "next_check_at" | "phase"
+    >,
+    message: string,
+  ) => {
     const now = Date.now();
     call.surfaced = true;
-    const doc: WatchdogDoc = { version: 1, ts: now, valid_until: Math.min(now + 360_000, Math.max(now + 120_000, status.next_check_at + 30_000)), session_id: session, tool_call_id: call.toolCallId, command: call.command,
-      elapsed_s: Math.floor((now - call.startedAt) / 1000), stalled_s: Math.floor((now - (call.stalledSince ?? now)) / 1000), ...status };
+    const doc: WatchdogDoc = {
+      version: 1,
+      ts: now,
+      valid_until: Math.min(
+        now + 360_000,
+        Math.max(now + 120_000, status.next_check_at + 30_000),
+      ),
+      session_id: session,
+      tool_call_id: call.toolCallId,
+      command: call.command,
+      elapsed_s: Math.floor((now - call.startedAt) / 1000),
+      stalled_s: Math.floor((now - (call.stalledSince ?? now)) / 1000),
+      ...status,
+    };
     writeWatchdog(doc);
-    try { ui?.notify(`${message}\n<officina-watchdog-v1>${JSON.stringify(doc)}`, status.verdict === "ALIVE" ? "info" : "warning"); } catch { /* advisory */ }
+    try {
+      ui?.notify(
+        `${message}\n<officina-watchdog-v1>${JSON.stringify(doc)}`,
+        status.verdict === "ALIVE" ? "info" : "warning",
+      );
+    } catch {
+      /* advisory */
+    }
   };
 
   const runJudge = async (call: WatchedCall): Promise<void> => {
@@ -108,31 +186,76 @@ export default function (pi: ExtensionAPI) {
     pending.set(call.toolCallId, controller);
     call.judging = true;
     const generation = call.generation ?? 0;
-    publish(call, { kind: "judge", verdict: "JUDGING", reason: "", next_check_at: Date.now() + JUDGE_TIMEOUT_MS, phase: "judge" }, `hang-watchdog: judging "${call.command.slice(0, 60)}"`);
-    const current = () => watched.get(call.toolCallId) === call && (call.generation ?? 0) === generation;
+    publish(
+      call,
+      {
+        kind: "judge",
+        verdict: "JUDGING",
+        reason: "",
+        next_check_at: Date.now() + JUDGE_TIMEOUT_MS,
+        phase: "judge",
+      },
+      `hang-watchdog: judging "${call.command.slice(0, 60)}"`,
+    );
+    const current = () =>
+      watched.get(call.toolCallId) === call &&
+      (call.generation ?? 0) === generation;
     const deadline = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
     let onAbort: () => void = () => {};
-    const cancelled = new Promise<null>((resolve) => { onAbort = () => resolve(null); controller.signal.addEventListener("abort", onAbort, { once: true }); });
+    const cancelled = new Promise<null>((resolve) => {
+      onAbort = () => resolve(null);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
     try {
       const request = async () => {
         const decision = await judgeWithDecision(call, controller.signal);
         if (decision) return decision;
         const reply = await judgeWithLane(call, controller.signal);
-        return reply === null ? { alive: null, reason: "judge unavailable — liveness unknown" } : parseVerdict(reply);
+        return reply === null
+          ? { alive: null, reason: "judge unavailable — liveness unknown" }
+          : parseVerdict(reply);
       };
       const result = await Promise.race([request(), cancelled]);
       if (!current()) return;
-      const verdict = result ?? { alive: null, reason: "judge deadline exceeded — liveness unknown" };
-      const label = verdict.alive === null ? "UNKNOWN" : verdict.alive ? "ALIVE" : "HUNG";
+      const verdict = result ?? {
+        alive: null,
+        reason: "judge deadline exceeded — liveness unknown (NO-JUDGE)",
+        unparsed: true,
+      };
+      // `unparsed` only exists on an unparsable reply: a decision-model verdict
+      // is structurally parsed, so the field is absent there.
+      const broken = "unparsed" in verdict && verdict.unparsed === true;
+      const label =
+        verdict.alive === null
+          ? broken
+            ? "NO-JUDGE"
+            : "UNKNOWN"
+          : verdict.alive
+            ? "ALIVE"
+            : "HUNG";
       call.lastVerdict = label;
       const capped = call.judgments >= MAX_JUDGMENTS_PER_CALL;
-      publish(call, { kind: verdict.alive === null ? "unavailable" : "verdict", verdict: label, reason: verdict.reason,
-        next_check_at: (call.judgedAt ?? Date.now()) + REJUDGE_EVERY_S * 1000, phase: capped ? "monitor" : "rejudge" },
-      `hang-watchdog verdict for "${call.command.slice(0, 60)}": ${label} — ${verdict.reason} (advisory; monitoring continues)`);
+      if (capped) call.monitorPublishedAt = Date.now();
+      publish(
+        call,
+        {
+          kind: verdict.alive === null ? "unavailable" : "verdict",
+          verdict: label,
+          reason: verdict.reason,
+          next_check_at: capped
+            ? 0
+            : (call.judgedAt ?? Date.now()) + REJUDGE_EVERY_S * 1000,
+          phase: capped ? "monitor" : "rejudge",
+        },
+        `hang-watchdog verdict for "${call.command.slice(0, 60)}": ${label} — ${verdict.reason} (advisory; monitoring continues)`,
+      );
     } finally {
       clearTimeout(deadline);
       controller.signal.removeEventListener("abort", onAbort);
-      if (pending.get(call.toolCallId) === controller) { pending.delete(call.toolCallId); call.judging = false; }
+      if (pending.get(call.toolCallId) === controller) {
+        pending.delete(call.toolCallId);
+        call.judging = false;
+      }
     }
   };
 
@@ -140,9 +263,21 @@ export default function (pi: ExtensionAPI) {
     if (action.kind === "none" || action.kind === "alive") return;
     if (action.kind === "notice") {
       const capped = call.judgments >= MAX_JUDGMENTS_PER_CALL;
-      publish(call, { kind: "notice", verdict: "UNKNOWN", reason: capped ? "judge budget exhausted; deterministic monitoring continues" : "no new output",
-        next_check_at: capped ? Date.now() + REJUDGE_EVERY_S * 1000 : (call.stalledSince ?? Date.now()) + judgeS * 1000,
-        phase: capped ? "monitor" : "soft" }, action.message);
+      publish(
+        call,
+        {
+          kind: "notice",
+          verdict: "UNKNOWN",
+          reason: capped
+            ? "judge budget exhausted; deterministic monitoring continues"
+            : "no new output",
+          next_check_at: capped
+            ? 0
+            : (call.stalledSince ?? Date.now()) + judgeS * 1000,
+          phase: capped ? "monitor" : "soft",
+        },
+        action.message,
+      );
       return;
     }
     void runJudge(call);
@@ -150,7 +285,8 @@ export default function (pi: ExtensionAPI) {
 
   const reset = () => {
     for (const controller of pending.values()) controller.abort();
-    watched.clear(); pending.clear();
+    watched.clear();
+    pending.clear();
     if (timer) clearInterval(timer);
     timer = undefined;
   };
@@ -160,29 +296,69 @@ export default function (pi: ExtensionAPI) {
     session = ctx.sessionManager.getSessionId();
     ui = ctx.ui; // RPC notifications work even when a caller reports hasUI=false.
     timer = setInterval(() => {
-      for (const call of watched.values()) handleTick(call, tickCall(call, call.lastOutputRevision, call.tail ?? "", { now: Date.now(), softS, judgeS }));
+      for (const call of watched.values())
+        handleTick(
+          call,
+          tickCall(call, call.lastOutputRevision, call.tail ?? "", {
+            now: Date.now(),
+            softS,
+            judgeS,
+          }),
+        );
     }, TICK_S * 1000);
     timer.unref?.();
   });
-  pi.on("session_shutdown", () => { reset(); ui = undefined; });
+  pi.on("session_shutdown", () => {
+    reset();
+    ui = undefined;
+  });
   pi.on("tool_execution_start", (event) => {
     if (event.toolName.toLowerCase() !== "bash") return;
     const command = String(event.args.command ?? event.args.cmd ?? "");
     if (!command) return;
-    watched.set(event.toolCallId, { toolCallId: event.toolCallId, command, startedAt: Date.now(), lastOutputRevision: 0, stalledSince: null, judgments: 0, lastVerdict: null });
+    watched.set(event.toolCallId, {
+      toolCallId: event.toolCallId,
+      command,
+      startedAt: Date.now(),
+      lastOutputRevision: 0,
+      stalledSince: null,
+      judgments: 0,
+      lastVerdict: null,
+    });
   });
   pi.on("tool_execution_update", (event) => {
     const call = watched.get(event.toolCallId);
-    if (!call || !observeToolOutput(call, event.partialResult, Date.now())) return;
+    if (!call || !observeToolOutput(call, event.partialResult, Date.now()))
+      return;
     pending.get(call.toolCallId)?.abort();
-    if (call.surfaced) publish(call, { kind: "notice", verdict: "ALIVE", reason: "new output from this tool", next_check_at: Date.now() + softS * 1000, phase: "soft" },
-      `hang-watchdog: "${call.command.slice(0, 60)}" output resumed`);
+    if (call.surfaced)
+      publish(
+        call,
+        {
+          kind: "notice",
+          verdict: "ALIVE",
+          reason: "new output from this tool",
+          next_check_at: Date.now() + softS * 1000,
+          phase: "soft",
+        },
+        `hang-watchdog: "${call.command.slice(0, 60)}" output resumed`,
+      );
   });
   pi.on("tool_execution_end", (event) => {
     const call = watched.get(event.toolCallId);
     watched.delete(event.toolCallId);
     pending.get(event.toolCallId)?.abort();
-    if (call?.surfaced) publish(call,
-      { kind: "ended", verdict: "", reason: "tool finished", next_check_at: 0, phase: "done" }, `hang-watchdog: "${call.command.slice(0, 60)}" finished`);
+    if (call?.surfaced)
+      publish(
+        call,
+        {
+          kind: "ended",
+          verdict: "",
+          reason: "tool finished",
+          next_check_at: 0,
+          phase: "done",
+        },
+        `hang-watchdog: "${call.command.slice(0, 60)}" finished`,
+      );
   });
 }

@@ -16,7 +16,7 @@ export interface ToolCheckDoc {
   version: 1;
   ts: number;
   format?: { tool: string; changed: boolean };
-  syntax?: { ok: boolean; output?: string };
+  syntax?: { ok: boolean; available?: boolean; output?: string };
   praetor?: { count: number };
 }
 

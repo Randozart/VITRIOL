@@ -3,10 +3,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkFor, diagConfig, renderDiagnostics, tailCap, type FileDiag } from "./diag.ts";
+import { checkerFailure, checkFor, diagConfig, renderDiagnostics, tailCap, type FileDiag } from "./diag.ts";
 
 describe("selected checkers actually run on this host", () => {
-  it("py_compile exits 0 on valid syntax and non-zero on broken", () => {
+  it("py_compile exits 0 on valid syntax and non-zero on broken", (ctx) => {
     const dir = mkdtempSync(join(tmpdir(), "tris-diag-"));
     try {
       const good = join(dir, "good.py");
@@ -18,7 +18,9 @@ describe("selected checkers actually run on this host", () => {
         try {
           execFileSync(cmd.argv[0], cmd.argv.slice(1), { stdio: "pipe" });
           return true;
-        } catch {
+        } catch (error) {
+          const result = checkerFailure(f, error);
+          if (result.status === "unavailable") ctx.skip(result.output);
           return false;
         }
       };
@@ -30,7 +32,7 @@ describe("selected checkers actually run on this host", () => {
   });
 });
 
-const d = (file: string, ok: boolean, output = ""): FileDiag => ({ file, ok, output });
+const d = (file: string, ok: boolean, output = ""): FileDiag => ({ file, status: ok ? "passed" : "failed", output });
 
 describe("diagConfig", () => {
   it("on by default, kill switch off; praetor opt-in", () => {
@@ -95,5 +97,31 @@ describe("tailCap", () => {
 
   it("passes short output through", () => {
     expect(tailCap("short", 100)).toBe("short");
+  });
+});
+
+
+describe("checker execution outcomes", () => {
+  it.each([
+    [{ code: "ENOENT", status: null }, "unavailable"],
+    [{ code: "EPERM", status: 0, stdout: "valid Python ran" }, "unavailable"],
+    [{ code: "ETIMEDOUT", signal: "SIGTERM" }, "unavailable"],
+    [{ signal: "SIGKILL", status: null }, "unavailable"],
+    [{ status: 1, stderr: "SyntaxError: bad" }, "failed"],
+    [{ status: 2, stdout: "verification rejected" }, "failed"],
+    [{ message: "unknown execution failure" }, "unavailable"],
+  ] as const)("classifies %j as %s", (error, status) => {
+    expect(checkerFailure("a.py", error).status).toBe(status);
+  });
+
+  it("unavailable checks never tell the model to repair valid code or count as passed", () => {
+    const unavailable = checkerFailure("a.py", { code: "EPERM", status: 0 });
+    expect(unavailable.status).not.toBe("passed");
+    expect(unavailable.output).toContain("EPERM");
+    expect(renderDiagnostics([unavailable], 1050)).toBe("");
+    const output = renderDiagnostics([unavailable, d("b.py", false, "SyntaxError")], 1050);
+    expect(output).toContain("1 file(s) failed");
+    expect(output).toContain("b.py");
+    expect(output).not.toContain("a.py");
   });
 });

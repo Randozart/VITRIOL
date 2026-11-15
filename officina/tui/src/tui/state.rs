@@ -448,6 +448,7 @@ pub struct FormatCheck {
 #[serde(default)]
 pub struct SyntaxCheck {
     pub ok: bool,
+    pub available: Option<bool>,
     pub output: Option<String>,
 }
 
@@ -3242,7 +3243,7 @@ impl AppState {
                         .as_ref()
                         .map(|f| (f.tool.as_str(), f.changed))
                         .hash(&mut h);
-                    c.syntax.as_ref().map(|s| s.ok).hash(&mut h);
+                    c.syntax.as_ref().map(|s| (s.ok, s.available)).hash(&mut h);
                     c.praetor.as_ref().map(|p| p.count).hash(&mut h);
                 }
             }
@@ -4877,13 +4878,16 @@ fn render_tool_block(
             if any {
                 spans.push(Span::styled(" · ", muted_st));
             }
+            let (label, color) = if sy.available == Some(false) {
+                ("? syntax unavailable", theme::MUTED)
+            } else if sy.ok {
+                ("✓ syntax", theme::GREEN)
+            } else {
+                ("✗ syntax", theme::RED)
+            };
             spans.push(Span::styled(
-                if sy.ok { "✓ syntax" } else { "✗ syntax" }.to_string(),
-                if sy.ok {
-                    Style::default().fg(theme::GREEN).bg(surf)
-                } else {
-                    Style::default().fg(theme::RED).bg(surf)
-                },
+                label.to_string(),
+                Style::default().fg(color).bg(surf),
             ));
             any = true;
         }
@@ -5549,6 +5553,34 @@ mod tests {
         let text = flat_text(&s.chat_lines(100));
         assert!(text.contains("-canonical-old"), "{text}");
         assert!(text.contains("+canonical-new"), "{text}");
+    }
+
+    #[test]
+    fn unavailable_syntax_is_neither_a_pass_nor_a_code_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("toolchecks-unavailable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("u1.json"),
+            r#"{"version":1,"syntax":{"ok":false,"available":false,"output":"EPERM"}}"#,
+        )
+        .unwrap();
+        let mut state = AppState {
+            tool_default: ToolVerbosity::Block,
+            tool_checks_dir: Some(dir.clone()),
+            ..AppState::default()
+        };
+        state.tool_start(
+            Some("u1"),
+            "write",
+            &serde_json::json!({"path":"a.py", "content":"x = 1"}),
+        );
+        state.tool_end(Some("u1"), "write", "ok", false);
+        let text = flat_text(&state.chat_lines(100));
+        assert!(text.contains("? syntax unavailable"), "{text}");
+        assert!(!text.contains("✓ syntax"), "{text}");
+        assert!(!text.contains("✗ syntax"), "{text}");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -560,3 +560,13 @@ No flags, no per-launch env — the router adapts per session, per turn
 - `parallel` stays 1 unless the operator wants true dual-local; the
   routing works identically at `parallel=1` (one senior local, the rest
   cloud).
+
+### Checker execution failures
+
+Post-edit syntax checks distinguish rejected source from unavailable execution. A
+missing executable, denied launch, timeout, or interrupted checker displays
+`? syntax unavailable` on the tool result and warns once per checker outage. It
+does not tell the model to repair the source or count the file as passing. A
+completed nonzero syntax-check exit still produces the normal bounded repair
+message. Successful checks stay silent. Older facts without an availability
+field retain their existing pass/fail display.

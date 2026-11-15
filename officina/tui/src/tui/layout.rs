@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::ansi;
+use super::settings;
 use super::state::{AppState, ChatEntry, DialogKind};
 use crate::theme;
 
@@ -297,6 +298,19 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if state.perm_modal_open {
         render_chat_and_editor(frame, state, area);
         render_permissions_modal(frame, state, area);
+        return;
+    }
+    if state.setting_menu.is_some() {
+        render_chat_and_editor(frame, state, area);
+        let menu_area = Rect {
+            height: if area.height >= 10 {
+                area.height - 4
+            } else {
+                area.height
+            },
+            ..area
+        };
+        settings::render(frame, state.setting_menu.as_ref().unwrap(), menu_area);
         return;
     }
     if state.show_diag {
@@ -656,54 +670,6 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         Vec::new()
     };
-
-    // Compaction banner (2026-11-13, operator request): a bordered card
-    // above the prompt — impossible to miss, works at any scroll depth.
-    if state.is_compacting {
-        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
-        let secs = state
-            .compaction_started_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let panel_w = area.width.min(64);
-        let panel_h = 4u16.min(area.height.saturating_sub(2));
-        let panel = Rect {
-            x: area.x + area.width.saturating_sub(panel_w) / 2,
-            y: input_area.y.saturating_sub(panel_h + 1),
-            width: panel_w,
-            height: panel_h,
-        };
-        frame.render_widget(ratatui::widgets::Clear, panel);
-        let edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(edge)
-            .style(Style::new().bg(theme::PANEL))
-            .title(Line::from(Span::styled(
-                format!(" {} compacting context — {secs}s ", frames[f]),
-                Style::new()
-                    .fg(theme::GREEN)
-                    .bg(theme::PANEL)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        let inner = block.inner(panel);
-        frame.render_widget(block, panel);
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "summarizing the session to free context",
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
-                )),
-                Line::from(Span::styled(
-                    "the next turn continues on its own — no action needed",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
-                )),
-            ])
-            .style(Style::new().bg(theme::PANEL)),
-            inner,
-        );
-    }
 
     // Question panel (2026-11-13): the ask extension stages question.json;
     // the TUI renders the operator's menu ON TOP OF THE PROMPT — exactly
@@ -1444,9 +1410,9 @@ fn render_command_popup(
     let total = cands.len();
     let visible = (area.height as usize).saturating_sub(2);
     let title = if total > visible {
-        format!(" commands {} · Tab completes ", total)
+        format!(" commands {} · → completes ", total)
     } else {
-        " commands · Tab completes ".to_string()
+        " commands · → completes ".to_string()
     };
     let block = block.title(Span::styled(title, Style::new().fg(theme::MUTED)));
     let inner = block.inner(area);
@@ -1559,7 +1525,7 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut spans = vec![
         Span::styled("enter send", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
-        Span::styled("tab complete", theme::muted()),
+        Span::styled("→ complete", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
         Span::styled("esc dissolve", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
@@ -4103,5 +4069,74 @@ mod grind_chip_tests {
         let text: String = title.iter().map(|sp| sp.content.to_string()).collect();
         assert!(text.contains("GRIND"), "{text}");
         assert!(text.contains('∞'), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod settings_chat_render_tests {
+    use super::*;
+
+    fn screen(state: &mut AppState, w: u16, h: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| render(f, state)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn settings_choices_fit_small_screens() {
+        for command in [
+            "/fire",
+            "/shimmer",
+            "/sidebar",
+            "/thinking",
+            "/thinking-view",
+            "/settings",
+            "/diag",
+        ] {
+            check_menu_sizes(command);
+        }
+    }
+
+    fn check_menu_sizes(command: &str) {
+        for (w, h) in [(20, 8), (40, 12), (80, 24), (120, 40)] {
+            let mut state = AppState::default();
+            settings::command(&mut state, command);
+            let last = state.setting_menu.as_ref().unwrap().choices.len() - 1;
+            state.setting_menu.as_mut().unwrap().selected = last;
+            let text = screen(&mut state, w, h);
+            assert!(
+                text.contains('›'),
+                "selected choice absent at {w}x{h}: {command}\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_is_in_chat_once_and_respects_scrollback() {
+        let mut state = AppState::default();
+        state.is_compacting = true;
+        state.compaction_started_at = Some(std::time::Instant::now());
+        state
+            .entries
+            .push(ChatEntry::Notice("transcript message".into()));
+        let text = screen(&mut state, 80, 24);
+        assert_eq!(text.matches("compacting context").count(), 1, "{text}");
+        assert!(!text.contains("summarizing the session"));
+        for i in 0..70 {
+            state
+                .entries
+                .push(ChatEntry::Notice(format!("older message {i}")));
+        }
+        state.scroll = u16::MAX;
+        let text = screen(&mut state, 80, 24);
+        assert!(
+            !text.contains("compacting context"),
+            "compaction must scroll with chat: {text}"
+        );
     }
 }

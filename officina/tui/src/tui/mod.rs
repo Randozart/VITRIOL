@@ -12,6 +12,7 @@ pub mod question;
 pub mod review;
 pub mod routes;
 pub mod session_check;
+pub mod settings;
 pub mod state;
 
 use std::io::{self, IsTerminal};
@@ -1071,6 +1072,15 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         return;
     }
 
+    if state.setting_menu.is_some() {
+        if let Some(message) = settings::key(state, key.code) {
+            if let Some(Some(request)) = settings::command(state, &message) {
+                let _ = bridge.request(request).await;
+            }
+        }
+        return;
+    }
+
     // /help modal (F1) — read-only reference; any of esc/enter/q closes.
     if state.help_open {
         let len = state::help_rows().len();
@@ -1721,17 +1731,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             state.help_open = !state.help_open;
             state.help_sel = 0;
         }
-        // Tab: complete selection when the popup is open; otherwise cycle
-        // agent mode — "/mode <next>" (bare /mode only lists, agent-mode.ts).
+        // Tab retains agent cycling and never accepts autocomplete.
+        KeyCode::Tab if state.cand_sel_logic_open() || state.prompt_ghost.is_some() => {}
         KeyCode::Tab => {
-            if state.cand_sel_logic_open() {
-                state.complete_command();
-            } else if state.prompt_ghost.is_some() && state.input.is_empty() {
-                // Codex parity (stage 4): Tab accepts the ghost as an
-                // editable draft when no completions are open. The agent-mode
-                // cycle stays reachable once the ghost is dismissed.
-                state.accept_ghost();
-            } else if let Some(next) = state.next_agent_mode() {
+            if let Some(next) = state.next_agent_mode() {
                 let m = format!("/agent {}", next);
                 let _ = bridge
                     .request(RpcCommand::Prompt {
@@ -1823,55 +1826,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             };
             // Prompt history (2026-11-13): recallable via Up/Down.
             state.record_prompt_history(&msg);
-            // /fire — pure-local UI state (composer flames); never RPC.
-            // /settings (alias /config) — consolidated UI settings.
-            if msg.starts_with("/settings") || msg.starts_with("/config") {
-                let start = if msg.starts_with("/settings") {
-                    "/settings"
-                } else {
-                    "/config"
-                };
-                let rest = msg[start.len()..].trim();
-                if rest.is_empty() {
-                    state.entries.push(state::ChatEntry::Diag(format!(
-                        "\u{2699} glimmer: {}",
-                        state.glimmer.label(),
-                    )));
-                    let fire_desc = if state.fire_on {
-                        format!("on {}", state.fire_style.label())
-                    } else {
-                        "off".to_string()
-                    };
-                    state.entries.push(state::ChatEntry::Diag(format!(
-                        "\u{2699} fire: {}",
-                        fire_desc,
-                    )));
-                    state.entries.push(state::ChatEntry::Diag(
-                        "\u{2699} /settings {glimmer|fire} <args>".to_string(),
-                    ));
-                    return;
+            if let Some(request) = settings::command(state, &msg) {
+                if let Some(request) = request {
+                    let _ = bridge.request(request).await;
                 }
-                if let Some((key, args)) = rest.split_once(' ') {
-                    match key {
-                        "glimmer" => {
-                            let label = state.set_glimmer(args);
-                            state.notice =
-                                Some((format!("glimmer: {}", label), "info".to_string()));
-                            persist_glimmer(state);
-                            return;
-                        }
-                        "fire" => {
-                            let label = state.set_fire(args);
-                            state.notice = Some((format!("fire: {}", label), "info".to_string()));
-                            persist_fire(state);
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                state.entries.push(state::ChatEntry::Diag(
-                    "usage: /settings {glimmer|fire} <args>".to_string(),
-                ));
                 return;
             }
             // /tools — tool verbosity config. Bare opens the modal picker;
@@ -2372,6 +2330,11 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         }
         KeyCode::Left => {
             state.cursor = state.cursor.saturating_sub(1);
+        }
+        KeyCode::Right
+            if state.cand_sel_logic_open() && state.cursor == state.input.chars().count() =>
+        {
+            state.complete_command();
         }
         KeyCode::Right
             if state.prompt_ghost.is_some() && state.cursor >= state.input.chars().count() =>
@@ -4393,16 +4356,22 @@ mod phase_wiring_tests {
     }
 
     #[test]
-    fn compaction_timer_tracks_the_banner() {
+    fn compaction_timer_tracks_chat_progress() {
         let mut s = AppState::default();
         fire(&mut s, "agent_start");
         assert!(s.compaction_started_at.is_none());
         fire(&mut s, "compaction_start");
         assert!(s.is_compacting);
-        assert!(s.compaction_started_at.is_some(), "banner timer armed");
+        assert!(
+            s.compaction_started_at.is_some(),
+            "chat progress timer armed"
+        );
         fire(&mut s, "compaction_end");
         assert!(!s.is_compacting);
-        assert!(s.compaction_started_at.is_none(), "banner timer cleared");
+        assert!(
+            s.compaction_started_at.is_none(),
+            "chat progress timer cleared"
+        );
         fire(&mut s, "agent_end");
     }
 
@@ -4483,5 +4452,60 @@ mod phase_wiring_tests {
             "mid-turn dialog tripped the table: {:?}",
             state_diags(&s)
         );
+    }
+}
+
+#[cfg(test)]
+mod input_settings_tests {
+    use super::*;
+
+    async fn press(code: KeyCode, state: &mut AppState, bridge: &mut RpcBridge) {
+        handle_key(KeyEvent::new(code, KeyModifiers::NONE), state, bridge).await;
+    }
+
+    #[tokio::test]
+    async fn right_tab_cursor_and_menu_keyboard_contract() {
+        let dir = std::env::temp_dir().join(format!("officina-input-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("stub.cjs");
+        std::fs::write(&script, "process.stdin.resume();").unwrap();
+        let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
+        let mut state = AppState::default();
+        state.input = "/side".into();
+        state.cursor = 5;
+        press(KeyCode::Tab, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "/side");
+        state.cursor = 2;
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.cursor, 3);
+        assert_eq!(state.input, "/side");
+        state.cursor = 5;
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "/sidebar");
+        press(KeyCode::Enter, &mut state, &mut bridge).await;
+        assert!(state.setting_menu.is_some());
+        assert_eq!(state.sidebar_force, None);
+        press(KeyCode::Down, &mut state, &mut bridge).await;
+        press(KeyCode::Enter, &mut state, &mut bridge).await;
+        assert_eq!(state.sidebar_force, Some(true));
+        assert!(state.setting_menu.is_none());
+        state.ghost_events_file = Some(dir.join("ghost.jsonl"));
+        state.prompt_ghost = Some(state::GhostSuggestion {
+            id: "test".into(),
+            text: "héllo".into(),
+            source: "test".into(),
+        });
+        press(KeyCode::Tab, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "");
+        assert!(state.prompt_ghost.is_some());
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "héllo");
+        assert_eq!(state.cursor, 5);
+        state.cursor = 1;
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.cursor, 2);
+        assert_eq!(state.input, "héllo");
+        drop(bridge);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

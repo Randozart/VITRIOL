@@ -146,8 +146,9 @@
   demoted behind healthy ones, and provider-health cooldowns (429/5xx)
   rotate lanes reactively. `/nimbus` prints the lane table with gateway
   marks, cooldowns, and the next pick.
-- **Autofill**: press **Tab** to cycle keyword/target completions (shown on the
-  ⧉ bar under the prompt). BackTab still cycles tabs.
+- **Autofill**: press **Right Arrow** at the end of input to accept the selected
+  slash completion or suggested prompt. Up/Down selects slash candidates; Enter
+  confirms a command selection. Tab cycles agent mode and never accepts autofill.
 - **Scroll**: **PgUp**/**PgDn** (and the wheel) scroll the output. Scrolling
   up **locks the view**: incoming streaming output never drags the lines
   you are reading. A hint row above the prompt shows the lock; click it or
@@ -300,6 +301,9 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 - **/mode is gone** — the old alias shadowed typing `/model`; agent modes
   live at `/agent` (the legacy `/mode plan` widget format still parses).
 
+- **Compaction**: progress and elapsed time appear in the chat and scroll with
+  the transcript; the completion or failure message stays in chat.
+
 ## Headless, cost, and automation
 
 - **Voice suggestions** — after a turn, the empty composer shows a dimmed
@@ -340,11 +344,18 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   `watch Ns` countdown to the next check — silence with visible feedback.
   It NEVER kills or aborts; Esc remains the only abort. Re-judges every
   5 min, max 3 per call. `OFFICINA_NO_HANG_WATCHDOG=1` disables.
-- **/fx** — fire + glimmer panel with a live preview. `/fire` and
-  `/glimmer` are gone. Fire obeys the liveliness contract: it only burns
+- **Settings**: `/fire`, `/glimmer` (alias `/shimmer`), `/sidebar`, `/thinking`,
+  `/thinking-view`, and `/diag` open small choice menus. Up/Down selects, Enter
+  applies, Escape cancels. `/settings` opens the settings list; explicit arguments
+  still work (for example `/sidebar hide` or `/settings fire emerald`). `/yolo`
+  opens the permissions picker. `/fx` retains its live preview.
+  Fire obeys the liveliness contract: it only burns
   while the session is actually working (streaming text or live tool
   CPU); when stalled the flames die and the preview says so. Glimmer
   stays decorative on a fresh screen.
+- **Compaction**: progress and elapsed time appear in the chat and scroll with
+  the transcript; the completion or failure message stays in chat.
+
 ## Headless, cost, and automation
 
 - **`vitriol officina exec "task"`** — one-shot run through the full

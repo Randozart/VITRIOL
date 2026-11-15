@@ -239,7 +239,8 @@ pub const HELP_KEYS: &[(&str, &str)] = &[
     ("alt+enter", "queue a follow-up instead of steering"),
     ("ctrl+q", "toggle the plan agent (also /plan)"),
     ("F2", "toggle deep research (also /deep-research)"),
-    ("tab", "autocomplete / cycle agent"),
+    ("→", "accept autocomplete at end of input"),
+    ("tab", "cycle agent"),
     ("esc", "abort streaming · close overlays — NEVER quits"),
     (
         "drag",
@@ -853,6 +854,7 @@ pub struct AppState {
     pub pending_images: Vec<PendingImage>,
 
     // Diagnostics overlay (F9)
+    pub setting_menu: Option<super::settings::SettingMenu>,
     pub show_diag: bool,
     /// Snapshot of the bridge stderr ring, refreshed each frame by run_loop.
     pub diag_view: Vec<String>,
@@ -929,7 +931,7 @@ pub struct AppState {
     /// Messages typed while busy, visible above the prompt until the
     /// agent actually reaches them (2026-11-13, operator request).
     pub held: Vec<HeldMsg>,
-    /// Compaction start (drives the prominent banner's timer).
+    /// Compaction start (drives the in-chat progress timer).
     pub compaction_started_at: Option<std::time::Instant>,
     /// Tool calls announced by the assistant turn but not yet observed via
     /// `tool_execution_start`. Covers the failure where pi persists the
@@ -1065,6 +1067,7 @@ impl Default for AppState {
             xsessions_sel: 0,
             xsessions_filter: String::new(),
             pending_images: Vec::new(),
+            setting_menu: None,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1372,7 +1375,7 @@ impl AppState {
         if self.is_streaming {
             return UiPhase::Streaming;
         }
-        if self.models_open || self.cache_open || self.resume_open {
+        if self.setting_menu.is_some() || self.models_open || self.cache_open || self.resume_open {
             return UiPhase::Modal;
         }
         UiPhase::Idle
@@ -2872,6 +2875,14 @@ impl AppState {
             "style" => self.fire_style = self.fire_style.next(),
             // Text discoloration toggle (owner request 2026-09-03) —
             // independent of the flame itself.
+            "tint on" => {
+                self.fire_tint = true;
+                return "tint on".into();
+            }
+            "tint off" => {
+                self.fire_tint = false;
+                return "tint off".into();
+            }
             "tint" => {
                 self.fire_tint = !self.fire_tint;
                 return if self.fire_tint {
@@ -3767,6 +3778,9 @@ impl AppState {
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
         ("janitor", "stale cache cleanup", "/janitor [dry] — remove stale prompt/watchdog/longjob/probe/KV/session-chain artifacts (protected: newest store file, slot0.bin, corrupt quarantines, ledgers); auto-runs daily"),
         ("thinking-view", "hide thinking blocks", "/thinking-view [hide|show] — collapse thinking blocks to a marker line (display only; the model's thinking level stays at /thinking)"),
+        ("fire", "fire settings", "/fire [on|off|prismatic|emerald|alchemy|tint on|tint off] — bare opens choices"),
+        ("glimmer", "watermark animation", "/glimmer [shimmer|breathe|twinkle|off] — bare opens choices"),
+        ("shimmer", "watermark animation", "/shimmer — alias for the glimmer picker"),
         ("fx", "fire + glimmer", "/fx — fire/glimmer panel with live preview (fire only animates while the session is actually working)"),
         ("answers", "last inquiry answer", "/answers — the last INQUIRE-mode question + answer (scrollable; written by the agent-mode extension)"),
         ("engine", "engine control", "/engine [start|stop|restart|status] — control the vitriol-server systemd unit (no sudo: polkit scopes you to the two vitriol units; your daily-driver config is untouched)"),
@@ -3775,22 +3789,22 @@ impl AppState {
         ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),
         ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
         ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),
-        ("diag", "toggle diagnostics", "/diag or F9 — stderr overlay from the agent process"),
+        ("diag", "diagnostic settings", "/diag [on|off] — picker; F9 toggles stderr overlay"),
         ("help", "glossary + keys + commands", "/help or F1 — the reference modal"),
         ("clone", "duplicate the session", "/clone — duplicate the active branch into a fresh session"),
         ("export", "export session to HTML", "/export [path] — write a self-contained HTML transcript"),
         ("rename", "rename the session", "/rename <name> — set the session display name"),
-        ("sidebar", "cycle sidebar visibility", "/sidebar — auto (hide when narrow) → show → hide"),
+        ("sidebar", "sidebar visibility", "/sidebar [auto|show|hide] — bare opens choices"),
         ("permissions", "permission mode", "/permissions — ask | auto | yolo (sensitive roots always guarded)"),
-        ("yolo", "toggle YOLO mode", "/yolo — toggle ask <-> yolo (sensitive roots still prompt)"),
+        ("yolo", "permission mode", "/yolo — open permission choices (sensitive roots still prompt)"),
         ("import-opencode", "import an OpenCode session", "/import-opencode [latest|<id>|list] [full] — convert an OpenCode session and switch to it (default: newest ~40k tokens + a digest of older history; full = everything)"),
         ("model", "select a model", "/model [provider/id] — picker from available models; provider/id switches directly"),
         ("new", "new session", "/new — fresh session (old one stays resumable)"),
         ("quit", "quit the TUI", "/quit — deliberate quit; the only other path is ^esc"),
         ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
-        ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare lists current values"),
+        ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare opens choices"),
         ("stats", "refresh stats", "/stats — refresh session statistics"),
-        ("thinking", "thinking level", "/thinking [off..max] — bare cycles"),
+        ("thinking", "thinking level", "/thinking [off..max] — bare opens choices"),
         ("tools", "tool verbosity", "/tools [<tool> <mode>[!+|-] | <tool> clear | default <mode>] — modes: line/block/full; bare opens the picker; ctrl+t too"),
     ];
 

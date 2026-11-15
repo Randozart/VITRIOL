@@ -384,7 +384,10 @@ pub enum ChatEntry {
     Notice(String),
     /// hang-watchdog entry (2026-11-13): rendered as a compact amber-bordered
     /// block instead of a red Diag line — it is an observation, not an error.
-    Watchdog(String),
+    Watchdog {
+        text: String,
+        doc: Option<Box<WatchdogDoc>>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -421,12 +424,15 @@ pub struct AnswerDoc {
 /// Structured watchdog facts (2026-11-13): written by the hang-watchdog
 /// extension; the transcript renders fields and the tool row shows a
 /// countdown, instead of dumping prose.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, Hash, serde::Deserialize)]
 #[serde(default)]
 pub struct WatchdogDoc {
     pub version: u32,
     pub ts: u64,
     pub kind: String,
+    pub session_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub valid_until: Option<u64>,
     pub command: String,
     pub elapsed_s: u64,
     pub stalled_s: u64,
@@ -2072,6 +2078,52 @@ impl AppState {
         }
     }
 
+    /// Own each card's facts and update only the matching session/call observation.
+    fn record_watchdog_notice(&mut self, message: &str) {
+        let path = self
+            .watchdog_file
+            .clone()
+            .unwrap_or_else(|| watchdog_path(&self.session_id));
+        let doc = load_watchdog_doc_at(&path).filter(|doc| {
+            self.session_id.is_empty()
+                || doc.session_id.as_deref() == Some(self.session_id.as_str())
+        });
+        let replacement = doc.as_ref().and_then(|next| {
+            self.entries
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, entry)| {
+                    let ChatEntry::Watchdog {
+                        doc: Some(previous),
+                        ..
+                    } = entry
+                    else {
+                        return None;
+                    };
+                    let same = if next.tool_call_id.is_some() {
+                        previous.session_id == next.session_id
+                            && previous.tool_call_id == next.tool_call_id
+                    } else {
+                        index + 1 == self.entries.len()
+                            && previous.command == next.command
+                            && previous.verdict == next.verdict
+                    };
+                    same.then_some(index)
+                })
+        });
+        self.watchdog = doc.clone();
+        let entry = ChatEntry::Watchdog {
+            text: message.to_string(),
+            doc: doc.map(Box::new),
+        };
+        if let Some(index) = replacement {
+            self.entries[index] = entry;
+            return;
+        }
+        self.entries.push(entry);
+    }
+
     /// Extension notify (stage 3, 2026-11-12): errors/warnings land in the
     /// transcript as Diag; info keeps the 40-char glance row, and anything
     /// the truncation would mangle (multi-line tables or >100-char payloads)
@@ -2080,29 +2132,7 @@ impl AppState {
     pub fn apply_notify(&mut self, msg: &str, ntype: &str) {
         // Watchdog observations are not errors — give them their own block.
         if msg.starts_with("hang-watchdog") {
-            let path = self.watchdog_file.clone().unwrap_or_else(watchdog_path);
-            let prev_key = self
-                .watchdog
-                .as_ref()
-                .map(|d| format!("{}|{}", d.command, d.verdict));
-            self.watchdog = load_watchdog_doc_at(&path);
-            let new_key = self
-                .watchdog
-                .as_ref()
-                .map(|d| format!("{}|{}", d.command, d.verdict));
-            // Same command+verdict as the card on screen: update in place
-            // instead of stacking duplicates (2026-11-14).
-            let replace = matches!(
-                (self.entries.last(), prev_key.as_deref(), new_key.as_deref()),
-                (Some(ChatEntry::Watchdog(_)), Some(p), Some(n)) if p == n
-            );
-            if replace {
-                if let Some(ChatEntry::Watchdog(prev)) = self.entries.last_mut() {
-                    *prev = msg.to_string();
-                }
-            } else {
-                self.entries.push(ChatEntry::Watchdog(msg.to_string()));
-            }
+            self.record_watchdog_notice(msg);
             return;
         }
         if ntype == "error" {
@@ -3015,7 +3045,7 @@ impl AppState {
     pub fn watchdog_countdown(&self) -> Option<u64> {
         let doc = self.watchdog.as_ref()?;
         let now = crate::tui::caduceus::now_ms();
-        if now.saturating_sub(doc.ts) > 120_000 || doc.next_check_at == 0 {
+        if !watchdog_fresh(doc, now) || doc.next_check_at == 0 {
             return None;
         }
         if doc.next_check_at <= now {
@@ -3207,8 +3237,11 @@ impl AppState {
             | ChatEntry::Diag(t)
             | ChatEntry::Warn(t)
             | ChatEntry::Error(t)
-            | ChatEntry::Notice(t)
-            | ChatEntry::Watchdog(t) => t.len().hash(&mut h),
+            | ChatEntry::Notice(t) => t.len().hash(&mut h),
+            ChatEntry::Watchdog { text, doc } => {
+                text.hash(&mut h);
+                doc.hash(&mut h);
+            }
             ChatEntry::Thinking { text, collapsed } => {
                 text.len().hash(&mut h);
                 collapsed.hash(&mut h);
@@ -3263,7 +3296,6 @@ impl AppState {
                 None => (format!("watch {secs}s"), true),
             });
         }
-        let wd = self.watchdog.clone();
         for (idx, entry) in self.entries.iter_mut().enumerate() {
             let before = lines.len();
             // Dynamic entries (the streaming tail's thinking block, running
@@ -3644,7 +3676,8 @@ impl AppState {
                         }
                     }
                 }
-                ChatEntry::Watchdog(text) => {
+                ChatEntry::Watchdog { text, doc } => {
+                    let wd = doc.as_deref();
                     // Structured card when the facts file is fresh; raw text
                     // fallback so a message is never lost (I3).
                     let edge_color = watchdog_edge_color(wd.as_ref().map(|d| d.verdict.as_str()));
@@ -3667,6 +3700,7 @@ impl AppState {
                                 .bg(theme::BG)
                                 .add_modifier(Modifier::BOLD),
                         ),
+                        Some("UNKNOWN") => (" UNKNOWN ", muted),
                         Some("JUDGING") => (
                             " JUDGING ",
                             Style::new()
@@ -5480,8 +5514,10 @@ mod tests {
         assert_eq!(watchdog_edge_color(None), theme::MUTED);
         // ALIVE must never wear the warning/failure hue (I3).
         let mut s = AppState::default();
-        s.entries
-            .push(ChatEntry::Watchdog("hang-watchdog ALIVE".into()));
+        s.entries.push(ChatEntry::Watchdog {
+            text: "hang-watchdog ALIVE".into(),
+            doc: None,
+        });
         s.watchdog = Some(WatchdogDoc {
             version: 1,
             ts: crate::tui::caduceus::now_ms(),
@@ -5493,7 +5529,11 @@ mod tests {
             reason: "compiling".into(),
             next_check_at: 0,
             phase: "watch".into(),
+            ..Default::default()
         });
+        if let Some(ChatEntry::Watchdog { doc, .. }) = s.entries.last_mut() {
+            *doc = s.watchdog.clone().map(Box::new);
+        }
         let lines = s.chat_lines(90);
         let colors = flat_colors(&lines);
         assert!(colors.contains(&theme::GREEN));
@@ -5524,10 +5564,10 @@ mod tests {
         let cards = s
             .entries
             .iter()
-            .filter(|e| matches!(e, ChatEntry::Watchdog(_)))
+            .filter(|e| matches!(e, ChatEntry::Watchdog { .. }))
             .count();
         assert_eq!(cards, 1, "identical facts replace the card");
-        if let Some(ChatEntry::Watchdog(t)) = s.entries.last() {
+        if let Some(ChatEntry::Watchdog { text: t, .. }) = s.entries.last() {
             assert!(t.contains("alive check 2"), "card carries the latest text");
         } else {
             panic!("expected a watchdog card");
@@ -5538,7 +5578,7 @@ mod tests {
         assert_eq!(
             s.entries
                 .iter()
-                .filter(|e| matches!(e, ChatEntry::Watchdog(_)))
+                .filter(|e| matches!(e, ChatEntry::Watchdog { .. }))
                 .count(),
             2
         );
@@ -5918,7 +5958,7 @@ mod tests {
             "warning",
         );
         assert_eq!(s.entries.len(), 1);
-        assert!(matches!(s.entries[0], ChatEntry::Watchdog(_)));
+        assert!(matches!(s.entries[0], ChatEntry::Watchdog { .. }));
         assert!(
             s.notice.is_none(),
             "watchdog entries do not use the glance row"
@@ -6009,6 +6049,9 @@ mod tests {
             ))
             .unwrap(),
         );
+        if let Some(ChatEntry::Watchdog { doc, .. }) = s2.entries.last_mut() {
+            *doc = s2.watchdog.clone().map(Box::new);
+        }
         let text = s2
             .chat_lines(80)
             .iter()
@@ -7393,26 +7436,50 @@ fn subtree_cpu_secs(root: u32) -> Option<f64> {
     Some(total)
 }
 
-fn watchdog_path() -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    p.push(".vitriol");
-    p.push("officina");
-    p.push("watchdog.json");
-    p
+fn watchdog_path(session: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".vitriol")
+        .join("officina");
+    watchdog_path_in(&root, session)
 }
 
-/// Facts are only trusted while fresh (2 min) — a stale card would claim
-/// a countdown for a watchdog that no longer watches.
-#[cfg(test)]
-pub fn load_watchdog_doc() -> Option<WatchdogDoc> {
-    load_watchdog_doc_at(&watchdog_path())
+fn watchdog_path_in(root: &std::path::Path, session: &str) -> std::path::PathBuf {
+    if session.is_empty() {
+        return root.join("watchdog.json");
+    }
+    // Match JavaScript's ASCII replacement over UTF-16 code units exactly.
+    let safe: String = session
+        .encode_utf16()
+        .take(120)
+        .map(|unit| {
+            char::from_u32(u32::from(unit))
+                .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+                .unwrap_or('_')
+        })
+        .collect();
+    root.join("watchdog").join(format!("{safe}.json"))
 }
 
+fn watchdog_fresh(doc: &WatchdogDoc, now: u64) -> bool {
+    if doc.version != 1 || doc.ts > now.saturating_add(5000) {
+        return false;
+    }
+    match doc.valid_until {
+        Some(expiry) => {
+            expiry >= doc.ts && expiry <= doc.ts.saturating_add(360_000) && now <= expiry
+        }
+        None => now.saturating_sub(doc.ts) <= 120_000,
+    }
+}
+
+/// Legacy facts expire after two minutes; scoped facts carry a bounded explicit lease.
 pub fn load_watchdog_doc_at(path: &std::path::Path) -> Option<WatchdogDoc> {
     let raw = std::fs::read_to_string(path).ok()?;
     let doc: WatchdogDoc = serde_json::from_str(&raw).ok()?;
-    let now = crate::tui::caduceus::now_ms();
-    if doc.version != 1 || now.saturating_sub(doc.ts) > 120_000 {
+    if !watchdog_fresh(&doc, crate::tui::caduceus::now_ms()) {
+        return None;
+    }
+    if doc.session_id.is_some() && doc.tool_call_id.as_deref().is_none_or(str::is_empty) {
         return None;
     }
     Some(doc)
@@ -7622,5 +7689,113 @@ fn phase_priority(dialog: bool, compacting: bool, streaming: bool, modal: bool) 
         UiPhase::Modal
     } else {
         UiPhase::Idle
+    }
+}
+
+#[cfg(test)]
+mod watchdog_ownership_tests {
+    use super::*;
+
+    fn document(session: &str, call: &str, command: &str, verdict: &str) -> serde_json::Value {
+        serde_json::json!({"version":1,"ts":crate::tui::caduceus::now_ms(),"session_id":session,"tool_call_id":call,
+            "command":command,"verdict":verdict,"reason":format!("evidence for {call}"),"kind":"verdict","phase":"rejudge"})
+    }
+
+    #[test]
+    fn owned_cards_keep_their_own_facts_and_update_without_stacking() {
+        let dir = std::env::temp_dir().join(format!("watchdog-owned-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("facts.json");
+        let mut state = AppState {
+            session_id: "session-a".into(),
+            watchdog_file: Some(path.clone()),
+            ..Default::default()
+        };
+        for (call, command, verdict) in [
+            ("one", "build-one", "ALIVE"),
+            ("two", "build-two", "HUNG"),
+            ("one", "build-one", "UNKNOWN"),
+        ] {
+            std::fs::write(
+                &path,
+                document("session-a", call, command, verdict).to_string(),
+            )
+            .unwrap();
+            state.apply_notify("hang-watchdog: phase changed", "warning");
+        }
+        assert_eq!(
+            state.entries.len(),
+            2,
+            "updates find their own call even behind another card"
+        );
+        let text = state
+            .chat_lines(100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text.matches("build-one").count(), 1, "{text}");
+        assert_eq!(text.matches("build-two").count(), 1, "{text}");
+        assert!(text.contains("UNKNOWN") && text.contains("HUNG"), "{text}");
+        assert!(
+            !text.contains("ALIVE"),
+            "old verdict must be invalidated: {text}"
+        );
+        std::fs::write(
+            &path,
+            document("foreign-session", "three", "foreign-build", "ALIVE").to_string(),
+        )
+        .unwrap();
+        state.apply_notify("hang-watchdog: unscoped raw notice", "warning");
+        assert!(state.watchdog.is_none(), "foreign facts are not trusted");
+        let text = state
+            .chat_lines(100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("foreign-build"), "{text}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn explicit_leases_cover_rejudge_cadence_but_remain_bounded() {
+        let now = 1_800_000_000_000;
+        let mut doc = WatchdogDoc {
+            version: 1,
+            ts: now - 180_000,
+            valid_until: Some(now + 90_000),
+            ..Default::default()
+        };
+        assert!(
+            watchdog_fresh(&doc, now),
+            "an explicit lease can cover a five-minute rejudge interval"
+        );
+        doc.valid_until = None;
+        assert!(
+            !watchdog_fresh(&doc, now),
+            "legacy freshness stays at two minutes"
+        );
+        doc.valid_until = Some(doc.ts + 360_001);
+        assert!(
+            !watchdog_fresh(&doc, now),
+            "oversized leases are not trusted"
+        );
+        doc.ts = now + 6000;
+        doc.valid_until = Some(now + 30_000);
+        assert!(
+            !watchdog_fresh(&doc, now),
+            "future-dated facts are not health evidence"
+        );
+    }
+
+    #[test]
+    fn session_paths_match_the_javascript_filename_contract() {
+        let root = std::path::Path::new("/private-test");
+        assert_eq!(
+            watchdog_path_in(root, "session/a🌙"),
+            root.join("watchdog/session_a__.json")
+        );
+        assert_eq!(watchdog_path_in(root, ""), root.join("watchdog.json"));
     }
 }

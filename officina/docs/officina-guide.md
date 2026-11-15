@@ -336,14 +336,20 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   rule scopes you to the two vitriol units. Your daily-driver config is
   untouched: the unit runs the live config; profile changes stay with
   `vitriol config load <name>`.
-- **Hang watchdog** — long bash calls that stop producing output get a
-  notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
-  (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge
-  liveliness. Verdicts render as a structured card (cmd / elapsed /
-  stalled / reason, verdict chip) and the running-tool row carries a
-  `watch Ns` countdown to the next check — silence with visible feedback.
-  It NEVER kills or aborts; Esc remains the only abort. Re-judges every
-  5 min, max 3 per call. `OFFICINA_NO_HANG_WATCHDOG=1` disables.
+- **Hang watchdog** — quiet bash calls get a notice at 60 s
+  (`OFFICINA_HANG_SOFT_S`) and an advisory judgment at 180 s
+  (`OFFICINA_HANG_JUDGE_S`). Structured Pi output updates and equal-length
+  rolling output count as activity; unchanged repeated callbacks do not.
+  Malformed replies, unavailable judges and abstentions show **UNKNOWN**.
+  There are at most three semantic attempts per quiet episode, spaced five
+  minutes apart; deterministic notices continue after that budget is spent.
+  Fresh output rearms the episode. Tool completion, progress and session changes
+  invalidate pending old judgments. Facts live under
+  `~/.vitriol/officina/watchdog/<session-id>.json`; cards retain their own call's
+  facts. Countdown leases cover the next check and remain bounded to six minutes.
+  This advisory extension never kills or aborts. The Rust harness's existing
+  hard-recovery deadlines remain separate; Esc is the operator's abort control.
+
 - **Settings**: `/fire`, `/glimmer` (alias `/shimmer`), `/sidebar`, `/thinking`,
   `/thinking-view`, and `/diag` open small choice menus. Up/Down selects, Enter
   applies, Escape cancels. `/settings` opens the settings list; explicit arguments

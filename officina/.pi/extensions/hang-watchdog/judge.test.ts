@@ -1,6 +1,8 @@
 // hang-watchdog rules (2026-11-12): observe → notice → judge. NEVER kills.
 import { describe, expect, it } from "vitest";
 import {
+  observeToolOutput,
+  toolOutputText,
   buildJudgePrompt,
   MAX_JUDGMENTS_PER_CALL,
   parseVerdict,
@@ -15,7 +17,7 @@ const call = (over: Partial<WatchedCall> = {}): WatchedCall => ({
   toolCallId: "t1",
   command: "brievc build c4probe.bv --verify-bodies",
   startedAt: T0,
-  lastOutputChars: 0,
+  lastOutputRevision: 0,
   stalledSince: null,
   judgments: 0,
   lastVerdict: null,
@@ -42,11 +44,11 @@ describe("tickCall", () => {
     const a = tickCall(c, 500, "more output", { now: T0 + 120_000, softS: 60, judgeS: 180 });
     expect(a.kind).toBe("alive");
     expect(c.stalledSince).toBeNull();
-    expect(c.lastOutputChars).toBe(500);
+    expect(c.lastOutputRevision).toBe(500);
   });
 
   it("escalates to a judgment after judgeS of stall", () => {
-    const c = call({ lastVerdict: "noticed", stalledSince: T0, lastOutputChars: 10 });
+    const c = call({ lastVerdict: "noticed", stalledSince: T0, lastOutputRevision: 10 });
     const a = tickCall(c, 10, "some tail", { now: T0 + 181_000, softS: 60, judgeS: 180 });
     expect(a.kind).toBe("judge");
     expect((a as { tail: string }).tail).toBe("some tail");
@@ -57,7 +59,7 @@ describe("tickCall", () => {
     const c = call({
       lastVerdict: "HUNG",
       stalledSince: T0,
-      lastOutputChars: 10,
+      lastOutputRevision: 10,
       judgments: 1,
       judgedAt: T0 + 181_000,
     });
@@ -68,7 +70,7 @@ describe("tickCall", () => {
     expect(a.kind).toBe("judge");
     expect(c.judgments).toBe(2);
     c.judgments = MAX_JUDGMENTS_PER_CALL;
-    expect(tickCall(c, 10, "", { now: T0 + 900_000, softS: 60, judgeS: 180 }).kind).toBe("none");
+    expect(tickCall(c, 10, "", { now: T0 + 900_000, softS: 60, judgeS: 180 }).kind).toBe("notice");
   });
 });
 
@@ -79,7 +81,7 @@ describe("parseVerdict", () => {
       reason: "It waits on stdin.",
     });
     expect(parseVerdict("noise\nVERDICT: ALIVE\ncompiling links").alive).toBe(true);
-    expect(parseVerdict("garbage").alive).toBe(true);
+    expect(parseVerdict("garbage").alive).toBeNull();
     expect(parseVerdict("garbage").reason).toContain("unparseable");
   });
 });
@@ -102,5 +104,36 @@ describe("pickJudgeModel + short", () => {
     expect(pickJudgeModel(["a/b", "c/d"])).toBe("a/b");
     expect(pickJudgeModel([])).toBeNull();
     expect(short("a  b\n c")).toBe("a b c");
+  });
+});
+
+
+describe("output observation and judgment lifecycle", () => {
+  it("reads real Pi content envelopes and bounded same-length rolling output", () => {
+    const c = call();
+    expect(toolOutputText({ content: [{ type: "text", text: "hello" }] })).toBe("hello");
+    const a = "a".repeat(5000), b = "b".repeat(5000);
+    expect(observeToolOutput(c, { content: [{ type: "text", text: a }] }, T0 + 1000)).toBe(true);
+    expect(observeToolOutput(c, { content: [{ type: "text", text: b }] }, T0 + 2000)).toBe(true);
+    expect(c.tail!.length).toBeLessThanOrEqual(1500);
+    expect(c.lastActivityAt).toBe(T0 + 2000);
+    expect(observeToolOutput(c, { content: [{ type: "text", text: b }] }, T0 + 3000)).toBe(false);
+    expect(observeToolOutput(c, { content: [{ type: "image", data: "ignored" }] }, T0 + 4000)).toBe(false);
+  });
+
+  it("timestamps early output and rearms notices and budget after genuine progress", () => {
+    const c = call({ judgments: 3, lastVerdict: "UNKNOWN", judgedAt: T0 });
+    observeToolOutput(c, "new output", T0 + 10_000);
+    expect(c.judgments).toBe(0);
+    expect(tickCall(c, c.lastOutputRevision, c.tail!, { now: T0 + 61_000, softS: 60, judgeS: 180 }).kind).toBe("none");
+    expect(tickCall(c, c.lastOutputRevision, c.tail!, { now: T0 + 71_000, softS: 60, judgeS: 180 }).kind).toBe("notice");
+  });
+
+  it("rates limits unavailable/noticed attempts and blocks overlapping judgments", () => {
+    const c = call({ lastVerdict: "noticed", judgedAt: T0 + 181_000, judgments: 1 });
+    expect(tickCall(c, 0, "", { now: T0 + 211_000, softS: 60, judgeS: 180 }).kind).toBe("none");
+    c.judging = true;
+    expect(tickCall(c, 0, "", { now: T0 + 700_000, softS: 60, judgeS: 180 }).kind).toBe("none");
+    expect(parseVerdict("VERDICT: UNKNOWN insufficient process evidence").alive).toBeNull();
   });
 });

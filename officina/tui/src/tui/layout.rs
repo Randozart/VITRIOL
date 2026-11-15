@@ -3990,19 +3990,18 @@ mod render_smoke {
     fn watchdog_card_and_fire_render_with_facts() {
         let mut s = base_state();
         let now = crate::tui::caduceus::now_ms();
-        s.watchdog = crate::tui::state::load_watchdog_doc().or_else(|| {
-            Some(crate::tui::state::WatchdogDoc {
-                version: 1,
-                ts: now,
-                kind: "verdict".into(),
-                command: "brievc build c4probe.bv".into(),
-                elapsed_s: 252,
-                stalled_s: 189,
-                verdict: "HUNG".into(),
-                reason: "waiting on stdin".into(),
-                next_check_at: now + 21_000,
-                phase: "rejudge".into(),
-            })
+        s.watchdog = Some(crate::tui::state::WatchdogDoc {
+            version: 1,
+            ts: now,
+            kind: "verdict".into(),
+            command: "brievc build c4probe.bv".into(),
+            elapsed_s: 252,
+            stalled_s: 189,
+            verdict: "HUNG".into(),
+            reason: "waiting on stdin".into(),
+            next_check_at: now + 21_000,
+            phase: "rejudge".into(),
+            ..Default::default()
         });
         s.fire_on = true;
         s.fire_target = 0.8;

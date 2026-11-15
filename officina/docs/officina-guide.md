@@ -581,3 +581,7 @@ The unused HTTP client dependency has been removed. On this 64-bit host,
 inline `ChatEntry` storage decreased from 352 to 208 bytes; optional tool JSON,
 check facts and render caches have separate heap ownership. Existing rendering,
 cache invalidation, tool-liveness and wire-contract tests cover behavior parity.
+
+The extension test runner uses four isolated workers by default to limit SDK/jiti
+startup contention while inference shares the host. This keeps all test cases and
+existing timeouts; Vitest's `--maxWorkers` option can override the resource budget.

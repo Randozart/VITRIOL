@@ -6,6 +6,7 @@ import type { Socket } from "node:net";
 import { normalizeContext } from "@earendil-works/pi-ai";
 // SDK loading belongs to fixture setup, outside transport assertion deadlines.
 import "@earendil-works/pi-ai/api/openai-completions";
+import "@earendil-works/pi-ai/api/anthropic-messages";
 import { streamLocalWithProgress } from "./progress.ts";
 
 const traces = vi.hoisted(() => [] as Array<{ detail?: string }>);

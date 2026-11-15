@@ -1,5 +1,9 @@
 # GPU emulation/simulation assessment
 
+Follow-up: [decision-model and cache-efficiency research](2026-11-15-decision-efficiency-research.md)
+records the later Jev/Laya/Mellum and shared-encoder discussion separately from
+GPU kernel emulation. It includes candidate tradeoffs and adoption boundaries.
+
 Created: 2026-11-15T10:30:11+01:00 (Europe/Amsterdam)
 
 Question: can CPU-side GPU emulation reduce the real-device cost of finding further VITRIOL/Officina optimizations? Preserve inference correctness, ownership/lease/rollback invariants and live service availability. No installation or live benchmark was performed. No repository files edited.

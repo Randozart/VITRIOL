@@ -198,6 +198,13 @@ separate calibration from held-out evaluation before changing production policy.
 
 ## Small decision models: candidate follow-up
 
+The [decision-efficiency research record](../.opencode/plans/2026-11-15-decision-efficiency-research.md)
+compares Jev/Laya/AnyJev, Mellum and warm-cache scoring, structured-feature
+classifiers, SetFit/MiniLM, fastText and GLiNER2. It records cache compatibility,
+evidence limits and the proposed held-out evaluation. For recurring fixed labels,
+the current first experiment is a cheap feature classifier or shared small encoder
+with trained heads; Laya remains a candidate for flexible typed questions.
+
 Jev-style typed models could replace some semantic yes/no, scoring and bounded
 selection calls. The existing Officina auto-route classifier already uses cheap
 rules, so replacing that does not eliminate an LM call. Keep admission arithmetic,

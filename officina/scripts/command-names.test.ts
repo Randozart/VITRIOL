@@ -61,6 +61,13 @@ describe("command-name registry", () => {
     expect(shadowed, `TUI shadows extension commands: ${shadowed}`).toEqual([]);
   });
 
+  it("registers the requested local settings menus without retiring their directory", () => {
+    const local = new Set(localCommandNames());
+    for (const name of ["fire", "glimmer", "shimmer", "sidebar", "thinking", "thinking-view", "diag", "settings", "fx"]) {
+      expect(local.has(name), `settings command missing: ${name}`).toBe(true);
+    }
+  });
+
   it("renamed commands are gone and their replacements exist", () => {
     const ext = new Set(extensionCommandNames());
     const local = new Set(localCommandNames());
@@ -71,8 +78,6 @@ describe("command-name registry", () => {
       "overflow-catalog",
       "session-name",
       "panel",
-      "fire",
-      "glimmer",
       "profile",
       "coupling",
       "model-handover",

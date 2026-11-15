@@ -2507,7 +2507,7 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         };
         lines.push(Line::from(Span::styled(text, style)));
     }
-    let body: Vec<Line> = lines.into_iter().skip(0).take(visible).collect();
+    let body: Vec<Line> = lines.into_iter().take(visible).collect();
     frame.render_widget(
         Paragraph::new(body).style(Style::new().bg(theme::PANEL)),
         inner,

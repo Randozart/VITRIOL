@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createJiti } from "jiti";
 import { normalizeContext } from "@earendil-works/pi-ai";
+// SDK initialization is fixture setup; the 5s cases below verify ownership payloads.
+import "@earendil-works/pi-ai/api/openai-completions";
 import { localCacheOwner, registerCacheOwners } from "./owner.ts";
 import { streamLocalWithProgress } from "./progress.ts";
 

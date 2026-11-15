@@ -76,3 +76,7 @@ Final freeze will follow this stage's commit. Required final commands: full evid
 ### Final sweep amendment — 2026-11-15 Europe/Amsterdam
 
 The frozen sweep passed 9 gates with one advisory but the unchanged llama-cpp-provider owner test exceeded Vitest's 5s limit during the loaded run (the local-provider case took ~9s). Its six-test file immediately passes in isolation in <1s. No ownership/streaming production source was modified; retain the real assertions and timeout rather than weakening the test. Rerun the full gate after correcting two source-comment placements found in final review. The prior failed manifest remains at /tmp/officina-checker-warning-evidence/final/20261115T124954Z-c9e57f2e/evidence.json and is superseded for current-source validation by the new frozen run. All 252 Rust tests and zero-warning strict Clippy remain the required gates.
+
+### Provider-fixture diagnosis — 2026-11-15 Europe/Amsterdam
+
+The ownership case's first stream call lazily imports the complete OpenAI SDK (`pi-ai/api/openai-completions.lazy.js` imports `openai-completions.js`). Under parallel suite startup that import can consume its unrelated 5s ownership-assertion budget. Load the same public provider module during test module setup so ownership assertions measure mocked-stream behavior, preserving their timeout, both provider cases, real payload checks and absence of network requests. This is a test-fixture repair, not a production retry/performance change.

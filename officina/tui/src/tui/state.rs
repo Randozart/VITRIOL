@@ -876,7 +876,7 @@ pub struct AppState {
     pub should_quit: bool,
 
     /// Watermark glimmer animation mode (owner request 2026-09-02) —
-    /// /glimmer cycles it; persistence lives in the run loop.
+    /// /glimmer opens its choices; persistence lives in the run loop.
     pub glimmer: crate::watermark::GlimmerMode,
     /// Composer fire (owner request 2026-09-02): GPU-load-driven braille
     /// flames above the prompt box. `fire_target` is the last `engine-fire`

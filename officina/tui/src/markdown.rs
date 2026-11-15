@@ -136,7 +136,6 @@ pub fn render(text: &str, width: usize) -> Vec<Line<'static>> {
     r.finish()
 }
 
-/// Pushdown state for the markdown event walk.
 struct StackedField<'a> {
     prefix: &'a str,
     label: &'a str,
@@ -150,6 +149,7 @@ struct FieldStyles {
     muted: Style,
 }
 
+/// Pushdown state for the markdown event walk.
 struct Renderer {
     /// Final wrapped lines.
     out: Vec<Line<'static>>,

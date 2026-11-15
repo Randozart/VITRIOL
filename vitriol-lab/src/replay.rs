@@ -33,7 +33,7 @@ pub struct Capacity {
     pub violations: Vec<MemoryViolation>,
 }
 
-pub fn capacity(trace: &Trace, cfg: &Config) -> Capacity {
+fn capacity(trace: &Trace, cfg: &Config) -> Capacity {
     let mut violations = Vec::new();
     for request in &trace.requests {
         violations.extend(trace.gpus.iter().enumerate().filter_map(|(i, gpu)| {

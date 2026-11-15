@@ -197,5 +197,10 @@ pub fn reusable(state: &Request, request: &Request, rewind: usize) -> usize {
     if state.state_prefix_ids.len().saturating_sub(common) > rewind {
         return 0;
     }
-    common.min(request.prefix_ids.len() - request.reprocess_tokens)
+    common.min(
+        request
+            .prefix_ids
+            .len()
+            .saturating_sub(request.reprocess_tokens),
+    )
 }

@@ -1740,6 +1740,7 @@ usage() {
                               systemd user unit (boot persistence)
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL
    vitriol cache-lifetime     read-only Rust audit of KV snapshot retirement
+   vitriol lab                offline policy replay and emulator correctness checks
    vitriol settings           interactive settings TUI (engine + Officina)
    vitriol opencode           import/resume OpenCode sessions
    vitriol fiat               Fiat Lux: free-tier merry-go-round (one screen)
@@ -3265,6 +3266,19 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
             PATH="$(dirname "$NODE_BIN"):$PATH"
         fi
         exec node "$SETTINGS_TUI" "$@"
+        ;;
+
+    lab)
+        shift
+        LAB_BIN="${VITRIOL_LAB_BIN:-${HOME}/.local/bin/vitriol-lab}"
+        if [[ -z "${VITRIOL_LAB_BIN:-}" && ! -x "$LAB_BIN" ]]; then
+            LAB_BIN="${PROJECT_DIR}/vitriol-lab/target/release/vitriol-lab"
+        fi
+        if [[ ! -x "$LAB_BIN" ]]; then
+            echo "[vitriol] lab needs the Rust binary; build with cargo build --release --manifest-path vitriol-lab/Cargo.toml" >&2
+            exit 1
+        fi
+        exec "$LAB_BIN" "$@"
         ;;
 
     cache-lifetime)

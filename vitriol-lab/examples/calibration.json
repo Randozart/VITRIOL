@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "measurement_origin": "synthetic",
+  "held_out": true,
+  "engine_fingerprint": "fixture-engine-v1",
+  "hardware_fingerprint": "fixture-device-v1",
+  "trace_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "baseline": "baseline",
+  "max_relative_error": 0.1,
+  "minimum_effect_fraction": 0.02,
+  "measurements": [
+    {
+      "name": "baseline",
+      "predicted_us": 1000,
+      "measured_us": 1000
+    },
+    {
+      "name": "candidate",
+      "predicted_us": 550,
+      "measured_us": 500
+    }
+  ]
+}

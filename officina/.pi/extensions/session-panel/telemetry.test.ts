@@ -10,6 +10,7 @@ import {
   fmtCost,
   fmtTokens,
   laneRowParts,
+  shortModel,
   type CaduceusFacts,
   type HealthFacts,
 } from "./telemetry.ts";
@@ -30,7 +31,8 @@ const ledgerSample = {
 describe("apiRowParts", () => {
   it("describes this session's own routed request", () => {
     expect(apiRowParts(ledgerSample, null, NOW)).toEqual({
-      model: "dahl/MiniMaxAI/MiniMax-M2.7",
+      model: "MiniMax-M2.7",
+      fullModel: "dahl/MiniMaxAI/MiniMax-M2.7",
       usage: "69.5k→976 tok",
       latency: "44.7s",
       cost: "free",
@@ -114,6 +116,15 @@ describe("laneRowParts", () => {
   it("stays silent with no candidates (P4)", () => {
     expect(laneRowParts(null, 0, null, NOW)).toBeNull();
     expect(laneRowParts({ candidates: [] }, 0, null, NOW)).toBeNull();
+  });
+});
+
+describe("shortModel", () => {
+  it("keeps the last segment and clips to the sidebar width", () => {
+    expect(shortModel("dahl/MiniMaxAI/MiniMax-M2.7")).toBe("MiniMax-M2.7");
+    expect(shortModel("Lapis Occultus")).toBe("Lapis Occultus");
+    expect(shortModel("owner/" + "x".repeat(40)).endsWith("…")).toBe(true);
+    expect(shortModel("")).toBe("");
   });
 });
 

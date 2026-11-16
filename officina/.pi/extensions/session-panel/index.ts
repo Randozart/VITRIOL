@@ -358,18 +358,20 @@ export default function (pi: ExtensionAPI) {
           ),
         ];
       }
+      // The sidebar is 34 columns: model on its own row, numbers next, verdict
+      // last — a single line would truncate the facts away (2026-11-16).
       const outcome = row.outcome === "ok" ? SAFETY : GOLD;
-      let line =
-        sc(MUTED, "api ") +
-        sc(TEXT, row.model) +
-        sc(MUTED, ` · ${row.usage}`) +
-        (row.latency ? sc(MUTED, ` · ${row.latency}`) : "") +
-        " · " +
-        sc(outcome, row.outcome) +
-        " · " +
-        sc(GOLD, row.cost);
-      if (row.note) line += sc(GOLD, ` · ${row.note}`);
-      return [truncate(line, CONTENT_W)];
+      const lines = [
+        truncate(sc(MUTED, "api ") + sc(TEXT, row.model), CONTENT_W),
+        truncate(
+          sc(MUTED, row.usage + (row.latency ? ` · ${row.latency}` : "")),
+          CONTENT_W,
+        ),
+      ];
+      const tail = [sc(outcome, row.outcome), sc(GOLD, row.cost)];
+      if (row.note) tail.push(sc(GOLD, row.note));
+      lines.push(truncate(tail.join(" · "), CONTENT_W));
+      return lines;
     }
     if (scope === "lanes") {
       const facts = cachedJsonFile<CaduceusFacts>(

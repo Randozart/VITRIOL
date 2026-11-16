@@ -44,7 +44,10 @@ export interface CaduceusFacts {
 
 /** Model-prefixed usage line for a cloud session's own last request. */
 export interface ApiRowParts {
+  /** Short, sidebar-friendly model label (last path segment). */
   model: string;
+  /** The provider/model id as the ledger recorded it. */
+  fullModel: string;
   usage: string;
   latency: string;
   cost: string;
@@ -77,6 +80,13 @@ export function fmtCost(v: number): string {
   return `€${n.toFixed(2)}`;
 }
 
+/** `dahl/MiniMaxAI/MiniMax-M2.7` → `MiniMax-M2.7`; the sidebar is 34 columns. */
+export function shortModel(model: string, max = 22): string {
+  const last = String(model ?? "").split("/").filter(Boolean).pop() ?? "";
+  const one = last.trim() || String(model ?? "").trim();
+  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+}
+
 function key(provider?: string, model?: string): string {
   return `${provider ?? "?"}/${model ?? "?"}`;
 }
@@ -103,7 +113,8 @@ export function apiRowParts(
   else if ((record?.failureCount ?? 0) > 0 && outcome === "error")
     note = "failing";
   return {
-    model: entry.model,
+    model: shortModel(entry.model),
+    fullModel: entry.model,
     usage,
     latency,
     cost: fmtCost(entry.costEstimate ?? 0),

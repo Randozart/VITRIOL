@@ -4362,44 +4362,67 @@ the config. Supported OAuth flows: ${OAUTH_PROVIDERS.map((p) => p.id).join(", ")
 function printHelp() {
   log(`vitriol caduceus — local Caduceus gateway for Officina
 
-Usage:
-  vitriol caduceus setup [--opencode-key-stdin] [--no-install] [--force]
-                          [--free] [--no-browser]
-  vitriol caduceus up
-  vitriol caduceus down
-  vitriol caduceus status
-  vitriol caduceus sync
-  vitriol caduceus accounts init|sync|status|keys|enable|import-keys
-  vitriol caduceus keys [--all] [--json]   # present provider keys (masked)
-  vitriol caduceus enable [--sync] [--disable-missing] [--dry-run] [--json]
-  vitriol caduceus import-keys <keys-file> [--dry-run] [--no-sync] [--json]
-  vitriol caduceus keepalive [--status|--install|--remove|--dry-run|--json|--quiet]
-  vitriol caduceus stats [--today|--month|--json]
-  vitriol caduceus preflight [--json] [--start-local]
-  vitriol caduceus recover-session [--file PATH] [--cwd DIR] [--deep] [--dry-run]
-  vitriol caduceus session-doctor [--latest|--file PATH] [--cwd DIR] [--json]
-  vitriol caduceus accounts signup
-  vitriol caduceus signup [--only a,b] [--start-at id] [--status]
-                          [--reset] [--no-open] [--no-sync] [--redo] [--json]
-  vitriol caduceus accounts oauth list|login|status
-  vitriol caduceus cache status|enable|disable [--providers a,b] [--json]
-  vitriol caduceus egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
-  vitriol caduceus service install|status|remove
-  vitriol caduceus watchdog [--install|--remove|--json]   health probe; restarts a wedged gateway
-  vitriol caduceus router [--install [--enable]|--remove|--json]   reroute-until-served proxy
-  vitriol caduceus migrate [--dry-run|--apply] [--no-service] [--json]
-  vitriol caduceus doctor [--json]
-  vitriol caduceus use <model-id> [--local] [--json]
-  vitriol caduceus config get [--json]
-  vitriol caduceus config set cache auto|local|cloud|off
-  vitriol caduceus config set praetor on|off
+USAGE
+  vitriol caduceus <command> [options]
 
-Setup installs the OmniRoute vendor package@${PIN} under ${VENDOR_DIR}, configures OpenCode Go,
-creates a local inference key, disables compression/semantic-cache/memory, and
-writes ${ENV_FILE}. Accounts sync bulk-imports API-key providers from
-${ACCOUNTS_FILE}; accounts free adds zero-key free providers and reuses existing
-OpenCode credentials. Cache overrides enable provider-native prompt caching on
-opencode-go/glm/zai. Egress is fixed-only by policy (no quota-based rotation).`);
+SETUP AND LIFECYCLE
+  setup                      install/configure the gateway (OmniRoute vendor)
+      --opencode-key-stdin --no-install --force --free --no-browser
+  up | down | status | sync
+  migrate                    rename the legacy OmniRoute install
+      --dry-run | --apply [--no-service] [--json]
+  service                    user unit for the gateway
+      install | status | remove
+
+PROVIDERS AND ACCOUNTS
+  signup                     interactive provider wizard (adds providers)
+      [--only a,b] [--start-at id] [--status] [--reset]
+      [--no-open] [--no-sync] [--redo] [--json]
+  accounts                   accounts config and OAuth
+      init | sync | status | signup | free | discover
+      oauth list | login <provider> | status
+  keys                       present provider keys (masked)
+      [--all] [--json]
+  import-keys <keys-file>    bulk import
+      [--dry-run] [--no-sync] [--json]
+  enable                     enable accounts for the keys present
+      [--sync] [--disable-missing] [--dry-run] [--json]
+  keepalive                  Dahl free-token keepalive
+      [--status] [--install] [--remove] [--dry-run] [--json] [--quiet]
+
+ROUTING AND CACHE
+  router                     reroute-until-served proxy (2026-11-16)
+      [--install [--enable]] | --remove | --json
+  cache                      provider-native prompt caching
+      status | enable | disable [--providers a,b] [--json]
+  egress                     fixed-only egress proxy (no quota rotation)
+      status | set | clear | test [--proxy URL] [--no-proxy LIST]
+  config                     get | set cache auto|local|cloud|off
+                             get | set praetor on|off
+
+SUPERVISION
+  watchdog                   health probe; restarts a wedged gateway
+      [--install] [--remove] [--json]
+
+DIAGNOSTICS
+  doctor                     one-shot health report [--json]
+  stats                      usage today/month [--today|--month|--json]
+  preflight                  pre-turn readiness check [--json] [--start-local]
+  recover-session            repair a stuck session file
+      [--file PATH] [--cwd DIR] [--deep] [--dry-run]
+  session-doctor             inspect the newest/last session
+      [--latest|--file PATH] [--cwd DIR] [--json]
+  use <model-id>             pin the model Oficina should use [--local] [--json]
+
+NOTES
+  setup installs the OmniRoute vendor package@${PIN} under ${VENDOR_DIR},
+  configures OpenCode Go, creates a local inference key, disables
+  compression/semantic-cache/memory, and writes ${ENV_FILE}.
+  accounts sync bulk-imports API-key providers from ${ACCOUNTS_FILE};
+  accounts free adds zero-key free providers and reuses existing OpenCode
+  credentials. cache overrides enable provider-native prompt caching on
+  opencode-go/glm/zai. egress is fixed-only by policy (no quota rotation).
+  router follows the Caduceus panel's fallback list (Models tab, \`f\`).`);
 }
 
 async function main() {

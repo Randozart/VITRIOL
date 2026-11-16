@@ -1719,25 +1719,25 @@ usage() {
                               harness in the current directory (local-inference
                               tuned; engine telemetry in the editor). Args pass
                               through to the scaffold CLI (e.g. -p "one-shot").
-   vitriol caduceus setup    install/configure the local Caduceus gateway (OmniRoute vendor)
-                              (OpenCode Go subscription, strict passthrough)
-   vitriol caduceus status|up|down|sync
-                              gateway health, start/stop, catalog refresh
-   vitriol caduceus accounts init|sync|status
-                              bulk API-key accounts (env refs) + OAuth assist
-   vitriol caduceus accounts free|discover
-                              zero-key free providers / reuse OpenCode auth
-   vitriol caduceus cache status|enable|disable
-                              provider-native prompt-cache overrides
-   vitriol caduceus egress status|set|clear|test
-                              fixed proxy/VPN egress (no quota rotation)
-   vitriol caduceus doctor   one-shot health report
+   vitriol caduceus signup    interactive provider wizard (adds providers)
+   vitriol caduceus setup     install/configure the local gateway (OmniRoute)
+   vitriol caduceus accounts init|sync|status|signup|free|discover
+                              bulk API-key + zero-key free accounts; oauth login
+   vitriol caduceus keys|enable|import-keys
+                              inspect / enable / bulk-import provider keys
+   vitriol caduceus router [--install [--enable]]|--remove
+                              reroute-until-served proxy (panel fallback, `f`)
+   vitriol caduceus watchdog [--install]|--remove
+                              health probe; restarts a wedged gateway
+   vitriol caduceus status|up|down|sync|doctor
+                              health, start/stop, catalog refresh, full report
+   vitriol caduceus cache|egress|config
+                              prompt-cache overrides / egress / env toggles
+   vitriol caduceus service|migrate
+                              systemd user unit / legacy install migration
    vitriol caduceus use <model> [--local]
                               persist default pi provider/model
-   vitriol caduceus config get|set
-                              cache/praetor env toggles
-   vitriol caduceus service install|status|remove
-                              systemd user unit (boot persistence)
+   vitriol caduceus help      complete list with every flag
    vitriol cache-report       prompt-cache hit/miss report for a session JSONL
    vitriol cache-lifetime     read-only Rust audit of KV snapshot retirement
    vitriol lab                offline policy replay and emulator correctness checks

@@ -144,13 +144,17 @@ async function attempt(model, body, headers) {
         JSON.stringify({ ...JSON.parse(body.toString("utf8")), model }),
       )
     : body;
+  // GET/HEAD cannot carry a body (catalog reads, health probes): the proxy is a
+  // general reverse proxy, not just a chat endpoint (2026-11-16).
+  const method = String(headers.__method ?? "POST").toUpperCase();
+  const sendBody = method !== "GET" && method !== "HEAD" && payload.length > 0;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FIRST_BYTE_MS);
   try {
     const upstream = await fetch(`${GATEWAY}${headers.__path}`, {
-      method: headers.__method,
+      method,
       headers: headers.__forward,
-      body: payload,
+      ...(sendBody ? { body: payload } : {}),
       signal: controller.signal,
     });
     return { upstream, timer, controller };

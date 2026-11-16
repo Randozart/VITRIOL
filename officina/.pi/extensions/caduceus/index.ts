@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { streamCloudWithRecovery } from "./capacity.ts";
+import { resolveBaseUrl as resolveProviderBaseUrl } from "./base-url.ts";
 import { budgetStatus } from "../_shared/budget.ts";
 import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
 import { readGatewayMarks } from "../_shared/gateway-health.ts";
@@ -282,7 +283,9 @@ function envKillSwitch(): boolean {
 }
 
 function resolveBaseUrl(): string {
-  return (process.env.OFFICINA_CADUCEUS_BASE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
+  // Explicit env wins; otherwise the reroute proxy takes over when its unit is
+  // installed (2026-11-16). Kept in base-url.ts so the policy is testable.
+  return resolveProviderBaseUrl();
 }
 
 function readCache(baseUrl: string): RawCatalog | undefined {

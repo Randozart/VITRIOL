@@ -429,3 +429,46 @@ field swapping contents.
 
 F1–F4 (already committed) fixed a genuine per-frame *colour* churn in the tint
 pass and delivered the ignition line. They were not this bug. They stay.
+
+---
+
+# F5 as landed (2026-11-16, commit 3efa776, installed b8264847)
+
+## What changed
+
+| piece | where |
+|---|---|
+| `Settled { applied, pending }` with `settle(now)` / `force(value)` | `state.rs` |
+| `AppState::band_ind`, `AppState::band_ctx` | `state.rs` |
+| `stabilize_band_parts[_at]`; `stabilize_band_rows[_at]` retired | `state.rs` |
+| rows placed from settled parts; ctx row bottom-anchored | `layout.rs` |
+| `reset_band()` on `switch_session`/`new_session` | `state.rs` + `mod.rs` |
+
+## Verification
+
+- **Negative control**: restoring the old live-count split makes
+  `ctx_row_keeps_its_slot_when_an_indicator_appears` fail with *"transient
+  indicator moved the ctx row"*; with the new code it passes. The test really
+  pins the reported bug.
+- 309 tests pass (4 new: parts settle independently; a one-frame ctx absence is
+  ignored; ctx keeps its slot when an indicator appears; ctx row is
+  bottom-anchored for `ind_h = 0..2`).
+- `cargo fmt --check` clean, release built with no warnings, installed
+  (md5 `b8264847`), PTY smoke exit 0.
+
+## Invariants now pinned
+
+- **I10** — ctx row index is identical across frames with the same settled parts
+  (`ctx_row_keeps_its_slot_when_an_indicator_appears`).
+- **I11** — `indicator_area` and `ctx_area` are disjoint by construction
+  (`ind_h + ctx_h == band_h`, `debug_assert`), and ctx is never squeezed to 0
+  while `ctx_h == 1` (`ctx_row_is_bottom_anchored`).
+- **I12** — the transcript still cannot be moved by transient data (three part
+  settle tests).
+- **I13** — with stable data the band geometry is unchanged from the previous
+  build (bottom anchoring equals top+ind when the sum holds).
+
+## What this was NOT
+
+F1–F4 (tint churn + ignition line) fixed a different observable: per-frame
+colour changes in the fire's tint. They remain valid and shipped in `9a68fbc`.

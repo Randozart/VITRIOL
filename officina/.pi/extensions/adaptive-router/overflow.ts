@@ -252,3 +252,31 @@ export function parseModelSpec(spec: string): { provider: string; id: string } |
   if (slash <= 0 || slash >= trimmed.length - 1) return null;
   return { provider: trimmed.slice(0, slash), id: trimmed.slice(slash + 1) };
 }
+
+/** Minimal shape a lane needs for the pin rule (kept structural). */
+export interface LaneRef {
+  provider: string;
+  id: string;
+}
+
+/** Generic so callers keep their full model type through the helper. */
+type LaneOf<T extends LaneRef> = T;
+
+/**
+ * Which cloud lane a turn runs on (2026-11-16).
+ *
+ * A manual pick pins the LANE, not only the tier: the tier-collapse guard left
+ * cloud->cloud rotation armed, so an explicit /model choice was swapped for
+ * another candidate on the next turn ("I select DeepSeek and it routes to
+ * something like Qwen").
+ */
+export function resolveTargetCloud<T extends LaneRef>(input: {
+  tier: string;
+  manual: boolean;
+  activeCloud: LaneOf<T> | undefined;
+  candidate: LaneOf<T> | undefined;
+}): LaneOf<T> | undefined {
+  if (input.tier !== "cloud") return undefined;
+  if (input.manual && input.activeCloud) return input.activeCloud;
+  return input.candidate;
+}

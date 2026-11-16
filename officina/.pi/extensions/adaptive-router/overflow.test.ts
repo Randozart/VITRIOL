@@ -4,6 +4,7 @@ import {
   decideTier,
   localBusy,
   parseModelSpec,
+  resolveTargetCloud,
   type DecideInput,
   type LoadSample,
   type OverflowConfig,
@@ -284,5 +285,37 @@ describe("complexity promote", () => {
     expect(d.tier).toBe("cloud");
     expect(d.peerDemoted).toBe(true);
     expect(d.reason).not.toContain("free-lane uplift");
+  });
+});
+
+// The DeepSeek→Qwen bug (2026-11-16): an explicit /model pick was accepted but
+// the next turn rotated to another candidate, because the manual latch only
+// paused TIER changes, not lane rotation inside the cloud tier.
+describe("resolveTargetCloud", () => {
+  const small = { provider: "caduceus", id: "caduceus/small" };
+  const big = { provider: "caduceus", id: "caduceus/big" };
+
+  it("pins the operator's lane when the pick is manual", () => {
+    expect(
+      resolveTargetCloud({ tier: "cloud", manual: true, activeCloud: big, candidate: small }),
+    ).toEqual(big);
+  });
+
+  it("follows the router's candidate when routing is automatic", () => {
+    expect(
+      resolveTargetCloud({ tier: "cloud", manual: false, activeCloud: big, candidate: small }),
+    ).toEqual(small);
+  });
+
+  it("never returns a cloud lane for the local tier", () => {
+    expect(
+      resolveTargetCloud({ tier: "local", manual: true, activeCloud: big, candidate: small }),
+    ).toBeUndefined();
+  });
+
+  it("falls back to the candidate when nothing is pinned yet", () => {
+    expect(
+      resolveTargetCloud({ tier: "cloud", manual: true, activeCloud: undefined, candidate: small }),
+    ).toEqual(small);
   });
 });

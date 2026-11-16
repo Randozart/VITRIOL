@@ -202,6 +202,39 @@ describe("manual latch", () => {
     expect(setModel).toHaveBeenCalledTimes(1); // unchanged
   });
 
+  it("picking a KNOWN candidate also latches (the DeepSeek→Qwen bug)", async () => {
+    // Owner report 2026-11-16: "/model accepted DeepSeek, then the next turn
+    // routed to something like Qwen." The handler returned early for any model
+    // it recognised as a candidate, so `manual` was never set and overflow
+    // re-picked its own preference on the following turn.
+    //
+    // Two candidates, so a re-pick is observable: the router prefers whichever
+    // fits first, and the operator selects the OTHER one.
+    process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/small,caduceus/big";
+    const h = harness({ "caduceus/small": 1_000_000, "caduceus/big": 1_000_000 });
+    await h.start(); // spill: applies the router's own pick
+    expect(setModel).toHaveBeenCalledTimes(1);
+    const first = setModel.mock.calls[0][0] as { provider: string; id: string };
+    const other = first.id.endsWith("small")
+      ? { provider: first.provider, id: "caduceus/big" }
+      : { provider: first.provider, id: "caduceus/small" };
+    setModel.mockClear();
+    // The operator picks the lane the router did NOT choose.
+    h.trigger("model_select", { model: other });
+    await h.start(); // engine still busy — must not re-pick
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it("/overflow on re-arms after an explicit pick", async () => {
+    const h = harness();
+    h.trigger("model_select", { model: { provider: "caduceus", id: "opencode-go/deepseek-v4.1-flash" } });
+    await h.start();
+    expect(setModel).not.toHaveBeenCalled();
+    await h.command("route-overflow", "on");
+    await h.start();
+    expect(setModel).toHaveBeenCalled();
+  });
+
   it("/route-overflow on re-arms auto routing after a manual pick", async () => {
     const h = harness();
     busy.current = false; // pick a manual model while LOCAL and idle

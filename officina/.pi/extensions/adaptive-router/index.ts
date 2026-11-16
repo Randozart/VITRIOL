@@ -33,6 +33,7 @@ import {
   decideTier,
   localBusy,
   parseModelSpec,
+  resolveTargetCloud,
   type OverflowConfig,
   type Privacy,
   type Tier,
@@ -363,6 +364,13 @@ export default function (pi: ExtensionAPI) {
     if (manual && decision.tier !== tier) {
       decision = { tier, reason: "manual — overflow paused" };
     }
+    // ...and a manual pick pins the LANE, not only the tier (2026-11-16). The
+    // tier collapse above left cloud→cloud rotation armed, so an explicit
+    // /model choice was still swapped for another candidate on the next turn:
+    // "I select DeepSeek and it routes to something like Qwen".
+    if (manual && decision.tier === "cloud" && activeCloud && cloudFits) {
+      decision = { tier: "cloud", reason: "manual — pinned lane" };
+    }
 
     let switched = false;
     // Publish this session's decision so peers can rank against it. Peer
@@ -396,7 +404,13 @@ export default function (pi: ExtensionAPI) {
     }
     // Cloud tier may need to rotate to a different candidate after a 429 or
     // when the context outgrows a 65k free model.
-    let targetCloud = decision.tier === "cloud" ? candidate : undefined;
+    const pinned = manual && decision.tier === "cloud" && activeCloud ? activeCloud : undefined;
+    let targetCloud = resolveTargetCloud({
+      tier: decision.tier,
+      manual,
+      activeCloud,
+      candidate,
+    });
     if (tier === "cloud" && decision.tier === "cloud" && !targetCloud) {
       targetCloud = undefined; // no viable candidate; fall through to local
     }
@@ -488,10 +502,15 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     if (cloudCandidates.some((m) => sameModel(event.model, m))) {
+      // The operator picked a lane we also know as a candidate. Record it, but
+      // STILL latch: returning here used to leave overflow armed, so the next
+      // turn re-picked a different lane (owner: "/model accepted DeepSeek, then
+      // it routed to something like Qwen", 2026-11-16).
       tier = "cloud";
       activeCloud = event.model;
-      return;
     }
+    // An explicit pick by the operator pins the session: overflow pauses until
+    // `/overflow on` (or a virtual model is chosen).
     manual = true;
   });
 

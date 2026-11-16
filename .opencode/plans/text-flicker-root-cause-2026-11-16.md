@@ -280,3 +280,46 @@ I6 below pins it.
   which reads better than the current single floating row.
 - The ignition glyph is one dot wide; a two-dot variant (`⡄`) is a one-line
   change if the operator wants a stronger line at high load.
+
+---
+
+# As landed (2026-11-16, commit 9a68fbc)
+
+All four parts shipped as planned; installed binary md5 `08ef0d4f`.
+
+## What changed
+
+| piece | where | note |
+|---|---|---|
+| `column_edge`, `column_light` | `fire.rs` | extracted from `render`; shape vs noise is now explicit |
+| `rows_for_stable` | `fire.rs` | dead band `ROW_STEP_LEVEL ± ROW_DEADBAND` (0.125 ± 0.05); ignition/extinction immediate |
+| `tint_rows` (pure) | `fire.rs` | the mask as a function of `(rows, width, level, phase)` — no hash |
+| `ignition_row`, `ignition_color` | `fire.rs` | 1 s slot (`IGNITION_STEP_MS`), sides only, `⡀` glyph |
+| `fire_rows_prev` | `state.rs` | carries the applied height for the dead band |
+| ignition painting, `ignition_spans` | `layout.rs` | run-length grouped; flames now sit strictly above the divider |
+| tint origin | `layout.rs` | uses the fire rect's own top (`fire_base_y`), not `input_area.y - rows` |
+
+## Verification
+
+- 305 tests pass (13 new): `rows_for_stable` dead band + immediate
+  ignite/extinguish, `ignition_row` dark/side-only/monotone/stable/glyph,
+  `tint_rows` frame-stability (identical tinted set at 0/120/240/360/480/600 ms
+  for level 0.6), tint emptiness without fire, tint growth with load, plus two
+  screen-dump tests (divider all `_` with fire off; only `_`/`⡀` with fire on).
+- `cargo fmt --check` clean; release rebuilt; installed; PTY smoke exit 0.
+- Visual dump at level 1.0 (80×24) showed `____⡀⡀__⡀___…` on the divider with
+  denser braille rows above and the middle band dark — as designed.
+
+## Deviations from the plan
+
+- `render`'s return value stayed `Vec<Vec<Option<Color>>>` but is now produced by
+  `tint_rows`, so its meaning ("tint mask") is unchanged for callers.
+- The braille row count is `max(1, rows_for(level) - 1)`; the ignition row is
+  always present when `level >= MIN_LEVEL`, so the strip's footprint is
+  unchanged from before (the base row used to be erased).
+
+## Known follow-up
+
+If the operator wants a stronger line at high load, switch `DENSITY[1]` (`⡀`)
+to `DENSITY[2]` (`⡄`) inside `ignition_row` — a one-line change, no other
+adjustments needed.

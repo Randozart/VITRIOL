@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { coreBinaryPath, coreCall, coreEnabled, resetCoreClient } from "./core-rpc.ts";
+import {
+  coreBinaryPath,
+  coreCall,
+  coreEnabled,
+  resetCoreClient,
+} from "./core-rpc.ts";
 
 afterEach(() => {
   delete process.env.OFFICINA_ROUTER_CORE;
@@ -9,6 +14,11 @@ afterEach(() => {
 
 describe("core sidecar client", () => {
   it("is off unless OFFICINA_ROUTER_CORE=rust", async () => {
+    // The suite inherits the operator's shell; assert the UNSET default on a
+    // clean env rather than on whatever happened to be exported (a shell with
+    // OFFICINA_ROUTER_CORE=rust made this test fail the release gate).
+    delete process.env.OFFICINA_ROUTER_CORE;
+    resetCoreClient();
     expect(coreEnabled()).toBe(false);
     expect(await coreCall("ping", {})).toBeUndefined();
     process.env.OFFICINA_ROUTER_CORE = "rust";
@@ -21,12 +31,18 @@ describe("core sidecar client", () => {
     expect(await coreCall("ping", {})).toBeUndefined();
   });
 
-  it.skipIf(!coreBinaryPath())("answers ping from the built sidecar", async () => {
-    process.env.OFFICINA_ROUTER_CORE = "rust";
-    const result = (await coreCall("ping", {}, 2_000)) as { ok?: boolean; version?: string };
-    expect(result?.ok).toBe(true);
-    expect(typeof result?.version).toBe("string");
-  });
+  it.skipIf(!coreBinaryPath())(
+    "answers ping from the built sidecar",
+    async () => {
+      process.env.OFFICINA_ROUTER_CORE = "rust";
+      const result = (await coreCall("ping", {}, 2_000)) as {
+        ok?: boolean;
+        version?: string;
+      };
+      expect(result?.ok).toBe(true);
+      expect(typeof result?.version).toBe("string");
+    },
+  );
 
   it.skipIf(!coreBinaryPath())("batches admission decisions", async () => {
     process.env.OFFICINA_ROUTER_CORE = "rust";
@@ -36,8 +52,20 @@ describe("core sidecar client", () => {
         promptTokens: 170_000,
         reserveTokens: 16_384,
         lanes: [
-          { id: "big", declared: 400_000, invalid: false, cooling: false, ownerPaused: false },
-          { id: "paused", declared: 400_000, invalid: false, cooling: false, ownerPaused: true },
+          {
+            id: "big",
+            declared: 400_000,
+            invalid: false,
+            cooling: false,
+            ownerPaused: false,
+          },
+          {
+            id: "paused",
+            declared: 400_000,
+            invalid: false,
+            cooling: false,
+            ownerPaused: true,
+          },
         ],
       },
       2_000,

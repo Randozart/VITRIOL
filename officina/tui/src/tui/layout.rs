@@ -741,6 +741,8 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // band (slots/engine/ctx rows) off from the transcript above — the
     // user-space band vs the log the agent writes into. Fire dots rising
     // through the gap keep their flame fg because set_style patches bg only.
+    // 2026-11-16: underscore (not box-drawing) so the line hugs the status
+    // band below it, reading as an underline rather than a floating rule.
     {
         let gap = Rect {
             y: area.y + chat_area.height,
@@ -748,7 +750,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             ..area
         };
         let line = Line::from(vec![Span::styled(
-            "─".repeat(gap.width as usize),
+            "_".repeat(gap.width as usize),
             Style::new().fg(theme::BORDER_DIM),
         )]);
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);

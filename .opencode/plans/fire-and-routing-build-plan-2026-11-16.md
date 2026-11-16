@@ -245,3 +245,64 @@ a provider URL and break the live path, this stays open with the knob named.
 
 Until it is wired, the user-visible symptom is still covered by **L1**: a 429
 switches the turn to `officina/lapis` and replays it.
+
+---
+
+# Help + provider wiring + supervision polish (2026-11-16, `c3c4d19`, `4b9184e`)
+
+## Help that cannot drift
+
+Owner: *"I couldn't find it in the --help menu. Which, by the way, is a poorly
+formatted mess right now."* Two causes, both fixed:
+
+1. **Two help screens.** The node CLI listed `signup`; the shell wrapper's
+   `vitriol caduceus` summary stopped at `service install|status|remove` and
+   omitted `signup`, `keys`, `enable`, `import-keys`, `keepalive`, `stats`,
+   `preflight`, `recover-session`, `session-doctor`, `accounts oauth`,
+   `watchdog`, `router`, `migrate`. The wrapper now carries the same groups and
+   points at `vitriol caduceus help` for flags.
+2. **Formatting.** The node help is now sectioned — SETUP AND LIFECYCLE ·
+   PROVIDERS AND ACCOUNTS · ROUTING AND CACHE · SUPERVISION · DIAGNOSTICS — with
+   one command per line, flags indented beneath, and no inline `#` prose
+   breaking the column.
+
+**Drift guard** (`scripts/caduceus-help.test.mjs`): it parses the dispatch table
+(`command === "…"`) and the `printHelp` template out of the source and asserts
+every dispatched command appears in the help, that the sections exist, that
+`signup` stays discoverable, and that no line carries an inline comment. A
+command can no longer ship undocumented.
+
+## Sessions now actually use the router
+
+The open item from the fallback work is closed: `caduceus/base-url.ts` decides
+the provider origin and `index.ts` calls it.
+
+| condition | origin |
+|---|---|
+| `OFFICINA_CADUCEUS_BASE_URL` set | that value (P1) |
+| router unit installed | `http://127.0.0.1:20129/v1` |
+| otherwise | `http://127.0.0.1:20128/v1` (P2, unchanged) |
+| `OFFICINA_CADUCEUS_ROUTER=0` | gateway (P3 kill switch) |
+
+The unit file written by `router --install` and deleted by `--remove` is the
+switch, so no launch-environment plumbing is needed. Verified (`base-url.test.ts`,
+temp HOME per case).
+
+The proxy became a real reverse proxy for this: GET/HEAD are forwarded without a
+body, so the catalog and probes pass through — checked live, **754 models** via
+`:20129`.
+
+## Supervision polish
+
+`RestartSteps=5` + `RestartMaxDelaySec=60` on the gateway unit: with
+`StartLimitIntervalSec=0` it would otherwise retry every 2 s forever if it were
+permanently broken. Applied live (`RestartSteps=5`, `RestartMaxDelayUSec=1min`).
+
+`doctor` gained a `routing proxy` row (port + configured fallback, or "installed
+but stopped").
+
+## Caveat
+
+A session that is already running keeps the provider it registered at start, so
+the router takes effect for **new** sessions (restart Officina). `doctor` shows
+whether it is active, and `OFFICINA_CADUCEUS_ROUTER=0` reverses it instantly.

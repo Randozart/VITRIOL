@@ -737,6 +737,14 @@ fn model_group_identity(m: &Model) -> (String, String, u8) {
     (key, title, rank)
 }
 
+/// Who asked for the running turn to stop. Esc is the operator's own decision:
+/// it must never kill or restart the pi child (E1, 2026-11-16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortSource {
+    Operator,
+    Watchdog,
+}
+
 #[derive(Debug, Clone)]
 pub struct LastPrompt {
     pub text: String,
@@ -1053,9 +1061,10 @@ pub struct AppState {
     pub recovery: heal::RecoveryState,
     /// `/recover` asks the async loop for a manual recovery attempt.
     pub heal_requested: bool,
-    /// Set after a watchdog abort; if the agent has not settled by this
-    /// instant the TUI surfaces a restart hint instead of looking hung.
-    pub abort_deadline: Option<std::time::Instant>,
+    /// Set after an abort; if the agent has not settled by this instant the TUI
+    /// releases the UI. The source decides whether a child restart may follow:
+    /// only the watchdog may escalate, never an operator Esc (2026-11-16).
+    pub abort_deadline: Option<(std::time::Instant, AbortSource)>,
     /// Prompts typed while a tool is still running. They are delivered after
     /// the turn settles instead of being sent as RPC `Steer` behind a tool
     /// that may never finish (and would then never be persisted).
@@ -2716,6 +2725,37 @@ impl AppState {
         if let Some(p) = self.last_prompt.as_mut() {
             p.stalled_tool = true;
         }
+    }
+
+    /// Arm the abort settle deadline, tagged with who asked for the stop.
+    pub fn arm_abort(&mut self, now: std::time::Instant, source: AbortSource) {
+        self.abort_deadline = Some((now + std::time::Duration::from_secs(10), source));
+    }
+
+    /// The armed abort's source once its settle deadline has passed.
+    pub fn abort_due(&self, now: std::time::Instant) -> Option<AbortSource> {
+        match self.abort_deadline {
+            Some((deadline, source)) if now >= deadline => Some(source),
+            _ => None,
+        }
+    }
+
+    pub fn abort_pending(&self) -> bool {
+        self.abort_deadline.is_some()
+    }
+
+    /// Operator Esc: stop the turn and drop every queued/held message plus any
+    /// pending recovery obligation. Returns how many messages were dropped so
+    /// the caller can report it (E4: no silent loss).
+    pub fn operator_stop(&mut self) -> usize {
+        let dropped = self.queued_prompts.len();
+        self.queued_prompts.clear();
+        self.held.clear();
+        self.expected_tool_calls.clear();
+        self.clear_stall_state();
+        self.recovery.pending_replay = None;
+        self.note_prompt_failed();
+        dropped
     }
 
     pub fn model_is_lapis(&self) -> bool {
@@ -7186,6 +7226,56 @@ mod tests {
             )
         });
         assert!(failed);
+    }
+
+    #[test]
+    fn operator_stop_drops_the_queue_and_recovery_obligations() {
+        let mut s = AppState::default();
+        s.queued_prompts.push("one".into());
+        s.queued_prompts.push("two".into());
+        s.held_push("steer me", HeldKind::Steer);
+        s.held_push("follow up", HeldKind::FollowUp);
+        s.expected_tool_calls
+            .insert("call-1".into(), std::time::Instant::now());
+        s.park_stall("call-1", std::time::Duration::from_secs(60));
+        s.recovery.pending_replay = Some(heal::PendingReplay {
+            at: std::time::Instant::now(),
+            requires_lapis: false,
+        });
+
+        let dropped = s.operator_stop();
+
+        assert_eq!(dropped, 2, "every queued message is counted (E4)");
+        assert!(s.queued_prompts.is_empty());
+        assert!(s.held.is_empty());
+        assert!(s.expected_tool_calls.is_empty());
+        assert!(!s.stall_parked("call-1", std::time::Instant::now()));
+        assert!(
+            s.recovery.pending_replay.is_none(),
+            "a stopped turn must not be replayed"
+        );
+    }
+
+    #[test]
+    fn abort_source_decides_who_may_escalate() {
+        let mut s = AppState::default();
+        let now = std::time::Instant::now();
+        assert_eq!(s.abort_due(now), None, "nothing armed");
+
+        s.arm_abort(now, AbortSource::Operator);
+        assert!(s.abort_pending());
+        assert_eq!(s.abort_due(now), None, "deadline not reached yet");
+        assert_eq!(
+            s.abort_due(now + std::time::Duration::from_secs(10)),
+            Some(AbortSource::Operator)
+        );
+
+        s.arm_abort(now, AbortSource::Watchdog);
+        assert_eq!(
+            s.abort_due(now + std::time::Duration::from_secs(60)),
+            Some(AbortSource::Watchdog),
+            "the watchdog keeps its own escalation path (E3)"
+        );
     }
 
     #[test]

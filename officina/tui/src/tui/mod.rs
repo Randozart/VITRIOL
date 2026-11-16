@@ -1678,17 +1678,35 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             }
         }
         KeyCode::Esc => {
-            if state.is_streaming {
-                // Arm the settle deadline: if pi never confirms with
-                // agent_end, the watchdog releases the UI instead of
-                // spinning forever (2026-11-13, operator report).
+            // Operator stop (2026-11-16): Esc ends the work NOW — abort the
+            // turn, drop every queued/held message, and never let the settle
+            // deadline restart pi. Idle Esc stays the deliberate no-op it has
+            // been since the accidental-quit report.
+            let busy = state.is_streaming || state.has_running_tool();
+            if busy || !state.queued_prompts.is_empty() {
+                cancel_pending_dialogs(state, bridge).await;
                 let _ = bridge.request(RpcCommand::Abort { id: None }).await;
-                state.abort_deadline =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+                let dropped = state.operator_stop();
+                let now = std::time::Instant::now();
+                state.arm_abort(now, state::AbortSource::Operator);
+                if dropped > 0 {
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "harness: stopped — dropped {dropped} queued message(s)"
+                    )));
+                }
+                state.notice = Some((
+                    if dropped > 0 {
+                        format!("stopped · {dropped} queued dropped")
+                    } else {
+                        "stopped".to_string()
+                    },
+                    "warning".to_string(),
+                ));
+                stall::trail(
+                    "abort.operator",
+                    serde_json::json!({ "dropped": dropped, "busy": busy }),
+                );
             }
-            // Idle Esc: close-overlays is handled above (modals); here it
-            // is a deliberate NO-OP — it used to quit (owner report:
-            // accidental quits).
         }
         // ^c — copy (owner request 2026-09-03). Selection first, else the
         // last assistant reply. Never aborts, never quits.
@@ -2663,15 +2681,36 @@ async fn maybe_heal(
 
     // Abort-settle deadline runs even with the tool watchdog disabled: an
     // unresponsive abort must never leave 'working…' spinning forever
-    // (2026-11-13, operator report). Self-heal turns this into a respawn.
-    if state.abort_deadline.is_some_and(|deadline| now >= deadline) {
+    // (2026-11-13, operator report). Only a WATCHDOG abort may escalate to a
+    // child restart; an operator Esc releases the UI and says what is still
+    // running (E1/E3, 2026-11-16).
+    if let Some(source) = state.abort_due(now) {
         state.abort_deadline = None;
         state.note_phase(state::UiEvent::AgentEnd);
         state.is_streaming = false;
         state.is_compacting = false;
         state.expected_tool_calls.clear();
         let abandoned = state.abandon_running_tools("abort did not settle — released");
-        if heal::self_heal_enabled() {
+        if source == state::AbortSource::Operator {
+            let still = state
+                .oldest_running_tool()
+                .map(|tool| {
+                    format!(
+                        "pi is still finishing {} ({}s)",
+                        tool.name,
+                        tool.age.as_secs()
+                    )
+                })
+                .unwrap_or_else(|| "pi has not confirmed the stop".to_string());
+            stall::trail(
+                "abort.operator_unsettled",
+                serde_json::json!({ "abandoned": abandoned, "still": still }),
+            );
+            state.entries.push(state::ChatEntry::Warn(format!(
+                "harness: stopped — {still}; no restart was attempted (use /recover if it stays stuck)"
+            )));
+            return;
+        } else if heal::self_heal_enabled() {
             state.entries.push(state::ChatEntry::Warn(format!(
                 "harness watchdog: abort did not settle after 10s — restarting pi{}; session preserved, transcript restored",
                 if abandoned > 0 {
@@ -2813,7 +2852,7 @@ async fn maybe_heal(
     // tool watch is armed. Probe the engine first so a long prefill is never
     // mistaken for a hang.
     if state.wire_idle_due(now, policy.wire_idle)
-        && state.abort_deadline.is_none()
+        && !state.abort_pending()
         && state.recovery.engine_deadline.is_none()
     {
         let activity = heal::engine_activity().await;
@@ -2872,7 +2911,7 @@ async fn maybe_heal(
             state.note_prompt_failed();
             state.recovery.phase = heal::Phase::Aborting;
             state.recovery.reason = "wire idle".to_string();
-            state.abort_deadline = Some(now + Duration::from_secs(10));
+            state.arm_abort(now, state::AbortSource::Watchdog);
             return;
         }
     }
@@ -2915,7 +2954,7 @@ async fn maybe_heal(
             };
             maybe_grace_or_abort(state, bridge, &case).await;
             // An abort was just armed: the settle deadline owns the next step.
-            if state.abort_deadline.is_some() {
+            if state.abort_pending() {
                 return;
             }
         }
@@ -2942,7 +2981,7 @@ async fn abort_for_stall(
     state.note_prompt_failed();
     state.recovery.phase = heal::Phase::Aborting;
     state.recovery.reason = reason.to_string();
-    state.abort_deadline = Some(now + std::time::Duration::from_secs(10));
+    state.arm_abort(now, state::AbortSource::Watchdog);
     stall::trail(
         "abort.sent",
         serde_json::json!({ "reason": reason, "recovery": state.recovery.reason }),

@@ -104,6 +104,22 @@ const WATCHDOG_EVERY_SECONDS = Math.max(
   15,
   Math.min(600, Number(process.env.CADUCEUS_WATCHDOG_SECONDS) || 60),
 );
+const ROUTER_PORT = Math.max(1024, Number(process.env.CADUCEUS_ROUTER_PORT) || 20129);
+const ROUTER_ORIGIN = `http://127.0.0.1:${ROUTER_PORT}`;
+const ROUTER_UNIT = join(
+  HOME,
+  ".config",
+  "systemd",
+  "user",
+  "vitriol-caduceus-router.service",
+);
+const ROUTER_STATE_FILE = join(
+  HOME,
+  ".vitriol",
+  "officina",
+  "caduceus-router-state.json",
+);
+const ROUTER_SCRIPT = join(dirname(new URL(import.meta.url).pathname), "caduceus-router.mjs");
 const OLD_SERVICE_UNIT = join(
   HOME,
   ".config",
@@ -1493,6 +1509,113 @@ async function cmdWatchdog(flags) {
   log(
     `${label} gateway ${action === "none" ? (healthy ? "healthy" : "unhealthy") : action} · ${latencyMs}ms · ${state.reason}`,
   );
+}
+
+/**
+ * Routing proxy (2026-11-16): the layer that keeps a turn alive when the lane a
+ * request pinned is quota-spent or dead. Off by default — with no fallbacks it
+ * is a pure pass-through, and `--install` only writes the unit (add --enable to
+ * start it).
+ */
+async function cmdRouter(flags) {
+  if (flags.remove) {
+    systemctlUser(["disable", "--now", "vitriol-caduceus-router.service"]);
+    rmSync(ROUTER_UNIT, { force: true });
+    systemctlUser(["daemon-reload"]);
+    log("Caduceus routing proxy removed.");
+    return;
+  }
+  const fallbacks = String(
+    process.env.CADUCEUS_ROUTER_FALLBACKS ??
+      readEnv().get("CADUCEUS_ROUTER_FALLBACKS") ??
+      "",
+  )
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (flags.install) {
+    const node = process.execPath;
+    mkdirSync(join(HOME, ".config", "systemd", "user"), { recursive: true });
+    const unit = `[Unit]
+Description=Caduceus routing proxy (reroute-until-served)
+After=vitriol-caduceus.service
+Wants=vitriol-caduceus.service
+
+[Service]
+Type=simple
+ExecStart="${node}" "${resolve(ROUTER_SCRIPT)}" --port ${ROUTER_PORT}
+Environment=CADUCEUS_ROUTER_PORT=${ROUTER_PORT}
+Environment=CADUCEUS_ROUTER_STATE=${ROUTER_STATE_FILE}
+EnvironmentFile=-${ENV_FILE}
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
+`;
+    writeFileSync(ROUTER_UNIT, unit, { mode: 0o644 });
+    systemctlUser(["daemon-reload"]);
+    if (flags.enable) {
+      const enable = systemctlUser([
+        "enable",
+        "--now",
+        "vitriol-caduceus-router.service",
+      ]);
+      if (!enable.ok)
+        fail(`could not enable vitriol-caduceus-router.service: ${enable.out}`);
+      log(`Routing proxy enabled on ${ROUTER_ORIGIN}`);
+    } else {
+      log(
+        "Routing proxy unit written (not started) — add --enable to start it now.",
+      );
+    }
+    if (fallbacks.length === 0) {
+      warn(
+        "no CADUCEUS_ROUTER_FALLBACKS configured — the proxy will pass requests straight through",
+      );
+    }
+    return;
+  }
+
+  const active = systemctlUser([
+    "is-active",
+    "vitriol-caduceus-router.service",
+  ]).ok;
+  let health = null;
+  try {
+    const res = await fetch(`${ROUTER_ORIGIN}/health`, {
+      signal: AbortSignal.timeout(2_000),
+    });
+    health = res.ok ? await res.json() : null;
+  } catch {
+    health = null;
+  }
+  const report = {
+    installed: existsSync(ROUTER_UNIT),
+    active,
+    port: ROUTER_PORT,
+    fallbacks,
+    health,
+  };
+  if (flags.json) {
+    log(JSON.stringify(report, null, 2));
+    return;
+  }
+  log(
+    `Routing proxy: ${active ? "active" : report.installed ? "installed, stopped" : "not installed"}`,
+  );
+  log(`  port:      ${ROUTER_PORT}`);
+  log(
+    `  fallbacks: ${fallbacks.length ? fallbacks.join(", ") : "(none — pass-through)"}`,
+  );
+  if (health) {
+    const parked = (health.parked ?? [])
+      .map((p) => `${p.model} (${p.seconds}s)`)
+      .join(", ");
+    log(`  parked:    ${parked || "none"}`);
+  }
+  log(`  state:     ${ROUTER_STATE_FILE}`);
 }
 
 async function cmdDoctor(flags) {
@@ -4252,6 +4375,7 @@ Usage:
   vitriol caduceus egress status|set|clear|test [--proxy URL] [--no-proxy LIST]
   vitriol caduceus service install|status|remove
   vitriol caduceus watchdog [--install|--remove|--json]   health probe; restarts a wedged gateway
+  vitriol caduceus router [--install [--enable]|--remove|--json]   reroute-until-served proxy
   vitriol caduceus migrate [--dry-run|--apply] [--no-service] [--json]
   vitriol caduceus doctor [--json]
   vitriol caduceus use <model-id> [--local] [--json]
@@ -4286,6 +4410,7 @@ async function main() {
   if (command === "egress") return cmdEgress(parseFlags(argv.slice(1)));
   if (command === "service") return cmdService(parseFlags(argv.slice(1)));
   if (command === "watchdog") return cmdWatchdog(parseFlags(argv.slice(1)));
+  if (command === "router") return cmdRouter(parseFlags(argv.slice(1)));
   if (command === "migrate") return cmdMigrate(parseFlags(argv.slice(1)));
   if (command === "signup") return cmdSignup(parseFlags(argv.slice(1)));
   if (command === "keys") return cmdKeys(parseFlags(argv.slice(1)));

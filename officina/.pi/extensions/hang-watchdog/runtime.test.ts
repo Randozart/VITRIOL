@@ -96,6 +96,76 @@ describe("watchdog runtime", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(String(fetcher.mock.calls[0][0])).toContain("/v1/systemone");
     expect(facts().verdict).toBe("UNKNOWN");
+    expect(facts().source).toBe("decision");
+  });
+
+  it("labels a satisfied decision answer as source decision (D1)", async () => {
+    availableCatalog();
+    vi.stubEnv(
+      "OFFICINA_WATCHDOG_DECISION_URL",
+      "http://127.0.0.1:8000/v1/systemone",
+    );
+    fetcher.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          usage: {
+            truncated: false,
+            state_tokens_dropped: 0,
+            truncated_questions: [],
+          },
+          answers: {
+            liveness: {
+              type: "choice",
+              choice: "HUNG",
+              answer_confidence: 0.95,
+              action: { act_probability: 0.99 },
+              abstention: "passed",
+            },
+          },
+        }),
+      ),
+    );
+    start();
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(facts().verdict).toBe("HUNG");
+    expect(facts().source).toBe("decision");
+    expect(facts().reason).toContain("answer score");
+  });
+
+  it("a failing decision endpoint stays decision-labeled, never lane (I4: no retry)", async () => {
+    availableCatalog();
+    vi.stubEnv(
+      "OFFICINA_WATCHDOG_DECISION_URL",
+      "http://127.0.0.1:8000/v1/systemone",
+    );
+    fetcher.mockResolvedValue(new Response("boom", { status: 500 }));
+    start();
+    await vi.advanceTimersByTimeAsync(180_000);
+    // The configured decision lane was attempted and failed; the watchdog must
+    // not silently fall back to the free lane (I4) — the source stays decision
+    // and the reason names the service failure.
+    expect(facts().source).toBe("decision");
+    expect(facts().verdict).toBe("UNKNOWN");
+    expect(facts().reason).toContain("unavailable");
+  });
+
+  it("labels no-judge-at-all as unavailable", async () => {
+    // No endpoint AND no free lane: deterministic monitoring continues, source
+    // unavailable (D2).
+    catalog.candidates = [];
+    start();
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(facts().source).toBe("unavailable");
+    expect(facts().verdict).toBe("UNKNOWN");
+  });
+
+  it("labels a free-lane reply as source lane without an endpoint (D1 parity)", async () => {
+    availableCatalog();
+    fetcher.mockResolvedValue(response("VERDICT: HUNG\nwaiting for stdin"));
+    start();
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(facts().source).toBe("lane");
+    expect(facts().verdict).toBe("HUNG");
   });
   it("surfaces notices in RPC/headless contexts and never turns malformed replies into health", async () => {
     availableCatalog();

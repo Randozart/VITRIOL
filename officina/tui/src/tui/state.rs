@@ -447,6 +447,9 @@ pub struct WatchdogDoc {
     pub stalled_s: u64,
     pub verdict: String,
     pub reason: String,
+    /// Where the verdict came from (2026-11-16): "decision" (typed SystemOne
+    /// lane), "lane" (free cloud judge), "unavailable", or empty on notices.
+    pub source: Option<String>,
     pub next_check_at: u64,
     pub phase: String,
 }
@@ -4306,6 +4309,15 @@ impl AppState {
                             if !doc.reason.is_empty() {
                                 lines.push(field("reason", doc.reason.clone()));
                             }
+                            if let Some(src) = doc.source.as_deref() {
+                                let tag = match src {
+                                    "decision" => "decision model",
+                                    "lane" => "free lane",
+                                    "unavailable" => "unavailable",
+                                    other => other,
+                                };
+                                lines.push(field("source", tag.to_string()));
+                            }
                             let hint = match doc.verdict.as_str() {
                                 "ALIVE" => "compiling/working \u{2014} no action needed",
                                 "HUNG" => "esc aborts if you agree \u{00b7} no auto-kill",
@@ -6639,7 +6651,7 @@ mod tests {
             serde_json::from_str(&format!(
                 r#"{{"version":1,"ts":{now},"kind":"verdict","command":"brievc build c4probe.bv",
                  "elapsed_s":252,"stalled_s":189,"verdict":"HUNG","reason":"waiting on stdin",
-                 "next_check_at":0,"phase":"done"}}"#
+                 "source":"decision","next_check_at":0,"phase":"done"}}"#
             ))
             .unwrap(),
         );
@@ -6652,6 +6664,8 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("source"), "card must name the verdict source");
+        assert!(text.contains("decision model"));
         assert!(text.contains("HUNG"), "verdict chip: {text}");
         assert!(text.contains("brievc build"), "cmd field: {text}");
         assert!(text.contains("4m 12s"), "elapsed field: {text}");

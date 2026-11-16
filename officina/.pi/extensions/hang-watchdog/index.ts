@@ -20,6 +20,11 @@ import {
 } from "./judge.ts";
 import { judgeWithDecision } from "./decision.ts";
 import {
+  resolveDecisionConfig,
+  readDecisionConfig,
+  writeDecisionConfig,
+} from "./config.ts";
+import {
   extractCatalogModels,
   freeToolCandidates,
 } from "../caduceus/catalog.ts";
@@ -118,6 +123,10 @@ interface WatchdogDoc {
   stalled_s: number;
   verdict: "JUDGING" | "ALIVE" | "HUNG" | "UNKNOWN" | "NO-JUDGE" | "";
   reason: string;
+  /** Where the verdict came from (2026-11-16): typed decision lane, free
+   *  cloud lane, or unavailable when neither could answer. Absent on
+   *  notices/ended docs where no judge ran. */
+  source?: "decision" | "lane" | "unavailable";
   next_check_at: number;
   phase: "soft" | "judge" | "rejudge" | "monitor" | "done";
 }
@@ -150,7 +159,7 @@ export default function (pi: ExtensionAPI) {
     call: WatchedCall,
     status: Pick<
       WatchdogDoc,
-      "kind" | "verdict" | "reason" | "next_check_at" | "phase"
+      "kind" | "verdict" | "reason" | "source" | "next_check_at" | "phase"
     >,
     message: string,
   ) => {
@@ -209,11 +218,16 @@ export default function (pi: ExtensionAPI) {
     try {
       const request = async () => {
         const decision = await judgeWithDecision(call, controller.signal);
-        if (decision) return decision;
+        if (decision) return decision; // carries source "decision"
         const reply = await judgeWithLane(call, controller.signal);
-        return reply === null
-          ? { alive: null, reason: "judge unavailable — liveness unknown" }
-          : parseVerdict(reply);
+        if (reply === null) {
+          return {
+            alive: null,
+            reason: "judge unavailable — liveness unknown",
+            source: "unavailable" as const,
+          };
+        }
+        return { ...parseVerdict(reply), source: "lane" as const };
       };
       const result = await Promise.race([request(), cancelled]);
       if (!current()) return;
@@ -221,6 +235,7 @@ export default function (pi: ExtensionAPI) {
         alive: null,
         reason: "judge deadline exceeded — liveness unknown (NO-JUDGE)",
         unparsed: true,
+        source: "unavailable" as const,
       };
       // `unparsed` only exists on an unparsable reply: a decision-model verdict
       // is structurally parsed, so the field is absent there.
@@ -246,6 +261,8 @@ export default function (pi: ExtensionAPI) {
             ? 0
             : (call.judgedAt ?? Date.now()) + REJUDGE_EVERY_S * 1000,
           phase: capped ? "monitor" : "rejudge",
+          source: ("source" in verdict ? verdict.source : "lane") as
+            "decision" | "lane" | "unavailable",
         },
         `hang-watchdog verdict for "${call.command.slice(0, 60)}": ${label} — ${verdict.reason} (advisory; monitoring continues)`,
       );
@@ -360,5 +377,104 @@ export default function (pi: ExtensionAPI) {
         },
         `hang-watchdog: "${call.command.slice(0, 60)}" finished`,
       );
+  });
+
+  // /decision — configure the typed SystemOne judge (2026-11-16).
+  // `status` shows the current lane; `set <url>` / `key <token>` /
+  // `floor <0-1>` write the 0600 config; `off` clears it. Env vars still
+  // override the file for throwaway runs.
+  pi.registerCommand?.("decision", {
+    description:
+      "Decision lane: status | set <systemone-url> | key <token> | floor <0-1> | off (hang-watchdog's typed judge)",
+    handler: async (
+      args: string,
+      ctx: {
+        ui?: { notify?: (m: string, l?: "error" | "info" | "warning") => void };
+      },
+    ) => {
+      const cfg = readDecisionConfig() ?? {
+        version: 1 as const,
+        url: "",
+        key: "",
+        floor: 0.9,
+      };
+      const a = args.trim();
+      const show = (
+        text: string,
+        level: "error" | "info" | "warning" = "info",
+      ) => {
+        try {
+          ctx.ui?.notify?.(text, level);
+        } catch {
+          /* advisory */
+        }
+      };
+      const redact = (k: string) =>
+        k ? `${k.slice(0, 6)}…${k.length > 6 ? " (set)" : ""}` : "";
+      if (!a || a === "status") {
+        const current = resolveDecisionConfig();
+        if (!current.endpoint) {
+          show(
+            "decision: unset — watchdog uses the free lane (set /decision set <url> to enable)",
+          );
+          return;
+        }
+        show(
+          `decision: ${current.endpoint} · floor ${current.floor} · key ${redact(current.key)}`,
+        );
+        return;
+      }
+      if (a === "off") {
+        writeDecisionConfig({ version: 1, url: "", key: "", floor: 0.9 });
+        show("decision: cleared — watchdog uses the free lane");
+        return;
+      }
+      const setUrl = a.match(/^set\s+(\S+)/);
+      if (setUrl) {
+        const url = setUrl[1];
+        if (!/^https?:\/\//.test(url)) {
+          show(`decision: URL must be http(s): ${url}`, "warning");
+          return;
+        }
+        const ok = writeDecisionConfig({
+          ...cfg,
+          url,
+          key: cfg.key,
+          floor: cfg.floor,
+        });
+        show(
+          ok ? `decision: set ${url}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setKey = a.match(/^key\s+(\S+)/);
+      if (setKey) {
+        const ok = writeDecisionConfig({ ...cfg, key: setKey[1] });
+        show(
+          ok ? "decision: key set" : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setFloor = a.match(/^floor\s+([0-9.]+)/);
+      if (setFloor) {
+        const floor = Number(setFloor[1]);
+        if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
+          show("decision: floor must be 0..1", "warning");
+          return;
+        }
+        const ok = writeDecisionConfig({ ...cfg, floor });
+        show(
+          ok ? `decision: floor ${floor}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      show(
+        "decision: unknown arguments — try `set <url>`, `key <token>`, `floor <0-1>`, `status`, `off`",
+        "warning",
+      );
+    },
   });
 }

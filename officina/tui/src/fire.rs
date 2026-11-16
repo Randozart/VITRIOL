@@ -214,31 +214,53 @@ pub fn column_light(edge: f64, level: f64) -> f64 {
     (edge * level * 1.15).clamp(0.0, 1.0)
 }
 
-/// Ignition slot — the divider line re-rolls once a second, not once a frame.
-const IGNITION_STEP_MS: u128 = 1000;
+/// Height of the flame's bottom row inside a column of `rows` cells, in the
+/// same fraction space `render` uses (`from_base / rows`).
+fn base_frac(rows: usize) -> f64 {
+    0.5 / rows.max(1) as f64
+}
 
-/// Per-column ignition for the divider row: the flame's base.
+/// How much of its base density a column puts on the rule. Embers dot the line
+/// instead of filling it; a full draw is at the fire's own density.
+fn level_scale(level: f64) -> f64 {
+    (0.35 + 0.65 * (level * 1.6).min(1.0)).clamp(0.0, 1.0)
+}
+
+/// Cells of the DIVIDER row: the fire's own bottom row, drawn on the line
+/// (owner decision 2026-11-16: *"take the current fire, and start it fully on
+/// the underscore row … once the flame gets started, it consumes whatever part
+/// of the underscore row it needs"*).
 ///
-/// `None` keeps the divider glyph; `Some(⡀)` replaces it with the thinnest
-/// braille dot, so a dead fire leaves a plain underscore rule and a live one
-/// lights it selectively (owner request 2026-11-16). Selection uses the SLOW
-/// hash and the unanimated envelope, so the line can never flicker.
-pub fn ignition_row(width: usize, phase_ms: u128, level: f64) -> Vec<Option<char>> {
+/// `None` keeps the underscore. A claimed column returns the glyph the flame
+/// field would draw on its own bottom row — same ramp, same hash seed, so the
+/// line and the body are one flame — except that the base density is scaled by
+/// `level_scale` so first embers read as dots on the line rather than a bar.
+/// `rows` must be the height of the flame field above the line.
+pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<Option<char>> {
     let mut out = vec![None; width];
     if width == 0 || level < MIN_LEVEL {
         return out;
     }
-    let step = (phase_ms / IGNITION_STEP_MS) as u32;
+    let step = (phase_ms / FLICKER_STEP_MS) as u32;
+    let base = base_frac(rows);
+    let last = rows.saturating_sub(1) as u32;
     for (x, slot) in out.iter_mut().enumerate() {
-        let light = column_light(column_edge(x, width), level);
-        if light <= 0.0 {
+        let col_light = column_light(column_edge(x, width), level);
+        if col_light <= 0.0 {
             continue;
         }
-        // Odds rise with the column's base reach: embers light a few side
-        // columns, a full draw lights nearly all of them.
-        if hash01(x as u32, 313, step) < light {
-            *slot = Some(DENSITY[1]);
+        // The flame always starts ON the line: the bottom row is inside the
+        // column by construction, so nothing floats above the rule.
+        let col_h = (col_light * (0.7 + 0.6 * hash01(x as u32, 0, step))).max(base);
+        let frac = (base / col_h.max(1e-3)).clamp(0.0, 1.0);
+        let dens =
+            ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, last, step)) * level_scale(level))
+                .clamp(0.0, 1.0);
+        let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
+        if idx == 0 {
+            continue; // first embers keep the underscore, intermittently
         }
+        *slot = Some(DENSITY[idx.min(DENSITY.len() - 1)]);
     }
     out
 }
@@ -290,7 +312,14 @@ pub fn render(
             // Unanimated reach = the flame's shape; the hash only roughens the
             // glyphs drawn on top of it.
             let col_light = column_light(edge, level);
-            let col_h = col_light * (0.7 + 0.6 * hash01(x as u32, 0, step));
+            // Clamped to the base row: a burning column always reaches the
+            // rule, so the body cannot float above its own line (2026-11-16).
+            let floor = if col_light > 0.0 {
+                base_frac(rows)
+            } else {
+                0.0
+            };
+            let col_h = (col_light * (0.7 + 0.6 * hash01(x as u32, 0, step))).max(floor);
             let frac_from_base = from_base / rows as f64;
             if frac_from_base > col_h {
                 // Above the flame — a rising ember? (owner request: little
@@ -442,83 +471,8 @@ mod stability_tests {
         assert_eq!(rows_for_stable(0.0, 4), 0);
     }
 
-    #[test]
-    fn ignition_line_is_dark_without_fire() {
-        for phase in [0u128, 700, 1234] {
-            let row = ignition_row(80, phase, 0.0);
-            assert_eq!(row.len(), 80);
-            assert!(row.iter().all(Option::is_none), "no fire ⇒ plain divider");
-        }
-        assert!(ignition_row(80, 0, MIN_LEVEL * 0.5)
-            .iter()
-            .all(Option::is_none));
-        assert!(ignition_row(0, 0, 1.0).is_empty());
-    }
-
-    /// The fire climbs the sides: the middle band of the divider stays dark.
-    #[test]
-    fn ignition_line_lights_the_sides_only() {
-        let w = 120;
-        let row = ignition_row(w, 500, 1.0);
-        let lit: Vec<usize> = row
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| c.is_some())
-            .map(|(x, _)| x)
-            .collect();
-        assert!(!lit.is_empty(), "a full draw must light the base");
-        for x in lit {
-            let edge = column_edge(x, w);
-            assert!(edge > 0.0, "column {x} is inside the dead middle band");
-        }
-        // Both sides carry ignition, not just one.
-        assert!(row.iter().take(w / 4).any(Option::is_some));
-        assert!(row.iter().skip(w - w / 4).any(Option::is_some));
-    }
-
-    #[test]
-    fn ignition_count_rises_with_load() {
-        let count = |level: f64| {
-            ignition_row(200, 500, level)
-                .iter()
-                .filter(|c| c.is_some())
-                .count()
-        };
-        let mut prev = 0;
-        for level in [0.05, 0.15, 0.3, 0.5, 0.75, 1.0] {
-            let now = count(level);
-            assert!(
-                now >= prev,
-                "ignition count must not fall as load rises ({level}: {now} < {prev})"
-            );
-            prev = now;
-        }
-        assert!(prev > 0);
-    }
-
-    /// One-second slot: the lit set must be identical inside a second, so the
-    /// ignition line cannot flicker at frame rate.
-    #[test]
-    fn ignition_line_is_stable_within_a_slot() {
-        let base = ignition_row(120, 0, 0.6);
-        for phase in [120u128, 240, 600, 960] {
-            assert_eq!(
-                ignition_row(120, phase, 0.6),
-                base,
-                "slot must not re-roll at {phase}ms"
-            );
-        }
-        assert_ne!(
-            ignition_row(120, 1000, 0.6),
-            base,
-            "the next slot is allowed to drift"
-        );
-    }
-
-    /// F3, the regression this whole change exists for: the set of cells that
-    /// lend their colour to text must be identical on consecutive frames at a
-    /// constant level. It used to follow the per-frame hash, so glyphs flipped
-    /// tinted/untinted at ~11 fps.
+    /// The tint mask must not churn with the flame's per-frame hash: the set
+    /// of cells lending colour to text is identical on consecutive frames.
     #[test]
     fn tint_mask_is_identical_across_frames_at_one_level() {
         let pattern = |phase: u128| -> Vec<Vec<bool>> {
@@ -566,12 +520,114 @@ mod stability_tests {
         }
     }
 
+    /// The fire climbs the sides: the rule's middle band is never consumed.
     #[test]
-    fn ignition_glyph_is_the_thinnest_dot() {
-        let row = ignition_row(120, 0, 1.0);
-        let glyphs: Vec<char> = row.iter().filter_map(|c| *c).collect();
-        assert!(!glyphs.is_empty());
-        assert!(glyphs.iter().all(|g| *g == DENSITY[1]));
-        assert_eq!(DENSITY[1], '⡀');
+    fn line_never_claims_the_middle_band() {
+        let w = 120;
+        for level in [0.1, 0.5, 1.0] {
+            let row = line_cells(w, 4, 500, level);
+            for (x, cell) in row.iter().enumerate() {
+                if cell.is_some() {
+                    assert!(
+                        column_edge(x, w) > 0.0,
+                        "column {x} is inside the dead middle band"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn line_claims_more_as_the_fire_grows() {
+        let claimed = |level: f64| {
+            line_cells(200, 4, 500, level)
+                .iter()
+                .filter(|c| c.is_some())
+                .count()
+        };
+        let mut prev = 0;
+        for level in [0.06, 0.15, 0.3, 0.5, 0.75, 1.0] {
+            let now = claimed(level);
+            assert!(now >= prev, "claimed cells fell at {level}: {now} < {prev}");
+            prev = now;
+        }
+        assert!(prev > 0);
+    }
+
+    #[test]
+    fn line_is_untouched_without_fire() {
+        for phase in [0u128, 700, 1234] {
+            let row = line_cells(80, 4, phase, 0.0);
+            assert_eq!(row.len(), 80);
+            assert!(row.iter().all(Option::is_none), "no fire => plain rule");
+        }
+        assert!(line_cells(80, 4, 0, MIN_LEVEL * 0.5)
+            .iter()
+            .all(Option::is_none));
+        assert!(line_cells(0, 4, 0, 1.0).is_empty());
+    }
+
+    /// Owner decision 2026-11-16: at first embers the rule is only
+    /// *intermittently* broken up by the flame.
+    #[test]
+    fn first_embers_only_dot_the_line() {
+        let w = 160;
+        let row = line_cells(w, 4, 500, 0.06);
+        let claimed: Vec<usize> = row
+            .iter()
+            .enumerate()
+            .filter(|(x, c)| c.is_some() && column_light(column_edge(*x, w), 0.06) > 0.0)
+            .map(|(x, _)| x)
+            .collect();
+        assert!(!claimed.is_empty(), "embers must touch the line somewhere");
+        let lit_zone: Vec<usize> = (0..w)
+            .filter(|x| column_light(column_edge(*x, w), 0.06) > 0.0)
+            .collect();
+        assert!(
+            claimed.len() < lit_zone.len(),
+            "underscores must survive inside the lit zone"
+        );
+        // Sparse glyphs: the ramp's first two steps at most.
+        for (x, cell) in row.iter().enumerate() {
+            if let Some(g) = cell {
+                let idx = DENSITY.iter().position(|d| d == g).expect("ramp glyph");
+                assert!(idx <= 2, "column {x} too dense for embers: {g:?}");
+            }
+        }
+    }
+
+    /// Once it is burning, the flame consumes the line where it burns.
+    #[test]
+    fn a_burning_flame_consumes_its_line() {
+        let w = 160;
+        let row = line_cells(w, 4, 500, 1.0);
+        for x in 0..w {
+            let light = column_light(column_edge(x, w), 1.0);
+            if light > 0.0 {
+                assert!(row[x].is_some(), "column {x} burns but left its underscore");
+            } else {
+                assert!(row[x].is_none(), "middle band must keep the rule");
+            }
+        }
+    }
+
+    /// The rule follows the fire's own clock (120 ms), not a calm 1 s slot.
+    #[test]
+    fn line_follows_the_flame_clock() {
+        let base = line_cells(120, 4, 0, 0.8);
+        assert_eq!(line_cells(120, 4, 60, 0.8), base, "same flicker slot");
+        assert_eq!(line_cells(120, 4, 119, 0.8), base, "same flicker slot");
+    }
+
+    #[test]
+    fn line_glyphs_come_from_the_flame_ramp() {
+        let row = line_cells(120, 4, 0, 1.0);
+        for g in row.iter().flatten() {
+            assert!(DENSITY.contains(g), "{g:?} is not a ramp glyph");
+            // The shipped ceiling is ⣷ (0xF7); the full block ⣿ stays banned
+            // so transcript text underneath the line never disappears.
+            assert_ne!(*g, '⣿', "never the full block");
+            assert!((*g as u32) - 0x2800 <= 0xF7, "{g:?} exceeds the ceiling");
+        }
     }
 }

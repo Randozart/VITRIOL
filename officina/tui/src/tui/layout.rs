@@ -713,7 +713,11 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         };
         let w = gap.width as usize;
         let phase_ms = state.started.elapsed().as_millis();
-        let lit = crate::fire::ignition_row(w, phase_ms, state.fire_level);
+        // The rule IS the fire's bottom row (2026-11-16): a column the flame
+        // claims shows the flame's own base glyph, everything else keeps the
+        // underscore. `flame_rows` is the field height above this row, so the
+        // two agree on where the bottom row sits.
+        let lit = crate::fire::line_cells(w, flame_rows.max(1), phase_ms, state.fire_level);
         let flame = crate::fire::ignition_color(phase_ms, state.fire_level, state.fire_style);
         let line = Line::from(ignition_spans(w, &lit, flame));
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);
@@ -4270,16 +4274,19 @@ mod settings_chat_render_tests {
         let text = screen(&mut state, 80, 24);
         let row = divider_row(&text);
         assert!(
-            row.contains('⡀'),
-            "ignition dot missing from the divider: {row:?}"
+            row.chars().any(|c| c != '_' && c != ' '),
+            "the burning flame must claim part of the rule: {row:?}"
+        );
+        // The rule now carries the fire's own base glyphs (2026-11-16): any
+        // braille ramp glyph is legitimate, but nothing else.
+        assert!(
+            row.chars()
+                .all(|c| c == '_' || c == ' ' || (0x2800..=0x28FF).contains(&(c as u32))),
+            "the divider carries only underscores and braille, got {row:?}"
         );
         assert!(
-            row.chars().all(|c| c == '_' || c == ' ' || c == '⡀'),
-            "the divider carries only underscores and ignition dots, got {row:?}"
-        );
-        assert!(
-            row.chars().filter(|c| *c == '⡀').count() < row.chars().count(),
-            "ignition is selective, never the whole row"
+            row.chars().filter(|c| *c == '_').count() > 0,
+            "the rule is never consumed wholesale: {row:?}"
         );
     }
 
@@ -4365,6 +4372,39 @@ mod settings_chat_render_tests {
                 "ctx row must sit on the last band row (ind={ind}):\n{text}"
             );
         }
+    }
+
+    /// I24: the flame always *starts* on the rule — wherever the rule is
+    /// claimed, the flame's bottom row above it must carry a glyph.
+    #[test]
+    fn flame_meets_its_line() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.fire_on = true;
+        state.fire_level = 1.0;
+        state.fire_target = 1.0;
+        let text = screen(&mut state, 80, 24);
+        let lines: Vec<&str> = text.lines().collect();
+        let idx = lines
+            .iter()
+            .position(|l| l.chars().filter(|c| *c == '_').count() > 5)
+            .expect("divider row");
+        assert!(idx > 0);
+        let rule: Vec<char> = lines[idx].chars().collect();
+        let above: Vec<char> = lines[idx - 1].chars().collect();
+        let mut checked = 0;
+        for (x, c) in rule.iter().enumerate() {
+            if *c == '_' || *c == ' ' {
+                continue;
+            }
+            let up = above.get(x).copied().unwrap_or(' ');
+            assert_ne!(
+                up, ' ',
+                "column {x} burns on the rule but the body is empty above it"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "no claimed columns at full load:\n{text}");
     }
 
     #[test]

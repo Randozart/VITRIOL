@@ -993,8 +993,12 @@ pub struct AppState {
     /// Working directory — session scan root for /resume.
     pub cwd: std::path::PathBuf,
 
-    /// Agent mode tracking — the widget's own "/mode <next>" hint (Tab).
+    /// Agent mode tracking — the widget's own "/agent <next>" hint (Tab).
     pub agent_mode: Option<String>,
+    /// Mode already requested from Tab, with the instant: a second Tab inside
+    /// the grace must not re-send the same target (the widget has not caught up
+    /// yet, which used to read as "Tab is blocked again").
+    pub agent_mode_pending: Option<(String, std::time::Instant)>,
     /// Current mode label (e.g. "BUILD") + badge glyph, parsed from the same
     /// widget — drives the header mode chip (owner request 2026-09-02).
     pub agent_mode_label: Option<String>,
@@ -1225,6 +1229,7 @@ impl Default for AppState {
             cand_sel: 0,
             cwd: std::path::PathBuf::from("."),
             agent_mode: None,
+            agent_mode_pending: None,
             agent_mode_label: None,
             agent_mode_glyph: None,
             should_quit: false,
@@ -3371,6 +3376,10 @@ impl AppState {
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 {
+                    // The hint advancing settles any Tab request in flight.
+                    if self.agent_mode.as_deref() != Some(next.as_str()) {
+                        self.agent_mode_pending = None;
+                    }
                     self.agent_mode = Some(next);
                     return;
                 }
@@ -3382,6 +3391,24 @@ impl AppState {
     /// tells us.
     pub fn next_agent_mode(&self) -> Option<String> {
         self.agent_mode.clone()
+    }
+
+    /// Remember that Tab asked for `next`. The pending mark clears itself when
+    /// the widget advances to a different target (or after the grace).
+    pub fn note_mode_switch_sent(&mut self, next: &str) {
+        self.agent_mode_pending = Some((next.to_string(), std::time::Instant::now()));
+    }
+
+    /// True while a Tab-requested switch to `next` is still in flight — the
+    /// widget hint has not advanced yet, so re-sending it would be a visible
+    /// no-op (2026-11-16, operator report: "tabbing through modes is blocked so
+    /// often").
+    pub fn mode_switch_in_flight(&self, next: &str) -> bool {
+        self.agent_mode_pending
+            .as_ref()
+            .is_some_and(|(pending, at)| {
+                pending == next && at.elapsed() < std::time::Duration::from_secs(2)
+            })
     }
 
     /// Cycle the watermark glimmer (Shimmer → Breathe → Twinkle → Off).
@@ -7074,6 +7101,27 @@ mod tests {
         assert_eq!(s.agent_mode_label.as_deref(), Some("BUILD"));
         assert_eq!(s.agent_mode_glyph.as_deref(), Some("▪"));
         assert_eq!(s.agent_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn tab_switch_pending_settles_when_the_hint_advances() {
+        let mut s = AppState::default();
+        s.parse_agent_mode(&["▪ BUILD · writes unlocked · TAB / /agent plan".to_string()]);
+        assert_eq!(s.next_agent_mode().as_deref(), Some("plan"));
+        assert!(!s.mode_switch_in_flight("plan"), "nothing sent yet");
+
+        s.note_mode_switch_sent("plan");
+        assert!(
+            s.mode_switch_in_flight("plan"),
+            "re-sending would be a no-op"
+        );
+        assert!(!s.mode_switch_in_flight("build"), "only the same target");
+
+        // The widget advancing is what settles the mark.
+        s.parse_agent_mode(&["◈ PLAN · research only · TAB / /agent build".to_string()]);
+        assert_eq!(s.next_agent_mode().as_deref(), Some("build"));
+        assert!(!s.mode_switch_in_flight("plan"));
+        assert!(!s.mode_switch_in_flight("build"));
     }
 
     #[test]

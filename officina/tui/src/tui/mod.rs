@@ -1812,13 +1812,22 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             state.help_open = !state.help_open;
             state.help_sel = 0;
         }
-        // Tab keeps agent cycling and never sends while the composer holds
-        // text (D7/K3, 2026-11-16): a recalled line must not become a stray
-        // /agent command, and a menu row is run with Enter.
-        KeyCode::Tab if !state.input.is_empty() => {}
-        KeyCode::Tab => {
-            if let Some(next) = state.next_agent_mode() {
-                let m = format!("/agent {}", next);
+        // Tab cycles the agent mode (owner request 2026-09-01). Two ways it
+        // used to become a dead key (2026-11-16 operator report: "tabbing
+        // through modes is blocked so often"):
+        //   1. the guard tested `!input.is_empty()`, so ANY typed text blocked
+        //      it — only a command line may keep the key (the popup owns those);
+        //   2. the widget hint lags one round-trip, so a second Tab re-sent the
+        //      same target and nothing visibly happened.
+        // A missing hint is now reported instead of silently doing nothing.
+        KeyCode::Tab if state.input.starts_with('/') => {}
+        KeyCode::Tab => match state.next_agent_mode() {
+            Some(next) if state.mode_switch_in_flight(&next) => {
+                state.notice = Some((format!("agent: switching to {next}…"), "info".to_string()));
+            }
+            Some(next) => {
+                state.note_mode_switch_sent(&next);
+                let m = format!("/agent {next}");
                 let _ = bridge
                     .request(RpcCommand::Prompt {
                         id: None,
@@ -1828,7 +1837,13 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     })
                     .await;
             }
-        }
+            None => {
+                state.notice = Some((
+                    "agent: no mode hint yet — try /agent <name>".to_string(),
+                    "warning".to_string(),
+                ));
+            }
+        },
         KeyCode::Up => {
             if state.cand_sel_logic_open() {
                 state.cycle_candidate(false);

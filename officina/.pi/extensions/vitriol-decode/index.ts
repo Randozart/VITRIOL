@@ -1,8 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { fireLoad, fmtRate, fmtTokens } from "./decode.ts";
 import { RAMPS, renderGauge } from "./braille.ts";
-import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
+import {
+  getEngineSnapshot,
+  onEngineUpdate,
+  startEnginePolling,
+} from "../_shared/engine.ts";
 import { getVitriolLogSnapshot } from "../_shared/vitriol-log.ts";
+import {
+  engineRowsVisible,
+  telemetryScope,
+  type TelemetryScope,
+} from "../_shared/telemetry-scope.ts";
 
 // vitriol-decode — live engine telemetry below the editor (2026-08-31).
 //
@@ -33,9 +42,17 @@ export default function (pi: ExtensionAPI) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ui is ctx-bound; typed loosely here, set in session_start
   let ui: any = null;
   let sessionDir = "";
+  /** Which facts this session's own provider produces (2026-11-16). */
+  let scope: TelemetryScope = "none";
 
   const render = () => {
-    if (!ui) return; // no session context yet; engine updates render once bound
+    if (!ui) return;
+    // Only an engine-scoped session shows engine truth (2026-11-16): a cloud
+    // session used to render the workshop's tok/s and flames.
+    if (!engineRowsVisible(scope)) {
+      ui.setWidget("vitriol-decode", [], { placement: "belowEditor" });
+      return;
+    } // no session context yet; engine updates render once bound
     const last = getEngineSnapshot();
     // Machine-readable fire load for the Rust TUI's composer flames (owner
     // request 2026-09-02). Raw number, no styling — the TUI parses it and
@@ -51,12 +68,16 @@ export default function (pi: ExtensionAPI) {
         ingestTps: last.ingest.tps,
         gpuLoad: last.gpuLoad,
       });
-      ui.setWidget("engine-fire", [`FIRE ${load.toFixed(3)}`], { placement: "belowEditor" });
+      ui.setWidget("engine-fire", [`FIRE ${load.toFixed(3)}`], {
+        placement: "belowEditor",
+      });
     }
     if (!last.up) {
-      ui.setWidget("vitriol-decode", [
-        `◈ VITRIOL  engine down (tris up to start)`,
-      ], { placement: "belowEditor" });
+      ui.setWidget(
+        "vitriol-decode",
+        [`◈ VITRIOL  engine down (tris up to start)`],
+        { placement: "belowEditor" },
+      );
       return;
     }
     // Vitriolum visual language (matches the engine TUI): slot capacity on
@@ -70,7 +91,11 @@ export default function (pi: ExtensionAPI) {
     const decoding = last.delta.tps > 0 || busy > 0;
     const slotGauge = renderGauge(RAMPS.capacity, busy / total, 10);
     const ratio = Math.min(1, last.delta.tps / 25); // ramp saturates at 25 tok/s
-    const tpsGauge = renderGauge(decoding ? RAMPS.activity : RAMPS.mercury, decoding ? Math.max(0.08, ratio) : 0.08, 10);
+    const tpsGauge = renderGauge(
+      decoding ? RAMPS.activity : RAMPS.mercury,
+      decoding ? Math.max(0.08, ratio) : 0.08,
+      10,
+    );
     const line1 =
       `◈ VITRIOL  ${slotGauge} slots ${busy}/${total}` +
       `   ${tpsGauge} ${decoding ? `${fmtRate(last.delta.tps)} tok/s` : "idle"}` +
@@ -96,7 +121,10 @@ export default function (pi: ExtensionAPI) {
       }
     }
     const line2 = logLine || (sessionDir ? `◈ ${sessionDir}` : "");
-    const rpc = last.rpc.length > 0 ? `   ·  rpc ${last.rpc.map((s) => s.split(":")[0]).join(",")}` : "";
+    const rpc =
+      last.rpc.length > 0
+        ? `   ·  rpc ${last.rpc.map((s) => s.split(":")[0]).join(",")}`
+        : "";
     const lines = [line1 + rpc];
     if (line2) lines.push(line2);
     ui.setWidget("vitriol-decode", lines, { placement: "belowEditor" });
@@ -106,6 +134,7 @@ export default function (pi: ExtensionAPI) {
     if (!ctx.hasUI) return; // print/JSON mode: nothing to decorate
     ui = ctx.ui;
     sessionDir = ctx.cwd;
+    scope = telemetryScope(ctx.model?.provider, ctx.model?.id);
     try {
       // terminal tab / window title: workshop + which folder
       const title = `officina · ${ctx.cwd.replace(/^\/home\/[^/]+/, "~")}`;
@@ -113,8 +142,16 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // title is decoration, never load-bearing
     }
-    startEnginePolling();
+    if (engineRowsVisible(scope)) startEnginePolling();
     onEngineUpdate(render);
+    render();
+  });
+
+  // Switching model changes which facts belong to this session.
+  pi.on("model_select", (event) => {
+    const m = (event as { model?: { id?: string; provider?: string } }).model;
+    scope = telemetryScope(m?.provider, m?.id);
+    if (engineRowsVisible(scope)) startEnginePolling();
     render();
   });
 }

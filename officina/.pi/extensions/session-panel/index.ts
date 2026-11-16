@@ -1,16 +1,43 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { couplingDisplay, loadCouplings } from "../_shared/couplings.ts";
 import { fgSeq } from "../_shared/vitriolum.ts";
-import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
+import {
+  getEngineSnapshot,
+  onEngineUpdate,
+  startEnginePolling,
+} from "../_shared/engine.ts";
 import { RAMPS, renderGauge } from "../vitriol-decode/braille.ts";
 import { fmtRate, fmtTokens } from "../vitriol-decode/decode.ts";
-import { registerSidebarSection, onSidebarUpdate, renderAllSections, sidebarEnriched, sc, SIDEBAR_COLORS } from "../_shared/sidebar.ts";
+import {
+  registerSidebarSection,
+  onSidebarUpdate,
+  renderAllSections,
+  sidebarEnriched,
+  sc,
+  SIDEBAR_COLORS,
+} from "../_shared/sidebar.ts";
 import { getTaskSummary, getTaskItems } from "../task-state/index.ts";
 import { getRecentTools } from "../skill-inject/index.ts";
 import { getLastTopics } from "../knowledge-inject/index.ts";
-import { getScratchpadSummary, getScratchpadItems } from "../scratchpad/index.ts";
+import {
+  getScratchpadSummary,
+  getScratchpadItems,
+} from "../scratchpad/index.ts";
+import {
+  engineRowsVisible,
+  telemetryScope,
+  type TelemetryScope,
+} from "../_shared/telemetry-scope.ts";
+import { lastRouteForSession } from "../_shared/route-ledger.ts";
+import {
+  apiRowParts,
+  cachedJsonFile,
+  laneRowParts,
+  type CaduceusFacts,
+  type HealthFacts,
+} from "./telemetry.ts";
 
 // session-panel v4 (2026-09-01): sidebar section coordinator.
 //
@@ -55,7 +82,8 @@ export { CONTENT_W };
 const MISMATCH_GRACE_MS = 5000;
 
 // (ANSI-stripped visible width — exported for tests alongside embDiv.)
-export const visibleLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+export const visibleLen = (s: string) =>
+  s.replace(/\x1b\[[0-9;]*m/g, "").length;
 
 /** Truncate a styled string to `w` visible cells. Safe for ANSI escape sequences. */
 const truncate = (s: string, w: number): string => {
@@ -66,13 +94,27 @@ const truncate = (s: string, w: number): string => {
   while (i < s.length) {
     if (s[i] === "\x1b") {
       const rest = s.slice(i);
-      const m = /^(\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\))/.exec(rest);
-      if (m) { out += m[1]; i += m[1].length; continue; }
+      const m =
+        /^(\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b_[^\x07\x1b]*(?:\x07|\x1b\\))/.exec(
+          rest,
+        );
+      if (m) {
+        out += m[1];
+        i += m[1].length;
+        continue;
+      }
     }
     if (vis >= w) break;
     const cp = s.codePointAt(i) ?? 0;
     const ch = String.fromCodePoint(cp);
-    const cw = cp >= 0x1100 && (cp <= 0x115f || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xff00 && cp <= 0xff60)) ? 2 : 1;
+    const cw =
+      cp >= 0x1100 &&
+      (cp <= 0x115f ||
+        (cp >= 0x2e80 && cp <= 0xa4cf) ||
+        (cp >= 0xac00 && cp <= 0xd7a3) ||
+        (cp >= 0xff00 && cp <= 0xff60))
+        ? 2
+        : 1;
     if (vis + cw > w) break;
     out += ch;
     vis += cw;
@@ -102,10 +144,10 @@ export function modelMatchesLoaded(
   const fname = loaded_path.split("/").pop() ?? "";
   const base = fname.replace(/\.gguf$/i, "");
   return (
-    modelId === loaded_model
-    || modelId === loaded_path
-    || modelId === fname
-    || modelId === base
+    modelId === loaded_model ||
+    modelId === loaded_path ||
+    modelId === fname ||
+    modelId === base
   );
 }
 
@@ -119,21 +161,38 @@ export const embDiv = (name: string): string => {
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_SESSION_PANEL === "0") return; // Rule 15
 
-  const state: PanelState = { files: new Map(), tokensIn: 0, tokensOut: 0, cacheRead: 0, cacheWrite: 0, turns: 0 };
+  const state: PanelState = {
+    files: new Map(),
+    tokensIn: 0,
+    tokensOut: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    turns: 0,
+  };
   let cwd = "";
   let modelId = "";
   let sessionId = "";
   let providerName = "llamacpp";
+  /** Which facts this session's OWN work produces (2026-11-16). Display only. */
+  let scope: TelemetryScope = "none";
+  /** A facts file under ~/.vitriol/officina (cached reads only). */
+  const officinaFile = (name: string) =>
+    join(process.env.HOME || "", ".vitriol", "officina", name);
   let visible = true;
   const couplings = loadCouplings();
-  let ctxUsage: { tokens: number | null; contextWindow: number; percent: number | null } | null = null;
+  let ctxUsage: {
+    tokens: number | null;
+    contextWindow: number;
+    percent: number | null;
+  } | null = null;
   let sessionCtx: any = null;
   /** When the current engine/pi model divergence was first observed. */
   let mismatchOnset: number | null = null;
   const mismatchGraceElapsed = (): boolean =>
     mismatchOnset !== null && Date.now() - mismatchOnset >= MISMATCH_GRACE_MS;
 
-  const shortPath = (p: string) => (cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p);
+  const shortPath = (p: string) =>
+    cwd && p.startsWith(cwd) ? p.slice(cwd.length + 1) : p;
 
   // ANSI-aware greedy word wrap
   const wrapAnsi = (s: string, width: number): string[] => {
@@ -173,15 +232,18 @@ export default function (pi: ExtensionAPI) {
   // P11: Active permission mode (ask / auto / yolo). Runtime file wins over
   // the launch env, matching permissions-guard's resolution order.
   registerSidebarSection("perm", 11, () => {
-    const modePath = process.env.OFFICINA_PERMISSIONS_MODE_FILE
-      || join(process.env.HOME || "", ".vitriol", "officina", "permissions-mode");
+    const modePath =
+      process.env.OFFICINA_PERMISSIONS_MODE_FILE ||
+      join(process.env.HOME || "", ".vitriol", "officina", "permissions-mode");
     let mode = process.env.OFFICINA_PERMISSIONS_MODE || "ask";
     try {
       if (existsSync(modePath)) {
         const raw = readFileSync(modePath, "utf8").trim().toLowerCase();
         if (raw === "ask" || raw === "auto" || raw === "yolo") mode = raw;
       }
-    } catch { /* cosmetic */ }
+    } catch {
+      /* cosmetic */
+    }
     const color = mode === "yolo" ? VIOLET : mode === "auto" ? GOLD : SAFETY;
     return [truncate(sc(MUTED, "perm ") + sc(color, mode), CONTENT_W)];
   });
@@ -193,7 +255,12 @@ export default function (pi: ExtensionAPI) {
     const envPath = join(home, ".vitriol", "officina", "env");
     const accountsPath = join(home, ".vitriol", "officina", "accounts.json");
     const profilePath = join(home, ".vitriol", "officina", "routing-profile");
-    const healthPath = join(home, ".vitriol", "officina", "provider-health.json");
+    const healthPath = join(
+      home,
+      ".vitriol",
+      "officina",
+      "provider-health.json",
+    );
     const envKeys = new Set<string>();
     try {
       if (existsSync(envPath)) {
@@ -202,7 +269,9 @@ export default function (pi: ExtensionAPI) {
           if (m) envKeys.add(m[1]);
         }
       }
-    } catch { /* cosmetic */ }
+    } catch {
+      /* cosmetic */
+    }
     let total = 0;
     let present = 0;
     try {
@@ -212,31 +281,147 @@ export default function (pi: ExtensionAPI) {
           const key = String(a?.credential_env ?? "").trim();
           if (!key) continue;
           total += 1;
-          if (envKeys.has(key) || String(process.env[key] ?? "").trim()) present += 1;
+          if (envKeys.has(key) || String(process.env[key] ?? "").trim())
+            present += 1;
         }
       }
-    } catch { /* cosmetic */ }
+    } catch {
+      /* cosmetic */
+    }
     let profile = "auto";
-    try { profile = readFileSync(profilePath, "utf8").trim() || "auto"; } catch { /* auto */ }
+    try {
+      profile = readFileSync(profilePath, "utf8").trim() || "auto";
+    } catch {
+      /* auto */
+    }
     let cooling = 0;
     try {
       const health = JSON.parse(readFileSync(healthPath, "utf8"));
       const now = Date.now();
-      cooling = Object.values(health?.models ?? {}).filter((r: any) => Number(r?.cooldownUntil) > now).length;
-    } catch { /* none */ }
+      cooling = Object.values(health?.models ?? {}).filter(
+        (r: any) => Number(r?.cooldownUntil) > now,
+      ).length;
+    } catch {
+      /* none */
+    }
     const lines = [
-      truncate(sc(MUTED, "local ") + sc(eng.up ? SAFETY : GOLD, eng.up ? "up" : "down"), CONTENT_W),
-      truncate(sc(MUTED, "cloud ") + sc(SAFETY, `${present}/${total} keys`), CONTENT_W),
+      truncate(
+        sc(MUTED, "cloud ") + sc(SAFETY, `${present}/${total} keys`),
+        CONTENT_W,
+      ),
       truncate(sc(MUTED, "profile ") + sc(VIOLET, profile), CONTENT_W),
     ];
-    if (cooling > 0) lines.push(truncate(sc(MUTED, "cooling ") + sc(GOLD, String(cooling)), CONTENT_W));
+    // The local engine's health belongs to engine-scoped sessions only
+    // (2026-11-16: a cloud session was reading the workshop's engine).
+    if (engineRowsVisible(scope)) {
+      lines.unshift(
+        truncate(
+          sc(MUTED, "local ") +
+            sc(eng.up ? SAFETY : GOLD, eng.up ? "up" : "down"),
+          CONTENT_W,
+        ),
+      );
+    }
+    if (cooling > 0)
+      lines.push(
+        truncate(sc(MUTED, "cooling ") + sc(GOLD, String(cooling)), CONTENT_W),
+      );
     return lines;
   });
 
   // P13: Divider with embedded group header (engine stats follow)
   registerSidebarSection("div1", 13, () => {
-    if (!sidebarEnriched()) return undefined;
+    if (!sidebarEnriched() || !engineRowsVisible(scope)) return undefined;
     return [embDiv("Engine")];
+  });
+
+  // P24: THIS session's own provider facts (2026-11-16). A cloud session must
+  // never read the workshop's engine numbers, and a nimbus session must see the
+  // free-lane pool it actually routes through.
+  registerSidebarSection("api", 24, () => {
+    if (!sidebarEnriched()) return undefined;
+    if (scope === "cloud") {
+      const entry = lastRouteForSession(sessionId);
+      const health = cachedJsonFile<HealthFacts>(
+        officinaFile("provider-health.json"),
+      );
+      const row = apiRowParts(entry, health, Date.now());
+      if (!row) {
+        // Nothing routed yet: name the selection, never invent numbers (P4).
+        if (!modelId) return undefined;
+        return [
+          truncate(
+            sc(MUTED, "api ") +
+              sc(TEXT, `${providerName || "?"}/${modelId}`) +
+              sc(MUTED, " · idle"),
+            CONTENT_W,
+          ),
+        ];
+      }
+      const outcome = row.outcome === "ok" ? SAFETY : GOLD;
+      let line =
+        sc(MUTED, "api ") +
+        sc(TEXT, row.model) +
+        sc(MUTED, ` · ${row.usage}`) +
+        (row.latency ? sc(MUTED, ` · ${row.latency}`) : "") +
+        " · " +
+        sc(outcome, row.outcome) +
+        " · " +
+        sc(GOLD, row.cost);
+      if (row.note) line += sc(GOLD, ` · ${row.note}`);
+      return [truncate(line, CONTENT_W)];
+    }
+    if (scope === "lanes") {
+      const facts = cachedJsonFile<CaduceusFacts>(
+        officinaFile("caduceus-state.json"),
+      );
+      const health = cachedJsonFile<HealthFacts>(
+        officinaFile("provider-health.json"),
+      );
+      const row = laneRowParts(
+        facts,
+        ctxUsage?.tokens ?? 0,
+        health,
+        Date.now(),
+      );
+      if (!row) {
+        return [
+          truncate(
+            sc(MUTED, "nimbus ") + sc(MUTED, "no lanes resolved"),
+            CONTENT_W,
+          ),
+        ];
+      }
+      const lines = [
+        truncate(
+          sc(MUTED, "nimbus ") +
+            sc(SAFETY, `${row.lanes} lanes`) +
+            sc(MUTED, row.gatewayUp ? "" : " · gateway down"),
+          CONTENT_W,
+        ),
+      ];
+      if (row.cooling > 0) {
+        lines.push(
+          truncate(
+            sc(MUTED, "cooling ") + sc(GOLD, String(row.cooling)),
+            CONTENT_W,
+          ),
+        );
+      }
+      lines.push(
+        truncate(
+          sc(MUTED, "next ") + sc(TEXT, row.next ?? "none fits"),
+          CONTENT_W,
+        ),
+      );
+      if (row.budget) {
+        lines.push(
+          truncate(sc(MUTED, "budget ") + sc(MUTED, row.budget), CONTENT_W),
+        );
+      }
+      return lines;
+    }
+    return undefined;
   });
 
   // P20: Context usage (+ the lost ejected-tokens counter, owner request
@@ -248,17 +433,33 @@ export default function (pi: ExtensionAPI) {
     const filled = ctxUsage.tokens != null ? fmtTokens(ctxUsage.tokens) : "--";
     const total = fmtTokens(ctxUsage.contextWindow);
     // Depth is the dominant speed tax: warn before compaction gets urgent.
-    const pctColor = pct != null && pct >= 90 ? VIOLET : pct != null && pct >= 75 ? GOLD : SAFETY;
+    const pctColor =
+      pct != null && pct >= 90
+        ? VIOLET
+        : pct != null && pct >= 75
+          ? GOLD
+          : SAFETY;
     const lines = [
-      truncate(`${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(pctColor, pct.toFixed(1) + "%") : sc(MUTED, "--")}`, CONTENT_W),
-      truncate(`${sc(MUTED, "tokens ")}${sc(SAFETY, filled)}${sc(MUTED, "/")}${sc(SAFETY, total)}`, CONTENT_W),
+      truncate(
+        `${sc(MUTED, "ctx ")}${g} ${pct != null ? sc(pctColor, pct.toFixed(1) + "%") : sc(MUTED, "--")}`,
+        CONTENT_W,
+      ),
+      truncate(
+        `${sc(MUTED, "tokens ")}${sc(SAFETY, filled)}${sc(MUTED, "/")}${sc(SAFETY, total)}`,
+        CONTENT_W,
+      ),
     ];
     if (pct != null && pct >= 75) {
       lines.push(truncate(sc(pctColor, "compact soon: /compact"), CONTENT_W));
     }
     const ejected = getEngineSnapshot().ejected;
     if (ejected > 0) {
-      lines.push(truncate(`${sc(MUTED, "ejected ")}${sc(SOLVENT, fmtTokens(ejected))}`, CONTENT_W));
+      lines.push(
+        truncate(
+          `${sc(MUTED, "ejected ")}${sc(SOLVENT, fmtTokens(ejected))}`,
+          CONTENT_W,
+        ),
+      );
     }
     return lines;
   });
@@ -266,13 +467,23 @@ export default function (pi: ExtensionAPI) {
   // P21: Prompt-cache activity (cloud providers). Shows cumulative cache reads
   // and writes plus an approximate hit rate for the session.
   registerSidebarSection("cache", 21, () => {
+    if (!engineRowsVisible(scope)) return undefined;
     if (state.cacheRead + state.cacheWrite <= 0) return undefined;
     const prompt = state.tokensIn + state.cacheRead + state.cacheWrite;
     const hit = prompt > 0 ? (state.cacheRead / prompt) * 100 : 0;
     return [
-      truncate(`${sc(MUTED, "cache read ")}${sc(SOLVENT, fmtTokens(state.cacheRead))}`, CONTENT_W),
-      truncate(`${sc(MUTED, "cache write ")}${sc(VIOLET, fmtTokens(state.cacheWrite))}`, CONTENT_W),
-      truncate(`${sc(MUTED, "cache hit ")}${sc(SAFETY, hit.toFixed(0) + "%")}`, CONTENT_W),
+      truncate(
+        `${sc(MUTED, "cache read ")}${sc(SOLVENT, fmtTokens(state.cacheRead))}`,
+        CONTENT_W,
+      ),
+      truncate(
+        `${sc(MUTED, "cache write ")}${sc(VIOLET, fmtTokens(state.cacheWrite))}`,
+        CONTENT_W,
+      ),
+      truncate(
+        `${sc(MUTED, "cache hit ")}${sc(SAFETY, hit.toFixed(0) + "%")}`,
+        CONTENT_W,
+      ),
     ];
   });
 
@@ -280,6 +491,7 @@ export default function (pi: ExtensionAPI) {
   // slots and engine-boot cumulative tokens dropped as noise; prefill rate
   // row merged away — during prefill this row carries the rate).
   registerSidebarSection("engine", 25, () => {
+    if (!engineRowsVisible(scope)) return undefined;
     const eng = getEngineSnapshot();
     if (!eng.up) return undefined;
     // Alive-but-busy (2026-09-04): queue-backed endpoints stall while a
@@ -298,7 +510,12 @@ export default function (pi: ExtensionAPI) {
     // Boot decode total gets its OWN row (owner request 2026-09-03) —
     // appended to the rate row it wrapped uglily at 40 cols.
     if (eng.total > 0) {
-      lines.push(truncate(sc(MUTED, `${fmtTokens(eng.total)} decoded this boot`), CONTENT_W));
+      lines.push(
+        truncate(
+          sc(MUTED, `${fmtTokens(eng.total)} decoded this boot`),
+          CONTENT_W,
+        ),
+      );
     }
     // Distributed row-split (owner request 2026-09-09): when the engine
     // loaded RPC servers (/props rpc_servers), surface the remote host —
@@ -316,29 +533,48 @@ export default function (pi: ExtensionAPI) {
   // matches NEITHER the alias NOR the loaded path's basename, this row
   // goes warning-orange, names both, and a one-time notice fires on onset.
   registerSidebarSection("loaded", 26, () => {
+    if (!engineRowsVisible(scope)) return undefined;
     const eng = getEngineSnapshot();
     if (!eng.up || !eng.loaded_model) return undefined;
-    const base = eng.loaded_path.split("/").pop()?.replace(/\.gguf$/i, "") ?? "";
-    const aligned = modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
+    const base =
+      eng.loaded_path
+        .split("/")
+        .pop()
+        ?.replace(/\.gguf$/i, "") ?? "";
+    const aligned = modelMatchesLoaded(
+      modelId,
+      eng.loaded_model,
+      eng.loaded_path,
+    );
     const virtualDefault = providerName === "officina";
     if (process.env.OFFICINA_OVERFLOW === "1" || virtualDefault) {
       return [
-        truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W),
         truncate(
-          sc(MUTED, "route ") + sc(VIOLET, virtualDefault ? "Lapis Occultus" : "overflow"),
+          sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model),
+          CONTENT_W,
+        ),
+        truncate(
+          sc(MUTED, "route ") +
+            sc(VIOLET, virtualDefault ? "Lapis Occultus" : "overflow"),
           CONTENT_W,
         ),
       ];
     }
     if (!aligned && modelId && mismatchGraceElapsed()) {
       return [
-        truncate(sc(MUTED, "loaded ") + sc(SAFETY, eng.loaded_model), CONTENT_W),
+        truncate(
+          sc(MUTED, "loaded ") + sc(SAFETY, eng.loaded_model),
+          CONTENT_W,
+        ),
         truncate(sc(MUTED, "pi ") + sc(SAFETY, modelId), CONTENT_W),
         truncate(sc(SAFETY, "⚠ model mismatch"), CONTENT_W),
       ];
     }
-    const lines = [truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W)];
-    if (base) lines.push(truncate(sc(MUTED, "file ") + sc(SOLVENT, base), CONTENT_W));
+    const lines = [
+      truncate(sc(MUTED, "loaded ") + sc(SOLVENT, eng.loaded_model), CONTENT_W),
+    ];
+    if (base)
+      lines.push(truncate(sc(MUTED, "file ") + sc(SOLVENT, base), CONTENT_W));
     return lines;
   });
 
@@ -364,27 +600,50 @@ export default function (pi: ExtensionAPI) {
     // IN FULL, in progress first.
     const lines: string[] = [];
     if (summary.inProgress > 0) {
-      lines.push(truncate(`${sc(SAFETY, "[>] ")}${sc(SAFETY, `${summary.inProgress} in progress`)}`, CONTENT_W));
+      lines.push(
+        truncate(
+          `${sc(SAFETY, "[>] ")}${sc(SAFETY, `${summary.inProgress} in progress`)}`,
+          CONTENT_W,
+        ),
+      );
     }
     if (summary.pending > 0) {
-      lines.push(truncate(`${sc(MUTED, "[ ] ")}${sc(MUTED, `${summary.pending} pending`)}`, CONTENT_W));
+      lines.push(
+        truncate(
+          `${sc(MUTED, "[ ] ")}${sc(MUTED, `${summary.pending} pending`)}`,
+          CONTENT_W,
+        ),
+      );
     }
     if (summary.completed > 0) {
-      lines.push(truncate(`${sc(MUTED, "✓ ")}${sc(MUTED, `${summary.completed} done`)}`, CONTENT_W));
+      lines.push(
+        truncate(
+          `${sc(MUTED, "✓ ")}${sc(MUTED, `${summary.completed} done`)}`,
+          CONTENT_W,
+        ),
+      );
     }
     if (summary.cancelled > 0) {
-      lines.push(truncate(`${sc(MUTED, "✗ ")}${sc(MUTED, `${summary.cancelled} cancelled`)}`, CONTENT_W));
+      lines.push(
+        truncate(
+          `${sc(MUTED, "✗ ")}${sc(MUTED, `${summary.cancelled} cancelled`)}`,
+          CONTENT_W,
+        ),
+      );
     }
     const open = getTaskItems().filter(
       (t) => t.status === "in_progress" || t.status === "pending",
     );
     const shown = open.slice(0, 6);
     for (const t of shown) {
-      const mark = t.status === "in_progress" ? sc(SAFETY, "[>] ") : sc(MUTED, "[ ] ");
+      const mark =
+        t.status === "in_progress" ? sc(SAFETY, "[>] ") : sc(MUTED, "[ ] ");
       lines.push(truncate("  " + mark + sc(TEXT, t.description), CONTENT_W));
     }
     if (open.length > shown.length) {
-      lines.push(truncate(sc(MUTED, `  +${open.length - shown.length} open`), CONTENT_W));
+      lines.push(
+        truncate(sc(MUTED, `  +${open.length - shown.length} open`), CONTENT_W),
+      );
     }
     return lines;
   });
@@ -404,10 +663,16 @@ export default function (pi: ExtensionAPI) {
     if (!s) return undefined;
     const lines: string[] = [
       truncate(sc(MUTED, "facts ") + sc(VIOLET, String(s.facts)), CONTENT_W),
-      truncate(sc(MUTED, "context ") + sc(VIOLET, String(s.context)), CONTENT_W),
+      truncate(
+        sc(MUTED, "context ") + sc(VIOLET, String(s.context)),
+        CONTENT_W,
+      ),
       truncate(sc(MUTED, "leads ") + sc(VIOLET, String(s.leads)), CONTENT_W),
       truncate(sc(MUTED, "dead ") + sc(VIOLET, String(s.dead)), CONTENT_W),
-      truncate(sc(MUTED, "lines ") + sc(VIOLET, `${s.lines}/${s.cap}`), CONTENT_W),
+      truncate(
+        sc(MUTED, "lines ") + sc(VIOLET, `${s.lines}/${s.cap}`),
+        CONTENT_W,
+      ),
     ];
     const items = getScratchpadItems();
     if (items) {
@@ -421,9 +686,12 @@ export default function (pi: ExtensionAPI) {
       for (const f of items.facts) pushItem(sc(VIOLET, "▪ "), f);
       for (const c of items.context) pushItem(sc(MUTED, "· "), c);
       for (const l of items.leads) pushItem(sc(SOLVENT, "→ "), l);
-      const totalItems = items.facts.length + items.context.length + items.leads.length;
+      const totalItems =
+        items.facts.length + items.context.length + items.leads.length;
       if (totalItems > used) {
-        lines.push(truncate(sc(MUTED, `  +${totalItems - used} more`), CONTENT_W));
+        lines.push(
+          truncate(sc(MUTED, `  +${totalItems - used} more`), CONTENT_W),
+        );
       }
     }
     return lines;
@@ -431,10 +699,15 @@ export default function (pi: ExtensionAPI) {
 
   // P40: Files touched
   registerSidebarSection("files", 40, () => {
-    const files = [...state.files.entries()].sort((a, b) => b[1].ts - a[1].ts).slice(0, 5);
+    const files = [...state.files.entries()]
+      .sort((a, b) => b[1].ts - a[1].ts)
+      .slice(0, 5);
     if (files.length === 0) return undefined;
     return files.map(([p, f]) => {
-      const counts = f.add || f.del ? ` ${sc(SAFETY, "+" + f.add)} ${sc(SUBSTRATE, "−" + f.del)}` : "";
+      const counts =
+        f.add || f.del
+          ? ` ${sc(SAFETY, "+" + f.add)} ${sc(SUBSTRATE, "−" + f.del)}`
+          : "";
       return truncate(sc(VIOLET, shortPath(p)) + counts, CONTENT_W);
     });
   });
@@ -450,9 +723,18 @@ export default function (pi: ExtensionAPI) {
   // `SESSION ID: #… @ ~/path`).
   registerSidebarSection("session", 45, () => {
     return [
-      truncate(sc(MUTED, "in ") + sc(SAFETY, String(state.tokensIn)), CONTENT_W),
-      truncate(sc(MUTED, "out ") + sc(SAFETY, String(state.tokensOut)), CONTENT_W),
-      truncate(sc(MUTED, "turns ") + sc(SAFETY, String(state.turns)), CONTENT_W),
+      truncate(
+        sc(MUTED, "in ") + sc(SAFETY, String(state.tokensIn)),
+        CONTENT_W,
+      ),
+      truncate(
+        sc(MUTED, "out ") + sc(SAFETY, String(state.tokensOut)),
+        CONTENT_W,
+      ),
+      truncate(
+        sc(MUTED, "turns ") + sc(SAFETY, String(state.turns)),
+        CONTENT_W,
+      ),
     ];
   });
 
@@ -462,7 +744,12 @@ export default function (pi: ExtensionAPI) {
     if (!sidebarEnriched()) return undefined;
     const tools = getRecentTools();
     if (tools.length === 0) return undefined;
-    const lines = [truncate(sc(MUTED, "tools ") + sc(SAFETY, String(tools.length)), CONTENT_W)];
+    const lines = [
+      truncate(
+        sc(MUTED, "tools ") + sc(SAFETY, String(tools.length)),
+        CONTENT_W,
+      ),
+    ];
     for (const t of tools.slice(0, 5)) {
       lines.push(truncate("  " + sc(VIOLET, t), CONTENT_W));
     }
@@ -477,12 +764,19 @@ export default function (pi: ExtensionAPI) {
     if (!sidebarEnriched()) return undefined;
     const topics = getLastTopics();
     if (topics.length === 0) return undefined;
-    const lines = [truncate(sc(MUTED, "refs ") + sc(SAFETY, String(topics.length)), CONTENT_W)];
+    const lines = [
+      truncate(
+        sc(MUTED, "refs ") + sc(SAFETY, String(topics.length)),
+        CONTENT_W,
+      ),
+    ];
     for (const t of topics.slice(0, 5)) {
       lines.push(truncate("  " + sc(SOLVENT, t), CONTENT_W));
     }
     if (topics.length > 5) {
-      lines.push(truncate(sc(MUTED, `  +${topics.length - 5} more`), CONTENT_W));
+      lines.push(
+        truncate(sc(MUTED, `  +${topics.length - 5} more`), CONTENT_W),
+      );
     }
     return lines;
   });
@@ -495,9 +789,15 @@ export default function (pi: ExtensionAPI) {
 
   // P90: Command hints
   registerSidebarSection("hints", 90, () => {
-    return ["/help", "/model", "/agent", "/permissions", "/cache", "/tools", "/opencode"].map((cmd) =>
-      truncate(sc(MUTED, cmd), CONTENT_W),
-    );
+    return [
+      "/help",
+      "/model",
+      "/agent",
+      "/permissions",
+      "/cache",
+      "/tools",
+      "/opencode",
+    ].map((cmd) => truncate(sc(MUTED, cmd), CONTENT_W));
   });
 
   // ── Render coordinator ────────────────────────────────────────────────
@@ -541,7 +841,8 @@ export default function (pi: ExtensionAPI) {
     if (typeof p !== "string") return;
     let add = 0;
     let del = 0;
-    const details = (event as { details?: { patch?: string; diff?: string } }).details;
+    const details = (event as { details?: { patch?: string; diff?: string } })
+      .details;
     const patch = details?.patch ?? details?.diff;
     if (typeof patch === "string") {
       for (const line of patch.split("\n")) {
@@ -559,7 +860,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event) => {
-    const msg = event.message as { role?: string; usage?: Record<string, number> };
+    const msg = event.message as {
+      role?: string;
+      usage?: Record<string, number>;
+    };
     if (msg?.role !== "assistant") return;
     try {
       ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage;
@@ -581,6 +885,7 @@ export default function (pi: ExtensionAPI) {
     const m = (event as { model?: { id?: string; provider?: string } }).model;
     modelId = m?.id ?? modelId;
     providerName = m?.provider ?? providerName;
+    scope = telemetryScope(providerName, modelId);
     touch();
   });
 
@@ -588,6 +893,8 @@ export default function (pi: ExtensionAPI) {
     cwd = ctx.cwd;
     sessionId = ctx.sessionManager.getSessionId();
     modelId = ctx.model?.id ?? "";
+    providerName = ctx.model?.provider ?? providerName;
+    scope = telemetryScope(providerName, modelId);
     try {
       ctx.ui.setTitle?.(`officina · ${cwd.replace(/^\/home\/[^/]+/, "~")}`);
     } catch {
@@ -600,11 +907,17 @@ export default function (pi: ExtensionAPI) {
       ctxUsage = null;
     }
     if (ctx.hasUI) {
-      startEnginePolling();
+      // Only an engine-scoped session needs the 700 ms /metrics probe; a cloud
+      // session must not poll the workshop's engine (2026-11-16). Other
+      // consumers (background-lane, adaptive-router) start it for their own
+      // reasons and are untouched.
+      if (engineRowsVisible(scope)) startEnginePolling();
       let mismatchNotified = false;
       onEngineUpdate(() => {
         // Keep context usage fresh during ingestion (not just on message_end)
-        try { ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage; } catch {}
+        try {
+          ctxUsage = sessionCtx?.getContextUsage?.() ?? ctxUsage;
+        } catch {}
         // One-time notice on model mismatch onset (owner request
         // 2026-09-03): the engine's loaded model vs pi's selection.
         // Uses modelMatchesLoaded (2026-09-04) — the raw !== fired on
@@ -621,8 +934,13 @@ export default function (pi: ExtensionAPI) {
           const eng = getEngineSnapshot();
           const overflowArmed = process.env.OFFICINA_OVERFLOW === "1";
           const virtualDefault = providerName === "officina";
-          const mismatch = !overflowArmed && !virtualDefault && eng.up && !!eng.loaded_model && !!modelId
-            && !modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
+          const mismatch =
+            !overflowArmed &&
+            !virtualDefault &&
+            eng.up &&
+            !!eng.loaded_model &&
+            !!modelId &&
+            !modelMatchesLoaded(modelId, eng.loaded_model, eng.loaded_path);
           if (mismatch) {
             mismatchOnset ??= Date.now();
             if (!mismatchNotified && mismatchGraceElapsed()) {
@@ -643,11 +961,11 @@ export default function (pi: ExtensionAPI) {
     renderSidebar();
   });
 
-
   // ── /history — full transcript, scrollable modal overlay ─────────────
   const ESC = "\x1b";
   pi.registerCommand("history", {
-    description: "Scroll the full session transcript (↑↓ pgup/pgdn, q to close)",
+    description:
+      "Scroll the full session transcript (↑↓ pgup/pgdn, q to close)",
     handler: async (_args: string, ctx: { ui: any; sessionManager: any }) => {
       const entries = ctx.sessionManager.getEntries() ?? [];
       const msgs = entries
@@ -655,7 +973,8 @@ export default function (pi: ExtensionAPI) {
         .map((e: { message?: unknown }) => (e as { message: unknown }).message);
       let llm: Array<{ role: string; content: unknown }> = [];
       try {
-        const { convertToLlm } = await import("@earendil-works/pi-coding-agent");
+        const { convertToLlm } =
+          await import("@earendil-works/pi-coding-agent");
         llm = convertToLlm(msgs as never[]) as typeof llm;
       } catch {
         return;
@@ -668,7 +987,10 @@ export default function (pi: ExtensionAPI) {
         if (typeof content === "string") text = content;
         else if (Array.isArray(content)) {
           text = content
-            .filter((cv): cv is { type: string; text?: string } => typeof cv === "object" && cv !== null && "text" in cv)
+            .filter(
+              (cv): cv is { type: string; text?: string } =>
+                typeof cv === "object" && cv !== null && "text" in cv,
+            )
             .map((cv) => cv.text ?? "")
             .join(" ");
         }
@@ -685,17 +1007,29 @@ export default function (pi: ExtensionAPI) {
           render(width: number): string[] {
             const inner = Math.max(4, width - 4);
             const header = `── session history · ${lines.length} messages · ${cwd.replace(/^\/home\/[^/]+/, "~")} ──`;
-            const flat: string[] = [header, "── q close · ↑↓/pgup/pgdn · G bottom ──", ""];
+            const flat: string[] = [
+              header,
+              "── q close · ↑↓/pgup/pgdn · G bottom ──",
+              "",
+            ];
             for (const l of lines) {
-              const wrapped = l.text.match(new RegExp(`.{1,${inner - 4}}(\s|$)`, "g")) ?? [l.text];
-              flat.push(` ${l.who === "you" ? "you▸" : "ai ▸"} ${wrapped[0]!.trimEnd()}`);
-              for (const cont of wrapped.slice(1)) flat.push(`      ${cont.trimEnd()}`);
+              const wrapped = l.text.match(
+                new RegExp(`.{1,${inner - 4}}(\s|$)`, "g"),
+              ) ?? [l.text];
+              flat.push(
+                ` ${l.who === "you" ? "you▸" : "ai ▸"} ${wrapped[0]!.trimEnd()}`,
+              );
+              for (const cont of wrapped.slice(1))
+                flat.push(`      ${cont.trimEnd()}`);
               flat.push("");
             }
             const avail = Math.max(10, (tui?.rows ?? 40) - 8);
             const start = Math.max(0, flat.length - avail - offset);
             const view = flat.slice(start, start + avail);
-            return [...view, `── [${flat.length ? Math.min(flat.length, start + avail) : 0}/${flat.length}] ──`];
+            return [
+              ...view,
+              `── [${flat.length ? Math.min(flat.length, start + avail) : 0}/${flat.length}] ──`,
+            ];
           },
           invalidate() {},
           handleInput(data: string) {
@@ -716,23 +1050,43 @@ export default function (pi: ExtensionAPI) {
 
   // ── /import — pull another session's tasks + scratchpad into this one ───
   pi.registerCommand("import-tasks", {
-    description: "Import tasks and scratchpad from another session (/import or /import <stem>)",
-    handler: async (args: string, ctx: { ui: any; sessionManager: any; mode?: string }) => {
+    description:
+      "Import tasks and scratchpad from another session (/import or /import <stem>)",
+    handler: async (
+      args: string,
+      ctx: { ui: any; sessionManager: any; mode?: string },
+    ) => {
       const tasksDir = join(cwd, ".officina", "tasks");
       const scratchDir = join(cwd, ".officina");
       try {
-        const { readdirSync, readFileSync, copyFileSync, existsSync } = await import("node:fs");
+        const { readdirSync, readFileSync, copyFileSync, existsSync } =
+          await import("node:fs");
         const { join: j } = await import("node:path");
 
         // Current session stem (to exclude from list)
         const curFile = ctx.sessionManager.getSessionFile?.();
-        const curStem = curFile?.split("/").pop()?.replace(/\.jsonl$/, "") ?? "";
+        const curStem =
+          curFile
+            ?.split("/")
+            .pop()
+            ?.replace(/\.jsonl$/, "") ?? "";
 
         // Gather available sessions from task files
         let files: string[] = [];
-        try { files = readdirSync(tasksDir).filter((f: string) => f.endsWith(".json")); } catch { /* no tasks dir */ }
+        try {
+          files = readdirSync(tasksDir).filter((f: string) =>
+            f.endsWith(".json"),
+          );
+        } catch {
+          /* no tasks dir */
+        }
 
-        const sessions: Array<{ stem: string; date: string; tasks: number; hasScratch: boolean }> = [];
+        const sessions: Array<{
+          stem: string;
+          date: string;
+          tasks: number;
+          hasScratch: boolean;
+        }> = [];
         for (const f of files) {
           const stem = f.replace(/\.json$/, "");
           if (stem === curStem) continue;
@@ -740,7 +1094,9 @@ export default function (pi: ExtensionAPI) {
           try {
             const data = JSON.parse(readFileSync(j(tasksDir, f), "utf8"));
             taskCount = (data.tasks ?? []).length;
-          } catch { /* corrupt */ }
+          } catch {
+            /* corrupt */
+          }
           const hasScratch = existsSync(j(scratchDir, `${stem}.md`));
           // Parse date from stem (format: 2026-09-05T05-11-44-395Z_...)
           const dateStr = stem.split("T")[0] ?? stem.slice(0, 10);
@@ -755,7 +1111,11 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const copySession = async (target: { stem: string; tasks: number; hasScratch: boolean }) => {
+        const copySession = async (target: {
+          stem: string;
+          tasks: number;
+          hasScratch: boolean;
+        }) => {
           const srcTasks = j(tasksDir, `${target.stem}.json`);
           const dstTasks = j(tasksDir, `${curStem}.json`);
           if (existsSync(srcTasks)) copyFileSync(srcTasks, dstTasks);
@@ -771,9 +1131,14 @@ export default function (pi: ExtensionAPI) {
 
         // If args provided, try direct import
         if (args.trim()) {
-          const target = sessions.find((s) => s.stem === args.trim() || s.stem.startsWith(args.trim()));
+          const target = sessions.find(
+            (s) => s.stem === args.trim() || s.stem.startsWith(args.trim()),
+          );
           if (!target) {
-            await ctx.ui.notify?.(`session not found: ${args.trim()}`, "warning");
+            await ctx.ui.notify?.(
+              `session not found: ${args.trim()}`,
+              "warning",
+            );
             return;
           }
           await copySession(target);
@@ -784,9 +1149,13 @@ export default function (pi: ExtensionAPI) {
         // instead of the TUI-only overlay (2026-11-10).
         if (ctx.mode === "rpc" || typeof ctx.ui.custom !== "function") {
           const labels = sessions.map(
-            (s) => `${s.date} · ${s.tasks} tasks${s.hasScratch ? " + scratch" : ""} · ${s.stem.slice(0, 24)}`,
+            (s) =>
+              `${s.date} · ${s.tasks} tasks${s.hasScratch ? " + scratch" : ""} · ${s.stem.slice(0, 24)}`,
           );
-          const choice = await ctx.ui.select?.("Import session state from…", labels);
+          const choice = await ctx.ui.select?.(
+            "Import session state from…",
+            labels,
+          );
           if (choice) {
             const idx = labels.indexOf(choice);
             if (idx >= 0) await copySession(sessions[idx]);
@@ -809,7 +1178,9 @@ export default function (pi: ExtensionAPI) {
                 const s = sessions[i];
                 const mark = i === selected ? "▸ " : "  ";
                 const scratch = s.hasScratch ? " + scratch" : "";
-                lines.push(`${mark}${s.date}  ${s.tasks} tasks${scratch}  ${s.stem.slice(0, 12)}…`);
+                lines.push(
+                  `${mark}${s.date}  ${s.tasks} tasks${scratch}  ${s.stem.slice(0, 12)}…`,
+                );
               }
               return lines;
             },
@@ -817,20 +1188,23 @@ export default function (pi: ExtensionAPI) {
             handleInput(data: string) {
               if (data === "q" || data === ESC) return close();
               if (data === `${ESC}[A`) selected = Math.max(0, selected - 1);
-              else if (data === `${ESC}[B`) selected = Math.min(sessions.length - 1, selected + 1);
+              else if (data === `${ESC}[B`)
+                selected = Math.min(sessions.length - 1, selected + 1);
               else if (data === "\r" || data === "\n") {
                 void copySession(sessions[selected]);
                 close();
                 return;
-              }
-              else return;
+              } else return;
               tui.requestRender();
             },
           }),
           { overlay: true },
         );
       } catch (e) {
-        await ctx.ui.notify?.(`import failed: ${(e as Error).message}`, "warning");
+        await ctx.ui.notify?.(
+          `import failed: ${(e as Error).message}`,
+          "warning",
+        );
       }
     },
   });

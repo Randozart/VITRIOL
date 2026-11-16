@@ -194,6 +194,14 @@ pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
         "live engine rate (tok/s / idle); 'N decoded this boot' = engine decode total",
     ),
     (
+        "api",
+        "this session's own last request when the provider is a cloud lane: model, tokens in→out, latency, cost, outcome",
+    ),
+    (
+        "nimbus",
+        "free-lane pool for officina/nimbus: lane count, cooling lanes, next lane that fits the context",
+    ),
+    (
         "[>] / [ ] / ✓ / ✗",
         "Todo: in-progress / pending / done / cancelled counts",
     ),

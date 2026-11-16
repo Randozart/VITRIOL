@@ -3349,6 +3349,59 @@ async fn handle_provider_failure(
                 "warning".to_string(),
             ));
         }
+        heal::Failure::RateLimit => {
+            // A quota/rate error is switchable, not terminal (2026-11-16:
+            // "I want Caduceus to just pick me a model and run with it so I
+            // don't have to resume sessions"). Same shape as ModelNotFound:
+            // go local, replay. The hint the gateway already sends decides how
+            // long to wait; the budget stops an endless loop.
+            if !state.recovery.take_rate_limit_replay(policy) {
+                state.recovery.degrade("rate limited — replay budget spent");
+                state.entries.push(state::ChatEntry::Error(format!(
+                    "harness: still rate limited after {} replays — {detail}",
+                    state.recovery.rate_limit_replays
+                )));
+                return;
+            }
+            let wait =
+                heal::quota_hint(detail).unwrap_or_else(|| std::time::Duration::from_secs(90));
+            if !state.model_is_lapis() {
+                let _ = bridge
+                    .request(RpcCommand::SetModel {
+                        id: None,
+                        provider: "officina".to_string(),
+                        model_id: "lapis".to_string(),
+                    })
+                    .await;
+                if replayable && policy.replay {
+                    state.recovery.pending_replay = Some(heal::PendingReplay {
+                        at: now + std::time::Duration::from_secs(1),
+                        requires_lapis: true,
+                    });
+                }
+                state.notice = Some((
+                    format!(
+                        "harness: rate limited — switching to officina/lapis (was {})",
+                        detail.chars().take(60).collect::<String>()
+                    ),
+                    "warning".to_string(),
+                ));
+            } else {
+                if replayable && policy.replay {
+                    state.recovery.pending_replay = Some(heal::PendingReplay {
+                        at: now + wait,
+                        requires_lapis: false,
+                    });
+                }
+                state.notice = Some((
+                    format!(
+                        "harness: rate limited — retrying in {}s",
+                        wait.as_secs().max(1)
+                    ),
+                    "warning".to_string(),
+                ));
+            }
+        }
         _ => {
             state.notice = Some((format!("harness: {detail}"), "warning".to_string()));
         }

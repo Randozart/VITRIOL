@@ -84,6 +84,88 @@ pub fn classify_error(text: &str) -> Failure {
     Failure::Unknown
 }
 
+/// Days since the Unix epoch for a civil date (Hinnant's algorithm). Used by
+/// the quota-hint parser so the crate needs no date dependency.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Epoch milliseconds for an RFC-3339/ISO-8601 UTC stamp
+/// (`2026-11-16T18:54:18.506Z`). `None` on anything unexpected — a bad hint
+/// must never stall a replay.
+pub fn parse_iso_ms(text: &str) -> Option<i64> {
+    let t = text.trim();
+    if t.len() < 19 {
+        return None;
+    }
+    let year: i64 = t.get(0..4)?.parse().ok()?;
+    let month: i64 = t.get(5..7)?.parse().ok()?;
+    let day: i64 = t.get(8..10)?.parse().ok()?;
+    let hour: i64 = t.get(11..13)?.parse().ok()?;
+    let min: i64 = t.get(14..16)?.parse().ok()?;
+    let sec: i64 = t.get(17..19)?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let frac_ms = t
+        .find('.')
+        .and_then(|i| t.get(i + 1..i + 4))
+        .and_then(|f| f.parse::<i64>().ok())
+        .unwrap_or(0);
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400_000 + hour * 3_600_000 + min * 60_000 + sec * 1000 + frac_ms)
+}
+
+/// How long a provider asked us to wait, read from the error text the gateway
+/// already emits: `"retry_after":177` (seconds) wins, else `"reset_at":"…Z"`.
+/// Clamped to 1 s … 1 h so a hostile or absurd value cannot park a session.
+pub fn quota_hint_at(detail: &str, now_ms: i64) -> Option<std::time::Duration> {
+    const MIN_MS: i64 = 1_000;
+    const MAX_MS: i64 = 3_600_000;
+    let clamped = |ms: i64| {
+        Some(std::time::Duration::from_millis(
+            ms.clamp(MIN_MS, MAX_MS) as u64
+        ))
+    };
+    if let Some(idx) = detail.find("retry_after") {
+        let rest = &detail[idx + "retry_after".len()..];
+        let rest = rest.trim_start_matches(['"', ':', '=', ' ']);
+        let digits: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if let Ok(secs) = digits.parse::<f64>() {
+            if secs.is_finite() && secs >= 0.0 {
+                return clamped((secs * 1000.0) as i64);
+            }
+        }
+    }
+    if let Some(idx) = detail.find("reset_at") {
+        let rest = &detail[idx + "reset_at".len()..];
+        let rest = rest.trim_start_matches(['"', ':', '=', ' ']);
+        let stamp: String = rest.chars().take_while(|c| *c != '"').collect();
+        if let Some(at) = parse_iso_ms(&stamp) {
+            return clamped(at - now_ms);
+        }
+    }
+    None
+}
+
+/// `quota_hint_at` against the wall clock.
+pub fn quota_hint(detail: &str) -> Option<std::time::Duration> {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    quota_hint_at(detail, now_ms)
+}
+
 /// Only the virtual lapis model may auto-start/restart the engine.
 pub fn is_lapis(model: &Option<Model>) -> bool {
     model
@@ -214,6 +296,9 @@ pub struct RecoveryState {
     pub last_failure: Option<(Failure, Instant)>,
     /// Failure handed from handle_event (sync) to the async run loop.
     pub pending_failure: Option<(Failure, String)>,
+    /// Replays granted for rate-limited turns. Local is quota-free, so this is
+    /// a small guard against a lane that 429s forever (2026-11-16).
+    pub rate_limit_replays: u8,
 }
 
 impl Default for RecoveryState {
@@ -232,6 +317,7 @@ impl Default for RecoveryState {
             next_retry_at: None,
             last_failure: None,
             pending_failure: None,
+            rate_limit_replays: 0,
         }
     }
 }
@@ -263,12 +349,22 @@ impl RecoveryState {
         self.engine_next_probe = None;
     }
 
+    /// Consume one rate-limit replay from the budget. False when spent.
+    pub fn take_rate_limit_replay(&mut self, policy: &Policy) -> bool {
+        if self.rate_limit_replays >= policy.max_attempts as u8 {
+            return false;
+        }
+        self.rate_limit_replays = self.rate_limit_replays.saturating_add(1);
+        true
+    }
+
     pub fn recovered(&mut self) {
         self.phase = Phase::Idle;
         self.degraded = false;
         self.rehydrate_deadline = None;
         self.next_retry_at = None;
         self.last_error = None;
+        self.rate_limit_replays = 0;
         self.rehydrate_grace_until = Some(Instant::now() + Duration::from_secs(5));
     }
 
@@ -415,6 +511,47 @@ mod tests {
             Failure::ModelNotFound
         );
         assert_eq!(classify_error("something else"), Failure::Unknown);
+    }
+
+    #[test]
+    fn parses_the_gateway_quota_hint_in_both_shapes() {
+        let detail = r#"[429]: quota … (reset after 2m 57s)","retry_after":177,"reset_at":"2026-11-16T18:54:18.506Z""#;
+        let hint = quota_hint_at(detail, 0).expect("retry_after wins");
+        assert_eq!(hint.as_secs(), 177);
+        // ISO-8601 only (no seconds hint).
+        let iso = r#""reset_at":"2026-11-16T18:54:18.506Z""#;
+        let at = parse_iso_ms("2026-11-16T18:54:18.506Z").expect("iso parses");
+        let hint = quota_hint_at(iso, at - 90_000).expect("reset_at");
+        assert_eq!(hint.as_secs(), 90);
+    }
+
+    #[test]
+    fn quota_hint_is_clamped_and_absent_when_unparseable() {
+        assert_eq!(quota_hint_at(r#""retry_after":0"#, 0).unwrap().as_secs(), 1);
+        assert_eq!(
+            quota_hint_at(r#""retry_after":99999"#, 0)
+                .unwrap()
+                .as_secs(),
+            3600
+        );
+        assert!(quota_hint_at("429 with no hint", 0).is_none());
+        assert!(quota_hint_at(r#""reset_at":"not-a-date""#, 0).is_none());
+        assert!(parse_iso_ms("2026-13-99T00:00:00Z").is_none());
+    }
+
+    #[test]
+    fn rate_limit_replays_are_budgeted_and_reset_on_recovery() {
+        let policy = Policy::default();
+        let mut r = RecoveryState::default();
+        for _ in 0..policy.max_attempts {
+            assert!(r.take_rate_limit_replay(&policy));
+        }
+        assert!(
+            !r.take_rate_limit_replay(&policy),
+            "budget must stop an endless replay loop"
+        );
+        r.recovered();
+        assert!(r.take_rate_limit_replay(&policy), "recovery refills it");
     }
 
     #[test]

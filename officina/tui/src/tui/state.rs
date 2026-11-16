@@ -11,6 +11,11 @@ use crate::theme;
 use crate::tui::heal;
 
 // ── Tool verbosity (owner request 2026-09-03) ────────────────────────────
+/// How long a status-band height candidate must hold before the layout
+/// adopts it (2026-11-16). Widget/ctx data flickers on its own schedule; the
+/// band must be still. 700 ms is shorter than a human notices a legitimate
+/// change and longer than any transient datum lives.
+pub const BAND_SETTLE: std::time::Duration = std::time::Duration::from_millis(700);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolVerbosity {
@@ -819,11 +824,12 @@ pub struct AppState {
 
     // Status-band height stabiliser (2026-11-16). The band's row count is
     // derived from live data (ctx fill, belowEditor widget lines) that can
-    // appear for a single frame — a one-frame height change instantly moves
-    // the whole transcript. `band_rows_applied` is what the renderer uses;
-    // `band_rows_pending` holds a candidate that has been seen once.
+    // come and go on their own schedule; every change moves the whole
+    // transcript. `band_rows_applied` is what the renderer uses;
+    // `band_rows_pending` holds a candidate plus the instant it was first
+    // seen, so a value must SETTLE (BAND_SETTLE) before it is adopted.
     pub band_rows_applied: u16,
-    pub band_rows_pending: Option<u16>,
+    pub band_rows_pending: Option<(u16, std::time::Instant)>,
 
     // Terminal title (setTitle)
     pub title: String,
@@ -1635,27 +1641,38 @@ impl AppState {
         ))
     }
 
-    /// Status-band height with one-frame hysteresis (2026-11-16).
+    /// Status-band height with settle hysteresis (2026-11-16).
     ///
     /// The band's row count comes from live data (context fill, belowEditor
     /// widget lines). Those arrive on their own schedule, and a value that
-    /// shows up for exactly one frame used to grow the band — and therefore
-    /// shift the whole transcript — for that frame. A candidate is adopted
-    /// only once it has been seen on two consecutive frames; until then the
-    /// last applied height is used, so a transient datum never moves the
-    /// layout. Returns the height to render with.
+    /// lives for a frame or two used to grow the band — and therefore shift
+    /// the whole transcript — for that moment (operator: "UI occasionally
+    /// bumps upwards"). A candidate is adopted only once it has been stable
+    /// for `BAND_SETTLE`; anything shorter than that is noise and the last
+    /// applied height is kept. Returns the height to render with.
     pub fn stabilize_band_rows(&mut self, candidate: u16) -> u16 {
+        self.stabilize_band_rows_at(candidate, std::time::Instant::now())
+    }
+
+    /// Clock-explicit form of `stabilize_band_rows` (unit-testable).
+    pub fn stabilize_band_rows_at(&mut self, candidate: u16, now: std::time::Instant) -> u16 {
         if candidate == self.band_rows_applied {
             self.band_rows_pending = None;
             return self.band_rows_applied;
         }
-        if self.band_rows_pending == Some(candidate) {
-            self.band_rows_applied = candidate;
-            self.band_rows_pending = None;
-            return self.band_rows_applied;
+        match self.band_rows_pending {
+            Some((pending, since)) if pending == candidate => {
+                if now.saturating_duration_since(since) >= BAND_SETTLE {
+                    self.band_rows_applied = candidate;
+                    self.band_rows_pending = None;
+                }
+                self.band_rows_applied
+            }
+            _ => {
+                self.band_rows_pending = Some((candidate, now));
+                self.band_rows_applied
+            }
         }
-        self.band_rows_pending = Some(candidate);
-        self.band_rows_applied
     }
 
     fn model_matches(&self, m: &Model) -> bool {
@@ -8893,20 +8910,66 @@ mod self_heal_tests {
     #[test]
     fn band_height_ignores_a_one_frame_candidate() {
         let mut s = AppState::default();
-        assert_eq!(s.stabilize_band_rows(0), 0);
+        let t0 = std::time::Instant::now();
+        assert_eq!(s.stabilize_band_rows_at(0, t0), 0);
         // A datum that shows up for a single frame must not move anything.
-        assert_eq!(s.stabilize_band_rows(1), 0, "first sighting holds");
-        assert_eq!(s.stabilize_band_rows(0), 0, "gone again — never applied");
+        assert_eq!(s.stabilize_band_rows_at(1, t0), 0, "first sighting holds");
+        assert_eq!(
+            s.stabilize_band_rows_at(0, t0 + BAND_SETTLE / 4),
+            0,
+            "gone again — never applied"
+        );
         assert_eq!(s.band_rows_applied, 0);
     }
 
     #[test]
-    fn band_height_adopts_a_candidate_that_persists() {
+    fn band_height_ignores_a_candidate_that_flickers_for_a_while() {
+        // Operator report 2026-11-16: "UI occasionally bumps upwards". A
+        // datum living for several frames is still noise — it must not be
+        // adopted just because it repeated.
         let mut s = AppState::default();
-        assert_eq!(s.stabilize_band_rows(2), 0);
-        assert_eq!(s.stabilize_band_rows(2), 2, "second frame applies it");
-        assert_eq!(s.stabilize_band_rows(1), 2, "shrink waits a frame");
-        assert_eq!(s.stabilize_band_rows(1), 1);
+        let t0 = std::time::Instant::now();
+        for step in 0..6 {
+            let now = t0 + BAND_SETTLE / 8 * step;
+            assert_eq!(
+                s.stabilize_band_rows_at(if step % 2 == 0 { 1 } else { 0 }, now),
+                0,
+                "alternating candidate never settles"
+            );
+        }
+        // A candidate that flickers ON twice with a gap must restart its clock.
+        assert_eq!(s.stabilize_band_rows_at(1, t0), 0);
+        assert_eq!(s.stabilize_band_rows_at(0, t0 + BAND_SETTLE / 2), 0);
+        assert_eq!(s.stabilize_band_rows_at(1, t0 + BAND_SETTLE / 2), 0);
+        assert_eq!(
+            s.stabilize_band_rows_at(1, t0 + BAND_SETTLE),
+            0,
+            "clock restarted"
+        );
+        assert_eq!(
+            s.stabilize_band_rows_at(1, t0 + BAND_SETTLE * 2),
+            1,
+            "adopted once it holds"
+        );
+    }
+
+    #[test]
+    fn band_height_adopts_a_candidate_that_settles() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        assert_eq!(s.stabilize_band_rows_at(2, t0), 0);
+        assert_eq!(
+            s.stabilize_band_rows_at(2, t0 + BAND_SETTLE / 2),
+            0,
+            "not yet settled"
+        );
+        assert_eq!(s.stabilize_band_rows_at(2, t0 + BAND_SETTLE), 2);
+        assert_eq!(
+            s.stabilize_band_rows_at(1, t0 + BAND_SETTLE * 2),
+            2,
+            "shrink waits too"
+        );
+        assert_eq!(s.stabilize_band_rows_at(1, t0 + BAND_SETTLE * 3), 1);
         assert_eq!(s.band_rows_applied, 1);
     }
 }

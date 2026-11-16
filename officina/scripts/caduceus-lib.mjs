@@ -74,6 +74,11 @@ EnvironmentFile=-${envFile}
 # noticed the model path was gone.
 Restart=always
 RestartSec=2
+# ...but back off instead of hammering every 2s forever when the gateway is
+# permanently broken (systemd 254+; ignored on older). StartLimitIntervalSec=0
+# means systemd would otherwise never stop retrying.
+RestartSteps=5
+RestartMaxDelaySec=60
 # Playwright children must be reaped before the next start.
 TimeoutStopSec=20
 KillMode=control-group

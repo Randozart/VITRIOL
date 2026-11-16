@@ -1732,6 +1732,25 @@ async function cmdDoctor(flags) {
     apiKey ? `set (...${apiKey.slice(-4)})` : "missing",
   );
 
+  if (existsSync(ROUTER_UNIT)) {
+    const active = systemctlUser([
+      "is-active",
+      "vitriol-caduceus-router.service",
+    ]).ok;
+    const prefsDoc = readJsonSafe(
+      process.env.OFFICINA_CADUCEUS_PREFS_FILE ||
+        join(HOME, ".vitriol", "officina", "caduceus-prefs.json"),
+    );
+    const fb = Array.isArray(prefsDoc?.fallback) ? prefsDoc.fallback : [];
+    add(
+      "routing proxy",
+      active ? "ok" : "warn",
+      active
+        ? `:${ROUTER_PORT} · fallback ${fb.length ? fb.join(", ") : "(none)"}`
+        : `installed but stopped — systemctl --user start vitriol-caduceus-router.service`,
+    );
+  }
+
   if (existsSync(ENV_FILE)) {
     const mode = statSync(ENV_FILE).mode & 0o777;
     add(

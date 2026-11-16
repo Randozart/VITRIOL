@@ -1061,6 +1061,14 @@ pub struct AppState {
     pub recovery: heal::RecoveryState,
     /// `/recover` asks the async loop for a manual recovery attempt.
     pub heal_requested: bool,
+    /// The composer line came from Up/Down history recall. While set the
+    /// command menu must not open and must not steal the arrows, or recalling a
+    /// `/command` entry freezes history navigation (2026-11-16, operator
+    /// report).
+    pub history_recall: bool,
+    /// The operator dismissed the command menu for exactly this line content;
+    /// any edit clears it (Esc closes the menu without touching the composer).
+    pub menu_dismissed_for: Option<String>,
     /// Set after an abort; if the agent has not settled by this instant the TUI
     /// releases the UI. The source decides whether a child restart may follow:
     /// only the watchdog may escalate, never an operator Esc (2026-11-16).
@@ -1243,6 +1251,8 @@ impl Default for AppState {
             last_prompt: None,
             recovery: heal::RecoveryState::default(),
             heal_requested: false,
+            history_recall: false,
+            menu_dismissed_for: None,
             abort_deadline: None,
             queued_prompts: Vec::new(),
             held: Vec::new(),
@@ -1955,6 +1965,8 @@ impl AppState {
         self.cursor = g.text.chars().count();
         self.input = g.text;
         self.ghost_dismissed_for = None;
+        self.note_input_typed();
+        self.cursor = self.input.chars().count();
         self.log_ghost_event(&g.id, &g.source, "accepted");
         true
     }
@@ -2077,6 +2089,8 @@ impl AppState {
         if self.prompt_history.is_empty() {
             return false;
         }
+        self.history_recall = true;
+        self.menu_dismissed_for = None;
         match self.history_idx {
             None => {
                 self.history_draft = self.input.clone();
@@ -4519,9 +4533,47 @@ impl AppState {
         true
     }
 
-    /// True when the command popup is open (candidates available).
+    /// True when the command menu should be open: a typed command line, not a
+    /// recalled one, and not dismissed for this exact content (K1/D6/D7,
+    /// 2026-11-16).
     pub fn cand_sel_logic_open(&self) -> bool {
+        if self.history_recall || !self.input.starts_with('/') {
+            return false;
+        }
+        if self.menu_dismissed_for.as_deref() == Some(self.input.as_str()) {
+            return false;
+        }
         !self.command_candidates().is_empty()
+    }
+
+    /// The operator edited the line: it is no longer a mere recall, and any
+    /// menu dismissal is void.
+    pub fn note_input_typed(&mut self) {
+        self.history_recall = false;
+        self.menu_dismissed_for = None;
+        self.cand_sel = 0;
+    }
+
+    /// Esc closed the command menu for the current content (composer untouched).
+    pub fn dismiss_command_menu(&mut self) {
+        self.menu_dismissed_for = Some(self.input.clone());
+        self.cand_sel = 0;
+    }
+
+    /// `/q` → `/quit` when exactly one command matches the typed prefix.
+    /// Ambiguous prefixes, arguments and plain text are returned unchanged (D8).
+    pub fn expand_unique_command(&self, msg: &str) -> String {
+        if !msg.starts_with('/') || msg.contains(' ') {
+            return msg.to_string();
+        }
+        let word = msg.trim_start_matches('/');
+        if word.is_empty() {
+            return msg.to_string();
+        }
+        match self.command_candidates_for(msg).as_slice() {
+            [only] if only.name != word => format!("/{}", only.name),
+            _ => msg.to_string(),
+        }
     }
 }
 
@@ -7276,6 +7328,68 @@ mod tests {
             Some(AbortSource::Watchdog),
             "the watchdog keeps its own escalation path (E3)"
         );
+    }
+
+    #[test]
+    fn history_recall_does_not_open_or_freeze_the_command_menu() {
+        let mut s = AppState::default();
+        s.record_prompt_history("/model");
+        s.record_prompt_history("what's next?");
+        s.record_prompt_history("/quit");
+
+        assert!(s.history_prev());
+        assert_eq!(s.input, "/quit");
+        assert!(
+            !s.cand_sel_logic_open(),
+            "a recalled line must not open the menu (K1)"
+        );
+        // The arrows still walk history instead of cycling the popup.
+        assert!(s.history_prev());
+        assert_eq!(s.input, "what's next?");
+        assert!(s.history_prev());
+        assert_eq!(s.input, "/model");
+
+        // Typing makes it the operator's own line again: the menu may open.
+        s.note_input_typed();
+        assert!(s.cand_sel_logic_open(), "edited command line reopens it");
+    }
+
+    #[test]
+    fn dismissed_command_menu_stays_closed_until_the_line_changes() {
+        let mut s = AppState::default();
+        s.input = "/q".to_string();
+        assert!(s.cand_sel_logic_open());
+        s.dismiss_command_menu();
+        assert!(!s.cand_sel_logic_open(), "Esc closed it (D7)");
+        assert_eq!(s.input, "/q", "closing must not touch the composer");
+        s.note_input_typed();
+        assert!(s.cand_sel_logic_open(), "any edit reopens it");
+    }
+
+    #[test]
+    fn a_unique_partial_command_expands_and_executes_in_one_press() {
+        let mut s = AppState::default();
+        s.commands = vec![
+            crate::rpc::protocol::SlashCommand {
+                name: "model".into(),
+                description: None,
+                source: None,
+            },
+            crate::rpc::protocol::SlashCommand {
+                name: "models-extra".into(),
+                description: None,
+                source: None,
+            },
+        ];
+        // `/mod…` is ambiguous → unchanged (still completes below).
+        assert_eq!(s.expand_unique_command("/model"), "/model");
+        assert_eq!(s.expand_unique_command("/mod"), "/mod");
+        // Unique prefix → the full command (D8).
+        assert_eq!(s.expand_unique_command("/models"), "/models-extra");
+        // Arguments and plain text are never rewritten.
+        assert_eq!(s.expand_unique_command("/model gpt"), "/model gpt");
+        assert_eq!(s.expand_unique_command("hello"), "hello");
+        assert_eq!(s.expand_unique_command("/"), "/");
     }
 
     #[test]

@@ -1678,34 +1678,41 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             }
         }
         KeyCode::Esc => {
-            // Operator stop (2026-11-16): Esc ends the work NOW — abort the
-            // turn, drop every queued/held message, and never let the settle
-            // deadline restart pi. Idle Esc stays the deliberate no-op it has
-            // been since the accidental-quit report.
-            let busy = state.is_streaming || state.has_running_tool();
-            if busy || !state.queued_prompts.is_empty() {
-                cancel_pending_dialogs(state, bridge).await;
-                let _ = bridge.request(RpcCommand::Abort { id: None }).await;
-                let dropped = state.operator_stop();
-                let now = std::time::Instant::now();
-                state.arm_abort(now, state::AbortSource::Operator);
-                if dropped > 0 {
-                    state.entries.push(state::ChatEntry::Diag(format!(
-                        "harness: stopped — dropped {dropped} queued message(s)"
-                    )));
-                }
-                state.notice = Some((
+            // Order (K4): the command menu closes first and leaves the composer
+            // untouched; only then does Esc mean "stop the work" (2026-11-16).
+            if state.cand_sel_logic_open() {
+                state.dismiss_command_menu();
+                state.notice = Some(("menu closed".to_string(), "info".to_string()));
+            } else {
+                // Operator stop: Esc ends the work NOW — abort the turn, drop
+                // every queued/held message, and never let the settle deadline
+                // restart pi. Idle Esc stays the deliberate no-op it has been
+                // since the accidental-quit report.
+                let busy = state.is_streaming || state.has_running_tool();
+                if busy || !state.queued_prompts.is_empty() {
+                    cancel_pending_dialogs(state, bridge).await;
+                    let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+                    let dropped = state.operator_stop();
+                    let now = std::time::Instant::now();
+                    state.arm_abort(now, state::AbortSource::Operator);
                     if dropped > 0 {
-                        format!("stopped · {dropped} queued dropped")
-                    } else {
-                        "stopped".to_string()
-                    },
-                    "warning".to_string(),
-                ));
-                stall::trail(
-                    "abort.operator",
-                    serde_json::json!({ "dropped": dropped, "busy": busy }),
-                );
+                        state.entries.push(state::ChatEntry::Diag(format!(
+                            "harness: stopped — dropped {dropped} queued message(s)"
+                        )));
+                    }
+                    state.notice = Some((
+                        if dropped > 0 {
+                            format!("stopped · {dropped} queued dropped")
+                        } else {
+                            "stopped".to_string()
+                        },
+                        "warning".to_string(),
+                    ));
+                    stall::trail(
+                        "abort.operator",
+                        serde_json::json!({ "dropped": dropped, "busy": busy }),
+                    );
+                }
             }
         }
         // ^c — copy (owner request 2026-09-03). Selection first, else the
@@ -1805,10 +1812,10 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             state.help_open = !state.help_open;
             state.help_sel = 0;
         }
-        // Tab retains agent cycling and never accepts autocomplete. A voice
-        // ghost must NOT swallow it (2026-11-15: after a GRIND loop ended a
-        // ghost made Tab a no-op, trapping the operator in grind mode).
-        KeyCode::Tab if state.cand_sel_logic_open() => {}
+        // Tab keeps agent cycling and never sends while the composer holds
+        // text (D7/K3, 2026-11-16): a recalled line must not become a stray
+        // /agent command, and a menu row is run with Enter.
+        KeyCode::Tab if !state.input.is_empty() => {}
         KeyCode::Tab => {
             if let Some(next) = state.next_agent_mode() {
                 let m = format!("/agent {}", next);
@@ -1903,6 +1910,14 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             };
             // Prompt history (2026-11-13): recallable via Up/Down.
             state.record_prompt_history(&msg);
+            // D8 (2026-11-16): a UNIQUE partial command runs in one press —
+            // `/q` → `/quit` — instead of completing and waiting for a second
+            // Enter. Ambiguous prefixes still complete further below.
+            let expanded = state.expand_unique_command(&msg);
+            if expanded != msg {
+                state.notice = Some((format!("{msg} → {expanded}"), "info".to_string()));
+            }
+            let msg = expanded;
             if let Some(request) = settings::command(state, &msg) {
                 if let Some(request) = request {
                     let _ = bridge.request(request).await;
@@ -2405,13 +2420,13 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if state.cursor > 0 {
                 state.cursor -= 1;
                 remove_char_at(&mut state.input, state.cursor);
-                state.cand_sel = 0;
+                state.note_input_typed();
             }
         }
         KeyCode::Delete => {
             if state.cursor < state.input.chars().count() {
                 remove_char_at(&mut state.input, state.cursor);
-                state.cand_sel = 0;
+                state.note_input_typed();
             }
         }
         KeyCode::Left => {
@@ -2462,7 +2477,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     state.dismiss_ghost("dismissed-typed");
                     insert_char_at(&mut state.input, state.cursor, c);
                     state.cursor += 1;
-                    state.cand_sel = 0;
+                    state.note_input_typed();
                 }
             }
         }

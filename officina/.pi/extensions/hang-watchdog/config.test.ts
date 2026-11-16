@@ -160,6 +160,20 @@ describe("ascensusGeminiKey", () => {
     expect(got).toBe("AIza" + "C".repeat(35));
   });
 
+  it("finds a gemini-named key inside another section", () => {
+    // The operator's own layout: the escalation provider's key first, the
+    // Gemini key grouped under [ascensus].
+    const text = [
+      "provider = zai-coding-plan",
+      "api_key = sk-zai-123",
+      "model = glm-4.6",
+      "[ascensus]",
+      "api_key = sk-zai-123",
+      "gemini_api_key = AIza" + "D".repeat(35),
+    ].join("\n");
+    expect(ascensusGeminiKey("/x", () => text)).toBe("AIza" + "D".repeat(35));
+  });
+
   it("tolerates a missing file", () => {
     expect(
       ascensusGeminiKey("/nope", () => {

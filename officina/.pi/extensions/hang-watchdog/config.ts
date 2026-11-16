@@ -114,8 +114,9 @@ export function ascensusGeminiKey(
     return "";
   }
   let section = "";
-  let bare = "";
-  let inGemini = "";
+  let named = ""; // an explicitly gemini-named key: gemini_api_key = AIza…
+  let bare = ""; // a sectionless api_key that looks like a Google key
+  let sectioned = ""; // [gemini] api_key = …
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
@@ -129,11 +130,18 @@ export function ascensusGeminiKey(
     const key = m[1].toLowerCase();
     const value = m[2].trim().replace(/^["']|["']$/g, "");
     if (!value) continue;
-    if (section === "gemini" && (key === "api_key" || key === "key")) inGemini = value;
-    if (section === "" && key === "api_key" && value.startsWith("AIza")) bare = value;
-    if (section === "" && (key === "gemini_api_key" || key === "gemini_key")) bare = value;
+    // A gemini-NAMED key wins regardless of which section it sits in — the
+    // operator may group it under [ascensus] beside the escalation provider
+    // (2026-11-16).
+    if (!named && (key === "gemini_api_key" || key === "gemini_key")) named = value;
+    if (!sectioned && section === "gemini" && (key === "api_key" || key === "key")) {
+      sectioned = value;
+    }
+    if (!bare && section === "" && key === "api_key" && value.startsWith("AIza")) {
+      bare = value;
+    }
   }
-  return inGemini || bare;
+  return named || sectioned || bare;
 }
 
 /** Everything the lane needs: env override first, then the file. */
@@ -173,7 +181,12 @@ export function resolveDecisionConfig(env: NodeJS.ProcessEnv = process.env): {
     mode,
     endpoint,
     key,
-    floor: Number.isFinite(minScore) ? minScore : (file?.floor ?? 0.9),
+    // The gemini lane's calibrated three-way probabilities peak around
+    // 0.75-0.80 on clear evidence (measured live 2026-11-16), so a 0.9 default
+    // would never fire; http keeps 0.9.
+    floor: Number.isFinite(minScore)
+      ? minScore
+      : (file?.floor ?? (mode === "gemini" ? 0.7 : 0.9)),
     margin: Number.isFinite(marginEnv) ? marginEnv : (file?.margin ?? 0.15),
     model:
       (env.OFFICINA_WATCHDOG_DECISION_MODEL ?? "").trim() ||

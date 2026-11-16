@@ -1,10 +1,24 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { decisionVerdict, judgeWithDecision, QUESTIONS } from "./decision.ts";
 import type { WatchedCall } from "./judge.ts";
 
 const complete = () => ({ usage: { truncated: false, state_tokens_dropped: 0, truncated_questions: [] }, answers: { liveness: { type: "choice", choice: "ALIVE", answer_confidence: 0.95, action: { act_probability: 0.99 }, abstention: "passed" } } });
 const call: WatchedCall = { toolCallId: "call", command: "build", startedAt: 0, stalledSince: 0, judgments: 0, lastOutputRevision: 0, lastVerdict: null, tail: "compiling", generation: 2 };
-afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+// Never read the operator's real decision config: this file asserts behaviour
+// when nothing (or a specific thing) is configured (2026-11-16).
+let cfgDir = "";
+beforeEach(() => {
+  cfgDir = mkdtempSync(join(tmpdir(), "officina-decision-test-"));
+  vi.stubEnv("OFFICINA_WATCHDOG_DECISION_FILE", join(cfgDir, "watchdog-decision.json"));
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
+  rmSync(cfgDir, { recursive: true, force: true });
+});
 
 describe("typed advisory decision endpoint", () => {
   it("accepts documented Laya choices, action objects and passed gates", () => {

@@ -139,13 +139,18 @@ export function mapDecisionsReply(
     return { ok: false, reason: "reply has no liveness answer" };
   }
   const probabilities = numeric(answer.probabilities);
-  const values = Object.values(probabilities).sort((a, b) => b - a);
+  const ranked = Object.entries(probabilities).sort((a, b) => b[1] - a[1]);
   const pmax =
     typeof answer.confidence === "number" && Number.isFinite(answer.confidence)
       ? answer.confidence
-      : (values[0] ?? 0);
-  const second = values.length > 1 ? values[1]! : 0;
-  const choice = typeof answer.choice === "string" ? answer.choice : "";
+      : (ranked[0]?.[1] ?? 0);
+  const second = ranked.length > 1 ? ranked[1]![1] : 0;
+  // MEASURED (2026-11-16): the endpoint can return choice:"UNKNOWN" while the
+  // distribution says ALIVE 0.79 / UNKNOWN 0.16 — i.e. `choice` is not the
+  // argmax. The probabilities are the calibrated signal, so the verdict comes
+  // from them; the API's own label is kept for the reason string only.
+  const apiChoice = typeof answer.choice === "string" ? answer.choice : "";
+  const choice = ranked.length > 0 ? ranked[0]![0] : apiChoice;
 
   const reply = (accepted: boolean, reason: string): GeminiOutcome => ({
     ok: true,
@@ -171,10 +176,11 @@ export function mapDecisionsReply(
     },
   });
 
+  const label = apiChoice && apiChoice !== choice ? ` (api said ${apiChoice})` : "";
   if (!["ALIVE", "HUNG", "UNKNOWN"].includes(choice)) {
-    return reply(false, `unexpected choice ${JSON.stringify(choice)}`);
+    return reply(false, `unexpected choice ${JSON.stringify(choice)}${label}`);
   }
-  if (choice === "UNKNOWN") return reply(false, "model chose UNKNOWN");
+  if (choice === "UNKNOWN") return reply(false, `argmax is UNKNOWN${label}`);
   if (!(pmax >= floor))
     return reply(false, `below floor (p=${pmax.toFixed(3)})`);
   if (margin > 0 && pmax - second < margin) {
@@ -183,7 +189,7 @@ export function mapDecisionsReply(
       `ambiguous (p=${pmax.toFixed(3)} lead=${(pmax - second).toFixed(3)} < ${margin})`,
     );
   }
-  return reply(true, `choice ${choice} p=${pmax.toFixed(3)}`);
+  return reply(true, `choice ${choice} p=${pmax.toFixed(3)}${label}`);
 }
 
 /** One decisions call. Transport failures are returned, never thrown. */

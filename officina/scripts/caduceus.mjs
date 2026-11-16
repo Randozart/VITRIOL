@@ -120,6 +120,12 @@ const ROUTER_STATE_FILE = join(
   "caduceus-router-state.json",
 );
 const ROUTER_SCRIPT = join(dirname(new URL(import.meta.url).pathname), "caduceus-router.mjs");
+const DECISION_FILE = join(
+  HOME,
+  ".vitriol",
+  "officina",
+  "watchdog-decision.json",
+);
 const OLD_SERVICE_UNIT = join(
   HOME,
   ".config",
@@ -1627,6 +1633,128 @@ WantedBy=default.target
     log(`  parked:    ${parked || "none"}`);
   }
   log(`  state:     ${ROUTER_STATE_FILE}`);
+}
+
+/**
+ * Watchdog decision lane (2026-11-16): the CLI face of `/decision` so the
+ * operator never has to hand-edit JSON. Writes the same 0600 file the extension
+ * reads; the key is never echoed back.
+ */
+async function cmdDecision(flags) {
+  const read = () => readJsonSafe(DECISION_FILE) ?? { version: 1 };
+  const write = (doc) => {
+    mkdirSync(dirname(DECISION_FILE), { recursive: true });
+    writeJsonAtomic(DECISION_FILE, { version: 1, url: "", key: "", floor: 0.7, ...doc });
+    return true;
+  };
+  const sub = String(flags._[0] ?? "status");
+  const doc = read();
+  const mode = doc.mode ?? (doc.url ? "http" : "heuristic");
+
+  if (sub === "key") {
+    const key = String(flags._[1] ?? "").trim();
+    if (!key) fail("usage: vitriol caduceus decision key <token>");
+    write({ ...doc, key });
+    log(`decision: key stored (${key.slice(0, 4)}…, ${key.length} chars) in ${DECISION_FILE}`);
+    return;
+  }
+  if (sub === "mode") {
+    const want = String(flags._[1] ?? "").trim();
+    if (!["heuristic", "http", "gemini"].includes(want)) {
+      fail("mode must be heuristic | http | gemini");
+    }
+    write({ ...doc, mode: want });
+    log(`decision: mode ${want}`);
+    return;
+  }
+  if (sub === "off") {
+    write({ ...doc, mode: "heuristic", key: "" });
+    log("decision: cleared — heuristics only");
+    return;
+  }
+  for (const [name, field, cast, range] of [
+    ["model", "model", String, null],
+    ["floor", "floor", Number, [0, 1]],
+    ["margin", "margin", Number, [0, 1]],
+    ["redact", "redact", (v) => v === "on" || v === "true", null],
+    ["set", "url", String, null],
+  ]) {
+    if (sub !== name) continue;
+    const raw = String(flags._[1] ?? "").trim();
+    if (!raw) fail(`usage: vitriol caduceus decision ${name} <value>`);
+    const value = cast(raw);
+    if (range && (!Number.isFinite(value) || value < range[0] || value > range[1])) {
+      fail(`${name} must be ${range[0]}..${range[1]}`);
+    }
+    write({ ...doc, [field]: value });
+    log(`decision: ${field} ${field === "url" ? value : JSON.stringify(value)}`);
+    return;
+  }
+
+  // status
+  const envKey = String(process.env.GEMINI_API_KEY ?? "").trim();
+  const ascPath = join(HOME, ".vitriol", "secrets");
+  let ascKey = "";
+  try {
+    const text = readFileSync(ascPath, "utf8");
+    let section = "";
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const header = /^\[([^\]]+)\]$/.exec(line);
+      if (header) {
+        section = header[1].trim().toLowerCase();
+        continue;
+      }
+      const m = /^(\w+)\s*=\s*(.+)$/.exec(line);
+      if (!m) continue;
+      const k = m[1].toLowerCase();
+      const v = m[2].trim().replace(/^["']|["']$/g, "");
+      if (!ascKey && (k === "gemini_api_key" || k === "gemini_key")) ascKey = v;
+      if (!ascKey && section === "gemini" && (k === "api_key" || k === "key")) ascKey = v;
+    }
+  } catch {
+    /* no secrets file */
+  }
+  const keySource = doc.key
+    ? "config"
+    : envKey
+      ? "GEMINI_API_KEY"
+      : ascKey
+        ? ascPath.replace(HOME, "~")
+        : "none";
+  const report = {
+    mode,
+    model: doc.model ?? "gemini-decision-1",
+    floor: doc.floor ?? (mode === "gemini" ? 0.7 : 0.9),
+    margin: doc.margin ?? 0.15,
+    redact: doc.redact ?? true,
+    url: doc.url ?? "",
+    key_source: keySource,
+    file: DECISION_FILE,
+  };
+  if (flags.json) {
+    log(JSON.stringify(report, null, 2));
+    return;
+  }
+  log(`decision lane: ${report.mode}`);
+  if (report.mode === "gemini") {
+    log(`  model:  ${report.model}`);
+    log(`  floor:  ${report.floor} (margin ${report.margin})`);
+    log(`  key:    ${report.key_source}`);
+    log(
+      `  egress: evidence ${report.redact ? "redacted" : "UNREDACTED"} → Google (~$0.00003/call)`,
+    );
+    if (report.key_source === "none") {
+      warn("no Gemini key found — `vitriol caduceus decision key <token>`");
+    }
+  } else if (report.mode === "http") {
+    log(`  url:    ${report.url || "(unset)"}`);
+    log(`  floor:  ${report.floor} (margin ${report.margin})`);
+  } else {
+    log("  heuristics only — no network, no cost (`decision mode gemini` to add a judge)");
+  }
+  log(`  file:   ${report.file}`);
 }
 
 async function cmdDoctor(flags) {
@@ -4419,6 +4547,11 @@ ROUTING AND CACHE
   config                     get | set cache auto|local|cloud|off
                              get | set praetor on|off
 
+DECISION LANE
+  decision                   watchdog judge (default: heuristics only)
+      status | key <token> | mode heuristic|http|gemini
+      model <id> | floor <0-1> | margin <0-1> | redact on|off | set <url> | off
+
 SUPERVISION
   watchdog                   health probe; restarts a wedged gateway
       [--install] [--remove] [--json]
@@ -4464,6 +4597,7 @@ async function main() {
   if (command === "service") return cmdService(parseFlags(argv.slice(1)));
   if (command === "watchdog") return cmdWatchdog(parseFlags(argv.slice(1)));
   if (command === "router") return cmdRouter(parseFlags(argv.slice(1)));
+  if (command === "decision") return cmdDecision(parseFlags(argv.slice(1)));
   if (command === "migrate") return cmdMigrate(parseFlags(argv.slice(1)));
   if (command === "signup") return cmdSignup(parseFlags(argv.slice(1)));
   if (command === "keys") return cmdKeys(parseFlags(argv.slice(1)));

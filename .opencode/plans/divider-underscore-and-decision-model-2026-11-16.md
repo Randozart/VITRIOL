@@ -133,3 +133,47 @@ watchdog at it.
 3. Which small judge model to pull (Gemma-2 2B vs Phi-3 mini vs Llama-3.2 1B)?
 4. Shim language: Node (fits the existing watchdog stack) or Rust (fits
    VITRIOL's stack)?
+
+## As landed (2026-11-16)
+
+### Item 1 — divider glyph
+`render_chat_and_editor` gap row now draws `_` instead of `─`
+(`officina/tui/src/tui/layout.rs`). Colour/overlay unchanged; fire dots still
+patch bg only. TUI rebuilt + installed (`~/.local/bin/officina`).
+
+### Item 2 — decision model (shipped, heuristic-first)
+- Judge weights: `~/Models/gemma-3-1b-it-Q4_K_M.gguf` (769 MiB, sha256
+  `8270790f…98ebd`). It loads on its own port — a 12B/27B judge does NOT fit
+  alongside the resident daily driver (both 3060s are at ~10.9 GiB).
+- **Finding:** a 1B judge is not a reliable *structured* classifier at T=0
+  (it loops; JSON output degenerates). The daily driver's
+  `/v1/chat/completions` classifies ALIVE/HUNG correctly with a one-word
+  system prompt, but is expensive/slow to use as an always-on judge.
+- **As landed:** `officina/.pi/extensions/hang-watchdog/decision-shim.cjs`
+  answers from deterministic heuristics first (keyword + stall-ratio:
+  ALIVE/HUNG, zero latency, no GPU) and only falls back to VITRIOL
+  `/v1/chat/completions` for ambiguous evidence; unreachable judge ⇒
+  UNKNOWN/abstained (never a silent ALIVE). 13 tests in `shim.test.mjs`.
+
+### Item 3 — connection errors vs full re-prefill (diagnosis)
+Measured on the live engine after a restart: a TCP RST mid-prefill, a bare
+close, and an abort all left the prompt cache intact (`prompt_n=4,
+cache_n=7400`). The cache is healthy (hit ratio ≈0.89). The residual
+uncached traffic comes from the LCP prefix cache's fingerprint (FNV-1a over
+count + first 64 + last 64 tokens), from session switches (cold cache), and
+from long cold prompts — NOT from connection errors. No code change made.
+
+### Item 4 — status band flash + question panel z-order (2026-11-16)
+- `AppState::stabilize_band_rows` adds one-frame hysteresis to the status
+  band height (indicator rows + ctx row). A datum that exists for a single
+  frame can no longer shift the transcript. Band surface painted first so a
+  reserved row reads as panel tone.
+- The context-fill row now survives `reset_for_rehydrate` (recovery respawns
+  the same conversation), so it cannot appear/disappear across a heal.
+- `render_question_panel` moved to the end of the chat screen: the ask menu
+  used to be painted before the transcript and composer, which drew over its
+  upper border (operator: "the question popped BEHIND the text").
+- Tests: `band_height_ignores_a_one_frame_candidate`,
+  `band_height_adopts_a_candidate_that_persists`,
+  `rehydrate_keeps_the_context_row_so_the_layout_cannot_jump`,
+  `question_panel_draws_over_the_transcript`.

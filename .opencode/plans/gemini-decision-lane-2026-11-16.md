@@ -350,3 +350,60 @@ The key. `GEMINI_API_KEY=AIza…` in `~/.vitriol/officina/env`, or
 `/decision mode gemini` and `/decision status` should report
 `gemini gemini-decision-1 · floor 0.9 · margin 0.15 · key … · evidence redacted,
 leaves the box · ~$0.00003/call`.
+
+---
+
+# LIVE (2026-11-16, commits `f781b6c`, this one)
+
+The key arrived in `~/.vitriol/secrets` under **`[ascensus]`** as
+`gemini_api_key = AIza…`. The resolver now finds a gemini-*named* key in any
+section (the operator's own grouping), and the lane is enabled:
+
+```
+$ vitriol caduceus decision status
+decision lane: gemini
+  model:  gemini-decision-1
+  floor:  0.7 (margin 0.15)
+  key:    ~/.vitriol/secrets
+  egress: evidence redacted → Google (~$0.00003/call)
+```
+
+## Measured live (real API, ~330 ms per call, `DECISION_LIVE=1`)
+
+| evidence | probabilities | verdict |
+|---|---|---|
+| `cargo build`, 120 s, short tail | ALIVE 0.793 · UNKNOWN 0.158 · HUNG 0.049 | **ALIVE** |
+| same, richer compile log | ALIVE 0.749 · UNKNOWN 0.183 · HUNG 0.068 | **ALIVE** |
+| `cat`, 300 s, empty tail | **HUNG 0.802** · UNKNOWN 0.195 · ALIVE 0.003 | **HUNG** |
+| command containing `AIza…` | accepted (redacted before send) | ok |
+
+So it discriminates cleanly, and 0.7 is the right floor: clear evidence lands at
+0.75–0.80, a blocked command at 0.80 with ALIVE collapsing to 0.003.
+
+## Two findings worth keeping
+
+1. **`choice` is not the argmax.** The endpoint returned `choice:"UNKNOWN"` while
+   the distribution said `ALIVE 0.793`. The calibrated probabilities are the
+   signal, so the mapping now takes the argmax and records the API's own label
+   in the reason (`api said UNKNOWN`). Trusting `choice` would have thrown away
+   every decision.
+2. **0.9 never fires.** A three-way choice peaks near 0.75–0.80, so the lane's
+   floor default is 0.7 (http mode keeps 0.9).
+
+## CLI (the fix for "exceedingly roundabout")
+
+```
+vitriol caduceus decision status
+vitriol caduceus decision mode gemini
+vitriol caduceus decision key <token>        # not needed here; ascensus supplies it
+vitriol caduceus decision floor 0.7 | margin 0.15 | model <id> | redact on|off
+```
+
+## Still open
+
+- Tuning the *instructions* text may shift confidence higher on ambiguous
+  evidence; measure before changing.
+- The heuristics still answer first, so Google is only consulted for genuinely
+  ambiguous stalls (cost stays near zero).
+- `decision-live.test.ts` is skipped unless `DECISION_LIVE=1`; it is the
+  regression harness for the API shape and the key's whereabouts.

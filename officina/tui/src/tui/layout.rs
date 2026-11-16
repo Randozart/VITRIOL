@@ -4374,6 +4374,55 @@ mod settings_chat_render_tests {
         }
     }
 
+    /// I27: the rule is never a copy of the row above it — a duplicate row
+    /// read as a printing error (owner report 2026-11-16). The rule is one
+    /// ramp step below the flame's bottom row, so every claimed column is
+    /// strictly lighter than the cell above it.
+    #[test]
+    fn rule_is_one_step_below_the_row_above() {
+        const RAMP: [char; 8] = ['⠀', '⡀', '⡄', '⡆', '⡇', '⣇', '⣧', '⣷'];
+        for level in [0.3_f64, 0.6, 1.0] {
+            let mut state = AppState::default();
+            state.entries.push(ChatEntry::Notice("hello".into()));
+            state.fire_on = true;
+            state.fire_level = level;
+            state.fire_target = level;
+            let text = screen(&mut state, 90, 24);
+            let lines: Vec<&str> = text.lines().collect();
+            let idx = lines
+                .iter()
+                .position(|l| l.chars().filter(|c| *c == '_').count() > 5)
+                .expect("divider row");
+            assert!(idx > 0);
+            let rule: Vec<char> = lines[idx].chars().collect();
+            let above: Vec<char> = lines[idx - 1].chars().collect();
+            let mut claimed = 0;
+            for (x, c) in rule.iter().enumerate() {
+                if *c == '_' || *c == ' ' {
+                    continue;
+                }
+                claimed += 1;
+                let below_rank = RAMP.iter().position(|d| d == c);
+                let above_rank = above.get(x).and_then(|u| RAMP.iter().position(|d| d == u));
+                if let (Some(b), Some(a)) = (below_rank, above_rank) {
+                    // Strictly lighter, except at the very first embers where
+                    // the row above is already the thinnest dot.
+                    assert!(
+                        b < a || (b == 1 && a == 1),
+                        "level {level}: column {x} repeats the row above ({c:?} vs {u:?})",
+                        u = above[x]
+                    );
+                }
+            }
+            assert!(claimed > 0, "no claimed columns at level {level}:\n{text}");
+            assert_ne!(
+                lines[idx],
+                lines[idx - 1],
+                "level {level}: rule duplicates the row above"
+            );
+        }
+    }
+
     /// I24: the flame always *starts* on the rule — wherever the rule is
     /// claimed, the flame's bottom row above it must carry a glyph.
     #[test]

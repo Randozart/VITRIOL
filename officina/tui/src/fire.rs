@@ -253,10 +253,19 @@ pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<
         // column by construction, so nothing floats above the rule.
         let col_h = (col_light * (0.7 + 0.6 * hash01(x as u32, 0, step))).max(base);
         let frac = (base / col_h.max(1e-3)).clamp(0.0, 1.0);
-        let dens =
-            ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, last, step)) * level_scale(level))
-                .clamp(0.0, 1.0);
-        let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
+        // What the flame's own bottom row shows for this column: same
+        // fraction and the same hash seed the field uses for that row.
+        let body_dens =
+            ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, last, step))).clamp(0.0, 1.0);
+        // Embers thin the line (so it reads as dots on the rule), and the line
+        // is always ONE RAMP STEP BELOW the row above it — two identical rows
+        // read as a printing error (owner report 2026-11-16).
+        let dens = body_dens * level_scale(level);
+        let scaled = (dens * (DENSITY.len() - 1) as f64).round() as usize;
+        // One step below the row above so the two rows can never be a copy —
+        // except at the very first embers, where the row above is already a
+        // single dot and the line must still dot the rule rather than vanish.
+        let idx = if scaled >= 2 { scaled - 1 } else { scaled };
         if idx == 0 {
             continue; // first embers keep the underscore, intermittently
         }

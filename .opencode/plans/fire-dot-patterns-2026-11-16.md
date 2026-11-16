@@ -495,3 +495,76 @@ At full load the rule row and the body's bottom row compute the same `frac` and
 hash seed, so they are *identical* glyphs. That reads as a solid base (intended
 once burning). If it ever looks one row too thick, pass `flame_rows + 1` to
 `line_cells` so the rule's `frac` differs slightly from the body's.
+
+---
+
+# F5 — the bottom two rows are identical (owner report, 2026-11-16)
+
+*"Currently the bottom two rows are identical, which looks ugly."*
+
+This is the follow-up I flagged when the rule was made the fire's row 0. Two
+causes, both measurable:
+
+1. **Same inputs by construction.** `render`'s bottom row uses
+   `frac_from_base = 0.5 / rows` with hash seed `r = rows - 1`; `line_cells` uses
+   `base = 0.5 / rows` with seed `last = rows - 1`. Identical fraction, identical
+   seed, identical jitter ⇒ identical glyph, in every column.
+2. **The ramp saturates.** At `frac ≈ 0.1` the jitter spans density 0.64…1.0,
+   i.e. ramp indices 5…7. From `level ≈ 0.6` upward both rows sit at 7 (`⣷`),
+   so even decorrelating the hash would leave most columns equal.
+
+## Two candidate fixes
+
+### A. Put the line on its own row of a `rows + 1` grid (the documented follow-up)
+
+`layout` passes `flame_rows + 1` to `line_cells`; the line's fraction becomes
+`0.5/(rows+1)` and its seed `rows`, so it can never be an exact copy.
+
+Measured at the same column: `level 0.6` → body 7, line 6; `level 1.0` → body 7,
+line 6. Distinct, but only by one ramp step — and because both distributions
+overlap (`5…7` vs `6…7`), individual columns still coincide by chance.
+
+### B. Make the line deterministically one step lighter than the row above (recommended)
+
+`line_cells` computes the *same* glyph the body's bottom row would have, then
+steps one down the ramp:
+
+```rust
+let idx = body_bottom_index(x, ...).saturating_sub(1);
+if idx == 0 { continue; }        // first embers keep the underscore
+*slot = Some(DENSITY[idx]);
+```
+
+- Every claimed column differs from the row above — no accidental duplicates,
+  regardless of saturation.
+- It reads as intended: the flame is hottest **just above** the line, with the
+  line as its cooler base. Embers still dot the rule intermittently (index 0 ⇒
+  `_`).
+- No saturating mismatch: at full load the pair is `⣧ / ⣷`, at embers `⡀ / ⡄`.
+
+## Invariants for either fix
+
+- **I27 — no duplicate rows**: the rule string and the flame's bottom-row string
+  differ, and (B only) *every* claimed column differs.
+- **I24/I25 unchanged**: the flame still starts on the line, and an unlit column
+  still keeps its `_`.
+- **I26 unchanged**: only `DENSITY` glyphs, never `⣿`.
+- Ember behaviour unchanged: intermittent underscores inside the lit zone.
+
+## Tests
+
+- `rule_is_never_a_copy_of_the_row_above` — render at `level = 1.0`: for every
+  claimed column, `rule[x] != body_bottom[x]` (B), and the row strings differ.
+- `rule_stays_a_step_below_at_every_load` — sweep `level` over
+  `{0.06, 0.3, 0.6, 1.0}` and assert the ramp index of the rule is exactly one
+  below the body's bottom row wherever both burn.
+- Existing line tests (`line_is_untouched_without_fire`,
+  `first_embers_only_dot_the_line`, `a_burning_flame_consumes_its_line`,
+  `line_follows_the_flame_clock`, `line_never_claims_the_middle_band`,
+  `flame_meets_its_line`) must stay green — B changes glyphs only, not claims.
+
+## Trade-off
+
+B makes the line systematically the *coolest* row of the fire. If that ever
+reads as a dim seam, invert it (`+1` instead of `-1`) and the line becomes the
+hot core with the body stepping down — the same one-line knob.

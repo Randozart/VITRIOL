@@ -1,0 +1,145 @@
+# Fire F5 + Caduceus routing dependability — consolidated plan (2026-11-16)
+
+Two work packages, both approved by the owner in the same session:
+
+1. **F5** — the fire's bottom two rows are identical (cosmetic, 1-file fix).
+2. **Routing** — "I really want Caduceus to just pick me a model and run with
+   it so I don't end up having to resume sessions so much."
+   Three layers: **L1** TUI, **L2** router extension, **L3** a routing proxy we
+   own.
+
+Detailed research lives in `.opencode/plans/fire-dot-patterns-2026-11-16.md` (F5)
+and `.opencode/plans/caduceus-model-routing-dependability-2026-11-16.md` (L1-L3
+trace). This document is the build order and the acceptance criteria.
+
+---
+
+## Part 1 — F5: rule must not duplicate the row above
+
+**Cause (measured).** `render`'s bottom row uses `frac = 0.5/rows`, hash seed
+`rows-1`; `line_cells` uses `base = 0.5/rows`, seed `rows-1`. Identical inputs ⇒
+identical glyph. And the ramp saturates (indices 5…7 at `frac ≈ 0.1`), so
+decorrelating alone is not enough once `level ≥ 0.6`.
+
+**Fix (B).** `line_cells` takes the ramp index the body's bottom row would have
+and steps one down:
+
+```rust
+let idx = body_bottom_index(x, rows, phase_ms, level).saturating_sub(1);
+if idx == 0 { continue; }        // first embers keep the underscore
+*slot = Some(DENSITY[idx]);
+```
+
+**Acceptance.** Every claimed column differs from the row above at
+`level ∈ {0.06, 0.3, 0.6, 1.0}`; ember intermittency, the `_` rule, the middle
+band and the `⣿` ceiling unchanged; the seven existing line/plane tests stay
+green.
+
+---
+
+## Part 2 — Routing
+
+### L1 — TUI: a rate limit is a switchable failure (`mod.rs`, `heal.rs`)
+
+`handle_provider_failure` currently handles `EngineDown | NoPhysicalModel` and
+`ModelNotFound`; everything else (including `RateLimit`) only shows a notice
+(`mod.rs:3361`). Change:
+
+- New `heal::quota_hint(detail) -> Option<Duration>`: parse `retry_after`
+  (seconds) or `reset_at` (ISO-8601) out of the provider message. Clamp
+  1 s … 1 h.
+- `Failure::RateLimit`:
+  - not on lapis ⇒ `SetModel{officina/lapis}` + `pending_replay` (the
+    `ModelNotFound` path, `mod.rs:3327`), notice names the lane and the reset;
+  - already on lapis ⇒ `pending_replay.at = now + hint.unwrap_or(90 s)`, bounded
+    by `policy.max_attempts` / window; when the budget is spent ⇒ `degrade()`
+    with a notice that says how long to wait.
+- Reuse `failure_seen` dedupe so a burst cannot stack replays.
+
+**Acceptance.** Classification tests for the two hint formats; a 429 while not
+on lapis schedules a replay and requests the lapis model; a 429 on lapis
+schedules at the hint (not the default); exhaustion degrades instead of
+looping.
+
+### L2 — router extension: cooling must engage on the virtual lane
+
+`adaptive-router/index.ts:497` starts with `if (tier !== "cloud" || !activeCloud)
+return;`, so on `officina/lapis` no cooling is ever recorded. Change:
+
+- Record provider failures for **whatever served** the request (from the event's
+  provider/model) even when `tier !== "cloud"`; keep the lane-picking logic
+  gated as today.
+- Accept the quota hint from the response **body** (`retry_after`, `reset_at`)
+  when the `Retry-After` header is absent — the gateway emits it in JSON.
+
+**Acceptance.** A 429 body hint parks the lane for the stated duration; a
+lapis-tier session still records the failure; `pickCloud` skips a cooled lane
+(existing behaviour, now with data); the router test matrix stays green.
+
+### L3 — a routing proxy we own (`officina/scripts/caduceus-router.cjs`)
+
+The gateway is a vendor package (`~/.vitriol/vendor/omniroute`) and its
+`config` CLI only manages *client* tool configs — there is no supported knob for
+"reroute this request to another model until one answers". So L3 is a small
+proxy we own, modelled on `decision-shim.cjs`:
+
+- Listens on `CADUCEUS_ROUTER_PORT` (default **20129**), forwards to the
+  gateway (20128).
+- Candidate list: the request's model first, then models from
+  `/v1/models` filtered to lanes that are not parked; parked lanes are read from
+  a persisted state file (`caduceus-router-state.json`) with `until` timestamps
+  taken from `retry_after` / `reset_at` in the error body.
+- Per-attempt deadline (connect + first byte, default 45 s). **Retry only before
+  the first byte reaches the client** — never after, so a partial stream is
+  never duplicated.
+- Park a lane on 429/401/403/404/5xx **or** deadline expiry; give up only when
+  every candidate is parked, and say how many were tried and when the earliest
+  returns.
+- Append one line per reroute to the route ledger
+  (`~/.vitriol/officina/route-ledger.jsonl`, existing format) so a silent
+  reroute is auditable, and expose state for `/doctor`.
+
+**Acceptance.** Unit tests for candidate ordering, parking from both hint
+formats, "parked lanes are never chosen", "no retry after the first byte", and
+the give-up message. Live check: with the proxy in the path, killing the lane a
+request is pinned to must still produce a 200.
+
+### Wiring and rollout
+
+- `vitriol caduceus router [--install|--status|--remove]` installs the proxy as
+  a user unit next to the gateway; the Officina provider entry points at 20129
+  when enabled, 20128 otherwise. Off by default (`CADUCEUS_ROUTER=1` to enable).
+- `/doctor` gains a line: proxy active, candidates, parked lanes, last reroute.
+
+---
+
+## Invariants (all layers)
+
+- **I30** every ladder has a candidate budget and a total deadline.
+- **I31** a parked lane (`until > now`) is never selected — router and proxy.
+- **I32** a reroute is never silent: ledger line + at most one UI line.
+- **I33** healthy behaviour is byte-identical: no extra probe, no extra hop, no
+  latency when nothing fails (proxy passes through untouched).
+- **I34** local is the floor: when every cloud candidate is parked the turn
+  continues on `officina/lapis`; only then may it fail.
+- **I35** no duplicate output: the proxy never retries after forwarding bytes.
+
+## Build order
+
+1. F5 (fire, 1 file + tests) — install.
+2. L1 (TUI heal) — install.
+3. L2 (router extension).
+4. L3 (proxy + tests + unit wiring + `/doctor` line).
+5. Gates: `cargo test` / `cargo fmt --check` / `vitest` / `tsc` / release build /
+   install / PTY smoke; one commit per stage; as-landed notes appended here.
+
+## Risk
+
+- Fire F5: display only.
+- L1: routing/state only, bounded by the existing heal budget; worst case a
+  notice, never a loop.
+- L2: cools lanes it previously ignored — a too-aggressive cool could starve a
+  provider; the 1 m…24 h clamp and `/doctor` make it visible.
+- L3: an extra loopback hop, off by default. If it proves unnecessary it is
+  removed by flipping one env var; the failure modes it covers (dead provider,
+  quota, first-byte hang) have no cheaper owner in this stack.

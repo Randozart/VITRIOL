@@ -12,11 +12,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ascensusGeminiKey,
   decisionConfigPath,
   readDecisionConfig,
   resolveDecisionConfig,
-  writeDecisionConfig,
   type DecisionConfig,
+  writeDecisionConfig,
 } from "./config.ts";
 
 let dir: string;
@@ -81,5 +82,89 @@ describe("decision config", () => {
     expect(got?.url).toBe("");
     expect(got?.floor).toBe(0.9);
     expect(resolveDecisionConfig({}).endpoint).toBe("");
+  });
+});
+
+describe("decision lane modes (2026-11-16)", () => {
+  it("derives the mode: endpoint ⇒ http, nothing ⇒ heuristic", () => {
+    writeDecisionConfig(cfg({ url: "http://127.0.0.1:9/x", floor: 0.8 }));
+    expect(resolveDecisionConfig({}).mode).toBe("http");
+    writeDecisionConfig(cfg({ url: "", floor: 0.8 }));
+    expect(resolveDecisionConfig({}).mode).toBe("heuristic");
+  });
+
+  it("honours an explicit gemini mode and its knobs", () => {
+    writeDecisionConfig({
+      version: 1,
+      mode: "gemini",
+      url: "",
+      key: "AIza-from-file",
+      floor: 0.6,
+      margin: 0.2,
+      model: "gemini-decision-1",
+      redact: false,
+    });
+    const got = resolveDecisionConfig({});
+    expect(got.mode).toBe("gemini");
+    expect(got.floor).toBe(0.6);
+    expect(got.margin).toBe(0.2);
+    expect(got.redact).toBe(false);
+    expect(got.key).toBe("AIza-from-file");
+  });
+
+  it("lets env override every knob", () => {
+    writeDecisionConfig(cfg({ url: "", floor: 0.9 }));
+    const got = resolveDecisionConfig({
+      OFFICINA_WATCHDOG_DECISION_MODE: "gemini",
+      OFFICINA_WATCHDOG_DECISION_MIN_SCORE: "0.55",
+      OFFICINA_WATCHDOG_DECISION_MARGIN: "0.25",
+      OFFICINA_WATCHDOG_DECISION_MODEL: "gemini-decision-1",
+      OFFICINA_WATCHDOG_DECISION_REDACT: "0",
+      GEMINI_API_KEY: "AIza-env",
+    } as NodeJS.ProcessEnv);
+    expect(got).toMatchObject({
+      mode: "gemini",
+      floor: 0.55,
+      margin: 0.25,
+      redact: false,
+      key: "AIza-env",
+    });
+  });
+
+  it("defaults the margin to 0.15 and redaction to on", () => {
+    writeDecisionConfig(cfg({ url: "http://127.0.0.1:9/x", floor: 0.8 }));
+    const got = resolveDecisionConfig({} as NodeJS.ProcessEnv);
+    expect(got.margin).toBe(0.15);
+    expect(got.redact).toBe(true);
+    expect(got.model).toBe("gemini-decision-1");
+  });
+});
+
+describe("ascensusGeminiKey", () => {
+  it("sniffs a bare AIza api_key (ascensusd's own rule)", () => {
+    const text = "provider = zai-coding-plan\napi_key = sk-zai\n";
+    expect(ascensusGeminiKey("/x", () => text)).toBe("");
+    const withGemini = `provider = zai-coding-plan\napi_key = AIza${"A".repeat(35)}\n`;
+    expect(ascensusGeminiKey("/x", () => withGemini)).toMatch(/^AIza/);
+  });
+
+  it("prefers a [gemini] section when present", () => {
+    const text = [
+      "provider = zai-coding-plan",
+      "api_key = AIza" + "B".repeat(35),
+      "[gemini]",
+      "api_key = AIza" + "C".repeat(35),
+      "model = gemini-decision-1",
+    ].join("\n");
+    const got = ascensusGeminiKey("/x", () => text);
+    expect(got).toBe("AIza" + "C".repeat(35));
+  });
+
+  it("tolerates a missing file", () => {
+    expect(
+      ascensusGeminiKey("/nope", () => {
+        throw new Error("ENOENT");
+      }),
+    ).toBe("");
   });
 });

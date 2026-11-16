@@ -2,6 +2,7 @@
 // The configured endpoint is advisory. No actor KV or generated decision text is used.
 import type { WatchedCall } from "./judge.ts";
 import { resolveDecisionConfig } from "./config.ts";
+import { askGeminiDecision } from "./decision-gemini.ts";
 
 /** Where a watchdog verdict came from (2026-11-16): the typed decision lane,
  *  the free cloud lane, or unavailable when both could not answer. */
@@ -32,7 +33,7 @@ const unknown = (reason: string): DecisionVerdict => ({
   source: "decision",
 });
 
-interface DecisionReply {
+export interface DecisionReply {
   usage?: {
     truncated?: unknown;
     truncated_questions?: unknown;
@@ -114,10 +115,40 @@ export async function judgeWithDecision(
 ): Promise<DecisionVerdict | undefined> {
   // Env vars win for throwaway runs; otherwise the operator's `/decision`
   // config file (2026-11-16).
-  const { endpoint, key, floor } = resolveDecisionConfig();
-  if (!endpoint) return undefined;
+  const cfg = resolveDecisionConfig();
+  const { endpoint, key, floor } = cfg;
+  if (cfg.mode === "heuristic") return undefined;
   if (!Number.isFinite(floor) || floor < 0 || floor > 1)
     return unknown("invalid decision answer-score floor");
+
+  // Gemini Decision 1 (2026-11-16): calibrated probabilities, no output tokens.
+  // Heuristics answer first, so only genuinely ambiguous evidence reaches here.
+  if (cfg.mode === "gemini") {
+    const now = Date.now();
+    const outcome = await askGeminiDecision(
+      {
+        command: call.command,
+        elapsedS: Math.floor((now - call.startedAt) / 1000),
+        stalledS: Math.floor((now - (call.stalledSince ?? now)) / 1000),
+        outputTail: call.tail ?? "",
+      },
+      {
+        key,
+        model: cfg.model,
+        floor,
+        margin: cfg.margin,
+        redact: cfg.redact,
+      },
+    );
+    if (!outcome.ok) return unknown(`decision model unavailable — ${outcome.reason}`);
+    const verdict = decisionVerdict(outcome.reply, floor);
+    if (verdict.alive === null) return unknown(outcome.reason);
+    // Name the verdict in the reason: "advisory; score 0.94" alone never told
+    // the operator WHICH choice the model made (2026-11-16).
+    return { ...verdict, reason: `${verdict.reason} (${outcome.reason})` };
+  }
+
+  if (!endpoint) return undefined;
   try {
     const url = new URL(endpoint);
     if (!["http:", "https:"].includes(url.protocol))

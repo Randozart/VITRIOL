@@ -385,7 +385,7 @@ export default function (pi: ExtensionAPI) {
   // override the file for throwaway runs.
   pi.registerCommand?.("decision", {
     description:
-      "Decision lane: status | set <systemone-url> | key <token> | floor <0-1> | off (hang-watchdog's typed judge)",
+      "Decision lane: status | mode heuristic|http|gemini | set <url> | key <token> | model <id> | floor <0-1> | margin <0-1> | redact on|off | off (hang-watchdog's typed judge)",
     handler: async (
       args: string,
       ctx: {
@@ -413,14 +413,21 @@ export default function (pi: ExtensionAPI) {
         k ? `${k.slice(0, 6)}…${k.length > 6 ? " (set)" : ""}` : "";
       if (!a || a === "status") {
         const current = resolveDecisionConfig();
-        if (!current.endpoint) {
+        if (current.mode === "heuristic") {
           show(
-            "decision: unset — watchdog uses the free lane (set /decision set <url> to enable)",
+            "decision: heuristics only (local) — `/decision mode gemini` or `set <url>` to add a judge",
+          );
+          return;
+        }
+        if (current.mode === "gemini") {
+          show(
+            `decision: gemini ${current.model} · floor ${current.floor} · margin ${current.margin} · ` +
+              `key ${redact(current.key) || "(none)"} · evidence ${current.redact ? "redacted, leaves the box" : "UNREDACTED, leaves the box"} · ~$0.00003/call`,
           );
           return;
         }
         show(
-          `decision: ${current.endpoint} · floor ${current.floor} · key ${redact(current.key)}`,
+          `decision: ${current.endpoint} · floor ${current.floor} · margin ${current.margin} · key ${redact(current.key)}`,
         );
         return;
       }
@@ -471,8 +478,57 @@ export default function (pi: ExtensionAPI) {
         );
         return;
       }
+      const setMode = a.match(/^mode\s+(heuristic|http|gemini)$/);
+      if (setMode) {
+        const mode = setMode[1] as "heuristic" | "http" | "gemini";
+        if (mode === "http" && !cfg.url) {
+          show("decision: mode http needs an endpoint first (`/decision set <url>`)", "warning");
+          return;
+        }
+        const ok = writeDecisionConfig({ ...cfg, mode });
+        show(
+          ok ? `decision: mode ${mode}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setModel = a.match(/^model\s+(\S+)$/);
+      if (setModel) {
+        const ok = writeDecisionConfig({ ...cfg, model: setModel[1] });
+        show(
+          ok ? `decision: model ${setModel[1]}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setMargin = a.match(/^margin\s+([0-9.]+)$/);
+      if (setMargin) {
+        const margin = Number(setMargin[1]);
+        if (!Number.isFinite(margin) || margin < 0 || margin > 1) {
+          show("decision: margin must be 0..1", "warning");
+          return;
+        }
+        const ok = writeDecisionConfig({ ...cfg, margin });
+        show(
+          ok ? `decision: margin ${margin}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setRedact = a.match(/^redact\s+(on|off)$/);
+      if (setRedact) {
+        const redactOn = setRedact[1] === "on";
+        const ok = writeDecisionConfig({ ...cfg, redact: redactOn });
+        show(
+          ok
+            ? `decision: redaction ${redactOn ? "on" : "OFF — raw evidence will leave the box"}`
+            : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
       show(
-        "decision: unknown arguments — try `set <url>`, `key <token>`, `floor <0-1>`, `status`, `off`",
+        "decision: unknown arguments — try `status`, `mode heuristic|http|gemini`, `set <url>`, `key <token>`, `model <id>`, `floor <0-1>`, `margin <0-1>`, `redact on|off`, `off`",
         "warning",
       );
     },

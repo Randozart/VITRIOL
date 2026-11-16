@@ -288,3 +288,65 @@ Never `ALIVE` on an error path (D1).
 `~/.vitriol/officina/env` as `GEMINI_API_KEY=AIza…`, or run
 `/decision key AIza…` after I ship the shim, or say "extend ascensus" and I'll do
 option B first so the key lives in `~/.vitriol/secrets`.
+
+---
+
+# As landed — infrastructure only (2026-11-16, commit `f781b6c`)
+
+Everything but the key, so the lane lights up the moment one exists.
+
+| piece | file | note |
+|---|---|---|
+| redaction | `hang-watchdog/decision-redact.ts` | scrub-before-send, 21 corpus tests |
+| Decisions client | `hang-watchdog/decision-gemini.ts` | request builder, probability→contract mapping, failure policy |
+| config knobs | `hang-watchdog/config.ts` | `mode`, `margin` (0.15), `model`, `redact` (on), `ascensusGeminiKey()` |
+| routing | `hang-watchdog/decision.ts` | gemini branch in `judgeWithDecision`; reason names the choice |
+| operator surface | `hang-watchdog/index.ts` | `/decision status\|mode\|set\|key\|model\|floor\|margin\|redact\|off` |
+| tests | `decision-redact`, `decision-gemini`, `decision-mode`, `config` | 122 watchdog tests (was 111) |
+
+## Redaction (R1-R5)
+
+Google/OpenAI/Anthropic/GitHub/HF/Slack/AWS key shapes, JWTs, URL credentials,
+`?key=`/`token=` params, `*_KEY=`/`*_TOKEN=`/`PASSWORD=` assignments,
+bearer/basic, long hex and base64-ish blobs, and e-mails. Caps: command 200,
+tail 200, total 1200 — **scrub before cap**, so a key split by the boundary
+cannot survive. Idempotent. The assignment *name* is kept
+(`GEMINI_API_KEY=«redacted»`) so the judge can see that something was scrubbed.
+
+## Mapping (the part that would silently break otherwise)
+
+`decision.ts` requires **both** `answer_confidence` and `action.act_probability`
+≥ floor. The Decisions reply gives one `confidence` (= p_max), so both scores are
+set to it — using `P(HUNG)` for the act score would have failed the gate on every
+ALIVE verdict. Floor default stays 0.9 for http mode; the gemini lane documents
+0.6 + margin 0.15 because a three-way choice rarely exceeds ~0.6 on genuinely
+ambiguous evidence.
+
+Failure policy: 429 ⇒ `rate limited`, 400-safety/`blockReason` ⇒ `safety block`,
+non-JSON ⇒ `unusable reply`, abort ⇒ `timeout`, no key ⇒ `no gemini key` — all
+`unknown`, never `ALIVE` (D1).
+
+## Key resolution order (gemini mode)
+
+1. `/decision key` / config `key`
+2. `GEMINI_API_KEY` in the environment
+3. `ascensusGeminiKey()` — `~/.vitriol/secrets`, mirroring ascensusd's own
+   sniffing: a bare `api_key` beginning `AIza`, a `gemini_api_key` line, or a
+   `[gemini]` section (the future multi-provider format) which wins.
+
+## Verified
+
+- 1423 tests across the suite (watchdog alone: 122), `tsc` clean.
+- One pre-existing flake sighted (`permissions-guard` under parallel load,
+  passes in isolation and on the re-run) — unrelated to this change.
+- Not verified live: no Gemini key on this host, so the lane currently answers
+  `unknown("decision model unavailable — no gemini key configured")` when set to
+  gemini mode. That is the designed behaviour, not a failure.
+
+## Still needed
+
+The key. `GEMINI_API_KEY=AIza…` in `~/.vitriol/officina/env`, or
+`/decision key AIza…`, or an ascensus `[gemini]` section. Then
+`/decision mode gemini` and `/decision status` should report
+`gemini gemini-decision-1 · floor 0.9 · margin 0.15 · key … · evidence redacted,
+leaves the box · ~$0.00003/call`.

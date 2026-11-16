@@ -436,15 +436,16 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let input_h = composer_box_height(&state.input, area.width);
     // Status band = belowEditor indicator rows (decode/route/phase tags) +
-    // the context-fill row. Both derive from live data that can appear for a
-    // single frame, so the HEIGHT is debounced (one-frame hysteresis): a
-    // transient datum must never shift the transcript, and a one-frame extra
-    // row read as a glitch (operator report 2026-11-16). Content still paints
-    // from the live values, clamped inside the applied height.
+    // the context-fill row. Both parts derive from live data that can appear
+    // for a single frame, so EACH PART is settled separately (2026-11-16):
+    // settling only the total let a transient indicator line take the ctx
+    // row's slot for a frame — "the ctx field flickers to look like a
+    // different field". With parts settled, a transient line simply does not
+    // render, and the ctx row never moves.
     let ctx_present = state.ctx_bar_label().is_some();
-    let indicator_h = indicators.len() as u16;
-    let band_need = indicator_h + u16::from(ctx_present);
-    let band_h = state.stabilize_band_rows(band_need);
+    let (ind_h, ctx_h) =
+        state.stabilize_band_parts(indicators.len() as u16, u16::from(ctx_present));
+    let band_h = ind_h + ctx_h;
     let chat_area = Rect {
         height: area.height.saturating_sub(input_h + 1 + band_h),
         ..area
@@ -455,14 +456,17 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         ..area
     };
     let indicator_area = Rect {
-        height: indicator_h.min(band_h),
+        height: ind_h,
         ..band_area
     };
+    // The ctx row is BOTTOM-anchored: its position is a function of the
+    // settled heights only, so indicator churn can never shift it.
     let ctx_area = Rect {
-        y: band_area.y + indicator_area.height,
-        height: (band_h - indicator_area.height).min(u16::from(ctx_present)),
+        y: band_area.y + band_h - ctx_h,
+        height: ctx_h,
         ..area
     };
+    debug_assert!(ind_h + ctx_h == band_h);
     let input_area = Rect {
         y: band_area.y + band_h,
         height: input_h,
@@ -725,7 +729,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         );
     }
 
-    if indicator_h > 0 {
+    if ind_h > 0 {
         let lines: Vec<Line> = indicators.iter().map(|l| ansi::parse_line(l)).collect();
         // Dedicated status-band surface (owner request 2026-11-10): the
         // three below-editor lines sit on the panel tone, and the flames
@@ -4277,6 +4281,90 @@ mod settings_chat_render_tests {
             row.chars().filter(|c| *c == '⡀').count() < row.chars().count(),
             "ignition is selective, never the whole row"
         );
+    }
+
+    /// Index of the status-band row that carries the context fill.
+    fn ctx_row_index(text: &str) -> Option<usize> {
+        text.lines().position(|l| l.contains(" ctx "))
+    }
+
+    fn band_state() -> AppState {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.ctx_usage = Some((12_345, 262_144));
+        // Pretend the parts have already settled (the dwell is wall-clock).
+        state.band_ind.force(1);
+        state.band_ctx.force(1);
+        state.set_widget_placed(
+            "vitriol-decode",
+            vec!["◈ VITRIOL  12.3 tok/s".into()],
+            Some("belowEditor".into()),
+        );
+        state
+    }
+
+    /// Operator report (2026-11-16): "the ctx field occasionally flickers to
+    /// look like a different field for one frame". A transient indicator line
+    /// must never take the ctx row's slot.
+    #[test]
+    fn ctx_row_keeps_its_slot_when_an_indicator_appears() {
+        let mut state = band_state();
+        let before = ctx_row_index(&screen(&mut state, 80, 24))
+            .expect("ctx row must be present in the steady state");
+
+        // A second indicator line for one frame (decode strips do this).
+        state.set_widget_placed(
+            "phase-model",
+            vec!["◇ plan: some-model".into()],
+            Some("belowEditor".into()),
+        );
+        let during = screen(&mut state, 80, 24);
+        assert_eq!(
+            ctx_row_index(&during),
+            Some(before),
+            "transient indicator moved the ctx row:\n{during}"
+        );
+        assert!(
+            during.contains(" ctx "),
+            "the ctx field must still be rendered:\n{during}"
+        );
+
+        // And back to one line: still the same row.
+        state.set_widget_placed("phase-model", vec![], Some("belowEditor".into()));
+        let after = screen(&mut state, 80, 24);
+        assert_eq!(ctx_row_index(&after), Some(before));
+    }
+
+    /// The ctx row is bottom-anchored in the band: its position depends only
+    /// on settled heights, so indicator churn can never shift it.
+    #[test]
+    fn ctx_row_is_bottom_anchored() {
+        for ind in 0..=2u16 {
+            let mut state = band_state();
+            state.band_ind.force(ind);
+            state.band_ctx.force(1);
+            state.widgets.clear();
+            for line in 0..ind {
+                state.set_widget_placed(
+                    &format!("w{line}"),
+                    vec![format!("indicator {line}")],
+                    Some("belowEditor".into()),
+                );
+            }
+            let text = screen(&mut state, 80, 24);
+            let ctx = ctx_row_index(&text).expect("ctx row missing");
+            // The divider is the row above the band; ctx is the band's last
+            // row, i.e. one above the composer's top border.
+            let composer_top = text
+                .lines()
+                .position(|l| l.trim_start().starts_with('╭'))
+                .expect("composer border");
+            assert_eq!(
+                ctx + 1,
+                composer_top,
+                "ctx row must sit on the last band row (ind={ind}):\n{text}"
+            );
+        }
     }
 
     #[test]

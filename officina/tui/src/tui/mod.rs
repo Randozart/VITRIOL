@@ -3697,6 +3697,9 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             state.entries.clear();
             state.md_cache_clear();
             state.widgets.clear();
+            // A fresh session has no status band yet; keeping the previous
+            // session's settled geometry would render its rows for a frame.
+            state.reset_band();
             state.input.clear();
             state.cursor = 0;
             state.resume_entries.clear();

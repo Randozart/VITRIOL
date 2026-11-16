@@ -17,6 +17,52 @@ use crate::tui::heal;
 /// change and longer than any transient datum lives.
 pub const BAND_SETTLE: std::time::Duration = std::time::Duration::from_millis(700);
 
+/// A row count with settle hysteresis (2026-11-16).
+///
+/// Live values (context fill, belowEditor widget lines) arrive on their own
+/// schedule; a candidate is adopted only once it has been stable for
+/// `BAND_SETTLE`, so a datum that lives for a frame or two can never move the
+/// layout. Each part of the status band keeps its own instance: the band's
+/// total height AND the split between indicator rows and the context row must
+/// both be settled, otherwise a transient indicator line takes the ctx row's
+/// slot for a frame ("the ctx field looks like a different field").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Settled {
+    pub applied: u16,
+    pending: Option<(u16, std::time::Instant)>,
+}
+
+impl Settled {
+    /// Adopt `candidate` once it has held for `BAND_SETTLE`; until then keep
+    /// the applied value.
+    pub fn settle(&mut self, candidate: u16, now: std::time::Instant) -> u16 {
+        if candidate == self.applied {
+            self.pending = None;
+            return self.applied;
+        }
+        match self.pending {
+            Some((pending, since)) if pending == candidate => {
+                if now.saturating_duration_since(since) >= BAND_SETTLE {
+                    self.applied = candidate;
+                    self.pending = None;
+                }
+                self.applied
+            }
+            _ => {
+                self.pending = Some((candidate, now));
+                self.applied
+            }
+        }
+    }
+
+    /// Adopt `candidate` immediately, clearing any pending change (test and
+    /// session-reset helper).
+    pub fn force(&mut self, value: u16) {
+        self.applied = value;
+        self.pending = None;
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolVerbosity {
     Line = 0,
@@ -822,14 +868,11 @@ pub struct AppState {
     // the bottom status row hides itself rather than showing a guess.
     pub ctx_usage: Option<(u64, u64)>,
 
-    // Status-band height stabiliser (2026-11-16). The band's row count is
-    // derived from live data (ctx fill, belowEditor widget lines) that can
-    // come and go on their own schedule; every change moves the whole
-    // transcript. `band_rows_applied` is what the renderer uses;
-    // `band_rows_pending` holds a candidate plus the instant it was first
-    // seen, so a value must SETTLE (BAND_SETTLE) before it is adopted.
-    pub band_rows_applied: u16,
-    pub band_rows_pending: Option<(u16, std::time::Instant)>,
+    // Status-band settle state (2026-11-16). TWO parts, settled separately:
+    // the indicator strip height and the context-fill row. Settling only their
+    // sum let a transient indicator line eat the ctx row's slot for a frame.
+    pub band_ind: Settled,
+    pub band_ctx: Settled,
 
     // Terminal title (setTitle)
     pub title: String,
@@ -1176,8 +1219,8 @@ impl Default for AppState {
             message_count: 0,
             widgets: Vec::new(),
             ctx_usage: None,
-            band_rows_applied: 0,
-            band_rows_pending: None,
+            band_ind: Settled::default(),
+            band_ctx: Settled::default(),
             title: String::new(),
             notice: None,
             commands: Vec::new(),
@@ -1646,38 +1689,35 @@ impl AppState {
         ))
     }
 
-    /// Status-band height with settle hysteresis (2026-11-16).
-    ///
-    /// The band's row count comes from live data (context fill, belowEditor
-    /// widget lines). Those arrive on their own schedule, and a value that
-    /// lives for a frame or two used to grow the band — and therefore shift
-    /// the whole transcript — for that moment (operator: "UI occasionally
-    /// bumps upwards"). A candidate is adopted only once it has been stable
-    /// for `BAND_SETTLE`; anything shorter than that is noise and the last
-    /// applied height is kept. Returns the height to render with.
-    pub fn stabilize_band_rows(&mut self, candidate: u16) -> u16 {
-        self.stabilize_band_rows_at(candidate, std::time::Instant::now())
+    /// Status-band parts with settle hysteresis (2026-11-16).
+    /// Returns `(indicator_rows, ctx_rows)` as the renderer should place them.
+    /// Each part settles on its own: a transient push on the indicator count
+    /// can never displace the context row (operator: "the ctx field flickers
+    /// to look like a different field for one frame"). The total therefore
+    /// changes only when a part has genuinely changed.
+    pub fn stabilize_band_parts(&mut self, indicator: u16, ctx: u16) -> (u16, u16) {
+        self.stabilize_band_parts_at(indicator, ctx, std::time::Instant::now())
     }
 
-    /// Clock-explicit form of `stabilize_band_rows` (unit-testable).
-    pub fn stabilize_band_rows_at(&mut self, candidate: u16, now: std::time::Instant) -> u16 {
-        if candidate == self.band_rows_applied {
-            self.band_rows_pending = None;
-            return self.band_rows_applied;
-        }
-        match self.band_rows_pending {
-            Some((pending, since)) if pending == candidate => {
-                if now.saturating_duration_since(since) >= BAND_SETTLE {
-                    self.band_rows_applied = candidate;
-                    self.band_rows_pending = None;
-                }
-                self.band_rows_applied
-            }
-            _ => {
-                self.band_rows_pending = Some((candidate, now));
-                self.band_rows_applied
-            }
-        }
+    /// Clock-explicit form of `stabilize_band_parts` (unit-testable).
+    pub fn stabilize_band_parts_at(
+        &mut self,
+        indicator: u16,
+        ctx: u16,
+        now: std::time::Instant,
+    ) -> (u16, u16) {
+        (
+            self.band_ind.settle(indicator, now),
+            self.band_ctx.settle(ctx, now),
+        )
+    }
+
+    /// Drop the band's settled geometry (session switch): a fresh session has
+    /// no band yet, and inheriting the old one would show a row of the
+    /// previous session's layout for a frame.
+    pub fn reset_band(&mut self) {
+        self.band_ind.force(0);
+        self.band_ctx.force(0);
     }
 
     fn model_matches(&self, m: &Model) -> bool {
@@ -8913,22 +8953,26 @@ mod self_heal_tests {
     }
 
     #[test]
-    fn band_height_ignores_a_one_frame_candidate() {
+    fn band_indicator_ignores_a_one_frame_candidate() {
         let mut s = AppState::default();
         let t0 = std::time::Instant::now();
-        assert_eq!(s.stabilize_band_rows_at(0, t0), 0);
+        assert_eq!(s.stabilize_band_parts_at(0, 0, t0), (0, 0));
         // A datum that shows up for a single frame must not move anything.
-        assert_eq!(s.stabilize_band_rows_at(1, t0), 0, "first sighting holds");
         assert_eq!(
-            s.stabilize_band_rows_at(0, t0 + BAND_SETTLE / 4),
-            0,
+            s.stabilize_band_parts_at(1, 0, t0),
+            (0, 0),
+            "first sighting holds"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(0, 0, t0 + BAND_SETTLE / 4),
+            (0, 0),
             "gone again — never applied"
         );
-        assert_eq!(s.band_rows_applied, 0);
+        assert_eq!(s.band_ind.applied, 0);
     }
 
     #[test]
-    fn band_height_ignores_a_candidate_that_flickers_for_a_while() {
+    fn band_indicator_ignores_a_candidate_that_flickers_for_a_while() {
         // Operator report 2026-11-16: "UI occasionally bumps upwards". A
         // datum living for several frames is still noise — it must not be
         // adopted just because it repeated.
@@ -8937,45 +8981,102 @@ mod self_heal_tests {
         for step in 0..6 {
             let now = t0 + BAND_SETTLE / 8 * step;
             assert_eq!(
-                s.stabilize_band_rows_at(if step % 2 == 0 { 1 } else { 0 }, now),
-                0,
+                s.stabilize_band_parts_at(if step % 2 == 0 { 1 } else { 0 }, 0, now),
+                (0, 0),
                 "alternating candidate never settles"
             );
         }
         // A candidate that flickers ON twice with a gap must restart its clock.
-        assert_eq!(s.stabilize_band_rows_at(1, t0), 0);
-        assert_eq!(s.stabilize_band_rows_at(0, t0 + BAND_SETTLE / 2), 0);
-        assert_eq!(s.stabilize_band_rows_at(1, t0 + BAND_SETTLE / 2), 0);
+        assert_eq!(s.stabilize_band_parts_at(1, 0, t0), (0, 0));
         assert_eq!(
-            s.stabilize_band_rows_at(1, t0 + BAND_SETTLE),
-            0,
+            s.stabilize_band_parts_at(0, 0, t0 + BAND_SETTLE / 2),
+            (0, 0)
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE / 2),
+            (0, 0)
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE),
+            (0, 0),
             "clock restarted"
         );
         assert_eq!(
-            s.stabilize_band_rows_at(1, t0 + BAND_SETTLE * 2),
-            1,
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE * 2),
+            (1, 0),
             "adopted once it holds"
         );
     }
 
     #[test]
-    fn band_height_adopts_a_candidate_that_settles() {
+    fn band_indicator_adopts_a_candidate_that_settles() {
         let mut s = AppState::default();
         let t0 = std::time::Instant::now();
-        assert_eq!(s.stabilize_band_rows_at(2, t0), 0);
+        assert_eq!(s.stabilize_band_parts_at(2, 0, t0), (0, 0));
         assert_eq!(
-            s.stabilize_band_rows_at(2, t0 + BAND_SETTLE / 2),
-            0,
+            s.stabilize_band_parts_at(2, 0, t0 + BAND_SETTLE / 2),
+            (0, 0),
             "not yet settled"
         );
-        assert_eq!(s.stabilize_band_rows_at(2, t0 + BAND_SETTLE), 2);
+        assert_eq!(s.stabilize_band_parts_at(2, 0, t0 + BAND_SETTLE), (2, 0));
         assert_eq!(
-            s.stabilize_band_rows_at(1, t0 + BAND_SETTLE * 2),
-            2,
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE * 2),
+            (2, 0),
             "shrink waits too"
         );
-        assert_eq!(s.stabilize_band_rows_at(1, t0 + BAND_SETTLE * 3), 1);
-        assert_eq!(s.band_rows_applied, 1);
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE * 3),
+            (1, 0)
+        );
+        assert_eq!(s.band_ind.applied, 1);
+    }
+
+    /// The reported bug (2026-11-16): "the ctx field flickers to look like a
+    /// different field for one frame". A transient indicator line must not be
+    /// able to take the context row's slot, so the parts settle separately.
+    #[test]
+    fn band_parts_settle_independently() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        // Steady state: one indicator row + the ctx row.
+        s.stabilize_band_parts_at(1, 1, t0);
+        assert_eq!(s.stabilize_band_parts_at(1, 1, t0 + BAND_SETTLE), (1, 1));
+        // A transient second indicator line for one frame.
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 1, t0 + BAND_SETTLE * 2),
+            (1, 1),
+            "the ctx row keeps its slot"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 1, t0 + BAND_SETTLE * 2 + BAND_SETTLE / 8),
+            (1, 1)
+        );
+        // A real second line that holds is adopted, and the ctx row stays put.
+        // Its clock restarted on the transitional frame, so it needs a full
+        // settle window from there.
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 1, t0 + BAND_SETTLE * 3),
+            (1, 1),
+            "clock restarted when the second line returned"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 1, t0 + BAND_SETTLE * 4),
+            (2, 1),
+            "adopted once it holds, ctx row unmoved"
+        );
+    }
+
+    #[test]
+    fn band_ctx_part_ignores_a_one_frame_absence() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        s.stabilize_band_parts_at(0, 1, t0);
+        assert_eq!(s.stabilize_band_parts_at(0, 1, t0 + BAND_SETTLE), (0, 1));
+        // ctx_usage momentarily unknown: the row must not vanish for a frame.
+        assert_eq!(
+            s.stabilize_band_parts_at(0, 0, t0 + BAND_SETTLE * 2),
+            (0, 1)
+        );
     }
 }
 

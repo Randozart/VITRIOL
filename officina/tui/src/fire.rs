@@ -257,19 +257,17 @@ pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<
         // fraction and the same hash seed the field uses for that row.
         let body_dens =
             ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, last, step))).clamp(0.0, 1.0);
-        // Embers thin the line (so it reads as dots on the rule), and the line
-        // is always ONE RAMP STEP BELOW the row above it — two identical rows
-        // read as a printing error (owner report 2026-11-16).
+        // THE LINE SMOULDERS (owner decision 2026-11-16: "let the fire start
+        // lower on the rule itself, and just have the line smoulder a bit on
+        // low load"). Presence still scales with load — more columns light up —
+        // but every lit cell keeps the *thinnest low dot*, so the rule stays a
+        // line with embers on it instead of becoming a dense bar that reads as
+        // detached from the flame above.
         let dens = body_dens * level_scale(level);
-        let scaled = (dens * (DENSITY.len() - 1) as f64).round() as usize;
-        // One step below the row above so the two rows can never be a copy —
-        // except at the very first embers, where the row above is already a
-        // single dot and the line must still dot the rule rather than vanish.
-        let idx = if scaled >= 2 { scaled - 1 } else { scaled };
-        if idx == 0 {
+        if dens <= 0.08 {
             continue; // first embers keep the underscore, intermittently
         }
-        *slot = Some(DENSITY[idx.min(DENSITY.len() - 1)]);
+        *slot = Some(DENSITY[1]);
     }
     out
 }
@@ -354,13 +352,33 @@ pub fn render(
                 continue;
             }
             // Position within this column's flame: 0 base → 1 tip.
-            let frac = (frac_from_base / col_h.max(1e-3)).clamp(0.0, 1.0);
+            //
+            // Remapped so the LOWEST VISIBLE row is the base. Without this the
+            // clamp `col_h >= base_frac` puts the bottom row at frac = 1 — its
+            // own tip — so the flame's sparse end touched the rule and the
+            // dense end floated a row above it: two detached bands (owner
+            // report 2026-11-16).
+            let span = (col_h - base_frac(rows)).max(1e-3);
+            let frac = ((frac_from_base - base_frac(rows)) / span).clamp(0.0, 1.0);
             // Heat: base hotter, tips cooler; whole arc shifts hot with load.
             let heat = (base_heat * (1.0 - frac * 0.75)).clamp(0.0, 1.0);
             // Density: dots pile toward the base, thin at the tips, with
-            // per-cell flicker keeping the surface alive.
-            let dens = ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, r as u32, step)))
+            // per-cell flicker keeping the surface alive. The BOTTOM row is
+            // capped so it blends into the smouldering rule instead of butting
+            // against it (a dense base next to thin embers read as two
+            // detached bands — owner report 2026-11-16).
+            let mut dens = ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, r as u32, step)))
                 .clamp(0.0, 1.0);
+            if r + 1 == rows {
+                // Base row: TAPERED, not clamped — a clamp would flatten every
+                // column to the same glyph and that uniform band is its own
+                // kind of edge. Scaling keeps the per-column variation, so the
+                // hand-over from the smouldering rule to the flame is a
+                // gradient (owner report 2026-11-16).
+                // Level-aware: embers keep the base close to the rule, a full
+                // draw lets it thicken upward.
+                dens *= 0.3 + 0.5 * level.clamp(0.0, 1.0);
+            }
             let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
             let ch = DENSITY[idx.min(DENSITY.len() - 1)];
             let c = style.color(heat, phase_ms);

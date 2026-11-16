@@ -4381,12 +4381,12 @@ mod settings_chat_render_tests {
         }
     }
 
-    /// I27: the rule is never a copy of the row above it — a duplicate row
-    /// read as a printing error (owner report 2026-11-16). The rule is one
-    /// ramp step below the flame's bottom row, so every claimed column is
-    /// strictly lighter than the cell above it.
+    /// I27 (revised 2026-11-16): the rule SMOULDERS. Every lit rule cell is
+    /// the thinnest low dot, so the line stays a line with embers on it, and
+    /// the flame's base row above is never thinner than it — the hand-over is a
+    /// gradient (1 dot → base → body), not two detached bands.
     #[test]
-    fn rule_is_one_step_below_the_row_above() {
+    fn rule_smoulders_below_the_flame() {
         const RAMP: [char; 8] = ['⠀', '⡀', '⡄', '⡆', '⡇', '⣇', '⣧', '⣷'];
         for level in [0.3_f64, 0.6, 1.0] {
             let mut state = AppState::default();
@@ -4411,13 +4411,17 @@ mod settings_chat_render_tests {
                 claimed += 1;
                 let below_rank = RAMP.iter().position(|d| d == c);
                 let above_rank = above.get(x).and_then(|u| RAMP.iter().position(|d| d == u));
-                if let (Some(b), Some(a)) = (below_rank, above_rank) {
-                    // Strictly lighter, except at the very first embers where
-                    // the row above is already the thinnest dot.
+                // The rule is always the thinnest low dot.
+                assert_eq!(
+                    below_rank,
+                    Some(1),
+                    "level {level}: rule cell {x} is {c:?}, expected the thinnest dot"
+                );
+                if let Some(a) = above_rank {
+                    // ...and the flame's base row is never thinner than it.
                     assert!(
-                        b < a || (b == 1 && a == 1),
-                        "level {level}: column {x} repeats the row above ({c:?} vs {u:?})",
-                        u = above[x]
+                        a >= 1,
+                        "level {level}: the base row above column {x} vanished"
                     );
                 }
             }

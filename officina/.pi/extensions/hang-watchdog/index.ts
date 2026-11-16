@@ -385,7 +385,7 @@ export default function (pi: ExtensionAPI) {
   // override the file for throwaway runs.
   pi.registerCommand?.("decision", {
     description:
-      "Decision lane: status | mode heuristic|http|gemini | set <url> | key <token> | model <id> | floor <0-1> | margin <0-1> | redact on|off | off (hang-watchdog's typed judge)",
+      "Decision lane: status | test [hung|alive] | mode heuristic|http|gemini | set <url> | key <token> | model <id> | floor <0-1> | margin <0-1> | redact on|off | off",
     handler: async (
       args: string,
       ctx: {
@@ -478,6 +478,44 @@ export default function (pi: ExtensionAPI) {
         );
         return;
       }
+      // `test` — run one real decision on synthetic stalled evidence. The
+      // fastest way to answer "is the judge actually being used?" without
+      // hunting through facts files (2026-11-16).
+      if (a === "test" || a === "test hung" || a === "test alive") {
+        const mode = cfg.mode ?? (cfg.url ? "http" : "heuristic");
+        if (mode === "heuristic") {
+          show("decision: heuristics only — no judge to call (`/decision mode gemini`)", "warning");
+          return;
+        }
+        const now = Date.now();
+        const hung = a !== "test alive";
+        const started = Date.now();
+        const verdict = await judgeWithDecision(
+          {
+            toolCallId: "decision-test",
+            command: hung ? "cat" : "cargo build --release",
+            startedAt: now - 300_000,
+            lastOutputRevision: 1,
+            stalledSince: hung ? now - 280_000 : null,
+            judgments: 0,
+            lastVerdict: null,
+            tail: hung ? "" : "Compiling officina-tui v0.2.0 — Finished release profile",
+            generation: 1,
+          },
+          new AbortController().signal,
+        );
+        const ms = Date.now() - started;
+        if (!verdict) {
+          show("decision: lane returned nothing (no judge configured?)", "warning");
+          return;
+        }
+        const label = verdict.alive === null ? "UNKNOWN" : verdict.alive ? "ALIVE" : "HUNG";
+        show(
+          `decision[${verdict.source}] ${label} in ${ms}ms — ${verdict.reason}`,
+          verdict.alive === null ? "warning" : "info",
+        );
+        return;
+      }
       const setMode = a.match(/^mode\s+(heuristic|http|gemini)$/);
       if (setMode) {
         const mode = setMode[1] as "heuristic" | "http" | "gemini";
@@ -528,7 +566,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       show(
-        "decision: unknown arguments — try `status`, `mode heuristic|http|gemini`, `set <url>`, `key <token>`, `model <id>`, `floor <0-1>`, `margin <0-1>`, `redact on|off`, `off`",
+        "decision: unknown arguments — try `status`, `test`, `mode heuristic|http|gemini`, `set <url>`, `key <token>`, `model <id>`, `floor <0-1>`, `margin <0-1>`, `redact on|off`, `off`",
         "warning",
       );
     },

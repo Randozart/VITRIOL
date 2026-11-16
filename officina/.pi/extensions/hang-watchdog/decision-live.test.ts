@@ -9,6 +9,7 @@
 // or the API shape changed.
 import { describe, expect, it } from "vitest";
 import { askGeminiDecision } from "./decision-gemini.ts";
+import { judgeWithDecision } from "./decision.ts";
 import { resolveDecisionConfig } from "./config.ts";
 
 const LIVE = process.env.DECISION_LIVE === "1";
@@ -109,5 +110,30 @@ describe.skipIf(!LIVE)("gemini decisions (live)", () => {
     );
     // Whatever the verdict, the call must succeed (redaction kept it valid).
     expect(out.ok, out.ok ? "" : out.reason).toBe(true);
+  });
+
+  // The actual watchdog entry point, against the REAL on-disk config (mode
+  // gemini, key from ~/.vitriol/secrets). This is the wiring the operator sees:
+  // it fails if the lane resolves to heuristic/http or the config is stale.
+  it("judgeWithDecision uses the gemini lane from the real config", async () => {
+    const now = Date.now();
+    const verdict = await judgeWithDecision(
+      {
+        toolCallId: "live",
+        command: "cat",
+        startedAt: now - 300_000,
+        lastOutputRevision: 1,
+        stalledSince: now - 280_000,
+        judgments: 0,
+        lastVerdict: null,
+        tail: "",
+        generation: 1,
+      },
+      new AbortController().signal,
+    );
+    expect(verdict, "the decision lane returned nothing — is mode gemini?").toBeDefined();
+    expect(verdict!.source).toBe("decision");
+    console.log(`[live-judge] alive=${verdict!.alive} reason=${verdict!.reason}`);
+    expect(verdict!.alive).toBe(false); // a 300s silent cat must not read alive
   });
 });

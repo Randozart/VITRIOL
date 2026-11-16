@@ -855,6 +855,35 @@ mod contract_tests {
     }
 
     #[test]
+    fn extension_ui_request_id_is_top_level_not_in_fields() {
+        // pi's RPC mode emits `{type, id, ...request}` — the id is never inside
+        // the flattened fields (2026-11-16: reading it there is the bug that
+        // dropped every extension dialog and hung the actor at tool preflight).
+        let req: ExtensionUiRequest = serde_json::from_value(serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "abc-123",
+            "method": "confirm",
+            "title": "permissions",
+            "message": "Allow bash?",
+        }))
+        .expect("dialog request");
+        assert_eq!(req.id, "abc-123", "id is a top-level field");
+        assert_eq!(req.method, "confirm");
+        assert_eq!(
+            req.fields.get("title").and_then(|v| v.as_str()),
+            Some("permissions")
+        );
+        assert_eq!(
+            req.fields.get("message").and_then(|v| v.as_str()),
+            Some("Allow bash?")
+        );
+        assert!(
+            req.fields.get("id").is_none(),
+            "the id must NOT land in the flattened fields"
+        );
+    }
+
+    #[test]
     fn id_mut_covers_every_variant_that_accepts_an_id() {
         for (mut cmd, _) in samples() {
             let is_ext_response = matches!(cmd, RpcCommand::ExtensionUiResponse { .. });

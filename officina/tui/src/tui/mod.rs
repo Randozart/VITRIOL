@@ -721,7 +721,7 @@ async fn run_loop(
                     }
                     Some(WireMessage::ExtensionUiRequest(req)) => {
                         state.note_wire_activity();
-                        handle_ui_request(state, &req.method, &req.fields, bridge).await;
+                        handle_ui_request(state, &req, bridge).await;
                     }
                     None => {
                         // A closed reader stays closed until a respawn installs
@@ -4362,10 +4362,16 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
 
 async fn handle_ui_request(
     state: &mut AppState,
-    method: &str,
-    fields: &serde_json::Value,
+    req: &crate::rpc::protocol::ExtensionUiRequest,
     bridge: &mut RpcBridge,
 ) {
+    // pi puts the dialog id at the TOP LEVEL of extension_ui_request
+    // (rpc-mode.js: `output({type, id, ...request})`); the flattened `fields`
+    // only carries title/message/options. Reading the id from fields was the
+    // 2026-11-16 session-reset bug: every extension dialog was dropped, pi
+    // waited forever, the tool never started and the watchdog respawned.
+    let method = req.method.as_str();
+    let fields = &req.fields;
     match method {
         "setWidget" => {
             let key = fields
@@ -4418,11 +4424,17 @@ async fn handle_ui_request(
         "select" | "confirm" | "input" | "editor" => {
             // Extension dialogs are real modals in the Rust TUI (2026-11-10).
             // Queue them; the response is sent when the user decides.
-            let id = fields
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            // Id comes from the top-level field first; the flattened legacy
+            // location is kept only for old fixtures (2026-11-16).
+            let id = if req.id.is_empty() {
+                fields
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                req.id.clone()
+            };
             if id.is_empty() {
                 // A request without an id can never be answered: silence would
                 // block the actor forever (2026-11-15).
@@ -4577,6 +4589,66 @@ mod tests {
             dialog_value("x", "Allow".into()),
             serde_json::json!({"type":"extension_ui_response","id":"x","value":"Allow"})
         );
+    }
+
+    #[tokio::test]
+    async fn real_wire_confirm_with_top_level_id_is_answered_not_dropped() {
+        // pi sends `{type, id, ...request}` — the TUI previously read the id
+        // from the flattened fields, dropped every dialog, and the actor hung
+        // at tool preflight (2026-11-16 session-reset bug).
+        use crate::rpc::protocol::ExtensionUiRequest;
+        let req: ExtensionUiRequest = serde_json::from_value(serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "dlg-1",
+            "method": "confirm",
+            "title": "permissions",
+            "message": "Allow bash?",
+        }))
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("officina-dlg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stub.cjs"), "process.stdin.resume();").unwrap();
+        let mut bridge = RpcBridge::spawn(&dir.join("stub.cjs"), &dir, &[])
+            .await
+            .unwrap();
+        let mut s = AppState::default();
+        handle_ui_request(&mut s, &req, &mut bridge).await;
+        let Some(dlg) = s.dialogs.pop_front() else {
+            panic!("confirm was dropped instead of queued");
+        };
+        assert_eq!(dlg.id, "dlg-1", "the dialog keeps the real top-level id");
+        assert!(matches!(dlg.kind, state::DialogKind::Confirm));
+        drop(bridge);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn id_less_request_stays_a_trail_noop_never_a_queued_dialog() {
+        use crate::rpc::protocol::ExtensionUiRequest;
+        let req: ExtensionUiRequest = serde_json::from_value(serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "",
+            "method": "confirm",
+            "title": "t",
+            "message": "m",
+        }))
+        .unwrap();
+        // Real pi always sends an id; a genuinely id-less request is a wire
+        // error and must be a no-op, never a queued dialog we cannot answer.
+        let dir = std::env::temp_dir().join(format!("officina-dlg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stub.cjs"), "process.stdin.resume();").unwrap();
+        let mut bridge = RpcBridge::spawn(&dir.join("stub.cjs"), &dir, &[])
+            .await
+            .unwrap();
+        let mut s = AppState::default();
+        handle_ui_request(&mut s, &req, &mut bridge).await;
+        assert!(
+            s.dialogs.is_empty(),
+            "genuinely id-less request stays a no-op"
+        );
+        drop(bridge);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

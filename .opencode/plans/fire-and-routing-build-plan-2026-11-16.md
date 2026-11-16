@@ -186,3 +186,62 @@ and no provider/model — so the router cannot cool a lane from that event alone
 L2 therefore reads the hint from `message_end`'s `errorMessage`, which is where
 Caduceus' JSON ends up. A future pi that includes the body would let the cooling
 happen a beat earlier.
+
+---
+
+# Fallback configuration in the Caduceus panel (2026-11-16, `fd75671`)
+
+Owner: *"make sure the fallback is easily configured in the Caduceus menu. For me
+this is OpenCode Go's DeepSeek v4.1 Flash. If all else fails, I keep using that
+model."*
+
+## Shipped
+
+- **Prefs contract** (`caduceus-prefs.ts` + Rust `CaduceusPrefs`): `fallback: []`
+  — serde-defaulted, skipped when empty, so an empty policy writes nothing
+  (I1 parity: absent ⇒ unchanged behaviour).
+- **Panel**: Models tab, `f` marks/unmarks the selected model as the reroute
+  fallback; the row shows `⤵`; the normal prefs save persists it. Test covers
+  the round-trip *and* that clearing it removes the field from the file.
+- **Proxy** follows the panel: env `CADUCEUS_ROUTER_FALLBACKS` wins (scripted
+  setups), otherwise the prefs file, mtime-cached so a change in the panel takes
+  effect without a restart. `/health` and `vitriol caduceus router` report the
+  effective list.
+- **Fail-loud fix**: the quiet `catch` in the prefs read hid a real bug
+  (`statSync is not defined` after an import refactor) that made the proxy
+  silently ignore the panel. It now logs the reason once per read.
+
+## Configured for this host
+
+`~/.vitriol/officina/caduceus-prefs.json`:
+`"fallback": ["opencode-go/deepseek-v4.1-flash"]` (id verified present in the
+gateway catalog; the older `opencode-go/deepseek-v4-flash` is on the hidden
+list, the v4.1 id is the one to use).
+
+Unit `vitriol-caduceus-router.service` is **enabled** on port 20129.
+
+## Live proof
+
+```
+$ curl -D- http://127.0.0.1:20129/v1/chat/completions -d '{"model":"agnes/agnes-3.0-flash",…}'
+HTTP/1.1 200   t=2.39s
+x-caduceus-router: model=opencode-go/deepseek-v4.1-flash;attempt=2
+{"model":"deepseek-v4.1-flash", …}
+
+state:   agnes/agnes-3.0-flash parked for its stated reset (HTTP 429)
+ledger:  {"model":"agnes/agnes-3.0-flash","status":429,…} then
+         {"model":"opencode-go/deepseek-v4.1-flash","status":200,"served":true,"attempt":2}
+```
+
+## Open item (not guessed)
+
+For a *session* to benefit, its `caduceus` provider must address the proxy
+(`http://127.0.0.1:20129/v1`) instead of the gateway (`:20128`). The extensions
+honour `OFFICINA_CADUCEUS_BASE_URL`, but I could not find where pi's `caduceus`
+provider is registered: no `registerProvider("caduceus")` in
+`officina/.pi/extensions`, no `caduceus` entry in `~/.pi/agent/models-store.json`
+or `settings.json`, and pi's own bundle does not define one. Rather than guess at
+a provider URL and break the live path, this stays open with the knob named.
+
+Until it is wired, the user-visible symptom is still covered by **L1**: a 429
+switches the turn to `officina/lapis` and replays it.

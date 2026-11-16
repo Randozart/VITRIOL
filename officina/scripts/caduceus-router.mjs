@@ -21,6 +21,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -28,11 +29,11 @@ import { dirname, join } from "node:path";
 import {
   DEFAULT_ROUTER_PORT,
   candidateOrder,
-  fallbacksFromEnv,
   giveUpMessage,
   park,
   parseQuotaHint,
   pruneParked,
+  resolveFallbacks,
 } from "./caduceus-router-lib.mjs";
 
 const HOME = process.env.HOME || homedir();
@@ -56,6 +57,10 @@ const STATE_FILE =
   process.env.CADUCEUS_ROUTER_STATE ||
   join(HOME, ".vitriol", "officina", "caduceus-router-state.json");
 const REROUTE_LOG = join(dirname(STATE_FILE), "caduceus-router-reroutes.jsonl");
+/** The Caduceus panel writes policy here; the proxy follows it (2026-11-16). */
+const PREFS_FILE =
+  process.env.OFFICINA_CADUCEUS_PREFS_FILE ||
+  join(HOME, ".vitriol", "officina", "caduceus-prefs.json");
 
 /** Parked lanes, persisted so a restart does not resurrect a spent lane. */
 function loadState() {
@@ -77,6 +82,28 @@ function saveState(state) {
   } catch {
     /* the proxy must keep serving even if the state file is unwritable */
   }
+}
+
+/** Prefs cache keyed on mtime: the panel can change fallbacks while we run. */
+let prefsCache = { mtime: -1, doc: null };
+
+function readPrefs() {
+  try {
+    const info = statSync(PREFS_FILE);
+    const mtime = info.mtimeMs;
+    if (mtime !== prefsCache.mtime) {
+      prefsCache = { mtime, doc: JSON.parse(readFileSync(PREFS_FILE, "utf8")) };
+    }
+    return prefsCache.doc;
+  } catch (error) {
+    console.error(`[prefs] ${PREFS_FILE}: ${error?.message ?? error}`);
+    return null;
+  }
+}
+
+/** Effective fallbacks for one request (env wins over the panel's prefs). */
+function effectiveFallbacks() {
+  return resolveFallbacks({ env: process.env, prefs: readPrefs() });
 }
 
 function logReroute(entry) {
@@ -144,7 +171,7 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         ok: true,
         gateway: GATEWAY,
-        fallbacks: fallbacksFromEnv().length,
+        fallbacks: effectiveFallbacks(),
         parked: parked.map(([model, until]) => ({
           model,
           seconds: Math.round((until - now) / 1000),
@@ -156,7 +183,7 @@ const server = createServer(async (req, res) => {
 
   const body = await readBody(req);
   const requested = modelOf(body);
-  const fallbacks = fallbacksFromEnv();
+  const fallbacks = effectiveFallbacks();
   const now = Date.now();
   state = pruneParked(state, now);
   const candidates = requested
@@ -276,10 +303,10 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  const fallbacks = fallbacksFromEnv();
+  const listed = effectiveFallbacks();
   console.log(
-    `caduceus-router on :${PORT} → ${GATEWAY} · fallbacks ${fallbacks.length}${
-      fallbacks.length ? ` (${fallbacks.join(", ")})` : " (pass-through)"
-    } · first-byte ${FIRST_BYTE_MS}ms`,
+    `caduceus-router on :${PORT} → ${GATEWAY} · fallbacks ${listed.length}${
+      listed.length ? ` (${listed.join(", ")})` : " (pass-through)"
+    } · first-byte ${FIRST_BYTE_MS}ms · prefs ${PREFS_FILE}`,
   );
 });

@@ -35,6 +35,13 @@ export interface CaduceusPrefs {
   max_candidates?: number;
   providers?: Record<string, ProviderPrefs>;
   models?: { pinned?: string[]; denied?: string[] };
+  /**
+   * Ordered reroute fallbacks for the Caduceus routing proxy (2026-11-16):
+   * if the lane a request pinned is quota-spent or dead, try these next, in
+   * order, and park whatever fails. Set from the Caduceus panel (Models tab,
+   * `f`). Empty/absent = the proxy passes requests straight through (I1).
+   */
+  fallback?: string[];
 }
 
 export interface PrefCandidate {
@@ -98,6 +105,9 @@ export function normalizePrefs(raw: unknown): CaduceusPrefs | null {
     const denied = listOf(models.denied);
     if (pinned.length > 0 || denied.length > 0) prefs.models = { pinned, denied };
   }
+
+  const fallback = listOf(doc.fallback);
+  if (fallback.length > 0) prefs.fallback = fallback;
   return prefs;
 }
 

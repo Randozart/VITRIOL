@@ -1525,7 +1525,9 @@ async function cmdRouter(flags) {
     log("Caduceus routing proxy removed.");
     return;
   }
-  const fallbacks = String(
+  // Env wins (scripted setups), else the Caduceus panel's policy file — the
+  // same resolution the proxy uses, so `status` never lies (2026-11-16).
+  const fromEnv = String(
     process.env.CADUCEUS_ROUTER_FALLBACKS ??
       readEnv().get("CADUCEUS_ROUTER_FALLBACKS") ??
       "",
@@ -1533,6 +1535,15 @@ async function cmdRouter(flags) {
     .split(",")
     .map((x) => x.trim())
     .filter(Boolean);
+  const prefsDoc = readJsonSafe(
+    process.env.OFFICINA_CADUCEUS_PREFS_FILE ||
+      join(HOME, ".vitriol", "officina", "caduceus-prefs.json"),
+  );
+  const fallbacks = fromEnv.length
+    ? fromEnv
+    : (Array.isArray(prefsDoc?.fallback) ? prefsDoc.fallback : [])
+        .map((x) => String(x ?? "").trim())
+        .filter(Boolean);
   if (flags.install) {
     const node = process.execPath;
     mkdirSync(join(HOME, ".config", "systemd", "user"), { recursive: true });

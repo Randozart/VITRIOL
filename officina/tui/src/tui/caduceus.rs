@@ -142,6 +142,11 @@ pub struct CaduceusPrefs {
     pub max_candidates: u32,
     pub providers: BTreeMap<String, ProviderPrefs>,
     pub models: ModelPrefs,
+    /// Reroute fallbacks for the Caduceus routing proxy (2026-11-16): tried in
+    /// order when the pinned lane is quota-spent or dead. `f` in the Models tab
+    /// marks one; absent/empty leaves the proxy a pass-through.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback: Vec<String>,
 }
 
 impl Default for CaduceusPrefs {
@@ -153,6 +158,7 @@ impl Default for CaduceusPrefs {
             max_candidates: 48,
             providers: BTreeMap::new(),
             models: ModelPrefs::default(),
+            fallback: Vec::new(),
         }
     }
 }
@@ -720,6 +726,29 @@ impl Page {
         changed
     }
 
+    /// Is `id` one of the reroute fallbacks (2026-11-16)?
+    pub fn is_fallback(&self, id: &str) -> bool {
+        self.prefs.fallback.iter().any(|m| m == id)
+    }
+
+    /// `f` — mark/unmark the selected model as a reroute fallback. The proxy
+    /// tries fallbacks in order when the pinned lane is quota-spent or dead, so
+    /// the operator keeps working instead of resuming the session.
+    pub fn toggle_fallback(&mut self) -> bool {
+        if self.tab != Tab::Models {
+            return false;
+        }
+        let Some(id) = self.candidate_view().get(self.sel).map(|c| c.id.clone()) else {
+            return false;
+        };
+        if let Some(pos) = self.prefs.fallback.iter().position(|m| *m == id) {
+            self.prefs.fallback.remove(pos);
+        } else {
+            self.prefs.fallback.push(id);
+        }
+        true
+    }
+
     /// Remove the selected model from both pin/deny lists (Backspace/Delete).
     pub fn clear_model_state(&mut self) -> bool {
         if self.tab != Tab::Models {
@@ -777,7 +806,7 @@ impl Page {
         }
     }
 
-    fn save(&mut self) {
+    pub fn save(&mut self) {
         self.note = Some(match save_prefs_at(&self.prefs_file, &self.prefs) {
             Ok(()) => "prefs saved".to_string(),
             Err(e) => format!("prefs save failed: {e}"),
@@ -1069,6 +1098,36 @@ mod tests {
         page.filter = "da".into();
         assert_eq!(page.provider_view().len(), 1);
         assert_eq!(page.provider_view()[0].id, "dahl");
+    }
+
+    /// `f` marks a reroute fallback and it survives a save/load round-trip —
+    /// the proxy reads this list (2026-11-16).
+    #[test]
+    fn fallback_marks_and_persists() {
+        let path = tmp_path("fallback");
+        let mut page = sample_page();
+        page.prefs_file = path.clone();
+        page.tab = Tab::Models;
+        let id = page.candidate_view()[0].id.clone();
+        assert!(!page.is_fallback(&id));
+        assert!(page.toggle_fallback(), "marking must report a change");
+        assert!(page.is_fallback(&id));
+        page.save();
+        let (reloaded, _note) = load_prefs_at(&path);
+        assert_eq!(reloaded.fallback, vec![id.clone()]);
+        // Second press clears it, and the cleared list is not written back as
+        // an empty array (I1 parity: absent field = pass-through).
+        assert!(page.toggle_fallback());
+        assert!(!page.is_fallback(&id));
+        page.save();
+        let (reloaded, _note) = load_prefs_at(&path);
+        assert!(reloaded.fallback.is_empty());
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw.contains("fallback"),
+            "empty fallback must not be written"
+        );
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

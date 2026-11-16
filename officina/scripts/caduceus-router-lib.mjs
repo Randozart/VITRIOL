@@ -107,6 +107,23 @@ export function giveUpMessage({ tried, parked, nowMs = Date.now() }) {
   return `all ${tried} candidate(s) unavailable — ${when}`;
 }
 
+/** Fallbacks from the Caduceus prefs document (`fallback: [...]`, 2026-11-16). */
+export function fallbacksFromPrefs(prefs) {
+  const raw = prefs?.fallback;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((m) => String(m ?? "").trim()).filter((m) => m.length > 0);
+}
+
+/**
+ * Effective fallbacks: the env wins (so a unit can pin them), otherwise the
+ * panel's policy file decides. The Caduceus panel is the normal way to set
+ * this; env exists for scripted setups.
+ */
+export function resolveFallbacks({ env = process.env, prefs = null } = {}) {
+  const fromEnv = fallbacksFromEnv(env);
+  return fromEnv.length > 0 ? fromEnv : fallbacksFromPrefs(prefs);
+}
+
 /** Fallback list from env (`CADUCEUS_ROUTER_FALLBACKS`, comma separated). */
 export function fallbacksFromEnv(env = process.env) {
   return String(env.CADUCEUS_ROUTER_FALLBACKS ?? "")

@@ -2990,6 +2990,13 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 } else {
                     page.prefs.model_state(&c.id).label()
                 };
+                // `f` marks the reroute fallback (2026-11-16): shown so the
+                // operator can see which model catches a spent lane.
+                let state_label = if page.is_fallback(&c.id) {
+                    format!("{state_label} ⤵").trim().to_string()
+                } else {
+                    state_label.to_string()
+                };
                 let text = format!(
                     "  {:<44} {:<14} {:>8} {:<5} {:<7}",
                     trunc(&c.id, 44),

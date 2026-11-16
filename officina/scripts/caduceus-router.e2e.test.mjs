@@ -4,12 +4,27 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { readFileSync, rmSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
+const HERE = dirname(fileURLToPath(import.meta.url));
 const STATE = join(tmpdir(), `caduceus-router-e2e-${process.pid}.json`);
-const ROUTER_PORT = 25_911 + (process.pid % 200);
-const GATEWAY_PORT = 26_911 + (process.pid % 200);
+// Ephemeral ports: fixed ones collide with a parallel run or a leftover child.
+let ROUTER_PORT = 0;
+let GATEWAY_PORT = 0;
+
+/** Bind an ephemeral port and hand the number back. */
+function freePort() {
+  return new Promise((resolve, reject) => {
+    const probe = createServer();
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+}
 
 /** Stub gateway: quota-fails anything not in `served`, streams SSE for those. */
 function startStub() {
@@ -43,7 +58,11 @@ function startStub() {
         }),
       );
     });
-    server.listen(GATEWAY_PORT, "127.0.0.1", () => resolve(server));
+    server.once("error", () => resolve(null));
+    server.listen(GATEWAY_PORT, "127.0.0.1", () => {
+      GATEWAY_PORT = server.address().port;
+      resolve(server);
+    });
   });
 }
 
@@ -52,11 +71,13 @@ let proxy;
 
 beforeAll(async () => {
   rmSync(STATE, { force: true });
+  GATEWAY_PORT = await freePort();
+  ROUTER_PORT = await freePort();
   stub = await startStub();
   proxy = spawn(
     process.execPath,
     [
-      join(__dirname, "caduceus-router.mjs"),
+      join(HERE, "caduceus-router.mjs"),
       "--port",
       String(ROUTER_PORT),
       "--gateway",
@@ -69,7 +90,7 @@ beforeAll(async () => {
         CADUCEUS_ROUTER_STATE: STATE,
         CADUCEUS_ROUTER_FIRST_BYTE_MS: "5000",
       },
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
     },
   );
   // Wait for the proxy's port to answer.

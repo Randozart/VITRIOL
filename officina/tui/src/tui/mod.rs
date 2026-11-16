@@ -994,6 +994,22 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
             KeyCode::Enter => page.detail = true,
             KeyCode::Char('/') => page.filtering = true,
             KeyCode::Char('r') => reload = true,
+            // f — mark the selected model as a reroute fallback (Models tab).
+            KeyCode::Char('f') => {
+                if page.toggle_fallback() {
+                    page.save();
+                    let marked = page
+                        .candidate_view()
+                        .get(page.sel)
+                        .map(|c| page.is_fallback(&c.id))
+                        .unwrap_or(false);
+                    page.note = Some(if marked {
+                        "fallback marked — the proxy tries it when a lane is spent".to_string()
+                    } else {
+                        "fallback cleared".to_string()
+                    });
+                }
+            }
             KeyCode::Char('h') => {
                 page.toggle_hidden();
             }

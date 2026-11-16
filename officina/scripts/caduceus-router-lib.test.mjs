@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   candidateOrder,
   fallbacksFromEnv,
+  fallbacksFromPrefs,
+  resolveFallbacks,
   giveUpMessage,
   isParked,
   park,
@@ -149,5 +151,23 @@ describe("fallbacksFromEnv", () => {
       ["a", "b"],
     );
     expect(fallbacksFromEnv({})).toEqual([]);
+  });
+});
+
+describe("fallbacks from the Caduceus panel", () => {
+  it("reads the prefs `fallback` list", () => {
+    expect(fallbacksFromPrefs({ fallback: [" opencode-go/deepseek-v4.1-flash ", ""] })).toEqual([
+      "opencode-go/deepseek-v4.1-flash",
+    ]);
+    expect(fallbacksFromPrefs({})).toEqual([]);
+    expect(fallbacksFromPrefs(null)).toEqual([]);
+  });
+
+  it("prefers the env, else the panel", () => {
+    expect(
+      resolveFallbacks({ env: { CADUCEUS_ROUTER_FALLBACKS: "env/lane" }, prefs: { fallback: ["ui/lane"] } }),
+    ).toEqual(["env/lane"]);
+    expect(resolveFallbacks({ env: {}, prefs: { fallback: ["ui/lane"] } })).toEqual(["ui/lane"]);
+    expect(resolveFallbacks({ env: {}, prefs: null })).toEqual([]);
   });
 });

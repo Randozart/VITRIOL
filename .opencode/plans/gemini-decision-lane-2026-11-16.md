@@ -153,3 +153,138 @@ price and on returning probabilities instead of prose.
 3. Do you want the Decisions API directly, or should the shim call it *through*
    Caduceus once you add the Gemini lane there (one more hop, but then the
    gateway's ledger and cooling cover it too)?
+
+---
+
+# Follow-up research (owner answers: key "should be for ascensus", evidence may leave, call Google directly)
+
+## A. The API contract, verified from the docs
+
+`POST https://generativelanguage.googleapis.com/v1beta/decisions`
+
+- **auth**: header **`x-goog-api-key: $GEMINI_API_KEY`** — `?key=` is *not*
+  documented for this endpoint (it is for `generateContent`, which is why
+  `ascensusd.call_gemini` uses it; the decisions shim must use the header).
+- **request**:
+  ```json
+  {
+    "model": "gemini-decision-1",
+    "input": "<shared evidence text>",
+    "questions": {
+      "liveness": {
+        "type": "choice",
+        "instructions": "Judge the command's liveness from the evidence.",
+        "criteria": {
+          "ALIVE": "clearly progressing (compiling, downloading, iterating)",
+          "HUNG": "blocked (deadlock, waiting for stdin, infinite repetition)",
+          "UNKNOWN": "insufficient or contradictory evidence"
+        }
+      }
+    }
+  }
+  ```
+  `questions` keys are `[A-Za-z0-9_-]{1,64}`; choice `criteria` is a **map
+  optionID → description** (2–255 options; the server sorts them); 1–1,000
+  questions share one billed `input`.
+- **response**: `answers.liveness = { choice, probabilities: {ALIVE,HUNG,UNKNOWN}, confidence }`
+  where **`confidence == p_max`**, plus `usage` with **zero output tokens**.
+  *Probabilities, not logits.* **No abstention field** — the client thresholds.
+- **failures**: `400` with a safety code (`safety`, `prohibited_content`,
+  `blocklist`, `image_safety`, `content_blocked`), or a `200` with no `answers`
+  and `promptFeedback.blockReason`; `429 RESOURCE_EXHAUSTED` with no
+  `Retry-After` (backoff+jitter is the documented remedy).
+
+## B. Key: not on this host, and ascensus is single-key
+
+- `~/.vitriol/secrets` holds exactly one `api_key` (49 chars, tail `AYJw`),
+  `provider = zai-coding-plan`, `model = glm-4.6` — **no Gemini key**.
+- `GEMINI_API_KEY` is absent from `~/.vitriol/officina/env`, `~/.omniroute/.env`,
+  `~/.pi/agent/auth.json`, `~/.bashrc`, `~/.profile`.
+- `ascensusd.read_secrets()` reads **one** `api_key`, sniffs `AIza…` as gemini,
+  and defaults the model to `gemini-2.5-flash` for that provider.
+
+Consequence: dropping a Gemini key into that file **replaces** the zai
+escalation key (single-key format), which is a behaviour change to ascensus, not
+to the watchdog. Two ways forward, and the second is the tidy end state:
+
+1. **Decision lane only (no ascensus change)** — put `GEMINI_API_KEY` in
+   `~/.vitriol/officina/env` (0600, existing pattern) or set it with
+   `/decision key <token>`. The shim resolves: env → decision config → gemini
+   entry in `~/.vitriol/secrets` (read-only fallback).
+2. **Extend ascensus to multi-provider** — allow sections/prefixes, e.g.
+   ```
+   provider = zai-coding-plan
+   api_key  = …
+   model    = glm-4.6
+   [gemini]
+   api_key  = AIza…
+   model    = gemini-decision-1
+   ```
+   `read_secrets()` gains a `--provider gemini` selector. Small, testable
+   (parser + resolution order), and then one file serves escalation *and* the
+   decision lane. This is the only option consistent with "configured for
+   ascensus", and it must not disturb the zai defaults.
+
+## C. Mapping onto the existing gate (exact, from `decision.ts:56-110`)
+
+The gate requires **both** scores ≥ floor and ≤ 1, `abstention` absent or
+`"passed"`, `low_confidence` falsy, and `choice ∈ {ALIVE, HUNG}`.
+
+| our field | source |
+|---|---|
+| `choice` | `answers.liveness.choice` |
+| `answer_confidence` | `answers.liveness.confidence` (= p_max) |
+| `action.act_probability` | **also `confidence`** — the contract's act score is "confidence to act on this verdict", so `P(HUNG)` would wrongly reject every ALIVE verdict |
+| `abstention` | `"passed"` when accepted, `"abstained"` when below the floor |
+| `usage` | `truncated:false`, `state_tokens_dropped:0`, `truncated_questions:[]`, `options.liveness:{total:3,distinct:3}` |
+
+**Floor choice matters**: with three options, p_max is naturally 0.33–0.6 on
+genuinely ambiguous evidence, so the existing 0.9 default would abstain almost
+always. Proposal for this lane: `floor = 0.60` **plus a margin rule**
+(`p_max − p_second ≥ 0.15`), both configurable; `/decision status` prints the
+effective values and states the reason a given verdict abstained.
+
+## D. Redaction (evidence may leave the box, per owner)
+
+Applied to `input` before the request, and never logged unredacted:
+
+- key-shaped tokens: `sk-…`, `ghp_/gho_…`, `AIza…`, bearer/JWT blobs, long
+  base64/hex runs (≥24 chars);
+- assignments: `*_KEY=`, `*_TOKEN=`, `*_SECRET=`, `PASSWORD=`, `AUTH=`;
+- URL credentials (`scheme://user:pass@`), and any `?key=`/`&token=` value →
+  `«redacted»`;
+- caps: command ≤ 200 chars, tail ≤ 200 chars, total `input` ≤ 1200 chars.
+
+Unit-tested against a corpus (the redaction module is shared with the shim).
+
+## E. Failure policy inside the watchdog path
+
+| condition | result |
+|---|---|
+| HTTP 429 | UNKNOWN + abstained, reason `rate limited`; **no retry** here (the watchdog re-evaluates later) |
+| HTTP 400 safety / 200 with `blockReason` | UNKNOWN + abstained, reason `safety block`; no retry |
+| timeout (>2500 ms) | UNKNOWN + abstained, reason `timeout` |
+| malformed / missing `answers` | UNKNOWN + abstained, reason `unusable reply` |
+| `confidence < floor` or margin too small | UNKNOWN + abstained, reason `below floor` |
+
+Never `ALIVE` on an error path (D1).
+
+## F. Build order
+
+1. `decision-redact.ts` + tests (pure, no network).
+2. `decision-gemini.cjs` (shim, header auth, mapping, failure policy) + mocked
+   tests using the shapes above.
+3. `config.ts`: `mode: "heuristic" | "gemini" | "http"`, `floor`, `margin`,
+   `redact` (default on); `/decision status` reports tier, cost/call, and
+   whether evidence leaves the box.
+4. Heuristics stay in front (unchanged); parity test for `mode=heuristic`.
+5. Optional ascensus multi-provider section (separate commit; touches
+   `ascensusd.py` + a parser test).
+6. Live smoke behind `DECISION_LIVE=1`.
+
+## G. Still needed from the owner
+
+**The key itself.** Nothing on this host has it. Either paste it into
+`~/.vitriol/officina/env` as `GEMINI_API_KEY=AIza…`, or run
+`/decision key AIza…` after I ship the shim, or say "extend ascensus" and I'll do
+option B first so the key lives in `~/.vitriol/secrets`.

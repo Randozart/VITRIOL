@@ -27,6 +27,7 @@ import {
   recordRetryAfter,
   recordSuccess,
 } from "../_shared/provider-health.ts";
+import { parseCooldownFromError } from "../_shared/gateway-health.ts";
 import {
   configFromEnv,
   decideTier,
@@ -534,8 +535,22 @@ export default function (pi: ExtensionAPI) {
   pi.on("message_end", (event, ctx) => {
     const m = event.message as { role?: string; provider?: string; model?: string; stopReason?: string };
     if (m.role === "assistant" && m.provider && m.model) {
-      if (m.stopReason === "error") recordFailure(m.provider, m.model, undefined, { errorClass: "completion_error" });
-      else recordSuccess(m.provider, m.model);
+      if (m.stopReason === "error") {
+        // The quota hint lives in the error TEXT, not in a header: pi's
+        // `after_provider_response` event carries {status, headers} only, so a
+        // body-only `retry_after`/`reset_at` (what Caduceus sends) is invisible
+        // there. `message_end` is the one event that carries the message
+        // (2026-11-16).
+        const text = (m as { errorMessage?: string }).errorMessage;
+        const hint = parseCooldownFromError(text);
+        if (hint) recordFailure(m.provider, m.model, 429, { retryAfterMs: hint, errorClass: "quota" });
+        else recordFailure(m.provider, m.model, undefined, { errorClass: "completion_error" });
+        // Cool the pinned lane for the stated duration even when tier
+        // bookkeeping says "local": the message names the lane that actually
+        // failed, and re-picking it minutes later is what caused the repeated
+        // 429s (2026-11-16).
+        if (activeCloud) cool(activeCloud, hint ?? 60_000);
+      } else recordSuccess(m.provider, m.model);
     }
     if (tier !== "cloud") return;
     const msg = event.message as {

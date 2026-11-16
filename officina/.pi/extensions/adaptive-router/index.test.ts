@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -215,6 +215,58 @@ describe("manual latch", () => {
     await h.start(); // re-armed: busy local spills to cloud now
     expect(setModel).toHaveBeenCalledTimes(1);
     expect(setModel.mock.calls[0][0]).toMatchObject({ provider: "caduceus" });
+  });
+  // L2 (2026-11-16): the quota hint lives in the error TEXT, because pi's
+  // after_provider_response event carries {status, headers} only — Caduceus
+  // sends `retry_after` / `reset_at` in the JSON body.
+  const readHealth = (path: string) =>
+    JSON.parse(readFileSync(path, "utf8")) as {
+      models: Record<string, { cooldownUntil: number; status: string }>;
+    };
+
+  it("parks the lane for the stated retry_after, not for a default", async () => {
+    const health = "/tmp/officina-adaptive-health-quota.json";
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = health;
+    rmSync(health, { force: true });
+    const h = harness();
+    await h.start();
+    const before = Date.now();
+    h.trigger("message_end", {
+      message: {
+        role: "assistant",
+        provider: "caduceus",
+        model: "agnes/agnes-3.0-flash",
+        stopReason: "error",
+        errorMessage: 'quota spent (reset after 2m 57s)","retry_after":177',
+      },
+    });
+    const rec = Object.values(readHealth(health).models)[0];
+    expect(rec, "the failing lane must be recorded").toBeDefined();
+    const remaining = rec!.cooldownUntil - before;
+    expect(remaining).toBeGreaterThan(170_000);
+    expect(remaining).toBeLessThan(180_000);
+    rmSync(health, { force: true });
+  });
+
+  it("uses the short default when the error text carries no quota hint", async () => {
+    const health = "/tmp/officina-adaptive-health-plain.json";
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE = health;
+    rmSync(health, { force: true });
+    const h = harness();
+    await h.start();
+    const before = Date.now();
+    h.trigger("message_end", {
+      message: {
+        role: "assistant",
+        provider: "caduceus",
+        model: "some/lane",
+        stopReason: "error",
+        errorMessage: "connection reset by peer",
+      },
+    });
+    const rec = Object.values(readHealth(health).models)[0];
+    expect(rec!.cooldownUntil - before).toBeLessThan(120_000);
+    rmSync(health, { force: true });
   });
 });
 

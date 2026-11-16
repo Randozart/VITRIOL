@@ -206,6 +206,11 @@ export function parseCooldownFromError(
   if (!text) return undefined;
   const cap = cooldownCeilingMs(env);
   const clamp = (ms: number): number => Math.min(cap, Math.max(60_000, Math.floor(ms)));
+  // `"retry_after":177` — a BARE number of seconds is what Caduceus actually
+  // sends (2026-11-16 trace); the original helper only matched a quoted value
+  // and silently fell back to the 60 s default.
+  const bare = /"retry_after"\s*:\s*"?([0-9]+(?:\.[0-9]+)?)"?/.exec(text);
+  if (bare) return clamp(Number(bare[1]) * 1000);
   const seconds = /"reset_seconds"\s*:\s*(\d+)/.exec(text);
   if (seconds) return clamp(Number(seconds[1]) * 1000);
   const iso = /"(?:retry_after|reset_at)"\s*:\s*"([^"]+)"/.exec(text);

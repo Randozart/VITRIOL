@@ -53,6 +53,12 @@ describe("parseCooldownFromError", () => {
   });
 
   it("ignores unrelated text and honours the ceiling override", () => {
+    expect(
+      parseCooldownFromError(
+        'quota spent (reset after 2m 57s)","retry_after":177,"reset_at":"2026-11-16T18:54:18.506Z"',
+        now,
+      ),
+    ).toBe(177_000); // bare number = seconds, the shape Caduceus sends
     expect(parseCooldownFromError("plain error", now)).toBeUndefined();
     expect(parseCooldownFromError(undefined, now)).toBeUndefined();
     process.env.OFFICINA_LANE_COOLDOWN_MAX_MS = "60000";

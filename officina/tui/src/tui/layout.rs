@@ -433,37 +433,38 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .filter(|l| !l.trim().is_empty())
         .take(3)
         .collect();
-    let indicator_h = indicators.len() as u16;
 
     let input_h = composer_box_height(&state.input, area.width);
-    // Context status row (owner request 2026-11-11): one row, only while a
-    // turn has reported context fill. Sits in the status band, above the
-    // breathing row.
-    let ctx_h = if state.ctx_bar_label().is_some() {
-        1
-    } else {
-        0
-    };
-    // One breathing row between the transcript and the prompt box (owner
-    // request 2026-09-03 — text flowed straight into the editor).
+    // Status band = belowEditor indicator rows (decode/route/phase tags) +
+    // the context-fill row. Both derive from live data that can appear for a
+    // single frame, so the HEIGHT is debounced (one-frame hysteresis): a
+    // transient datum must never shift the transcript, and a one-frame extra
+    // row read as a glitch (operator report 2026-11-16). Content still paints
+    // from the live values, clamped inside the applied height.
+    let ctx_present = state.ctx_bar_label().is_some();
+    let indicator_h = indicators.len() as u16;
+    let band_need = indicator_h + u16::from(ctx_present);
+    let band_h = state.stabilize_band_rows(band_need);
     let chat_area = Rect {
-        height: area
-            .height
-            .saturating_sub(input_h + 1 + indicator_h + ctx_h),
+        height: area.height.saturating_sub(input_h + 1 + band_h),
+        ..area
+    };
+    let band_area = Rect {
+        y: area.y + chat_area.height + 1,
+        height: band_h,
         ..area
     };
     let indicator_area = Rect {
-        y: area.y + chat_area.height + 1,
-        height: indicator_h,
-        ..area
+        height: indicator_h.min(band_h),
+        ..band_area
     };
     let ctx_area = Rect {
-        y: indicator_area.y + indicator_h,
-        height: ctx_h,
+        y: band_area.y + indicator_area.height,
+        height: (band_h - indicator_area.height).min(u16::from(ctx_present)),
         ..area
     };
     let input_area = Rect {
-        y: ctx_area.y + ctx_h,
+        y: band_area.y + band_h,
         height: input_h,
         ..area
     };
@@ -670,69 +671,8 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Vec::new()
     };
 
-    // Question panel (2026-11-13): the ask extension stages question.json;
-    // the TUI renders the operator's menu ON TOP OF THE PROMPT — exactly
-    // where their eyes already are. Enter answers, esc cancels, digits
-    // quick-pick. Disappears the moment the answer is written.
-    if let Some(q) = state.question.as_ref() {
-        let panel_w = area.width.min(72);
-        let opt_h = q.options.len() as u16;
-        let panel_h = (opt_h + 5).min(area.height.saturating_sub(4));
-        let panel = Rect {
-            x: area.x + area.width.saturating_sub(panel_w) / 2,
-            y: input_area.y.saturating_sub(panel_h + 1),
-            width: panel_w,
-            height: panel_h,
-        };
-        frame.render_widget(ratatui::widgets::Clear, panel);
-        let _edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(theme::GREEN).bg(theme::PANEL))
-            .title(Span::styled(
-                format!(" {} question ", theme::GLYPH_AI),
-                Style::new()
-                    .fg(theme::GREEN)
-                    .bg(theme::PANEL)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .style(Style::new().bg(theme::PANEL));
-        let inner = block.inner(panel);
-        frame.render_widget(block, panel);
-        if inner.height >= 1 && inner.width >= 20 {
-            let mut qlines: Vec<Line> = Vec::new();
-            let qw = inner.width.saturating_sub(2) as usize;
-            for seg in crate::tui::state::wrap_text(&q.question, qw) {
-                qlines.push(Line::from(Span::styled(
-                    format!(" {seg}"),
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
-                )));
-            }
-            let _visible_opts = inner
-                .height
-                .saturating_sub(qlines.len() as u16)
-                .min(opt_h.max(1));
-            for (i, opt) in q.options.iter().enumerate() {
-                let sel = i == state.question_sel;
-                let marker = if sel { "▸" } else { " " };
-                let st = if sel {
-                    Style::new().fg(theme::BG).bg(theme::GREEN)
-                } else {
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL)
-                };
-                qlines.push(Line::from(Span::styled(
-                    format!(" {marker}{} {opt}", i + 1),
-                    st,
-                )));
-            }
-            qlines.truncate(inner.height as usize);
-            frame.render_widget(
-                Paragraph::new(qlines).style(Style::new().bg(theme::PANEL)),
-                inner,
-            );
-        }
-    }
+    // Question panel: drawn LAST (see the tail of this function) so the
+    // transcript can never paint over its upper rows.
 
     // Gap row: explicit BG paint, ALWAYS (owner request 2026-09-03 — the
     // terminal background must never peek through below the panels). It now
@@ -754,6 +694,16 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Style::new().fg(theme::BORDER_DIM),
         )]);
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);
+    }
+
+    // Band surface first: with the height debounced, a row can be reserved
+    // one frame longer than its content — it must read as the panel's own
+    // tone, never as raw terminal background.
+    if band_area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(" ").style(Style::new().bg(theme::PANEL)),
+            band_area,
+        );
     }
 
     if indicator_h > 0 {
@@ -1034,6 +984,76 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Paragraph::new(Text::from(vec![line]))
             .wrap(Wrap { trim: false })
             .style(Style::default().bg(theme::PANEL)),
+        inner,
+    );
+
+    // Question panel last of all: it is an overlay on top of everything the
+    // transcript, band and composer paint (2026-11-16).
+    render_question_panel(frame, state, area, input_area);
+}
+
+/// Question panel (2026-11-13) — the ask extension stages question.json and
+/// the operator's menu is drawn where their eyes already are: just above the
+/// prompt. Rendered LAST of the chat screen (2026-11-16 operator report: the
+/// panel used to be painted before the transcript and composer, so their
+/// rows drew over the menu's upper border — it seemed to open BEHIND the
+/// text). Enter answers, esc cancels, digits quick-pick; it disappears the
+/// moment the answer is written.
+fn render_question_panel(frame: &mut Frame, state: &AppState, area: Rect, input_area: Rect) {
+    let Some(q) = state.question.as_ref() else {
+        return;
+    };
+    let panel_w = area.width.min(72);
+    let opt_h = q.options.len() as u16;
+    let panel_h = (opt_h + 5).min(area.height.saturating_sub(4));
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(panel_w) / 2,
+        y: input_area.y.saturating_sub(panel_h + 1),
+        width: panel_w,
+        height: panel_h,
+    };
+    frame.render_widget(ratatui::widgets::Clear, panel);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GREEN).bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" {} question ", theme::GLYPH_AI),
+            Style::new()
+                .fg(theme::GREEN)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(panel);
+    frame.render_widget(block, panel);
+    if inner.height < 1 || inner.width < 20 {
+        return;
+    }
+    let mut qlines: Vec<Line> = Vec::new();
+    let qw = inner.width.saturating_sub(2) as usize;
+    for seg in crate::tui::state::wrap_text(&q.question, qw) {
+        qlines.push(Line::from(Span::styled(
+            format!(" {seg}"),
+            Style::new().fg(theme::TEXT).bg(theme::PANEL),
+        )));
+    }
+    for (i, opt) in q.options.iter().enumerate() {
+        let sel = i == state.question_sel;
+        let marker = if sel { "▸" } else { " " };
+        let st = if sel {
+            Style::new().fg(theme::BG).bg(theme::GREEN)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        qlines.push(Line::from(Span::styled(
+            format!(" {marker}{} {opt}", i + 1),
+            st,
+        )));
+    }
+    qlines.truncate(inner.height as usize);
+    frame.render_widget(
+        Paragraph::new(qlines).style(Style::new().bg(theme::PANEL)),
         inner,
     );
 }
@@ -4155,6 +4175,33 @@ mod settings_chat_render_tests {
         assert!(
             !text.contains("compacting context"),
             "compaction must scroll with chat: {text}"
+        );
+    }
+
+    #[test]
+    fn question_panel_draws_over_the_transcript() {
+        // 2026-11-16 operator report: the question menu opened BEHIND the
+        // text because the transcript painted after it. The panel is an
+        // overlay and must win every cell it covers.
+        let mut state = AppState::default();
+        for i in 0..60 {
+            state
+                .entries
+                .push(ChatEntry::Notice(format!("older message {i}")));
+        }
+        state.question = Some(crate::tui::question::QuestionDoc {
+            version: 1,
+            id: "q1".into(),
+            question: "Which plan?".into(),
+            options: vec!["alpha".into(), "beta".into()],
+            ts: 0,
+        });
+        let text = screen(&mut state, 80, 24);
+        assert!(text.contains("Which plan?"), "question hidden:\n{text}");
+        assert!(text.contains("alpha") && text.contains("beta"), "{text}");
+        assert!(
+            text.contains("question"),
+            "panel title (*question*) hidden behind the transcript:\n{text}"
         );
     }
 }

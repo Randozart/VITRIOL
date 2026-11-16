@@ -817,6 +817,14 @@ pub struct AppState {
     // the bottom status row hides itself rather than showing a guess.
     pub ctx_usage: Option<(u64, u64)>,
 
+    // Status-band height stabiliser (2026-11-16). The band's row count is
+    // derived from live data (ctx fill, belowEditor widget lines) that can
+    // appear for a single frame — a one-frame height change instantly moves
+    // the whole transcript. `band_rows_applied` is what the renderer uses;
+    // `band_rows_pending` holds a candidate that has been seen once.
+    pub band_rows_applied: u16,
+    pub band_rows_pending: Option<u16>,
+
     // Terminal title (setTitle)
     pub title: String,
 
@@ -1158,6 +1166,8 @@ impl Default for AppState {
             message_count: 0,
             widgets: Vec::new(),
             ctx_usage: None,
+            band_rows_applied: 0,
+            band_rows_pending: None,
             title: String::new(),
             notice: None,
             commands: Vec::new(),
@@ -1623,6 +1633,29 @@ impl AppState {
             Self::short_count(window),
             pct
         ))
+    }
+
+    /// Status-band height with one-frame hysteresis (2026-11-16).
+    ///
+    /// The band's row count comes from live data (context fill, belowEditor
+    /// widget lines). Those arrive on their own schedule, and a value that
+    /// shows up for exactly one frame used to grow the band — and therefore
+    /// shift the whole transcript — for that frame. A candidate is adopted
+    /// only once it has been seen on two consecutive frames; until then the
+    /// last applied height is used, so a transient datum never moves the
+    /// layout. Returns the height to render with.
+    pub fn stabilize_band_rows(&mut self, candidate: u16) -> u16 {
+        if candidate == self.band_rows_applied {
+            self.band_rows_pending = None;
+            return self.band_rows_applied;
+        }
+        if self.band_rows_pending == Some(candidate) {
+            self.band_rows_applied = candidate;
+            self.band_rows_pending = None;
+            return self.band_rows_applied;
+        }
+        self.band_rows_pending = Some(candidate);
+        self.band_rows_applied
     }
 
     fn model_matches(&self, m: &Model) -> bool {
@@ -2889,7 +2922,11 @@ impl AppState {
         self.watchdog_fired.clear();
         self.compaction_started_at = None;
         self.compaction_auto_armed = false;
-        self.ctx_usage = None;
+        // The context-fill label is NOT cleared: recovery respawns the same
+        // conversation, and dropping the row would move the whole transcript
+        // by one line mid-turn (operator report 2026-11-16: "status band
+        // flashes an extra row"). A stale-by-one-turn number is honest; a
+        // jumping layout is not.
     }
 
     pub fn apply_state(&mut self, snapshot: crate::rpc::protocol::RpcSessionState) {
@@ -8837,6 +8874,40 @@ mod self_heal_tests {
         assert!(s.held.is_empty());
         assert!(!s.is_streaming);
         assert!(s.last_prompt.is_some(), "replay source survives the reset");
+    }
+
+    #[test]
+    fn rehydrate_keeps_the_context_row_so_the_layout_cannot_jump() {
+        let mut s = AppState::default();
+        s.ctx_usage = Some((12_345, 262_144));
+        s.reset_for_rehydrate();
+        assert_eq!(
+            s.ctx_usage,
+            Some((12_345, 262_144)),
+            "recovery respawns the same conversation — dropping the fill would \
+             move the transcript by one line"
+        );
+        assert!(s.ctx_bar_label().is_some());
+    }
+
+    #[test]
+    fn band_height_ignores_a_one_frame_candidate() {
+        let mut s = AppState::default();
+        assert_eq!(s.stabilize_band_rows(0), 0);
+        // A datum that shows up for a single frame must not move anything.
+        assert_eq!(s.stabilize_band_rows(1), 0, "first sighting holds");
+        assert_eq!(s.stabilize_band_rows(0), 0, "gone again — never applied");
+        assert_eq!(s.band_rows_applied, 0);
+    }
+
+    #[test]
+    fn band_height_adopts_a_candidate_that_persists() {
+        let mut s = AppState::default();
+        assert_eq!(s.stabilize_band_rows(2), 0);
+        assert_eq!(s.stabilize_band_rows(2), 2, "second frame applies it");
+        assert_eq!(s.stabilize_band_rows(1), 2, "shrink waits a frame");
+        assert_eq!(s.stabilize_band_rows(1), 1);
+        assert_eq!(s.band_rows_applied, 1);
     }
 }
 

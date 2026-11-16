@@ -11,7 +11,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { dirtyCount, predict, readVerifyLast } from "./predict.ts";
+import { predict, readVerifyLast } from "./predict.ts";
 import {
   buildGenPrompt,
   clearSuggestion,
@@ -22,6 +22,7 @@ import {
   type GenSignals,
 } from "./suggest.ts";
 import { pickJudgeModel } from "../hang-watchdog/judge.ts";
+import { getTaskItems } from "../task-state/index.ts";
 import { classifyTurn } from "../auto-route/classifier.ts";
 import {
   acceptanceBlock,
@@ -131,6 +132,8 @@ export default function (pi: ExtensionAPI) {
   let ui: any = null;
   let lastLine = "";
   let lastAssistantTail = "";
+  /** The operator's own last request — what a recommendation must serve. */
+  let lastUserPrompt = "";
   let inRun = false;
   // I4: only privacy-SAFE prompts are kept, and ONLY they reach a cloud lane
   // at distill time. Session-scoped; never persisted raw.
@@ -164,6 +167,21 @@ export default function (pi: ExtensionAPI) {
         .filter((l) => l.trim()).length;
     } catch {
       return -1;
+    }
+  };
+
+  /** The open task in the operator's own terms: in-progress, else first
+   *  pending. Cross-jiti safe: task-state keeps its file path on globalThis, so
+   *  this second instance reads the same task file (AGENTS cross-ext contract). */
+  const currentTask = (): string | null => {
+    try {
+      const items = getTaskItems();
+      const open =
+        items.find((t) => t.status === "in_progress") ??
+        items.find((t) => t.status === "pending");
+      return open?.description ?? null;
+    } catch {
+      return null;
     }
   };
 
@@ -242,6 +260,7 @@ export default function (pi: ExtensionAPI) {
     lastLine = "§";
     setPrediction(null);
     lastAssistantTail = "";
+    lastUserPrompt = "";
     if (distillTimer) {
       clearTimeout(distillTimer);
       distillTimer = null;
@@ -269,6 +288,7 @@ export default function (pi: ExtensionAPI) {
     if (message.role === "user" && learnEnabled) {
       const text = textOf().trim();
       if (text && !text.startsWith("/")) {
+        lastUserPrompt = text.slice(0, 240);
         try {
           const cls = classifyTurn({
             promptText: text,
@@ -307,7 +327,8 @@ export default function (pi: ExtensionAPI) {
     inRun = false;
     const verify = readVerifyLast(join(cwd, ".officina"));
     const dirty = countDirty();
-    const heuristic = predict(verify, dirty, Date.now());
+    const task = currentTask();
+    const heuristic = predict(verify, dirty, Date.now(), task);
     setPrediction(heuristic);
     if (!suggestEnabled) return;
     void (async () => {
@@ -317,6 +338,8 @@ export default function (pi: ExtensionAPI) {
           verifyKnown: !!verify,
           verifyOk: verify?.ok,
           dirtyFiles: dirty >= 0 ? dirty : undefined,
+          taskTail: task ?? undefined,
+          userPrompt: lastUserPrompt || undefined,
         };
         // Budget gate (stage 4): when the cloud budget is exhausted the LLM
         // draft is skipped — heuristic suggestions are local and still stage.
@@ -328,7 +351,13 @@ export default function (pi: ExtensionAPI) {
             )
           : null;
         const resolved = resolveSuggestion(heuristic, draft);
-        if (!resolved || inRun) return;
+        if (!resolved) {
+          // D4/N4: nothing request-aligned to offer → clear, so a stale ghost
+          // can never outlive the turn that produced it (2026-11-16).
+          clearSuggestion(OFFICINA_DIR);
+          return;
+        }
+        if (inRun) return;
         writeSuggestion(OFFICINA_DIR, {
           version: 1,
           id: makeSuggestionId(),

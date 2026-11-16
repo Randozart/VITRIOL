@@ -13,28 +13,31 @@ const v = (over: Partial<VerifyLast> = {}): VerifyLast => ({
 });
 
 describe("predict", () => {
-  it("points at failing gates first", () => {
-    const line = predict(v({ ok: false, regressions: ["cargo-test"] }), 3, 0);
-    expect(line).toContain("1 gate failing");
-    expect(line).toContain("/verify full"); // cheap run → suggest the full one
-    expect(predict(v({ ok: false, tier: "full", in_progress: ["a", "b"] }), 0, 0))
-      .toContain("2 gates failing");
-    expect(predict(v({ ok: false, tier: "full", in_progress: ["a", "b"] }), 0, 0))
-      .toContain("(/verify)");
+  it("follows the task in progress, with process state only as an annotation", () => {
+    const line = predict(v({ ok: false, regressions: ["cargo-test"] }), 3, 0, "wire the Esc handler");
+    expect(line).toBe(
+      "▸ next: wire the Esc handler · 1 gate failing · 3 changed files to commit",
+    );
+    expect(predict(v(), 0, 0, "wire the Esc handler")).toBe("▸ next: wire the Esc handler");
   });
 
-  it("suggests a commit when gates are green and the tree is dirty", () => {
-    expect(predict(v(), 2, 0)).toBe("▸ next: commit the work (2 changed files)");
-    expect(predict(v(), 1, 0)).toBe("▸ next: commit the work (1 changed file)");
+  it("clips a task line and never turns it into a paragraph", () => {
+    const long = predict(v(), 0, 0, `${"x".repeat(200)}.`);
+    expect(long!.length).toBeLessThanOrEqual(140);
+    expect(long!.endsWith("…")).toBe(true);
+    expect(predict(v(), 0, 0, "  finish the audit.  ")).toBe("▸ next: finish the audit");
+  });
+
+  it("stays silent without a task — harness bookkeeping is not advice (D4)", () => {
+    expect(predict(v({ ok: false, regressions: ["x"] }), 3, 0)).toBeNull();
+    expect(predict(null, 5, 0)).toBeNull();
+    expect(predict(v(), 1, 0)).toBeNull();
+    expect(predict(v(), 0, 0, "   ")).toBeNull();
   });
 
   it("stays silent when everything is green and clean", () => {
     expect(predict(v(), 0, 0)).toBeNull();
     expect(predict(null, 0, 0)).toBeNull();
-  });
-
-  it("still nudges a commit with no verify data", () => {
-    expect(predict(null, 5, 0)).toContain("5 changed files");
   });
 });
 

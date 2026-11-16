@@ -407,3 +407,30 @@ vitriol caduceus decision floor 0.7 | margin 0.15 | model <id> | redact on|off
   ambiguous stalls (cost stays near zero).
 - `decision-live.test.ts` is skipped unless `DECISION_LIVE=1`; it is the
   regression harness for the API shape and the key's whereabouts.
+
+---
+
+# "Gemini still isn't used" (2026-11-16) — stale session, not a defect
+
+Proved live: `judgeWithDecision` against the **real** on-disk config returns
+`source=decision`, `alive=false`, `reason "… (choice HUNG p=0.802)"` in ~140 ms
+(new case in `decision-live.test.ts`). The wiring is correct.
+
+The running session had loaded the extension **before** the gemini branch
+existed. The fingerprint is on disk: `~/.vitriol/officina/watchdog.json` is dated
+Nov 15 and has no `source` field at all (the field arrived with the typed lane).
+Extensions load once per session, so a restart is required.
+
+New: `/decision test [hung|alive]` runs one real decision and reports
+`source · verdict · latency · reason`, so this is one command instead of a facts
+file hunt. `/decision status` still answers "how is it configured".
+
+## Correction to an earlier claim in this document
+
+I wrote that "the heuristics answer first, so Google only sees ambiguous
+evidence". That is true of the standalone `decision-shim.cjs` (http mode), not of
+the gemini path: `judgeWithDecision` consults the model directly. It is still
+cheap and safe because the watchdog hard-bounds judgments —
+`MAX_JUDGMENTS_PER_CALL = 3`, re-judged no more often than `REJUDGE_EVERY_S` — so
+a stuck command costs at most three calls (~$0.0001) and cannot burn the daily
+quota.

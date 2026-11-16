@@ -143,3 +143,46 @@ request is pinned to must still produce a 200.
 - L3: an extra loopback hop, off by default. If it proves unnecessary it is
   removed by flipping one env var; the failure modes it covers (dead provider,
   quota, first-byte hang) have no cheaper owner in this stack.
+
+---
+
+# As landed (2026-11-16)
+
+| stage | commit | what shipped |
+|---|---|---|
+| F5 | `0562de9` | rule is one ramp step below the flame's bottom row; installed `3a736cc4` |
+| L1 | `6d91a81` | TUI RateLimit → switch to lapis / scheduled replay; hint parsing; replay budget; installed `2531f660` |
+| L2 | `049a01d` | quota hint read from the error text, bare `retry_after` accepted, lane parked for the stated duration |
+| L3 | (this commit) | `caduceus-router` proxy + lib + e2e, `vitriol caduceus router` CLI |
+
+## Verification
+
+- **F5**: dump at levels 0.3 / 0.6 / 1.0 shows the rule strictly lighter than the
+  row above (`⡀⡄…` vs `⡀⡇…`; `⡆⡇…` vs `⡇⣇…`; `⡇⣧…` vs `⣇⣷…`).
+  316 cargo tests.
+- **L1**: 429 hint parsing in both shapes (bare seconds / ISO), clamping,
+  unparseable input, replay budget + refill — 3 new tests.
+- **L2**: the operator's real error text now parks the lane for 177 s instead of
+  60 s; `parseCooldownFromError` gained the bare-number shape it never matched
+  (it had tests but **no production caller**).
+- **L3**: 16 policy tests + 4 e2e tests against a stub gateway
+  (reroute → attempt=2, healthy lane → attempt=1, parked lane skipped, 177 s
+  parking).
+- Gates: 1368 vitest, 316 cargo, `tsc` clean, `cargo fmt --check` clean.
+
+## What is NOT enabled
+
+The proxy is installed on demand and **stopped by default**
+(`vitriol caduceus router --install [--enable]`). With no
+`CADUCEUS_ROUTER_FALLBACKS` it is a pass-through, so I33 (healthy behaviour is
+byte-identical) holds whether or not the unit exists. Choosing the fallback
+list is the operator's call: a different model mid-session changes behaviour, so
+it is not inferred from the catalog.
+
+## Known limit (vendor)
+
+pi's `after_provider_response` event carries `{status, headers}` only — no body
+and no provider/model — so the router cannot cool a lane from that event alone.
+L2 therefore reads the hint from `message_end`'s `errorMessage`, which is where
+Caduceus' JSON ends up. A future pi that includes the body would let the cooling
+happen a beat earlier.

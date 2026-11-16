@@ -323,3 +323,109 @@ All four parts shipped as planned; installed binary md5 `08ef0d4f`.
 If the operator wants a stronger line at high load, switch `DENSITY[1]` (`⡀`)
 to `DENSITY[2]` (`⡄`) inside `ignition_row` — a one-line change, no other
 adjustments needed.
+
+---
+
+# F5 — the ctx row's SLOT flaps (owner clarification, 2026-11-16)
+
+Owner: *"you may have fixed the wrong thing… I meant that the ctx field
+occasionally flickers to look like a different field for one frame."*
+
+Correct — F1–F4 fixed a **colour** flicker (the tint mask). This is a
+**placement** flicker: the context-fill row momentarily shows another band
+row's content. Different bug, same strip.
+
+## Findings — reproduced in the code
+
+`layout.rs:441-469` (the band block) settles the *total* height but splits the
+rows from **live** values:
+
+```rust
+let ctx_present = state.ctx_bar_label().is_some();
+let indicator_h = indicators.len() as u16;          // LIVE count
+let band_h = state.stabilize_band_rows(indicator_h + u16::from(ctx_present));  // SETTLED sum
+
+let indicator_area = Rect { height: indicator_h.min(band_h), ..band_area };
+let ctx_area = Rect {
+    y: band_area.y + indicator_area.height,          // position from the LIVE count
+    height: (band_h - indicator_area.height).min(u16::from(ctx_present)),
+    ..area
+};
+```
+
+Failure mode, exactly what the operator sees:
+
+1. Steady state: 1 indicator row + the ctx row ⇒ settled `band_h = 2`,
+   `indicator_area.height = 1`, ctx row at `band.y + 1`.
+2. A belowEditor widget emits one extra line (decode/route/phase strips do this
+   on their own schedules) **for a single frame**.
+3. In that frame `indicator_h = 2`, and the clamp `min(band_h)` lets the
+   indicator area take **both** rows: `ctx_area.height = (2 - 2).min(1) = 0`.
+4. So the ctx row is not painted at all and the row where it normally sits now
+   shows the second indicator line — *"the ctx field looks like a different
+   field for one frame"*. Next frame it is back.
+
+The dwell made this *more* visible: the settled sum holds the old height, so the
+transient indicator line has nowhere to go and eats the ctx row instead.
+
+## Fix
+
+Settle the two parts **independently**, then place them:
+
+```rust
+let (ind_h, ctx_h) = state.stabilize_band_parts(indicator_h, u16::from(ctx_present));
+let band_h = ind_h + ctx_h;
+let indicator_area = Rect { height: ind_h, ..band_area };
+// ctx row is BOTTOM-anchored: its position never depends on indicator churn.
+let ctx_area = Rect { y: band_area.y + band_h - ctx_h, height: ctx_h, ..area };
+```
+
+- `AppState` gets a tiny `Settled { applied: u16, pending: Option<(u16, Instant)> }`
+  used twice (`band_ind`, `band_ctx`), replacing `band_rows_applied/pending`.
+  Same 700 ms `BAND_SETTLE` and the same clock-injected form for tests.
+- Consequences: a transient indicator line is simply **not rendered** while the
+  settled indicator height is 0/1 — invisible, no displacement. The ctx row
+  keeps its row for as long as `ctx_h` is settled at 1, which it is for the
+  whole session (ctx fill only grows).
+- `band_rows_applied/pending` and `stabilize_band_rows` are retired; the three
+  existing band tests are rewritten against the part API (same property).
+
+## Invariants
+
+- **I10 — the ctx row's slot is stable**: two frames rendered with the same
+  settled parts put the ctx label on the same row index, even when the live
+  candidate differs (transient indicator line). Pinned by a screen test.
+- **I11 — no field ever paints in another field's slot**: within a frame,
+  `indicator_area` and `ctx_area` never overlap and the ctx row is never
+  squeezed to zero height while `ctx_h == 1`.
+- **I12 — the transcript still cannot be moved by transient data**: total band
+  height changes only when a part's candidate survives `BAND_SETTLE`
+  (unchanged property, now per part).
+- **I13 — parity when nothing is transient**: with stable data, the rendered
+  screen is byte-identical to the pre-change build (no visual regression for
+  the normal case).
+
+## Tests
+
+1. `band_parts_settle_independently` — indicator candidate flaps while the ctx
+   candidate holds: ctx stays adopted, indicator does not.
+2. `ctx_row_keeps_its_row_when_an_indicator_appears` (screen test): settle
+   `(1, 1)`, then add a widget line, render, and assert the ctx label line index
+   is unchanged and the indicator text did not take its place.
+3. `ctx_row_is_bottom_anchored` — with `ctx_h = 1` and `ind_h = 0..2`, the ctx
+   label sits on the last row of the band in every case.
+4. Keep `band_height_ignores_a_candidate_that_flickers` /
+   `band_height_adopts_a_candidate_that_settles` and
+   `rehydrate_keeps_the_context_row…`.
+
+## Trade-off
+
+While an indicator strip's height is changing, the strip renders at its settled
+height (clipped), so a real extra line appears up to ~700 ms late. That is the
+same trade the band height already makes, and it is invisible compared with a
+field swapping contents.
+
+## Honest note on F1–F4
+
+F1–F4 (already committed) fixed a genuine per-frame *colour* churn in the tint
+pass and delivered the ignition line. They were not this bug. They stay.

@@ -455,3 +455,43 @@ The old rule drifted on a **1 s** slot so the dots could not flicker; as part of
 the fire it now follows the fire's **120 ms** flicker, so the lit parts of the
 line shimmer like the body. That is consistent with "the line is on fire", but
 it retires `IGNITION_STEP_MS` and its stability test.
+
+---
+
+# As landed (2026-11-16, commit 326cf8a, installed e12bc7e0)
+
+| piece | where |
+|---|---|
+| `base_frac(rows)`, `level_scale(level)` | `fire.rs` |
+| `line_cells(width, rows, phase_ms, level)` (replaces `ignition_row`) | `fire.rs` |
+| `col_h` clamped to the base row for burning columns (I24) | `fire.rs::render` |
+| divider paints via `line_cells(w, flame_rows, …)` | `layout.rs` |
+| `IGNITION_STEP_MS` + its 1 s stability test retired | — |
+
+## Verification
+
+- Visual dump at full load (80×24): the rule is claimed across both lit zones
+  (`⣇⣷⣇⣷…`) with `__________` intact through the dead middle band, and the
+  body sits directly above it — no gap, no floating mass.
+- 312 tests pass. New: `line_is_untouched_without_fire`,
+  `first_embers_only_dot_the_line` (underscores survive *inside* the lit zone,
+  glyphs ≤ 2 dots), `a_burning_flame_consumes_its_line` (every lit column
+  claimed, middle band kept), `line_follows_the_flame_clock`,
+  `line_glyphs_come_from_the_flame_ramp` (ramp only, `⣷` ceiling honoured,
+  never `⣿`), `line_never_claims_the_middle_band`,
+  `line_claims_more_as_the_fire_grows`, and the layout test `flame_meets_its_line`.
+- `cargo fmt --check` clean, release built warning-free, installed, PTY smoke 0.
+
+## Why the earlier sections stay in this file
+
+The dot-pattern / root-dot / `⣀`-low-line designs (F1–F4 above) were explored
+and rejected in favour of reusing the shipped flame. They are kept as the
+record of what was considered, with the owner's decisions inline; the shipped
+behaviour is this section only.
+
+## Follow-up knob (not done)
+
+At full load the rule row and the body's bottom row compute the same `frac` and
+hash seed, so they are *identical* glyphs. That reads as a solid base (intended
+once burning). If it ever looks one row too thick, pass `flame_rows + 1` to
+`line_cells` so the rule's `frac` differs slightly from the body's.

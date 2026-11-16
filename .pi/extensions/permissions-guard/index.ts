@@ -11,6 +11,7 @@ import {
   type Verdict,
 } from "./policy.ts";
 import { findBwrap, shouldWrap, wrapBwrap } from "./sandbox.ts";
+import { traceHooks } from "../_shared/hook-trace.ts";
 import {
   getJobsRoot,
   isLongRunner,
@@ -37,11 +38,15 @@ import {
 /** Resolved PER CALL (import-time capture once made tests hit the live
  * mirror — caught by the wiring suite; env must win dynamically). */
 function snapshotPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.TRIS_PERMS_FILE || `${env.HOME || ""}/.config/trismegistus/permissions.json`;
+  return (
+    env.TRIS_PERMS_FILE ||
+    `${env.HOME || ""}/.config/trismegistus/permissions.json`
+  );
 }
 
 function modePath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.OFFICINA_PERMISSIONS_MODE_FILE) return env.OFFICINA_PERMISSIONS_MODE_FILE;
+  if (env.OFFICINA_PERMISSIONS_MODE_FILE)
+    return env.OFFICINA_PERMISSIONS_MODE_FILE;
   return `${env.HOME || homedir()}/.vitriol/officina/permissions-mode`;
 }
 
@@ -57,6 +62,9 @@ function currentMode(env: NodeJS.ProcessEnv = process.env): PermMode {
 
 export default function (pi: ExtensionAPI) {
   if (process.env.TRIS_NO_PERMS === "1") return;
+  // Opt-in hook timing (OFFICINA_HOOK_TRACE=1): a tool_call handler that never
+  // resolves blocks the tool with no output (2026-11-15).
+  traceHooks("permissions-guard", pi);
 
   let cache: { mtime: number; snap: PermSnapshot } | null = null;
   let warned = false;
@@ -82,16 +90,24 @@ export default function (pi: ExtensionAPI) {
   ): Promise<{ block: true; reason: string } | undefined> {
     const mode = currentMode();
     if (verdict.action === "allow") {
-      emitHarnessEvent(harnessEvent("lc-perms", "allow", { detail: `${mode} ${detail}` }));
+      emitHarnessEvent(
+        harnessEvent("lc-perms", "allow", { detail: `${mode} ${detail}` }),
+      );
       return undefined;
     }
     if (verdict.action === "deny") {
-      emitHarnessEvent(harnessEvent("lc-perms", "deny", { detail: `${mode} ${detail}` }));
+      emitHarnessEvent(
+        harnessEvent("lc-perms", "deny", { detail: `${mode} ${detail}` }),
+      );
       return { block: true, reason: `permissions: ${verdict.reason}` };
     }
     const headless = ctx.mode !== "tui" && ctx.mode !== "rpc";
     if (headless || !ctx.hasUI) {
-      emitHarnessEvent(harnessEvent("lc-perms", "ask-denied-headless", { detail: `${mode} ${detail}` }));
+      emitHarnessEvent(
+        harnessEvent("lc-perms", "ask-denied-headless", {
+          detail: `${mode} ${detail}`,
+        }),
+      );
       return {
         block: true,
         reason: `permissions: ${verdict.reason} — denied in headless mode (fail-closed)`,
@@ -106,7 +122,8 @@ export default function (pi: ExtensionAPI) {
         detail: `${mode} ${detail}`,
       }),
     );
-    if (!yes) return { block: true, reason: `permissions: user declined ${tool}` };
+    if (!yes)
+      return { block: true, reason: `permissions: user declined ${tool}` };
     return undefined;
   }
 
@@ -121,7 +138,9 @@ export default function (pi: ExtensionAPI) {
     const snap = load();
     if (!snap && !warned) {
       warned = true;
-      emitHarnessEvent(harnessEvent("lc-perms", "no-snapshot", { detail: "mode policy only" }));
+      emitHarnessEvent(
+        harnessEvent("lc-perms", "no-snapshot", { detail: "mode policy only" }),
+      );
       ctx.ui.notify(
         "permissions-guard: no permissions.json (run `trismegistus perms-sync`) — mode policy in effect",
         "warning",
@@ -132,7 +151,12 @@ export default function (pi: ExtensionAPI) {
       const command = String(input.command ?? "");
       if (!command.trim()) return undefined;
       const verdict = commandVerdict(command, cwd, home, mode);
-      const enforced = await decideAndEnforce(tool, verdict, shortCommand(command), ctx as any);
+      const enforced = await decideAndEnforce(
+        tool,
+        verdict,
+        shortCommand(command),
+        ctx as any,
+      );
       if (enforced) return enforced;
       // Codex-qol stage 10 (I6): only sandboxed mode wraps; bwrap missing
       // degrades to unwrapped with exactly one warning per session.
@@ -141,11 +165,19 @@ export default function (pi: ExtensionAPI) {
         if (!bwrap) {
           if (!sandboxWarned) {
             sandboxWarned = true;
-            ctx.ui.notify?.("sandbox: bwrap not found — commands run unwrapped", "warning");
+            ctx.ui.notify?.(
+              "sandbox: bwrap not found — commands run unwrapped",
+              "warning",
+            );
           }
         } else {
           const net = process.env.OFFICINA_SANDBOX_NET === "1";
-          (e.input as Record<string, unknown>).command = wrapBwrap(command, cwd, bwrap, { net });
+          (e.input as Record<string, unknown>).command = wrapBwrap(
+            command,
+            cwd,
+            bwrap,
+            { net },
+          );
         }
         return undefined;
       }
@@ -163,7 +195,11 @@ export default function (pi: ExtensionAPI) {
           const job = `j-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
           const paths = jobDir(getJobsRoot(), job);
           mkdirSync(paths.dir, { recursive: true, mode: 0o700 });
-          (e.input as Record<string, unknown>).command = rewriteToDispatch(command, paths, job);
+          (e.input as Record<string, unknown>).command = rewriteToDispatch(
+            command,
+            paths,
+            job,
+          );
           ctx.ui.notify?.(
             `longjob ${job}: dispatched (log ${paths.log}) — poll bg_status ${job}, bg_wait ${job} <max_s>, or end your turn; you'll be woken with the result`,
             "info",
@@ -176,7 +212,8 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    if (tool !== "edit" && tool !== "write" && tool !== "read") return undefined;
+    if (tool !== "edit" && tool !== "write" && tool !== "read")
+      return undefined;
     const path = pathOf(input);
     if (!path) return undefined;
     const verdict = pathVerdict(tool, path, cwd, home, mode, snap);

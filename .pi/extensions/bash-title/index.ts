@@ -21,6 +21,11 @@ const GUIDANCE = [
   "present-tense description of what the command does (<= 70 chars, no shell",
   "syntax). Example:",
   '{"command":"cargo test --lib","title":"Run library tests"}',
+  "## Long or silent commands",
+  "A command that prints nothing for 300s is treated as stalled and the turn is",
+  "cancelled (the prompt is replayed once). Pass `timeout` (seconds) for any",
+  "build, test or verification that can run longer, and prefer commands that",
+  "print progress.",
 ].join("\n");
 
 function clip(text: string, max: number): string {
@@ -45,13 +50,15 @@ export default function (pi: ExtensionAPI) {
     }),
     command: Type.String({ description: "Shell command to execute" }),
     timeout: Type.Optional(
-      Type.Number({ description: "Timeout in seconds (optional, no default timeout)" }),
+      Type.Number({
+        description: "Timeout in seconds (optional, no default timeout)",
+      }),
     ),
   });
   pi.registerTool({
     name: "bash",
     label: bash.label,
-    description: `${bash.description} ALWAYS include a short \`title\` describing what the command does.`,
+    description: `${bash.description} ALWAYS include a short \`title\` describing what the command does. A command silent for 300s is aborted: pass \`timeout\` for long builds.`,
     promptSnippet: bash.promptSnippet,
     promptGuidelines: bash.promptGuidelines,
     parameters,
@@ -96,7 +103,8 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", (event) => {
     if (event.toolName !== "bash" && event.toolName !== "powershell") return;
     const title = (event.input as Record<string, unknown>).title;
-    if (typeof title !== "string" || title.trim().length === 0) missingTitle = true;
+    if (typeof title !== "string" || title.trim().length === 0)
+      missingTitle = true;
   });
   pi.on("before_agent_start", () => {
     if (!missingTitle && !shouldInject(GUIDANCE)) return undefined;
@@ -106,7 +114,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerToolRenderer((toolName, next): ToolRenderers | undefined => {
     const base = next();
-    if (!base || (toolName !== "bash" && toolName !== "powershell")) return base;
+    if (!base || (toolName !== "bash" && toolName !== "powershell"))
+      return base;
     const baseRenderCall = base.renderCall;
     if (!baseRenderCall) return base;
 
@@ -115,20 +124,30 @@ export default function (pi: ExtensionAPI) {
       renderCall(args, theme, context) {
         const component = baseRenderCall(args, theme, context);
         const raw = args as Record<string, unknown> | null | undefined;
-        const title = typeof raw?.title === "string" ? clip(raw.title.replace(/\s+/g, " ").trim(), 80) : "";
+        const title =
+          typeof raw?.title === "string"
+            ? clip(raw.title.replace(/\s+/g, " ").trim(), 80)
+            : "";
         if (!title) return component;
 
         const command = typeof raw?.command === "string" ? raw.command : "";
-        const timeout = typeof raw?.timeout === "number" ? theme.fg("muted", ` (timeout ${raw.timeout}s)`) : "";
+        const timeout =
+          typeof raw?.timeout === "number"
+            ? theme.fg("muted", ` (timeout ${raw.timeout}s)`)
+            : "";
         const firstLine = (command.split("\n")[0] ?? "").trim();
-        const shown = context.expanded ? command : `${clip(firstLine, 120)}${command.includes("\n") ? " …" : ""}`;
+        const shown = context.expanded
+          ? command
+          : `${clip(firstLine, 120)}${command.includes("\n") ? " …" : ""}`;
         const styled =
           theme.fg("accent", theme.bold(`▸ ${title}`)) +
           "\n" +
           theme.fg("toolTitle", theme.bold(`$ ${shown}`)) +
           timeout;
 
-        const settable = component as unknown as { setText?: (value: string) => void };
+        const settable = component as unknown as {
+          setText?: (value: string) => void;
+        };
         if (typeof settable.setText === "function") {
           settable.setText(styled);
           return component;

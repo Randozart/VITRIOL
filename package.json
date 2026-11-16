@@ -1,6 +1,6 @@
 {
   "name": "officina-scaffold",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "private": true,
   "description": "Trismegistus first-party scaffold (alkahest) — pi-coding-agent as a pinned library, our extensions, VITRIOL-coupled. See docs/SCAFFOLD-SOVEREIGNTY-2026-08-31.md.",
   "type": "module",
@@ -9,6 +9,7 @@
     "node": ">=22.19.0"
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "1.5.0",
     "@earendil-works/pi-coding-agent": "1.5.0",
     "@earendil-works/pi-tui": "1.5.0",
     "@sinclair/typebox": "^0.34.52"

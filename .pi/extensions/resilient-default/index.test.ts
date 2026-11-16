@@ -363,6 +363,16 @@ describe("resilient-default", () => {
     const route = await h.run("retry", "retry", { failed: { model: local, message: {} } });
     expect(route.model).toMatchObject({ provider: "caduceus", id: "test-model" });
   });
+
+  it("returns the fresh replacement after cooling the originally selected cloud lane", async () => {
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model,caduceus/second-model";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = join(testRegistry, "lapis-failure-marks.json");
+    const h = harness();
+    const result = await h.run("retry", "continue", {
+      failed: { model: cloud, message: { errorMessage: '429 model_cooldown {"reset_seconds":120}' } },
+    });
+    expect(result.model).toBe(cloud2);
+  });
 });
 
 // Nimbus — the cloud-only lane (2026-11-11): local is NEVER selected, in
@@ -377,6 +387,8 @@ describe("nimbus (cloud-only lane)", () => {
     process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-nimbus-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_ROUTING_PROFILE_FILE = "/tmp/officina-nimbus-profile-test";
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE = join(testRegistry, "nimbus-failure-marks.json");
+    rmSync(process.env.OFFICINA_GATEWAY_HEALTH_FILE, { force: true });
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
     process.env.OFFICINA_NO_LANE_SPREAD = "1";
@@ -392,6 +404,8 @@ describe("nimbus (cloud-only lane)", () => {
     delete process.env.OFFICINA_PROVIDER_HEALTH_FILE;
     delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
     delete process.env.OFFICINA_ROUTING_PROFILE_FILE;
+    delete process.env.OFFICINA_GATEWAY_HEALTH_FILE;
+    delete process.env.OFFICINA_CLOUD_RETRIES;
     delete process.env.OFFICINA_FREE_DAILY_TOKENS;
     delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
   });
@@ -431,6 +445,31 @@ describe("nimbus (cloud-only lane)", () => {
     recordFailure("caduceus", "test-model", 429);
     const second = await nimbus("user");
     expect(second.model).toMatchObject({ id: "second-model" });
+  });
+
+  it("handles the bare credential cooldown on retry without a response callback", async () => {
+    const h = harness();
+    const run = h.runLane("nimbus");
+    const first = await run("user");
+    const replacement = await run("retry", "continue", { state: first.state,
+      failed: { model: first.model, message: { errorMessage: "All credentials for model aion-labs/aion-3.0 are cooling down" } },
+    });
+    expect(replacement.model).toBe(cloud2);
+    expect(replacement.state.cloudRetries).toBe(2);
+  });
+
+  it("refuses to resurrect cooling lanes when every cloud lane is cooling", async () => {
+    recordFailure("caduceus", cloud.id, 429);
+    recordFailure("caduceus", cloud2.id, 429);
+    await expect(harness().runLane("nimbus")("user")).rejects.toThrow(/candidates cooling/);
+  });
+
+  it("stops at the Nimbus retry budget without selecting local", async () => {
+    process.env.OFFICINA_CLOUD_RETRIES = "1";
+    const h = harness();
+    await expect(h.runLane("nimbus")("retry", "continue", { state: { cloudRetries: 1, turnsOnTier: 1 },
+      failed: { model: cloud, message: { errorMessage: "429 model_cooldown" } },
+    })).rejects.toThrow(/Nimbus: cloud retry budget exhausted/);
   });
 
   it("dies loudly when no free lane fits — never falls back to local", async () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import setupProvider from "./index.ts";
+import { streamLocalWithProgress } from "./progress.ts";
 
 // End-to-end test of the issue #54 swap-time re-probe: drive the real default
 // export (which reads the shipped models.json, so `llamacpp` is present) with a
@@ -7,11 +8,11 @@ import setupProvider from "./index.ts";
 // provider is re-registered with the fresh window and the user is notified.
 
 function fakePi() {
-  const registers: { name: string; ctx: number | undefined }[] = [];
+  const registers: { name: string; ctx: number | undefined; stream: unknown }[] = [];
   let modelSelect: ((event: any, ctx: any) => any) | undefined;
   const pi = {
     registerProvider(name: string, config: any) {
-      registers.push({ name, ctx: config.models?.[0]?.contextWindow });
+      registers.push({ name, ctx: config.models?.[0]?.contextWindow, stream: config.streamSimple });
     },
     on(event: string, handler: (event: any, ctx: any) => any) {
       if (event === "model_select") modelSelect = handler;
@@ -61,6 +62,8 @@ describe("llama-cpp-provider swap re-probe (issue #54)", () => {
 
     // Swap re-registered llamacpp at the new window, with a notice.
     expect(registers.filter((r) => r.name === "llamacpp").at(-1)?.ctx).toBe(131072);
+    expect(registers.filter((r) => r.name === "llamacpp").every((r) => r.stream === streamLocalWithProgress)).toBe(true);
+    expect(registers.filter((r) => r.name !== "llamacpp").every((r) => r.stream === undefined)).toBe(true);
     expect(notes).toEqual(["context window updated 32k → 128k"]);
   });
 

@@ -5,6 +5,7 @@ pub mod cost;
 pub mod crashlog;
 pub mod diff;
 pub mod engine_config;
+pub mod heal;
 pub mod janitor;
 pub mod layout;
 pub mod paste;
@@ -12,6 +13,8 @@ pub mod question;
 pub mod review;
 pub mod routes;
 pub mod session_check;
+pub mod settings;
+pub mod stall;
 pub mod state;
 
 use std::io::{self, IsTerminal};
@@ -490,7 +493,7 @@ fn suspend_external(
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty argv"));
     }
     if !io::stdout().is_terminal() {
-        return Err(io::Error::new(io::ErrorKind::Other, "not a TTY"));
+        return Err(io::Error::other("not a TTY"));
     }
     disable_raw_mode()?;
     execute!(
@@ -521,6 +524,7 @@ async fn run_loop(
     bridge: &mut RpcBridge,
 ) -> Result<()> {
     let mut last_frame = std::time::Instant::now();
+    let heal_policy = heal::Policy::from_env();
     loop {
         if state.show_diag {
             state.diag_view = bridge
@@ -560,6 +564,20 @@ async fn run_loop(
                 match maybe_input {
                     Some(Event::Key(key)) => {
                         handle_key(key, state, bridge).await;
+                        if state.heal_requested {
+                            state.heal_requested = false;
+                            state.recovery.degraded = false;
+                            state.recovery.attempts.clear();
+                            recover(
+                                state,
+                                bridge,
+                                rx,
+                                "operator requested recovery",
+                                heal::Failure::Unknown,
+                                &heal_policy,
+                            )
+                            .await;
+                        }
                         if let Some(argv) = state.caduceus_suspend.take() {
                             match suspend_external(terminal, &argv) {
                                 Ok(()) => {
@@ -578,7 +596,7 @@ async fn run_loop(
                         }
                         if let Some((argv, tmp, original)) = state.editor_suspend.take() {
                             let spawn_ok = suspend_external(terminal, &argv).is_ok();
-                            let mut note: Option<(String, String)> = None;
+                            let note: Option<(String, String)>;
                             match std::fs::read_to_string(&tmp) {
                                 Ok(text) => {
                                     let edited =
@@ -626,13 +644,24 @@ async fn run_loop(
             msg = rx.recv() => {
                 match msg {
                     Some(WireMessage::Response(resp)) => {
+                        state.note_wire_activity();
                         if handle_response(state, &resp) {
                             let _ = bridge.request(RpcCommand::GetState { id: None }).await;
                             let _ = bridge.request(RpcCommand::GetMessages { id: None }).await;
                         }
+                        if state.recovery.phase == heal::Phase::Rehydrating
+                            && resp.command.as_deref() == Some("get_messages")
+                        {
+                            finish_rehydrate(state);
+                        }
                     }
                     Some(WireMessage::Event(event)) => {
+                        state.note_wire_activity();
                         let auto_continue = handle_event(state, &event.event_type, &event.fields);
+                        if let Some((failure, detail)) = state.recovery.pending_failure.take() {
+                            handle_provider_failure(state, bridge, failure, &detail, &heal_policy)
+                                .await;
+                        }
                         if auto_continue && state.queued_prompts.is_empty() {
                             // Guarded auto-continue (owner choice B, plan
                             // officina-compaction-continue-2026-09-03): a
@@ -675,6 +704,7 @@ async fn run_loop(
                         {
                             let message = state.queued_prompts.remove(0);
                             state.held_resolve_queued();
+                            state.note_prompt_sent(&message, None);
                             let _ = bridge
                                 .request(RpcCommand::Prompt {
                                     id: None,
@@ -690,15 +720,42 @@ async fn run_loop(
                         }
                     }
                     Some(WireMessage::ExtensionUiRequest(req)) => {
-                        handle_ui_request(state, &req.method, &req.fields, bridge).await;
+                        state.note_wire_activity();
+                        handle_ui_request(state, &req, bridge).await;
                     }
                     None => {
-                        state.entries.push(state::ChatEntry::Diag(
-                            "agent process exited".to_string(),
-                        ));
-                        terminal.draw(|frame| render(frame, state))?;
-                        tokio::time::sleep(Duration::from_millis(1200)).await;
-                        break;
+                        // A closed reader stays closed until a respawn installs
+                        // a new channel. Sleep through backoff instead of
+                        // spinning hot on the dead channel.
+                        let now = std::time::Instant::now();
+                        if state.recovery.phase == heal::Phase::Degraded
+                            || state
+                                .recovery
+                                .next_retry_at
+                                .is_some_and(|at| now < at)
+                        {
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                            continue;
+                        }
+                        state.note_prompt_failed();
+                        if heal::self_heal_enabled() {
+                            recover(
+                                state,
+                                bridge,
+                                rx,
+                                "agent process exited",
+                                heal::Failure::ChildExit,
+                                &heal_policy,
+                            )
+                            .await;
+                        } else {
+                            state.entries.push(state::ChatEntry::Diag(
+                                "agent process exited".to_string(),
+                            ));
+                            terminal.draw(|frame| render(frame, state))?;
+                            tokio::time::sleep(Duration::from_millis(1200)).await;
+                            break;
+                        }
                     }
                 }
             }
@@ -706,7 +763,7 @@ async fn run_loop(
                 // heartbeat redraw — keeps streaming indicator/gauges alive
                 // (90 ms on fresh screens so the watermark glimmer animates)
                 state.probe_liveness(bridge.pi_pid());
-                maybe_tool_watchdog(state, bridge).await;
+                maybe_heal(state, bridge, rx, &heal_policy).await;
             }
         }
     }
@@ -1068,6 +1125,15 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
     // questions, ask, rewind). It must be first or it can be shadowed.
     if !state.dialogs.is_empty() {
         handle_dialog_key(key, state, bridge).await;
+        return;
+    }
+
+    if state.setting_menu.is_some() {
+        if let Some(message) = settings::key(state, key.code) {
+            if let Some(Some(request)) = settings::command(state, &message) {
+                let _ = bridge.request(request).await;
+            }
+        }
         return;
     }
 
@@ -1612,17 +1678,42 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             }
         }
         KeyCode::Esc => {
-            if state.is_streaming {
-                // Arm the settle deadline: if pi never confirms with
-                // agent_end, the watchdog releases the UI instead of
-                // spinning forever (2026-11-13, operator report).
-                let _ = bridge.request(RpcCommand::Abort { id: None }).await;
-                state.abort_deadline =
-                    Some(std::time::Instant::now() + std::time::Duration::from_secs(10));
+            // Order (K4): the command menu closes first and leaves the composer
+            // untouched; only then does Esc mean "stop the work" (2026-11-16).
+            if state.cand_sel_logic_open() {
+                state.dismiss_command_menu();
+                state.notice = Some(("menu closed".to_string(), "info".to_string()));
+            } else {
+                // Operator stop: Esc ends the work NOW — abort the turn, drop
+                // every queued/held message, and never let the settle deadline
+                // restart pi. Idle Esc stays the deliberate no-op it has been
+                // since the accidental-quit report.
+                let busy = state.is_streaming || state.has_running_tool();
+                if busy || !state.queued_prompts.is_empty() {
+                    cancel_pending_dialogs(state, bridge).await;
+                    let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+                    let dropped = state.operator_stop();
+                    let now = std::time::Instant::now();
+                    state.arm_abort(now, state::AbortSource::Operator);
+                    if dropped > 0 {
+                        state.entries.push(state::ChatEntry::Diag(format!(
+                            "harness: stopped — dropped {dropped} queued message(s)"
+                        )));
+                    }
+                    state.notice = Some((
+                        if dropped > 0 {
+                            format!("stopped · {dropped} queued dropped")
+                        } else {
+                            "stopped".to_string()
+                        },
+                        "warning".to_string(),
+                    ));
+                    stall::trail(
+                        "abort.operator",
+                        serde_json::json!({ "dropped": dropped, "busy": busy }),
+                    );
+                }
             }
-            // Idle Esc: close-overlays is handled above (modals); here it
-            // is a deliberate NO-OP — it used to quit (owner report:
-            // accidental quits).
         }
         // ^c — copy (owner request 2026-09-03). Selection first, else the
         // last assistant reply. Never aborts, never quits.
@@ -1721,18 +1812,22 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             state.help_open = !state.help_open;
             state.help_sel = 0;
         }
-        // Tab: complete selection when the popup is open; otherwise cycle
-        // agent mode — "/mode <next>" (bare /mode only lists, agent-mode.ts).
-        KeyCode::Tab => {
-            if state.cand_sel_logic_open() {
-                state.complete_command();
-            } else if state.prompt_ghost.is_some() && state.input.is_empty() {
-                // Codex parity (stage 4): Tab accepts the ghost as an
-                // editable draft when no completions are open. The agent-mode
-                // cycle stays reachable once the ghost is dismissed.
-                state.accept_ghost();
-            } else if let Some(next) = state.next_agent_mode() {
-                let m = format!("/agent {}", next);
+        // Tab cycles the agent mode (owner request 2026-09-01). Two ways it
+        // used to become a dead key (2026-11-16 operator report: "tabbing
+        // through modes is blocked so often"):
+        //   1. the guard tested `!input.is_empty()`, so ANY typed text blocked
+        //      it — only a command line may keep the key (the popup owns those);
+        //   2. the widget hint lags one round-trip, so a second Tab re-sent the
+        //      same target and nothing visibly happened.
+        // A missing hint is now reported instead of silently doing nothing.
+        KeyCode::Tab if state.input.starts_with('/') => {}
+        KeyCode::Tab => match state.next_agent_mode() {
+            Some(next) if state.mode_switch_in_flight(&next) => {
+                state.notice = Some((format!("agent: switching to {next}…"), "info".to_string()));
+            }
+            Some(next) => {
+                state.note_mode_switch_sent(&next);
+                let m = format!("/agent {next}");
                 let _ = bridge
                     .request(RpcCommand::Prompt {
                         id: None,
@@ -1742,7 +1837,13 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     })
                     .await;
             }
-        }
+            None => {
+                state.notice = Some((
+                    "agent: no mode hint yet — try /agent <name>".to_string(),
+                    "warning".to_string(),
+                ));
+            }
+        },
         KeyCode::Up => {
             if state.cand_sel_logic_open() {
                 state.cycle_candidate(false);
@@ -1794,6 +1895,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     .await;
                 state.notice = Some(("queued follow-up".to_string(), "info".to_string()));
             } else {
+                state.note_prompt_sent(&msg, None);
                 let _ = bridge
                     .request(RpcCommand::Prompt {
                         id: None,
@@ -1823,55 +1925,18 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             };
             // Prompt history (2026-11-13): recallable via Up/Down.
             state.record_prompt_history(&msg);
-            // /fire — pure-local UI state (composer flames); never RPC.
-            // /settings (alias /config) — consolidated UI settings.
-            if msg.starts_with("/settings") || msg.starts_with("/config") {
-                let start = if msg.starts_with("/settings") {
-                    "/settings"
-                } else {
-                    "/config"
-                };
-                let rest = msg[start.len()..].trim();
-                if rest.is_empty() {
-                    state.entries.push(state::ChatEntry::Diag(format!(
-                        "\u{2699} glimmer: {}",
-                        state.glimmer.label(),
-                    )));
-                    let fire_desc = if state.fire_on {
-                        format!("on {}", state.fire_style.label())
-                    } else {
-                        "off".to_string()
-                    };
-                    state.entries.push(state::ChatEntry::Diag(format!(
-                        "\u{2699} fire: {}",
-                        fire_desc,
-                    )));
-                    state.entries.push(state::ChatEntry::Diag(
-                        "\u{2699} /settings {glimmer|fire} <args>".to_string(),
-                    ));
-                    return;
+            // D8 (2026-11-16): a UNIQUE partial command runs in one press —
+            // `/q` → `/quit` — instead of completing and waiting for a second
+            // Enter. Ambiguous prefixes still complete further below.
+            let expanded = state.expand_unique_command(&msg);
+            if expanded != msg {
+                state.notice = Some((format!("{msg} → {expanded}"), "info".to_string()));
+            }
+            let msg = expanded;
+            if let Some(request) = settings::command(state, &msg) {
+                if let Some(request) = request {
+                    let _ = bridge.request(request).await;
                 }
-                if let Some((key, args)) = rest.split_once(' ') {
-                    match key {
-                        "glimmer" => {
-                            let label = state.set_glimmer(args);
-                            state.notice =
-                                Some((format!("glimmer: {}", label), "info".to_string()));
-                            persist_glimmer(state);
-                            return;
-                        }
-                        "fire" => {
-                            let label = state.set_fire(args);
-                            state.notice = Some((format!("fire: {}", label), "info".to_string()));
-                            persist_fire(state);
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-                state.entries.push(state::ChatEntry::Diag(
-                    "usage: /settings {glimmer|fire} <args>".to_string(),
-                ));
                 return;
             }
             // /tools — tool verbosity config. Bare opens the modal picker;
@@ -2216,6 +2281,14 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     }
                     return;
                 }
+                "/recover" | "/heal" => {
+                    state.heal_requested = true;
+                    state.notice = Some((
+                        "harness: manual recovery requested".to_string(),
+                        "warning".to_string(),
+                    ));
+                    return;
+                }
                 "/diag last" => {
                     let path = crate::tui::crashlog::crash_log_path();
                     match std::fs::read_to_string(&path) {
@@ -2345,6 +2418,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     state.push_user(msg.clone());
                 }
                 let images = images_for_send(state);
+                state.note_prompt_sent(&msg, images.clone());
                 // is_streaming flips on the agent_start event (Prompt path);
                 // extension commands return without one — flag must not stick.
                 let _ = bridge
@@ -2361,17 +2435,22 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if state.cursor > 0 {
                 state.cursor -= 1;
                 remove_char_at(&mut state.input, state.cursor);
-                state.cand_sel = 0;
+                state.note_input_typed();
             }
         }
         KeyCode::Delete => {
             if state.cursor < state.input.chars().count() {
                 remove_char_at(&mut state.input, state.cursor);
-                state.cand_sel = 0;
+                state.note_input_typed();
             }
         }
         KeyCode::Left => {
             state.cursor = state.cursor.saturating_sub(1);
+        }
+        KeyCode::Right
+            if state.cand_sel_logic_open() && state.cursor == state.input.chars().count() =>
+        {
+            state.complete_command();
         }
         KeyCode::Right
             if state.prompt_ghost.is_some() && state.cursor >= state.input.chars().count() =>
@@ -2413,7 +2492,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
                     state.dismiss_ghost("dismissed-typed");
                     insert_char_at(&mut state.input, state.cursor, c);
                     state.cursor += 1;
-                    state.cand_sel = 0;
+                    state.note_input_typed();
                 }
             }
         }
@@ -2619,24 +2698,65 @@ async fn cancel_pending_dialogs(state: &mut AppState, bridge: &mut RpcBridge) {
     }
 }
 
-/// Tool-call stall watchdog. A tool with no `tool_execution_end` leaves
-/// `is_streaming` true forever, which turns later user prompts into RPC
-/// `Steer` messages queued behind a turn that will never finish. After the
-/// threshold, cancel any blocking dialog, abort once, and (if the abort also
-/// fails to settle) surface an explicit restart hint.
-async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
+/// Recovery + stall watchdog (2026-11-15). Aborts a stalled turn, detects a
+/// wire-idle hang, and escalates to a bounded pi respawn when abort cannot
+/// settle. With OFFICINA_SELF_HEAL=0 the pre-self-heal behavior is kept.
+async fn maybe_heal(
+    state: &mut AppState,
+    bridge: &mut RpcBridge,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<WireMessage>,
+    policy: &heal::Policy,
+) {
     let now = std::time::Instant::now();
 
     // Abort-settle deadline runs even with the tool watchdog disabled: an
     // unresponsive abort must never leave 'working…' spinning forever
-    // (2026-11-13, operator report).
-    if state.abort_deadline.is_some_and(|deadline| now >= deadline) {
+    // (2026-11-13, operator report). Only a WATCHDOG abort may escalate to a
+    // child restart; an operator Esc releases the UI and says what is still
+    // running (E1/E3, 2026-11-16).
+    if let Some(source) = state.abort_due(now) {
         state.abort_deadline = None;
         state.note_phase(state::UiEvent::AgentEnd);
         state.is_streaming = false;
         state.is_compacting = false;
         state.expected_tool_calls.clear();
         let abandoned = state.abandon_running_tools("abort did not settle — released");
+        if source == state::AbortSource::Operator {
+            let still = state
+                .oldest_running_tool()
+                .map(|tool| {
+                    format!(
+                        "pi is still finishing {} ({}s)",
+                        tool.name,
+                        tool.age.as_secs()
+                    )
+                })
+                .unwrap_or_else(|| "pi has not confirmed the stop".to_string());
+            stall::trail(
+                "abort.operator_unsettled",
+                serde_json::json!({ "abandoned": abandoned, "still": still }),
+            );
+            state.entries.push(state::ChatEntry::Warn(format!(
+                "harness: stopped — {still}; no restart was attempted (use /recover if it stays stuck)"
+            )));
+            return;
+        } else if heal::self_heal_enabled() {
+            state.entries.push(state::ChatEntry::Warn(format!(
+                "harness watchdog: abort did not settle after 10s — restarting pi{}; session preserved, transcript restored",
+                if abandoned > 0 {
+                    format!(", {abandoned} tool call(s) marked cancelled")
+                } else {
+                    String::new()
+                }
+            )));
+            let failure = match state.recovery.reason.as_str() {
+                "wire idle" => heal::Failure::WireIdle,
+                "tool stall" => heal::Failure::ToolStall,
+                _ => heal::Failure::AbortUnsettled,
+            };
+            recover(state, bridge, rx, "abort did not settle", failure, policy).await;
+            return;
+        }
         state.entries.push(state::ChatEntry::Warn(format!(
             "harness watchdog: abort did not settle after 10s — UI released{}; \
              the pi child may still be finishing in the background. If it stays \
@@ -2649,6 +2769,183 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
         )));
     }
 
+    // A failed respawn is retried after its backoff slot.
+    if state.recovery.next_retry_at.is_some_and(|at| now >= at)
+        && !matches!(
+            state.recovery.phase,
+            heal::Phase::Respawning | heal::Phase::Rehydrating
+        )
+    {
+        state.recovery.next_retry_at = None;
+        let reason = state.recovery.reason.clone();
+        recover(
+            state,
+            bridge,
+            rx,
+            &reason,
+            heal::Failure::AbortUnsettled,
+            policy,
+        )
+        .await;
+    }
+
+    // Rehydration that never completes is a failed recovery, not a hung UI.
+    if state.recovery.phase == heal::Phase::Rehydrating
+        && state
+            .recovery
+            .rehydrate_deadline
+            .is_some_and(|deadline| now >= deadline)
+    {
+        state
+            .recovery
+            .degrade("session restore timed out after respawn");
+        state.entries.push(state::ChatEntry::Warn(
+            "harness: pi restarted but the session transcript did not restore — /recover retries, /quit exits"
+                .to_string(),
+        ));
+    }
+
+    // Engine-start readiness probe (throttled; only while a start is pending).
+    if state.recovery.engine_deadline.is_some()
+        && state.recovery.engine_next_probe.is_none_or(|at| now >= at)
+    {
+        state.recovery.engine_next_probe = Some(now + Duration::from_secs(3));
+        match heal::engine_activity().await {
+            heal::EngineActivity::UpBusy | heal::EngineActivity::UpIdle => {
+                state.recovery.engine_deadline = None;
+                state.recovery.engine_next_probe = None;
+                state.notice = Some((
+                    "harness: engine is ready — resuming".to_string(),
+                    "info".to_string(),
+                ));
+            }
+            heal::EngineActivity::Down => {
+                if state
+                    .recovery
+                    .engine_deadline
+                    .is_some_and(|deadline| now >= deadline)
+                {
+                    state.recovery.engine_deadline = None;
+                    state.recovery.engine_next_probe = None;
+                    state.entries.push(state::ChatEntry::Warn(
+                        "harness: engine did not become ready — /engine status for details"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+    }
+
+    // One-shot replay after a recovered model/engine failure.
+    if state.recovery.pending_replay.is_some() {
+        let due = state
+            .recovery
+            .pending_replay
+            .as_ref()
+            .is_some_and(|p| now >= p.at);
+        let too_old = state
+            .recovery
+            .pending_replay
+            .as_ref()
+            .is_some_and(|p| now.duration_since(p.at) > Duration::from_secs(90));
+        let needs_lapis = state
+            .recovery
+            .pending_replay
+            .as_ref()
+            .is_some_and(|p| p.requires_lapis);
+        if due
+            && !state.is_streaming
+            && state.recovery.phase == heal::Phase::Idle
+            && (!needs_lapis || state.model_is_lapis())
+            && !state.replay_has_side_effects()
+        {
+            state.recovery.pending_replay = None;
+            if let Some((text, images)) = state.take_replayable_prompt() {
+                state.entries.push(state::ChatEntry::Diag(
+                    "harness: replaying the interrupted prompt".to_string(),
+                ));
+                let _ = bridge
+                    .request(RpcCommand::Prompt {
+                        id: None,
+                        message: text,
+                        images,
+                        streaming_behavior: None,
+                    })
+                    .await;
+            }
+        } else if too_old {
+            state.recovery.pending_replay = None;
+        }
+    }
+
+    // Wire-idle hang: pi is streaming but no wire message arrived and no
+    // tool watch is armed. Probe the engine first so a long prefill is never
+    // mistaken for a hang.
+    if state.wire_idle_due(now, policy.wire_idle)
+        && !state.abort_pending()
+        && state.recovery.engine_deadline.is_none()
+    {
+        let activity = heal::engine_activity().await;
+        if activity == heal::EngineActivity::UpBusy {
+            state.grant_wire_grace(Duration::from_secs(120));
+            state.notice = Some((
+                "harness: engine is still prefilling — wire-idle watchdog extended".to_string(),
+                "info".to_string(),
+            ));
+        } else if activity == heal::EngineActivity::Down
+            && state.model_is_lapis()
+            && policy.engine_start
+            && state.recovery.engine_deadline.is_none()
+        {
+            // A hung request with lapis selected is the one case where the
+            // wire-idle detector may bring the engine up. Every other model
+            // stays manual (operator rule 2026-11-15).
+            let active = engine_unit_active().await;
+            let verb = if active {
+                if policy.engine_restart {
+                    "restart"
+                } else {
+                    ""
+                }
+            } else {
+                "start"
+            };
+            if verb.is_empty() {
+                state.entries.push(state::ChatEntry::Diag(
+                    "harness: engine unit is active but unreachable — not restarting automatically (OFFICINA_HEAL_ENGINE_RESTART=0)"
+                        .to_string(),
+                ));
+            } else {
+                match engine_unit(verb).await {
+                    Ok(()) => {
+                        state.recovery.engine_deadline = Some(now + Duration::from_secs(90));
+                        state.recovery.engine_next_probe = Some(now + Duration::from_secs(3));
+                        state.grant_wire_grace(Duration::from_secs(120));
+                        state.notice = Some((
+                            format!("harness: engine unreachable — {verb}ing it (lapis selected)"),
+                            "warning".to_string(),
+                        ));
+                    }
+                    Err(e) => state.entries.push(state::ChatEntry::Error(format!(
+                        "harness: engine {verb} failed: {e}"
+                    ))),
+                }
+            }
+        } else {
+            state.entries.push(state::ChatEntry::Warn(format!(
+                "harness watchdog: no harness output for {}s and pi is idle — aborting (auto-recovery armed)",
+                now.duration_since(state.last_wire_at).as_secs()
+            )));
+            cancel_pending_dialogs(state, bridge).await;
+            let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+            state.note_prompt_failed();
+            state.recovery.phase = heal::Phase::Aborting;
+            state.recovery.reason = "wire idle".to_string();
+            state.arm_abort(now, state::AbortSource::Watchdog);
+            return;
+        }
+    }
+
     if state.tool_watchdog_secs == 0 {
         return;
     }
@@ -2657,7 +2954,7 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
     // Stage 0: an assistant turn announced a tool call, but pi never emitted
     // `tool_execution_start`. That is the exact "persisted tool call, nothing
     // happened" failure; it has no running tool entry to age out.
-    let start_limit = std::time::Duration::from_secs(state.tool_watchdog_secs.min(60).max(15));
+    let start_limit = std::time::Duration::from_secs(state.tool_watchdog_secs.clamp(15, 60));
     if let Some((id, age)) = state.oldest_expected_tool_call() {
         if age >= start_limit && state.watchdog_fired.insert(format!("expected:{id}")) {
             state.entries.push(state::ChatEntry::Warn(format!(
@@ -2669,27 +2966,417 @@ async fn maybe_tool_watchdog(state: &mut AppState, bridge: &mut RpcBridge) {
         }
     }
 
-    if let Some((key, name, age, timeout_s)) = state.oldest_running_tool() {
-        // A declared tool timeout is authoritative: wait it out plus grace.
+    if let Some(tool) = state.oldest_running_tool() {
         let base = std::time::Duration::from_secs(state.tool_watchdog_secs);
-        let limit = timeout_s
-            .map(|s| std::time::Duration::from_secs(s.saturating_add(60)))
-            .map_or(base, |t| t.max(base));
-        if age >= limit && state.watchdog_fired.insert(key) {
-            state.entries.push(state::ChatEntry::Warn(format!(
-                "harness watchdog: {name} idle {}s with no result — cancelling and aborting the turn",
-                age.as_secs()
-            )));
-            stalled = true;
+        let base_due = tool.age >= tool.limit(base);
+        // Decisive fast path: a silent, lone tool needs a couple of samples, not
+        // the full budget, to prove it spawned nothing (2026-11-15). Only the
+        // NeverStarted verdict may act before `base_due` — anything else waits.
+        let decisive_due = tool.silent
+            && state.running_tool_count() == 1
+            && tool.age >= std::time::Duration::from_secs(stall::UNSTARTED_SECS);
+        if base_due || decisive_due {
+            let case = StallCase {
+                tool: &tool,
+                policy,
+                now,
+                decisive_only: !base_due,
+            };
+            maybe_grace_or_abort(state, bridge, &case).await;
+            // An abort was just armed: the settle deadline owns the next step.
+            if state.abort_pending() {
+                return;
+            }
         }
     } else if state.expected_tool_calls.is_empty() {
         state.abort_deadline = None;
     }
 
-    if stalled {
-        cancel_pending_dialogs(state, bridge).await;
-        let _ = bridge.request(RpcCommand::Abort { id: None }).await;
-        state.abort_deadline = Some(now + std::time::Duration::from_secs(10));
+    if !stalled {
+        return;
+    }
+    abort_for_stall(state, bridge, "tool stall", now).await;
+}
+
+/// Abort a turn that cannot make progress: close every dialog, ask pi to stop,
+/// and arm the settle deadline that escalates to recovery.
+async fn abort_for_stall(
+    state: &mut AppState,
+    bridge: &mut RpcBridge,
+    reason: &'static str,
+    now: std::time::Instant,
+) {
+    cancel_pending_dialogs(state, bridge).await;
+    let _ = bridge.request(RpcCommand::Abort { id: None }).await;
+    state.note_prompt_failed();
+    state.recovery.phase = heal::Phase::Aborting;
+    state.recovery.reason = reason.to_string();
+    state.arm_abort(now, state::AbortSource::Watchdog);
+    stall::trail(
+        "abort.sent",
+        serde_json::json!({ "reason": reason, "recovery": state.recovery.reason }),
+    );
+}
+
+/// One stall evaluation's inputs, bundled so the ladder stays under the
+/// parameter/cyclomatic limits (Praetor Datalog 4; 2026-11-15).
+struct StallCase<'a> {
+    tool: &'a state::RunningTool,
+    policy: &'a heal::Policy,
+    now: std::time::Instant,
+    /// Only the decisive `NeverStarted` verdict may act (fast path).
+    decisive_only: bool,
+}
+
+/// Evidence-gated stall ladder (2026-11-15).
+///
+/// A tool that reports running but has spawned no process can never start, so
+/// it is aborted immediately. Anything demonstrably working (pi computing, a
+/// busy engine) keeps its time. A flat, silent tool gets exactly one bounded
+/// grace before the turn is aborted; the trail records every step.
+async fn maybe_grace_or_abort(state: &mut AppState, bridge: &mut RpcBridge, case: &StallCase<'_>) {
+    let key = &case.tool.key;
+    if state.watchdog_fired.contains(key) || state.stall_parked(key, case.now) {
+        return; // already decided, or the ladder is parked
+    }
+    let verdict = evaluate_stall(state, bridge, case).await;
+    apply_stall_verdict(state, bridge, case, verdict).await;
+}
+
+/// Gather liveness evidence and record the decision breadcrumb.
+async fn evaluate_stall(
+    state: &AppState,
+    bridge: &RpcBridge,
+    case: &StallCase<'_>,
+) -> stall::StallVerdict {
+    let pi_flat = state.pi_is_flat();
+    let engine_busy = pi_flat && heal::engine_activity().await == heal::EngineActivity::UpBusy;
+    let evidence = stall::Evidence {
+        pi_flat,
+        engine_busy,
+        descendants: bridge.pi_pid().and_then(state::subtree_process_count),
+    };
+    let verdict = stall::stall_verdict(
+        case.tool.silent,
+        state.running_tool_count() == 1,
+        state.stall_graced.contains(&case.tool.key),
+        evidence,
+    );
+    stall::trail(
+        "stall.evaluate",
+        serde_json::json!({
+            "key": case.tool.key,
+            "name": case.tool.name,
+            "age_s": case.tool.age.as_secs(),
+            "silent": case.tool.silent,
+            "verdict": format!("{verdict:?}"),
+            "pi_flat": evidence.pi_flat,
+            "engine_busy": evidence.engine_busy,
+            "descendants": evidence.descendants,
+        }),
+    );
+    verdict
+}
+
+/// Human-readable consequence of one verdict. Pure: no side effects, so the
+/// ladder stays readable and each arm is testable by inspection.
+fn stall_notice(verdict: stall::StallVerdict, name: &str, age_s: u64, grace_s: u64) -> String {
+    match verdict {
+        stall::StallVerdict::Working => format!(
+            "harness: {name} still looks alive ({age_s}s) — watchdog waiting; a busy engine or active pi tree is real work"
+        ),
+        stall::StallVerdict::Grace => format!(
+            "harness: {name} silent for {age_s}s with no process evidence — holding {grace_s}s before any abort (pass `timeout` for long builds)"
+        ),
+        stall::StallVerdict::NeverStarted => format!(
+            "harness watchdog: {name} never spawned a process ({age_s}s, no output) — cancelling; the prompt will be replayed once"
+        ),
+        stall::StallVerdict::Abort => format!(
+            "harness watchdog: {name} idle {age_s}s with no result — cancelling and aborting the turn"
+        ),
+    }
+}
+
+/// Announce and act on one verdict: park, hold, or abort the turn.
+async fn apply_stall_verdict(
+    state: &mut AppState,
+    bridge: &mut RpcBridge,
+    case: &StallCase<'_>,
+    verdict: stall::StallVerdict,
+) {
+    let tool = case.tool;
+    let key = tool.key.clone();
+    // Not decisive yet: hold the full budget, never spend the grace, say nothing.
+    if case.decisive_only && verdict != stall::StallVerdict::NeverStarted {
+        state.park_stall(&key, Duration::from_secs(30));
+        return;
+    }
+    let text = stall_notice(
+        verdict,
+        &tool.name,
+        tool.age.as_secs(),
+        case.policy.stall_grace.as_secs(),
+    );
+    match verdict {
+        stall::StallVerdict::Working => {
+            state.park_stall(&key, Duration::from_secs(60));
+            state.entries.push(state::ChatEntry::Diag(text));
+        }
+        stall::StallVerdict::Grace => {
+            state.stall_graced.insert(key.clone());
+            state.park_stall(&key, case.policy.stall_grace);
+            state.entries.push(state::ChatEntry::Warn(text));
+        }
+        stall::StallVerdict::NeverStarted => {
+            state.watchdog_fired.insert(key);
+            state.note_stall_unexecuted();
+            state.entries.push(state::ChatEntry::Warn(text));
+            abort_for_stall(state, bridge, "tool never started", case.now).await;
+        }
+        stall::StallVerdict::Abort => {
+            state.watchdog_fired.insert(key);
+            if tool.silent {
+                state.note_stall_unexecuted();
+            }
+            state.entries.push(state::ChatEntry::Warn(text));
+            abort_for_stall(state, bridge, "tool stall", case.now).await;
+        }
+    }
+}
+
+/// Kill the tree, reopen the session pi was writing and rehydrate the view.
+/// Bounded by the recovery policy; exhaustion leaves the TUI usable.
+async fn recover(
+    state: &mut AppState,
+    bridge: &mut RpcBridge,
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<WireMessage>,
+    reason: &str,
+    _failure: heal::Failure,
+    policy: &heal::Policy,
+) {
+    if !heal::self_heal_enabled()
+        || matches!(
+            state.recovery.phase,
+            heal::Phase::Respawning | heal::Phase::Rehydrating
+        )
+    {
+        return;
+    }
+    let now = std::time::Instant::now();
+    if !state.recovery.can_attempt(now, policy) {
+        state
+            .recovery
+            .degrade(&format!("recovery budget exhausted after {reason}"));
+        state.entries.push(state::ChatEntry::Warn(format!(
+            "harness degraded: recovery failed after {} attempts — input is preserved; /recover retries, /quit exits",
+            policy.max_attempts
+        )));
+        return;
+    }
+    state.recovery.record_attempt(now, reason);
+    state.recovery.pending_failure = None;
+    let attempt = state.recovery.attempts.len();
+    state.entries.push(state::ChatEntry::Warn(format!(
+        "harness: {reason} — recovering (attempt {attempt}/{})",
+        policy.max_attempts
+    )));
+    cancel_pending_dialogs(state, bridge).await;
+
+    let session = state.session_file.clone().or_else(|| {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .and_then(|home| crate::session_guard::latest_session_in(&home, &state.cwd))
+    });
+    let resume = session.and_then(|path| {
+        let (resume, note) = crate::session_guard::repair_for_resume(&path);
+        if let Some(note) = note {
+            state.entries.push(state::ChatEntry::Diag(note));
+        }
+        resume
+    });
+
+    match bridge.respawn(resume.as_deref()).await {
+        Ok(new_rx) => {
+            *rx = new_rx;
+            state.session_file = resume;
+            state.reset_for_rehydrate();
+            state.recovery.phase = heal::Phase::Rehydrating;
+            state.recovery.rehydrate_deadline = Some(now + Duration::from_secs(30));
+            state.recovery.engine_deadline = None;
+            state.recovery.engine_next_probe = None;
+            let _ = bridge.request(RpcCommand::GetState { id: None }).await;
+            let _ = bridge.request(RpcCommand::GetMessages { id: None }).await;
+            let _ = bridge.request(RpcCommand::GetCommands { id: None }).await;
+            let _ = bridge
+                .request(RpcCommand::GetSessionStats { id: None })
+                .await;
+            state.entries.push(state::ChatEntry::Diag(
+                "harness: pi restarted — restoring the session transcript".to_string(),
+            ));
+            if policy.replay && state.last_prompt_replayable() {
+                state.recovery.pending_replay = Some(heal::PendingReplay {
+                    at: now,
+                    requires_lapis: false,
+                });
+            }
+        }
+        Err(e) => {
+            let msg = format!("harness recover failed: {e}");
+            stall::trail(
+                "respawn.fail",
+                serde_json::json!({ "attempt": attempt, "error": msg }),
+            );
+            state.recovery.last_error = Some(msg.clone());
+            state.recovery.phase = heal::Phase::Idle;
+            state.recovery.next_retry_at = Some(now + policy.backoff_for(attempt));
+            state.entries.push(state::ChatEntry::Error(msg));
+        }
+    }
+}
+
+fn finish_rehydrate(state: &mut AppState) {
+    stall::trail(
+        "rehydrate.done",
+        serde_json::json!({ "entries": state.entries.len() }),
+    );
+    state.recovery.recovered();
+    state.entries.push(state::ChatEntry::Diag(
+        "harness: session restored".to_string(),
+    ));
+    if let Some(p) = state.recovery.pending_replay.as_mut() {
+        p.at = std::time::Instant::now();
+    }
+}
+
+/// Classified provider failure → one bounded environment action.
+async fn handle_provider_failure(
+    state: &mut AppState,
+    bridge: &mut RpcBridge,
+    failure: heal::Failure,
+    detail: &str,
+    policy: &heal::Policy,
+) {
+    if !heal::self_heal_enabled() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    if state.recovery.failure_seen(failure, now) {
+        return;
+    }
+    let replayable = state.last_prompt_replayable();
+    match failure {
+        heal::Failure::EngineDown | heal::Failure::NoPhysicalModel => {
+            // HARD RULE (operator 2026-11-15): only officina/lapis may
+            // auto-start the engine. Every other selection stays manual.
+            if !state.model_is_lapis() {
+                state.entries.push(state::ChatEntry::Diag(
+                    "harness: engine unavailable — auto-start skipped (select officina/lapis to enable it)"
+                        .to_string(),
+                ));
+                return;
+            }
+            if !policy.engine_start {
+                state.entries.push(state::ChatEntry::Diag(
+                    "harness: engine unavailable — auto-start disabled (OFFICINA_HEAL_ENGINE=0)"
+                        .to_string(),
+                ));
+                return;
+            }
+            let active = engine_unit_active().await;
+            let verb = if active {
+                if failure == heal::Failure::NoPhysicalModel {
+                    state.entries.push(state::ChatEntry::Diag(format!(
+                        "harness: no physical model available — {detail}"
+                    )));
+                    return;
+                }
+                if policy.engine_restart {
+                    "restart"
+                } else {
+                    state.entries.push(state::ChatEntry::Diag(
+                        "harness: engine unit is active — not restarting automatically (set OFFICINA_HEAL_ENGINE_RESTART=1 to allow)"
+                            .to_string(),
+                    ));
+                    return;
+                }
+            } else {
+                "start"
+            };
+            match engine_unit(verb).await {
+                Ok(()) => {
+                    state.recovery.engine_deadline = Some(now + Duration::from_secs(90));
+                    state.recovery.engine_next_probe = Some(now);
+                    if replayable && policy.replay {
+                        state.recovery.pending_replay = Some(heal::PendingReplay {
+                            at: now,
+                            requires_lapis: true,
+                        });
+                    }
+                    state.notice = Some((
+                        format!("harness: {verb}ing the engine — waiting for readiness"),
+                        "warning".to_string(),
+                    ));
+                }
+                Err(e) => {
+                    state.entries.push(state::ChatEntry::Error(format!(
+                        "harness: engine {verb} failed: {e}"
+                    )));
+                }
+            }
+        }
+        heal::Failure::ModelNotFound => {
+            if state.model_is_lapis() {
+                state.entries.push(state::ChatEntry::Diag(format!(
+                    "harness: model unavailable — {detail}"
+                )));
+                return;
+            }
+            let _ = bridge
+                .request(RpcCommand::SetModel {
+                    id: None,
+                    provider: "officina".to_string(),
+                    model_id: "lapis".to_string(),
+                })
+                .await;
+            if replayable && policy.replay {
+                state.recovery.pending_replay = Some(heal::PendingReplay {
+                    at: now + Duration::from_secs(1),
+                    requires_lapis: true,
+                });
+            }
+            state.notice = Some((
+                "harness: model unavailable — switching to officina/lapis".to_string(),
+                "warning".to_string(),
+            ));
+        }
+        _ => {
+            state.notice = Some((format!("harness: {detail}"), "warning".to_string()));
+        }
+    }
+}
+
+async fn engine_unit_active() -> bool {
+    tokio::process::Command::new("systemctl")
+        .args(["is-active", "vitriol-server.service"])
+        .output()
+        .await
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "active")
+        .unwrap_or(false)
+}
+
+async fn engine_unit(action: &str) -> Result<()> {
+    let out = tokio::process::Command::new("systemctl")
+        .args([action, "vitriol-server.service"])
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("systemctl {action}: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "systemctl {action}: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
     }
 }
 
@@ -3010,6 +3697,9 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             state.entries.clear();
             state.md_cache_clear();
             state.widgets.clear();
+            // A fresh session has no status band yet; keeping the previous
+            // session's settled geometry would render its rows for a frame.
+            state.reset_band();
             state.input.clear();
             state.cursor = 0;
             state.resume_entries.clear();
@@ -3019,26 +3709,36 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
             return true;
         }
         Some("get_state") => {
-            state.apply_state(
-                data.get("model")
+            state.apply_state(crate::rpc::protocol::RpcSessionState {
+                model: data
+                    .get("model")
                     .and_then(|m| serde_json::from_value(m.clone()).ok()),
-                data.get("thinkingLevel")
+                thinking_level: data
+                    .get("thinkingLevel")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                data.get("isStreaming")
+                is_streaming: data
+                    .get("isStreaming")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                data.get("isCompacting")
+                is_compacting: data
+                    .get("isCompacting")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
-                data.get("sessionId")
+                session_id: data
+                    .get("sessionId")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                data.get("sessionName")
+                session_file: data
+                    .get("sessionFile")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                data.get("messageCount").and_then(|v| v.as_u64()),
-            );
+                session_name: data
+                    .get("sessionName")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                message_count: data.get("messageCount").and_then(|v| v.as_u64()),
+            });
         }
         Some("get_messages") => {
             // Full-fidelity replay (owner bug 2026-09-03: "resumed a
@@ -3162,20 +3862,21 @@ fn handle_response(state: &mut AppState, resp: &crate::rpc::protocol::RpcRespons
                 return false;
             }
             // Start on the currently selected row so Enter is a no-op unless
-            // the user moves.
+            // the user moves. Position is in the GROUPED display order.
             let current = state
                 .model
                 .as_ref()
                 .map(|m| (m.provider.clone(), m.id.clone()));
+            state.models = models;
+            state.models_filter.clear();
             state.models_sel = current
                 .and_then(|(provider, id)| {
-                    models
+                    state
+                        .filtered_models()
                         .iter()
                         .position(|m| m.provider == provider && m.id == id)
                 })
                 .unwrap_or(0);
-            state.models = models;
-            state.models_filter.clear();
             state.models_sel = state.models_sel.min(state.models.len().saturating_sub(1));
             state.note_phase(state::UiEvent::OpenModal);
             state.models_open = true;
@@ -3308,9 +4009,9 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
         "agent_start" => {
             state.note_phase(state::UiEvent::AgentStart);
             state.is_streaming = true;
-            // A follow-up typed while idle became this turn.
             state.held_clear(Some(state::HeldKind::FollowUp));
             state.watchdog_fired.clear();
+            state.clear_stall_state();
             state.abort_deadline = None;
             state.expected_tool_calls.clear();
         }
@@ -3322,6 +4023,17 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             state.refresh_ghost();
             state.refresh_answers_notice();
             state.abort_deadline = None;
+            if state.recovery.phase == heal::Phase::Aborting {
+                stall::trail(
+                    "abort.settled",
+                    serde_json::json!({ "reason": state.recovery.reason.clone() }),
+                );
+                state.recovery.recovered();
+                state.entries.push(state::ChatEntry::Diag(
+                    "harness: recovered by abort".to_string(),
+                ));
+            }
+            state.settle_last_prompt();
             let expected = state.expected_tool_calls.len();
             state.expected_tool_calls.clear();
             // A turn that ends with a running tool means pi never emitted a
@@ -3389,16 +4101,23 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 if !dup {
                     state.entries.push(state::ChatEntry::Error(entry));
                 }
+                state.note_prompt_failed();
+                state.recovery.pending_failure =
+                    Some((heal::classify_error(detail), detail.to_string()));
             }
             if role == "assistant" {
                 if let Some(content) = msg.and_then(|m| m.get("content")) {
                     state.note_expected_tool_calls(content);
                     let text = content_text(content);
+                    let has_text = !text.is_empty();
                     let have_streamed = matches!(&state.entries.last(), Some(e)
                         if matches!(e, state::ChatEntry::Assistant(t) if !t.is_empty())
                             || matches!(e, state::ChatEntry::Thinking { text: t, .. } if !t.is_empty()));
-                    if !text.is_empty() && !have_streamed {
+                    if has_text && !have_streamed {
                         state.entries.push(state::ChatEntry::Assistant(text));
+                    }
+                    if has_text {
+                        state.note_prompt_assistant_output();
                     }
                 }
             }
@@ -3416,6 +4135,14 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 .unwrap_or(serde_json::Value::Null);
             state.note_tool_started(tool_call_id);
             state.tool_start(tool_call_id, name, &args);
+            stall::trail(
+                "tool.start",
+                serde_json::json!({
+                    "id": tool_call_id,
+                    "name": name,
+                    "timeout_s": args.get("timeout"),
+                }),
+            );
         }
         "tool_execution_update" => {
             state.mark_activity();
@@ -3460,6 +4187,14 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                 .get("isError")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            stall::trail(
+                "tool.end",
+                serde_json::json!({
+                    "id": tool_call_id,
+                    "name": name,
+                    "is_error": is_err,
+                }),
+            );
             // Extract result text from result.content[]
             let result_text = fields
                 .get("result")
@@ -3611,8 +4346,17 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             }
         }
         "session_start" => {
-            state.entries.clear();
-            state.md_cache_clear();
+            // Recovery already cleared the view and is replaying get_messages;
+            // a late session_start must not wipe the restored transcript.
+            let rehydrating = state.recovery.phase == heal::Phase::Rehydrating
+                || state
+                    .recovery
+                    .rehydrate_grace_until
+                    .is_some_and(|until| std::time::Instant::now() < until);
+            if !rehydrating {
+                state.entries.clear();
+                state.md_cache_clear();
+            }
         }
         _ => {}
     }
@@ -3621,10 +4365,16 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
 
 async fn handle_ui_request(
     state: &mut AppState,
-    method: &str,
-    fields: &serde_json::Value,
+    req: &crate::rpc::protocol::ExtensionUiRequest,
     bridge: &mut RpcBridge,
 ) {
+    // pi puts the dialog id at the TOP LEVEL of extension_ui_request
+    // (rpc-mode.js: `output({type, id, ...request})`); the flattened `fields`
+    // only carries title/message/options. Reading the id from fields was the
+    // 2026-11-16 session-reset bug: every extension dialog was dropped, pi
+    // waited forever, the tool never started and the watchdog respawned.
+    let method = req.method.as_str();
+    let fields = &req.fields;
     match method {
         "setWidget" => {
             let key = fields
@@ -3677,12 +4427,21 @@ async fn handle_ui_request(
         "select" | "confirm" | "input" | "editor" => {
             // Extension dialogs are real modals in the Rust TUI (2026-11-10).
             // Queue them; the response is sent when the user decides.
-            let id = fields
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            // Id comes from the top-level field first; the flattened legacy
+            // location is kept only for old fixtures (2026-11-16).
+            let id = if req.id.is_empty() {
+                fields
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                req.id.clone()
+            };
             if id.is_empty() {
+                // A request without an id can never be answered: silence would
+                // block the actor forever (2026-11-15).
+                stall::trail("ui.unknown_id", serde_json::json!({ "method": method }));
                 return;
             }
             let title = fields
@@ -3743,7 +4502,23 @@ async fn handle_ui_request(
                 }
             }
         }
-        _ => {}
+        other => {
+            // Unknown extension-UI methods used to be dropped, leaving pi
+            // awaiting an answer that can never arrive (2026-11-15). Fail fast
+            // instead of hanging the actor, and leave a breadcrumb.
+            let id = fields
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            stall::trail(
+                "ui.unknown",
+                serde_json::json!({ "method": other, "id": id }),
+            );
+            if !id.is_empty() {
+                let _ = bridge.send_raw(&dialog_cancelled(&id).to_string()).await;
+            }
+        }
     }
 }
 
@@ -3817,6 +4592,66 @@ mod tests {
             dialog_value("x", "Allow".into()),
             serde_json::json!({"type":"extension_ui_response","id":"x","value":"Allow"})
         );
+    }
+
+    #[tokio::test]
+    async fn real_wire_confirm_with_top_level_id_is_answered_not_dropped() {
+        // pi sends `{type, id, ...request}` — the TUI previously read the id
+        // from the flattened fields, dropped every dialog, and the actor hung
+        // at tool preflight (2026-11-16 session-reset bug).
+        use crate::rpc::protocol::ExtensionUiRequest;
+        let req: ExtensionUiRequest = serde_json::from_value(serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "dlg-1",
+            "method": "confirm",
+            "title": "permissions",
+            "message": "Allow bash?",
+        }))
+        .unwrap();
+        let dir = std::env::temp_dir().join(format!("officina-dlg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stub.cjs"), "process.stdin.resume();").unwrap();
+        let mut bridge = RpcBridge::spawn(&dir.join("stub.cjs"), &dir, &[])
+            .await
+            .unwrap();
+        let mut s = AppState::default();
+        handle_ui_request(&mut s, &req, &mut bridge).await;
+        let Some(dlg) = s.dialogs.pop_front() else {
+            panic!("confirm was dropped instead of queued");
+        };
+        assert_eq!(dlg.id, "dlg-1", "the dialog keeps the real top-level id");
+        assert!(matches!(dlg.kind, state::DialogKind::Confirm));
+        drop(bridge);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn id_less_request_stays_a_trail_noop_never_a_queued_dialog() {
+        use crate::rpc::protocol::ExtensionUiRequest;
+        let req: ExtensionUiRequest = serde_json::from_value(serde_json::json!({
+            "type": "extension_ui_request",
+            "id": "",
+            "method": "confirm",
+            "title": "t",
+            "message": "m",
+        }))
+        .unwrap();
+        // Real pi always sends an id; a genuinely id-less request is a wire
+        // error and must be a no-op, never a queued dialog we cannot answer.
+        let dir = std::env::temp_dir().join(format!("officina-dlg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("stub.cjs"), "process.stdin.resume();").unwrap();
+        let mut bridge = RpcBridge::spawn(&dir.join("stub.cjs"), &dir, &[])
+            .await
+            .unwrap();
+        let mut s = AppState::default();
+        handle_ui_request(&mut s, &req, &mut bridge).await;
+        assert!(
+            s.dialogs.is_empty(),
+            "genuinely id-less request stays a no-op"
+        );
+        drop(bridge);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -4393,16 +5228,22 @@ mod phase_wiring_tests {
     }
 
     #[test]
-    fn compaction_timer_tracks_the_banner() {
+    fn compaction_timer_tracks_chat_progress() {
         let mut s = AppState::default();
         fire(&mut s, "agent_start");
         assert!(s.compaction_started_at.is_none());
         fire(&mut s, "compaction_start");
         assert!(s.is_compacting);
-        assert!(s.compaction_started_at.is_some(), "banner timer armed");
+        assert!(
+            s.compaction_started_at.is_some(),
+            "chat progress timer armed"
+        );
         fire(&mut s, "compaction_end");
         assert!(!s.is_compacting);
-        assert!(s.compaction_started_at.is_none(), "banner timer cleared");
+        assert!(
+            s.compaction_started_at.is_none(),
+            "chat progress timer cleared"
+        );
         fire(&mut s, "agent_end");
     }
 
@@ -4483,5 +5324,95 @@ mod phase_wiring_tests {
             "mid-turn dialog tripped the table: {:?}",
             state_diags(&s)
         );
+    }
+}
+
+#[cfg(test)]
+mod input_settings_tests {
+    use super::*;
+
+    async fn press(code: KeyCode, state: &mut AppState, bridge: &mut RpcBridge) {
+        handle_key(KeyEvent::new(code, KeyModifiers::NONE), state, bridge).await;
+    }
+
+    #[tokio::test]
+    async fn tab_cycles_agent_even_when_a_ghost_suggestion_is_visible() {
+        let dir = std::env::temp_dir().join(format!("officina-tab-ghost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("stdin.log");
+        let script = dir.join("stub.cjs");
+        std::fs::write(
+            &script,
+            format!(
+                "const fs=require('fs');process.stdin.on('data',d=>fs.appendFileSync({:?},d));process.stdin.resume();",
+                log
+            ),
+        )
+        .unwrap();
+        let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
+        let mut state = AppState::default();
+        state.agent_mode = Some("plan".into());
+        state.prompt_ghost = Some(state::GhostSuggestion {
+            id: "g".into(),
+            text: "suggested next step".into(),
+            source: "test".into(),
+        });
+        press(KeyCode::Tab, &mut state, &mut bridge).await;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(
+            sent.contains("\"type\":\"prompt\"") && sent.contains("/agent plan"),
+            "Tab must send the agent cycle despite a ghost: {sent:?}"
+        );
+        assert!(state.prompt_ghost.is_some(), "ghost is not accepted by Tab");
+        drop(bridge);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn right_tab_cursor_and_menu_keyboard_contract() {
+        let dir = std::env::temp_dir().join(format!("officina-input-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("stub.cjs");
+        std::fs::write(&script, "process.stdin.resume();").unwrap();
+        let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
+        let mut state = AppState::default();
+        state.input = "/side".into();
+        state.cursor = 5;
+        press(KeyCode::Tab, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "/side");
+        state.cursor = 2;
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.cursor, 3);
+        assert_eq!(state.input, "/side");
+        state.cursor = 5;
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "/sidebar");
+        press(KeyCode::Enter, &mut state, &mut bridge).await;
+        assert!(state.setting_menu.is_some());
+        assert_eq!(state.sidebar_force, None);
+        press(KeyCode::Down, &mut state, &mut bridge).await;
+        press(KeyCode::Enter, &mut state, &mut bridge).await;
+        assert_eq!(state.sidebar_force, Some(true));
+        assert!(state.setting_menu.is_none());
+        state.ghost_events_file = Some(dir.join("ghost.jsonl"));
+        state.prompt_ghost = Some(state::GhostSuggestion {
+            id: "test".into(),
+            text: "héllo".into(),
+            source: "test".into(),
+        });
+        press(KeyCode::Tab, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "");
+        assert!(state.prompt_ghost.is_some());
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.input, "héllo");
+        assert_eq!(state.cursor, 5);
+        state.cursor = 1;
+        press(KeyCode::Right, &mut state, &mut bridge).await;
+        assert_eq!(state.cursor, 2);
+        assert_eq!(state.input, "héllo");
+        drop(bridge);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

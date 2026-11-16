@@ -296,7 +296,7 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
                     }
                     Line::from(
                         std::iter::once(Span::raw(" ".repeat(left_pad as usize)))
-                            .chain(spans.into_iter())
+                            .chain(spans)
                             .collect::<Vec<Span>>(),
                     )
                 })
@@ -339,7 +339,7 @@ pub fn render(frame: &mut Frame, area: Rect, phase_ms: u128, mode: GlimmerMode) 
                     }
                     Line::from(
                         std::iter::once(Span::raw(" ".repeat(left_pad as usize)))
-                            .chain(spans.into_iter())
+                            .chain(spans)
                             .collect::<Vec<Span>>(),
                     )
                 })

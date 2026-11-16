@@ -1,11 +1,6 @@
-// hang-watchdog (2026-11-12). Watches long-running bash calls; when output
-// stalls it escalates: a notice first, then the SESSION'S LANE judges
-// liveliness — a tiny free-lane completion over the gateway (never the busy
-// agent loop). INVARIANT: it never kills, never aborts, never injects into
-// the turn — the operator reads the verdict and presses Esc themselves.
-// Kill switch: OFFICINA_NO_HANG_WATCHDOG=1.
-
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+// PROVENANCE: original Officina advisory watchdog. Deterministic monitoring
+// survives unknown/unavailable semantic judgments; this extension never aborts.
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -14,6 +9,7 @@ import {
   MAX_JUDGMENTS_PER_CALL,
   REJUDGE_EVERY_S,
   JUDGE_S_DEFAULT,
+  observeToolOutput,
   parseVerdict,
   pickJudgeModel,
   SOFT_S_DEFAULT,
@@ -22,12 +18,25 @@ import {
   type TickAction,
   type WatchedCall,
 } from "./judge.ts";
-import { extractCatalogModels, freeToolCandidates } from "../caduceus/catalog.ts";
+import { judgeWithDecision } from "./decision.ts";
+import {
+  resolveDecisionConfig,
+  readDecisionConfig,
+  writeDecisionConfig,
+} from "./config.ts";
+import {
+  extractCatalogModels,
+  freeToolCandidates,
+} from "../caduceus/catalog.ts";
 
-const DEFAULT_BASE_URL = "http://127.0.0.1:20128/v1";
-const CATALOG = join(homedir(), ".vitriol", "officina", "caduceus-models.json");
 const JUDGE_TIMEOUT_MS = 30_000;
-const TAIL_LINES = 40;
+const directory = () => join(homedir(), ".vitriol", "officina");
+
+/** Session-scoped facts prevent one TUI from displaying another session's verdict. */
+export function watchdogPath(session: string): string {
+  const safe = session.replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 120);
+  return join(directory(), "watchdog", `${safe || "unknown"}.json`);
+}
 
 function envInt(name: string, fallback: number): number {
   const n = Number(process.env[name]);
@@ -35,35 +44,49 @@ function envInt(name: string, fallback: number): number {
 }
 
 function gatewayBase(): string {
-  const fromEnv = String(process.env.OFFICINA_CADUCEUS_URL ?? "").trim();
-  if (fromEnv) return fromEnv.replace(/\/+$/, "");
-  return DEFAULT_BASE_URL;
-}
-
-function resolveBaseUrl(): string {
-  // env wins (TUI parity), then the gateway-url file, then the default.
-  if (process.env.OFFICINA_CADUCEUS_URL) return gatewayBase();
+  if (process.env.OFFICINA_CADUCEUS_URL)
+    return process.env.OFFICINA_CADUCEUS_URL.replace(/\/+$/, "");
   try {
-    const path = join(homedir(), ".vitriol", "officina", "gateway-url");
-    if (existsSync(path)) {
-      const fromFile = readFileSync(path, "utf8").trim();
-      if (fromFile) return fromFile.replace(/\/+$/, "");
-    }
+    return (
+      readFileSync(join(directory(), "gateway-url"), "utf8")
+        .trim()
+        .replace(/\/+$/, "") || "http://127.0.0.1:20128/v1"
+    );
   } catch {
-    // fall through to default
+    return "http://127.0.0.1:20128/v1";
   }
-  return gatewayBase();
 }
 
-/** The judgment completion: best free lane, tiny budget, strict timeout.
- *  Returns the raw reply text or null (judge unavailable → fail-open). */
-async function judgeWithLane(model: string, prompt: string): Promise<string | null> {
-  const key = String(process.env.OFFICINA_CADUCEUS_API_KEY ?? "").trim();
-  if (!key) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
+function bestFreeLane(): string | null {
   try {
-    const res = await fetch(`${resolveBaseUrl()}/chat/completions`, {
+    const raw = JSON.parse(
+      readFileSync(join(directory(), "caduceus-models.json"), "utf8"),
+    );
+    return pickJudgeModel(
+      freeToolCandidates(extractCatalogModels(raw)).map((c) => c.id),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** A bounded separate completion, never the busy actor's turn or local slot. */
+async function judgeWithLane(
+  call: WatchedCall,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const model = bestFreeLane();
+  const key = process.env.OFFICINA_CADUCEUS_API_KEY?.trim();
+  if (!model || !key) return null;
+  try {
+    const now = Date.now();
+    const prompt = buildJudgePrompt(
+      call.command,
+      Math.floor((now - call.startedAt) / 1000),
+      Math.floor((now - (call.stalledSince ?? now)) / 1000),
+      call.tail ?? "",
+    );
+    const res = await fetch(`${gatewayBase()}/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -75,220 +98,383 @@ async function judgeWithLane(model: string, prompt: string): Promise<string | nu
         max_tokens: 80,
         temperature: 0,
       }),
-      signal: controller.signal,
+      signal,
     });
     if (!res.ok) return null;
     const doc = (await res.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
+      choices?: Array<{ message?: { content?: unknown } }>;
     };
-    return doc.choices?.[0]?.message?.content ?? null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function bestFreeLane(): string | null {
-  try {
-    const raw = JSON.parse(readFileSync(CATALOG, "utf8"));
-    const ids = freeToolCandidates(extractCatalogModels(raw)).map((c) => c.id);
-    return pickJudgeModel(ids);
+    const content = doc.choices?.[0]?.message?.content;
+    return typeof content === "string" ? content : null;
   } catch {
     return null;
   }
 }
-
-/** Structured watchdog facts for the TUI card + countdown (2026-11-13).
- *  Written beside every notify; the TUI renders fields, not prose, and
- *  shows "watchdog in Ns" until next_check_at. */
-const WATCHDOG_FILE = join(homedir(), ".vitriol", "officina", "watchdog.json");
 
 interface WatchdogDoc {
   version: 1;
   ts: number;
-  kind: "notice" | "judge" | "verdict" | "unavailable";
+  valid_until: number;
+  session_id: string;
+  tool_call_id: string;
+  kind: "notice" | "judge" | "verdict" | "unavailable" | "ended";
   command: string;
   elapsed_s: number;
   stalled_s: number;
-  verdict: "JUDGING" | "ALIVE" | "HUNG" | "";
+  verdict: "JUDGING" | "ALIVE" | "HUNG" | "UNKNOWN" | "NO-JUDGE" | "";
   reason: string;
+  /** Where the verdict came from (2026-11-16): typed decision lane, free
+   *  cloud lane, or unavailable when neither could answer. Absent on
+   *  notices/ended docs where no judge ran. */
+  source?: "decision" | "lane" | "unavailable";
   next_check_at: number;
-  phase: "soft" | "judge" | "rejudge" | "done";
+  phase: "soft" | "judge" | "rejudge" | "monitor" | "done";
 }
 
-function writeWatchdog(doc: Omit<WatchdogDoc, "version" | "ts">): void {
+function writeWatchdog(doc: WatchdogDoc): void {
   try {
-    mkdirSync(join(homedir(), ".vitriol", "officina"), { recursive: true });
-    const full: WatchdogDoc = { version: 1, ts: Date.now(), ...doc };
-    const tmp = `${WATCHDOG_FILE}.tmp-${process.pid}`;
-    writeFileSync(tmp, `${JSON.stringify(full, null, 2)}\n`);
-    renameSync(tmp, WATCHDOG_FILE);
+    const path = watchdogPath(doc.session_id);
+    mkdirSync(join(directory(), "watchdog"), { recursive: true });
+    const tmp = `${path}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(doc) + "\n", { mode: 0o600 });
+    renameSync(tmp, path);
   } catch {
-    // decoration contract
+    /* Observability must not stop the actor. */
   }
 }
 
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_NO_HANG_WATCHDOG === "1") return;
-
   const softS = envInt("OFFICINA_HANG_SOFT_S", SOFT_S_DEFAULT);
   const judgeS = envInt("OFFICINA_HANG_JUDGE_S", JUDGE_S_DEFAULT);
   const watched = new Map<string, WatchedCall>();
-  const tails = new Map<string, string>();
-  let ui: any = null;
+  const pending = new Map<string, AbortController>();
+  let session = `process-${process.pid}`;
+  let ui:
+    | { notify(message: string, level?: "info" | "warning" | "error"): unknown }
+    | undefined;
+  let timer: ReturnType<typeof setInterval> | undefined;
 
-  const surface = (message: string, level: string): void => {
+  const publish = (
+    call: WatchedCall,
+    status: Pick<
+      WatchdogDoc,
+      "kind" | "verdict" | "reason" | "source" | "next_check_at" | "phase"
+    >,
+    message: string,
+  ) => {
+    const now = Date.now();
+    call.surfaced = true;
+    const doc: WatchdogDoc = {
+      version: 1,
+      ts: now,
+      valid_until: Math.min(
+        now + 360_000,
+        Math.max(now + 120_000, status.next_check_at + 30_000),
+      ),
+      session_id: session,
+      tool_call_id: call.toolCallId,
+      command: call.command,
+      elapsed_s: Math.floor((now - call.startedAt) / 1000),
+      stalled_s: Math.floor((now - (call.stalledSince ?? now)) / 1000),
+      ...status,
+    };
+    writeWatchdog(doc);
     try {
-      ui?.notify?.(message, level);
+      ui?.notify(
+        `${message}\n<officina-watchdog-v1>${JSON.stringify(doc)}`,
+        status.verdict === "ALIVE" ? "info" : "warning",
+      );
     } catch {
-      // decoration contract
+      /* advisory */
     }
   };
 
-  const handleTick = async (call: WatchedCall, action: TickAction): Promise<void> => {
-    if (action.kind === "none" || action.kind === "alive") return;
-    const elapsedS = Math.floor((Date.now() - call.startedAt) / 1000);
-    const stalledS = Math.floor((Date.now() - (call.stalledSince ?? Date.now())) / 1000);
-    if (action.kind === "notice") {
-      writeWatchdog({
-        kind: "notice",
-        command: call.command,
-        elapsed_s: elapsedS,
-        stalled_s: stalledS,
-        verdict: "",
+  const runJudge = async (call: WatchedCall): Promise<void> => {
+    const controller = new AbortController();
+    pending.set(call.toolCallId, controller);
+    call.judging = true;
+    const generation = call.generation ?? 0;
+    publish(
+      call,
+      {
+        kind: "judge",
+        verdict: "JUDGING",
         reason: "",
-        next_check_at: Date.now() + Math.max(0, judgeS - stalledS) * 1000,
-        phase: "soft",
-      });
-      surface(action.message, "warning");
-      return;
-    }
-    // judge — never the busy agent loop: a separate tiny completion on a
-    // free lane. Fail-open: an unavailable judge changes nothing.
-    writeWatchdog({
-      kind: "judge",
-      command: call.command,
-      elapsed_s: elapsedS,
-      stalled_s: stalledS,
-      verdict: "JUDGING",
-      reason: "",
-      next_check_at: Date.now() + 30_000,
-      phase: "judge",
-    });
-    const model = bestFreeLane();
-    if (!model) {
-      writeWatchdog({
-        kind: "unavailable",
-        command: call.command,
-        elapsed_s: elapsedS,
-        stalled_s: stalledS,
-        verdict: "",
-        reason: "no free lane in catalog cache",
-        next_check_at: 0,
-        phase: "done",
-      });
-      surface(`${action.message} · (judge unavailable — no free lane in catalog cache)`, "warning");
-      return;
-    }
-    const prompt = buildJudgePrompt(
-      call.command,
-      Math.floor((Date.now() - call.startedAt) / 1000),
-      Math.floor((Date.now() - (call.stalledSince ?? Date.now())) / 1000),
-      action.tail,
+        next_check_at: Date.now() + JUDGE_TIMEOUT_MS,
+        phase: "judge",
+      },
+      `hang-watchdog: judging "${call.command.slice(0, 60)}"`,
     );
-    const reply = await judgeWithLane(model, prompt);
-    if (reply === null) {
-      writeWatchdog({
-        kind: "unavailable",
-        command: call.command,
-        elapsed_s: elapsedS,
-        stalled_s: stalledS,
-        verdict: "",
-        reason: "judge unreachable (assuming alive)",
-        next_check_at: 0,
-        phase: "done",
-      });
-      surface(`${action.message} · (judge unreachable — assuming alive)`, "warning");
+    const current = () =>
+      watched.get(call.toolCallId) === call &&
+      (call.generation ?? 0) === generation;
+    const deadline = setTimeout(() => controller.abort(), JUDGE_TIMEOUT_MS);
+    let onAbort: () => void = () => {};
+    const cancelled = new Promise<null>((resolve) => {
+      onAbort = () => resolve(null);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      const request = async () => {
+        const decision = await judgeWithDecision(call, controller.signal);
+        if (decision) return decision; // carries source "decision"
+        const reply = await judgeWithLane(call, controller.signal);
+        if (reply === null) {
+          return {
+            alive: null,
+            reason: "judge unavailable — liveness unknown",
+            source: "unavailable" as const,
+          };
+        }
+        return { ...parseVerdict(reply), source: "lane" as const };
+      };
+      const result = await Promise.race([request(), cancelled]);
+      if (!current()) return;
+      const verdict = result ?? {
+        alive: null,
+        reason: "judge deadline exceeded — liveness unknown (NO-JUDGE)",
+        unparsed: true,
+        source: "unavailable" as const,
+      };
+      // `unparsed` only exists on an unparsable reply: a decision-model verdict
+      // is structurally parsed, so the field is absent there.
+      const broken = "unparsed" in verdict && verdict.unparsed === true;
+      const label =
+        verdict.alive === null
+          ? broken
+            ? "NO-JUDGE"
+            : "UNKNOWN"
+          : verdict.alive
+            ? "ALIVE"
+            : "HUNG";
+      call.lastVerdict = label;
+      const capped = call.judgments >= MAX_JUDGMENTS_PER_CALL;
+      if (capped) call.monitorPublishedAt = Date.now();
+      publish(
+        call,
+        {
+          kind: verdict.alive === null ? "unavailable" : "verdict",
+          verdict: label,
+          reason: verdict.reason,
+          next_check_at: capped
+            ? 0
+            : (call.judgedAt ?? Date.now()) + REJUDGE_EVERY_S * 1000,
+          phase: capped ? "monitor" : "rejudge",
+          source: ("source" in verdict ? verdict.source : "lane") as
+            "decision" | "lane" | "unavailable",
+        },
+        `hang-watchdog verdict for "${call.command.slice(0, 60)}": ${label} — ${verdict.reason} (advisory; monitoring continues)`,
+      );
+    } finally {
+      clearTimeout(deadline);
+      controller.signal.removeEventListener("abort", onAbort);
+      if (pending.get(call.toolCallId) === controller) {
+        pending.delete(call.toolCallId);
+        call.judging = false;
+      }
+    }
+  };
+
+  const handleTick = (call: WatchedCall, action: TickAction) => {
+    if (action.kind === "none" || action.kind === "alive") return;
+    if (action.kind === "notice") {
+      const capped = call.judgments >= MAX_JUDGMENTS_PER_CALL;
+      publish(
+        call,
+        {
+          kind: "notice",
+          verdict: "UNKNOWN",
+          reason: capped
+            ? "judge budget exhausted; deterministic monitoring continues"
+            : "no new output",
+          next_check_at: capped
+            ? 0
+            : (call.stalledSince ?? Date.now()) + judgeS * 1000,
+          phase: capped ? "monitor" : "soft",
+        },
+        action.message,
+      );
       return;
     }
-    const verdict = parseVerdict(reply);
-    call.lastVerdict = verdict.alive ? "ALIVE" : "HUNG";
-    writeWatchdog({
-      kind: "verdict",
-      command: call.command,
-      elapsed_s: Math.floor((Date.now() - call.startedAt) / 1000),
-      stalled_s: Math.floor((Date.now() - (call.stalledSince ?? Date.now())) / 1000),
-      verdict: verdict.alive ? "ALIVE" : "HUNG",
-      reason: verdict.reason,
-      next_check_at:
-        call.judgments >= MAX_JUDGMENTS_PER_CALL ? 0 : Date.now() + REJUDGE_EVERY_S * 1000,
-      phase: call.judgments >= MAX_JUDGMENTS_PER_CALL ? "done" : "rejudge",
-    });
-    surface(
-      `hang-watchdog verdict for "${call.command.slice(0, 60)}": ${verdict.alive ? "ALIVE" : "HUNG"} — ${verdict.reason} ` +
-        "(no auto-kill; Esc aborts if you agree)",
-      verdict.alive ? "info" : "warning",
-    );
+    void runJudge(call);
+  };
+
+  const reset = () => {
+    for (const controller of pending.values()) controller.abort();
+    watched.clear();
+    pending.clear();
+    if (timer) clearInterval(timer);
+    timer = undefined;
   };
 
   pi.on("session_start", (_event, ctx) => {
-    ui = (ctx as { hasUI?: boolean; ui?: unknown }).hasUI ? (ctx as { ui: any }).ui : null;
-    watched.clear();
-    tails.clear();
+    reset();
+    session = ctx.sessionManager.getSessionId();
+    ui = ctx.ui; // RPC notifications work even when a caller reports hasUI=false.
+    timer = setInterval(() => {
+      for (const call of watched.values())
+        handleTick(
+          call,
+          tickCall(call, call.lastOutputRevision, call.tail ?? "", {
+            now: Date.now(),
+            softS,
+            judgeS,
+          }),
+        );
+    }, TICK_S * 1000);
+    timer.unref?.();
   });
-
+  pi.on("session_shutdown", () => {
+    reset();
+    ui = undefined;
+  });
   pi.on("tool_execution_start", (event) => {
-    const e = event as { toolCallId?: string; toolName?: string; args?: Record<string, unknown> };
-    const name = String(e.toolName ?? "").toLowerCase();
-    if (name !== "bash") return;
-    const command = String(e.args?.command ?? e.args?.cmd ?? "");
+    if (event.toolName.toLowerCase() !== "bash") return;
+    const command = String(event.args.command ?? event.args.cmd ?? "");
     if (!command) return;
-    watched.set(String(e.toolCallId), {
-      toolCallId: String(e.toolCallId),
+    watched.set(event.toolCallId, {
+      toolCallId: event.toolCallId,
       command,
       startedAt: Date.now(),
-      lastOutputChars: 0,
+      lastOutputRevision: 0,
       stalledSince: null,
       judgments: 0,
       lastVerdict: null,
     });
-    tails.set(String(e.toolCallId), "");
   });
-
   pi.on("tool_execution_update", (event) => {
-    const e = event as { toolCallId?: string; partialResult?: unknown };
-    const id = String(e.toolCallId ?? "");
-    if (!watched.has(id)) return;
-    const pr = e.partialResult;
-    const text =
-      typeof pr === "string"
-        ? pr
-        : Array.isArray(pr)
-          ? pr
-              .map((b) => (typeof b === "string" ? b : ((b as { text?: string })?.text ?? "")))
-              .join("\n")
-          : "";
-    tails.set(id, String(text).split("\n").slice(-TAIL_LINES).join("\n"));
+    const call = watched.get(event.toolCallId);
+    if (!call || !observeToolOutput(call, event.partialResult, Date.now()))
+      return;
+    pending.get(call.toolCallId)?.abort();
+    if (call.surfaced)
+      publish(
+        call,
+        {
+          kind: "notice",
+          verdict: "ALIVE",
+          reason: "new output from this tool",
+          next_check_at: Date.now() + softS * 1000,
+          phase: "soft",
+        },
+        `hang-watchdog: "${call.command.slice(0, 60)}" output resumed`,
+      );
   });
-
   pi.on("tool_execution_end", (event) => {
-    const id = String((event as { toolCallId?: string }).toolCallId ?? "");
-    watched.delete(id);
-    tails.delete(id);
+    const call = watched.get(event.toolCallId);
+    watched.delete(event.toolCallId);
+    pending.get(event.toolCallId)?.abort();
+    if (call?.surfaced)
+      publish(
+        call,
+        {
+          kind: "ended",
+          verdict: "",
+          reason: "tool finished",
+          next_check_at: 0,
+          phase: "done",
+        },
+        `hang-watchdog: "${call.command.slice(0, 60)}" finished`,
+      );
   });
 
-  const timer = setInterval(() => {
-    const now = Date.now();
-    for (const call of watched.values()) {
-      const tail = tails.get(call.toolCallId) ?? "";
-      const action = tickCall(call, tail.length, tail, {
-        now,
-        softS,
-        judgeS,
-      });
-      void handleTick(call, action);
-    }
-  }, TICK_S * 1000);
-  timer.unref?.();
+  // /decision — configure the typed SystemOne judge (2026-11-16).
+  // `status` shows the current lane; `set <url>` / `key <token>` /
+  // `floor <0-1>` write the 0600 config; `off` clears it. Env vars still
+  // override the file for throwaway runs.
+  pi.registerCommand?.("decision", {
+    description:
+      "Decision lane: status | set <systemone-url> | key <token> | floor <0-1> | off (hang-watchdog's typed judge)",
+    handler: async (
+      args: string,
+      ctx: {
+        ui?: { notify?: (m: string, l?: "error" | "info" | "warning") => void };
+      },
+    ) => {
+      const cfg = readDecisionConfig() ?? {
+        version: 1 as const,
+        url: "",
+        key: "",
+        floor: 0.9,
+      };
+      const a = args.trim();
+      const show = (
+        text: string,
+        level: "error" | "info" | "warning" = "info",
+      ) => {
+        try {
+          ctx.ui?.notify?.(text, level);
+        } catch {
+          /* advisory */
+        }
+      };
+      const redact = (k: string) =>
+        k ? `${k.slice(0, 6)}…${k.length > 6 ? " (set)" : ""}` : "";
+      if (!a || a === "status") {
+        const current = resolveDecisionConfig();
+        if (!current.endpoint) {
+          show(
+            "decision: unset — watchdog uses the free lane (set /decision set <url> to enable)",
+          );
+          return;
+        }
+        show(
+          `decision: ${current.endpoint} · floor ${current.floor} · key ${redact(current.key)}`,
+        );
+        return;
+      }
+      if (a === "off") {
+        writeDecisionConfig({ version: 1, url: "", key: "", floor: 0.9 });
+        show("decision: cleared — watchdog uses the free lane");
+        return;
+      }
+      const setUrl = a.match(/^set\s+(\S+)/);
+      if (setUrl) {
+        const url = setUrl[1];
+        if (!/^https?:\/\//.test(url)) {
+          show(`decision: URL must be http(s): ${url}`, "warning");
+          return;
+        }
+        const ok = writeDecisionConfig({
+          ...cfg,
+          url,
+          key: cfg.key,
+          floor: cfg.floor,
+        });
+        show(
+          ok ? `decision: set ${url}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setKey = a.match(/^key\s+(\S+)/);
+      if (setKey) {
+        const ok = writeDecisionConfig({ ...cfg, key: setKey[1] });
+        show(
+          ok ? "decision: key set" : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      const setFloor = a.match(/^floor\s+([0-9.]+)/);
+      if (setFloor) {
+        const floor = Number(setFloor[1]);
+        if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
+          show("decision: floor must be 0..1", "warning");
+          return;
+        }
+        const ok = writeDecisionConfig({ ...cfg, floor });
+        show(
+          ok ? `decision: floor ${floor}` : "decision: write failed",
+          ok ? "info" : "warning",
+        );
+        return;
+      }
+      show(
+        "decision: unknown arguments — try `set <url>`, `key <token>`, `floor <0-1>`, `status`, `off`",
+        "warning",
+      );
+    },
+  });
 }

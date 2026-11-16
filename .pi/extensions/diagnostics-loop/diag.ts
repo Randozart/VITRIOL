@@ -48,7 +48,7 @@ export function checkFor(file: string, cfg: DiagConfig = diagConfig({})): CheckC
 /** One file's check outcome. */
 export interface FileDiag {
   file: string;
-  ok: boolean;
+  status: "passed" | "failed" | "unavailable";
   /** stderr/stdout from the checker, already tail-capped. */
   output: string;
 }
@@ -58,7 +58,7 @@ export interface FileDiag {
  * (clean checks stay silent — zero tokens). Capped to budgetChars.
  */
 export function renderDiagnostics(diags: FileDiag[], budgetChars: number): string {
-  const bad = diags.filter((d) => !d.ok);
+  const bad = diags.filter((d) => d.status === "failed");
   if (bad.length === 0) return "";
   const head = `[diagnostics: ${bad.length} file(s) failed their syntax check after your edit — fix before continuing]`;
   let out = head;
@@ -78,4 +78,13 @@ export function tailCap(text: string, maxChars = 400): string {
   const t = text.trim();
   if (t.length <= maxChars) return t;
   return "…" + t.slice(t.length - maxChars);
+}
+
+/** Keep execution errors distinct from completed checks that reject source. */
+export function checkerFailure(file: string, error: unknown): FileDiag {
+  const e = (error ?? {}) as { code?: string; status?: number | null; signal?: string | null; stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
+  const status = !e.code && !e.signal && typeof e.status === "number" && e.status > 0 ? "failed" : "unavailable";
+  const output = tailCap(`${e.stderr ?? ""}\n${e.stdout ?? ""}`);
+  const reason = e.code || e.signal || e.message || "checker did not complete";
+  return { file, status, output: status === "unavailable" ? tailCap(`checker unavailable (${reason})\n${output}`) : output || reason };
 }

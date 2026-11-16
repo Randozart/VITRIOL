@@ -16,12 +16,10 @@ import {
 // (plan: .opencode/plans/dual-slot-background-lane-2026-08-31.md, v1 idea 1+2).
 //
 // Contract: bounded input (the turn's accumulated edit patches) → one compact
-// findings card → injected ONCE into the main context. Launch gate: the
-// engine must be fully idle (all slots idle, zero decode) for idleMs — the
-// lane converts between-turn idle cycles into work and never competes with
-// foreground decode by design. Requires the engine to run with `-np 2` (or
-// more); with fewer slots the gate still holds but jobs and the foreground
-// would contend — see OFFICINA_BG_SLOT.
+// findings card → injected ONCE into the main context. Requires a known second
+// engine slot before draining patches: single-slot reviews displace foreground
+// KV even between turns. The default "always" gate allows concurrent decode;
+// "idle" additionally requires all slots idle for idleMs. See OFFICINA_BG_SLOT.
 //
 // Kill switch: OFFICINA_NO_BACKGROUND=1 (Rule 15).
 

@@ -1,3 +1,3 @@
 pub mod bridge;
-pub mod protocol;
+pub use officina_tui::protocol;
 pub mod sessions;

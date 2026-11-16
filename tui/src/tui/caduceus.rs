@@ -989,9 +989,11 @@ mod tests {
     #[test]
     fn prefs_round_trip_and_invalid_is_ignored() {
         let path = tmp_path("roundtrip");
-        let mut prefs = CaduceusPrefs::default();
-        prefs.free_only = false;
-        prefs.per_owner = 3;
+        let mut prefs = CaduceusPrefs {
+            free_only: false,
+            per_owner: 3,
+            ..Default::default()
+        };
         prefs.providers.insert(
             "glm".into(),
             ProviderPrefs {

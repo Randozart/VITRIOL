@@ -4,7 +4,7 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { recordToolCheck } from "../_shared/toolchecks.ts";
-import { checkFor, diagConfig, renderDiagnostics, tailCap, type FileDiag } from "./diag.ts";
+import { checkFor, diagConfig, renderDiagnostics, checkerFailure, type FileDiag } from "./diag.ts";
 
 // diagnostics-loop — after every successful edit/write, run the file's fast
 // syntax check; failures are appended as a compact tail message before the
@@ -19,8 +19,9 @@ export default function (pi: ExtensionAPI) {
   if (!cfg.enabled) return;
 
   const pending: FileDiag[] = [];
+  const unavailable = new Set<string>();
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     const e = event as { toolName?: string; isError?: boolean; input?: Record<string, unknown> };
     const name = String(e.toolName ?? "").toLowerCase();
     if (name !== "edit" && name !== "write") return;
@@ -31,9 +32,15 @@ export default function (pi: ExtensionAPI) {
     if (!cmd) return;
     const diag = runCheck(file, cmd);
     recordToolCheck((e as { toolCallId?: string }).toolCallId, {
-      syntax: { ok: diag.ok, output: diag.ok ? undefined : diag.output.slice(0, 300) },
+      syntax: { ok: diag.status === "passed", available: diag.status !== "unavailable", output: diag.status === "passed" ? undefined : diag.output.slice(0, 300) },
     });
-    if (!diag.ok) pending.push(diag);
+    if (diag.status === "failed") pending.push(diag);
+    const checker = cmd.argv[0];
+    if (diag.status !== "unavailable") unavailable.delete(checker);
+    if (diag.status === "unavailable" && !unavailable.has(checker)) {
+      unavailable.add(checker);
+      ctx.ui.notify(`${checker}: ${diag.output}`, "warning");
+    }
   });
 
   /** Run one checker; praetor sentinel routes through a temp-directory copy. */
@@ -41,11 +48,9 @@ export default function (pi: ExtensionAPI) {
     if (cmd.argv[0] === "praetor-diag") return runPraetor(file);
     try {
       execFileSync(cmd.argv[0], cmd.argv.slice(1), { timeout: 30_000, stdio: "pipe" });
-      return { file, ok: true, output: "" };
+      return { file, status: "passed", output: "" };
     } catch (err) {
-      const e = err as { stdout?: string | Buffer; stderr?: string | Buffer; message?: string };
-      const output = tailCap(String(e.stderr ?? "") + "\n" + String(e.stdout ?? ""));
-      return { file, ok: false, output: output || String(e.message ?? "check failed") };
+      return checkerFailure(file, err);
     }
   }
 
@@ -55,10 +60,9 @@ export default function (pi: ExtensionAPI) {
     try {
       copyFileSync(file, join(tmp, basename(file)));
       execFileSync("praetor", ["validate", "--warn", "--target", tmp], { timeout: cfg.praetorTimeoutMs, stdio: "pipe" });
-      return { file, ok: true, output: "" };
+      return { file, status: "passed", output: "" };
     } catch (err) {
-      const e = err as { stdout?: string | Buffer; message?: string };
-      return { file, ok: false, output: tailCap(String(e.stdout ?? "") || String(e.message ?? "praetor failed")) };
+      return checkerFailure(file, err);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

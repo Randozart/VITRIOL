@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildChildEnv,
   defaultConcurrency,
@@ -14,32 +17,33 @@ import {
 
 describe("scheduleForceKill", () => {
   it("SIGKILLs a child that ignores SIGTERM (proc.killed would have blocked it)", async () => {
-    // Trap SIGTERM and stay alive — only SIGKILL can end this child. Print
-    // "ready" AFTER registering the handler so the parent doesn't race the
-    // SIGTERM in before the trap is installed (which would kill it by default).
-    const child = spawn(process.execPath, [
-      "-e",
-      "process.on('SIGTERM',()=>{});console.log('ready');setInterval(()=>{},1000)",
-    ]);
-    await new Promise<void>((r) => {
-      child.stdout.on("data", (d) => {
-        if (d.toString().includes("ready")) r();
-      });
-    });
-
-    child.kill("SIGTERM");
-    // Node flips `killed` true on dispatch even though the child is still alive —
-    // this is exactly the condition that made the old `if (!proc.killed)` dead.
-    expect(child.killed).toBe(true);
-
+    const dir = mkdtempSync(join(tmpdir(), "officina-force-kill-"));
+    const ready = join(dir, "ready");
+    // A file handshake avoids coupling signal verification to stdout delivery.
+    // The self-expiry bounds cleanup even on hosts that deny child signalling.
+    const child = spawn(process.execPath, ["-e",
+      "process.on('SIGTERM',()=>{});require('fs').writeFileSync(process.argv[1],'ready');setTimeout(()=>process.exit(99),4000)", ready,
+    ], { stdio: "ignore" });
+    let forceKill: ReturnType<typeof setTimeout> | undefined;
     let exited = false;
-    child.once("exit", () => (exited = true));
-    scheduleForceKill(child, () => exited, 50);
-
-    const signal = await new Promise<NodeJS.Signals | null>((r) =>
-      child.once("exit", (_code, sig) => r(sig)),
-    );
-    expect(signal).toBe("SIGKILL");
+    const exit = new Promise<NodeJS.Signals | null>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (_code, signal) => { exited = true; resolve(signal); });
+    });
+    // Attach a rejection observer immediately, including during startup.
+    void exit.catch(() => {});
+    try {
+      await waitForReady(child, ready);
+      child.kill("SIGTERM");
+      expect(child.killed).toBe(true);
+      forceKill = scheduleForceKill(child, () => exited, 50);
+      expect(await exit).toBe("SIGKILL");
+    } finally {
+      if (forceKill) clearTimeout(forceKill);
+      if (!exited) { try { child.kill("SIGKILL"); } catch { /* self-expiry still bounds the child */ } }
+      await exit.catch(() => {});
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("does not force-kill a child that has already exited", async () => {
@@ -162,3 +166,23 @@ describe("resolveLauncher / defaultConcurrency", () => {
     set(prev);
   });
 });
+
+
+/** Bound startup and report launch/early-exit failures rather than a generic test timeout. */
+function waitForReady(child: ChildProcess, ready: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const finish = (error?: Error) => {
+      clearInterval(poll);
+      clearTimeout(deadline);
+      child.removeListener("error", onError);
+      child.removeListener("exit", onExit);
+      if (error) reject(error); else resolve();
+    };
+    const onError = (error: Error) => finish(error);
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) => finish(new Error(`child exited before readiness: code=${code} signal=${signal}`));
+    const poll = setInterval(() => { if (existsSync(ready)) finish(); }, 10);
+    const deadline = setTimeout(() => finish(new Error("child did not become ready within 1500ms")), 1500);
+    child.once("error", onError);
+    child.once("exit", onExit);
+  });
+}

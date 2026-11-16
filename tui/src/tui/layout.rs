@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::ansi;
+use super::settings;
 use super::state::{AppState, ChatEntry, DialogKind};
 use crate::theme;
 
@@ -222,11 +223,10 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
     } else {
         area.width.saturating_sub(right_w)
     };
-    let cols =
-        Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w.max(0))]).split(Rect {
-            width: area.width,
-            ..area
-        });
+    let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w)]).split(Rect {
+        width: area.width,
+        ..area
+    });
 
     let mut mid_spans = left;
     if !model.is_empty() {
@@ -297,6 +297,19 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if state.perm_modal_open {
         render_chat_and_editor(frame, state, area);
         render_permissions_modal(frame, state, area);
+        return;
+    }
+    if state.setting_menu.is_some() {
+        render_chat_and_editor(frame, state, area);
+        let menu_area = Rect {
+            height: if area.height >= 10 {
+                area.height - 4
+            } else {
+                area.height
+            },
+            ..area
+        };
+        settings::render(frame, state.setting_menu.as_ref().unwrap(), menu_area);
         return;
     }
     if state.show_diag {
@@ -420,37 +433,42 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .filter(|l| !l.trim().is_empty())
         .take(3)
         .collect();
-    let indicator_h = indicators.len() as u16;
 
     let input_h = composer_box_height(&state.input, area.width);
-    // Context status row (owner request 2026-11-11): one row, only while a
-    // turn has reported context fill. Sits in the status band, above the
-    // breathing row.
-    let ctx_h = if state.ctx_bar_label().is_some() {
-        1
-    } else {
-        0
-    };
-    // One breathing row between the transcript and the prompt box (owner
-    // request 2026-09-03 — text flowed straight into the editor).
+    // Status band = belowEditor indicator rows (decode/route/phase tags) +
+    // the context-fill row. Both parts derive from live data that can appear
+    // for a single frame, so EACH PART is settled separately (2026-11-16):
+    // settling only the total let a transient indicator line take the ctx
+    // row's slot for a frame — "the ctx field flickers to look like a
+    // different field". With parts settled, a transient line simply does not
+    // render, and the ctx row never moves.
+    let ctx_present = state.ctx_bar_label().is_some();
+    let (ind_h, ctx_h) =
+        state.stabilize_band_parts(indicators.len() as u16, u16::from(ctx_present));
+    let band_h = ind_h + ctx_h;
     let chat_area = Rect {
-        height: area
-            .height
-            .saturating_sub(input_h + 1 + indicator_h + ctx_h),
+        height: area.height.saturating_sub(input_h + 1 + band_h),
+        ..area
+    };
+    let band_area = Rect {
+        y: area.y + chat_area.height + 1,
+        height: band_h,
         ..area
     };
     let indicator_area = Rect {
-        y: area.y + chat_area.height + 1,
-        height: indicator_h,
-        ..area
+        height: ind_h,
+        ..band_area
     };
+    // The ctx row is BOTTOM-anchored: its position is a function of the
+    // settled heights only, so indicator churn can never shift it.
     let ctx_area = Rect {
-        y: indicator_area.y + indicator_h,
+        y: band_area.y + band_h - ctx_h,
         height: ctx_h,
         ..area
     };
+    debug_assert!(ind_h + ctx_h == band_h);
     let input_area = Rect {
-        y: ctx_area.y + ctx_h,
+        y: band_area.y + band_h,
         height: input_h,
         ..area
     };
@@ -633,20 +651,33 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // after live testing): the fire is drawn BEFORE the chat so the
     // transcript renders on top — flames read as a backdrop, visible only
     // in the gaps, never over a character.
+    //
+    // 2026-11-16 (owner): the fire IGNITES ON THE DIVIDER ROW. The braille
+    // field sits strictly above it; the divider lights per column (⡀) where
+    // the flame has reach, so a dead fire is a plain underscore rule and a
+    // live one grows out of it. Height comes through `rows_for_stable` so a
+    // breathing level cannot flap the strip (that flapping re-coloured a
+    // whole row of text).
     let fire_rows = if state.fire_on {
-        crate::fire::rows_for(state.fire_level)
+        crate::fire::rows_for_stable(state.fire_level, state.fire_rows_prev)
     } else {
         0
     };
-    // Flames start at the TOP of the status band so they rise into the
-    // transcript above it; the band's own background occludes the base.
-    let fire_base_y = indicator_area.y;
-    let fire_map = if fire_rows > 0 && fire_rows as u16 <= fire_base_y {
+    state.fire_rows_prev = fire_rows;
+    // The divider row is the base; the glyph field gets the remaining rows
+    // (it used to spend one on a base row the divider then erased).
+    let ign_y = area.y + chat_area.height;
+    let flame_rows = if fire_rows > 0 {
+        fire_rows.saturating_sub(1).max(1)
+    } else {
+        0
+    };
+    let fire_map = if flame_rows > 0 && flame_rows as u16 <= ign_y {
         crate::fire::render(
             frame,
             Rect {
-                y: fire_base_y.saturating_sub(fire_rows as u16),
-                height: fire_rows as u16,
+                y: ign_y.saturating_sub(flame_rows as u16),
+                height: flame_rows as u16,
                 ..input_area
             },
             state.started.elapsed().as_millis(),
@@ -656,119 +687,10 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         Vec::new()
     };
+    let fire_base_y = ign_y.saturating_sub(fire_map.len() as u16);
 
-    // Compaction banner (2026-11-13, operator request): a bordered card
-    // above the prompt — impossible to miss, works at any scroll depth.
-    if state.is_compacting {
-        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
-        let secs = state
-            .compaction_started_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        let panel_w = area.width.min(64);
-        let panel_h = 4u16.min(area.height.saturating_sub(2));
-        let panel = Rect {
-            x: area.x + area.width.saturating_sub(panel_w) / 2,
-            y: input_area.y.saturating_sub(panel_h + 1),
-            width: panel_w,
-            height: panel_h,
-        };
-        frame.render_widget(ratatui::widgets::Clear, panel);
-        let edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(edge)
-            .style(Style::new().bg(theme::PANEL))
-            .title(Line::from(Span::styled(
-                format!(" {} compacting context — {secs}s ", frames[f]),
-                Style::new()
-                    .fg(theme::GREEN)
-                    .bg(theme::PANEL)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        let inner = block.inner(panel);
-        frame.render_widget(block, panel);
-        frame.render_widget(
-            ratatui::widgets::Paragraph::new(vec![
-                Line::from(Span::styled(
-                    "summarizing the session to free context",
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
-                )),
-                Line::from(Span::styled(
-                    "the next turn continues on its own — no action needed",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
-                )),
-            ])
-            .style(Style::new().bg(theme::PANEL)),
-            inner,
-        );
-    }
-
-    // Question panel (2026-11-13): the ask extension stages question.json;
-    // the TUI renders the operator's menu ON TOP OF THE PROMPT — exactly
-    // where their eyes already are. Enter answers, esc cancels, digits
-    // quick-pick. Disappears the moment the answer is written.
-    if state.question.is_some() {
-        let q = state.question.as_ref().unwrap();
-        let panel_w = area.width.min(72);
-        let opt_h = q.options.len() as u16;
-        let panel_h = (opt_h + 5).min(area.height.saturating_sub(4));
-        let panel = Rect {
-            x: area.x + area.width.saturating_sub(panel_w) / 2,
-            y: input_area.y.saturating_sub(panel_h + 1),
-            width: panel_w,
-            height: panel_h,
-        };
-        frame.render_widget(ratatui::widgets::Clear, panel);
-        let edge = Style::new().fg(theme::GREEN).bg(theme::PANEL);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(theme::GREEN).bg(theme::PANEL))
-            .title(Span::styled(
-                format!(" {} question ", theme::GLYPH_AI),
-                Style::new()
-                    .fg(theme::GREEN)
-                    .bg(theme::PANEL)
-                    .add_modifier(Modifier::BOLD),
-            ))
-            .style(Style::new().bg(theme::PANEL));
-        let inner = block.inner(panel);
-        frame.render_widget(block, panel);
-        if inner.height >= 1 && inner.width >= 20 {
-            let mut qlines: Vec<Line> = Vec::new();
-            let qw = inner.width.saturating_sub(2) as usize;
-            for seg in crate::tui::state::wrap_text(&q.question, qw) {
-                qlines.push(Line::from(Span::styled(
-                    format!(" {seg}"),
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
-                )));
-            }
-            let visible_opts = inner
-                .height
-                .saturating_sub(qlines.len() as u16)
-                .min(opt_h.max(1));
-            for (i, opt) in q.options.iter().enumerate() {
-                let sel = i == state.question_sel;
-                let marker = if sel { "▸" } else { " " };
-                let st = if sel {
-                    Style::new().fg(theme::BG).bg(theme::GREEN)
-                } else {
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL)
-                };
-                qlines.push(Line::from(Span::styled(
-                    format!(" {marker}{} {opt}", i + 1),
-                    st,
-                )));
-            }
-            qlines.truncate(inner.height as usize);
-            frame.render_widget(
-                Paragraph::new(qlines).style(Style::new().bg(theme::PANEL)),
-                inner,
-            );
-        }
-    }
+    // Question panel: drawn LAST (see the tail of this function) so the
+    // transcript can never paint over its upper rows.
 
     // Gap row: explicit BG paint, ALWAYS (owner request 2026-09-03 — the
     // terminal background must never peek through below the panels). It now
@@ -777,20 +699,37 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // band (slots/engine/ctx rows) off from the transcript above — the
     // user-space band vs the log the agent writes into. Fire dots rising
     // through the gap keep their flame fg because set_style patches bg only.
+    // 2026-11-16: underscore (not box-drawing) so the line hugs the status
+    // band below it, reading as an underline rather than a floating rule —
+    // and it is the fire's ignition line: with flames up, the columns that
+    // have reach are replaced by a thin braille dot in the flame's base
+    // colour. The selection is hashed once a second, so the line drifts
+    // slowly and never flickers.
     {
         let gap = Rect {
             y: area.y + chat_area.height,
             height: 1,
             ..area
         };
-        let line = Line::from(vec![Span::styled(
-            "─".repeat(gap.width as usize),
-            Style::new().fg(theme::BORDER_DIM),
-        )]);
+        let w = gap.width as usize;
+        let phase_ms = state.started.elapsed().as_millis();
+        let lit = crate::fire::ignition_row(w, phase_ms, state.fire_level);
+        let flame = crate::fire::ignition_color(phase_ms, state.fire_level, state.fire_style);
+        let line = Line::from(ignition_spans(w, &lit, flame));
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);
     }
 
-    if indicator_h > 0 {
+    // Band surface first: with the height debounced, a row can be reserved
+    // one frame longer than its content — it must read as the panel's own
+    // tone, never as raw terminal background.
+    if band_area.height > 0 {
+        frame.render_widget(
+            Paragraph::new(" ").style(Style::new().bg(theme::PANEL)),
+            band_area,
+        );
+    }
+
+    if ind_h > 0 {
         let lines: Vec<Line> = indicators.iter().map(|l| ansi::parse_line(l)).collect();
         // Dedicated status-band surface (owner request 2026-11-10): the
         // three below-editor lines sit on the panel tone, and the flames
@@ -861,7 +800,9 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // every fire row alone.
     if !fire_map.is_empty() {
         let tint_all = state.fire_tint;
-        let fire_y = input_area.y.saturating_sub(fire_rows as u16);
+        // The mask's row 0 is the TOP of the braille field (one row above
+        // the divider since 2026-11-16).
+        let fire_y = fire_base_y;
         let buffer = frame.buffer_mut();
         for (ry, map_row) in fire_map.iter().enumerate() {
             if !tint_all {
@@ -1003,11 +944,14 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(input_block, input_area);
 
     let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
-    let line = if state.input.is_empty() && state.prompt_ghost.is_some() {
+    let line = if let Some(ghost) = state
+        .prompt_ghost
+        .as_ref()
+        .filter(|_| state.input.is_empty())
+    {
         // Voice-suggestion ghost (stage 2): dimmed gold, cursor block on the
         // first glyph — same shape as the motto, but a suggestion you can
         // accept with →. Render-only; nothing is ever pre-sent (I1).
-        let ghost = state.prompt_ghost.as_ref().unwrap();
         let budget = (inner.width as usize).saturating_sub(2);
         let text: String = ghost.text.chars().take(budget).collect();
         let mut chars = text.chars();
@@ -1067,14 +1011,114 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             .style(Style::default().bg(theme::PANEL)),
         inner,
     );
+
+    // Question panel last of all: it is an overlay on top of everything the
+    // transcript, band and composer paint (2026-11-16).
+    render_question_panel(frame, state, area, input_area);
 }
 
-/// Extension dialog modal (`confirm` / `select` / `input` / `editor`).
+/// Divider-row spans: `_` for unlit columns, the thin braille dot for lit
+/// ones, run-length grouped so a wide row costs a handful of spans instead of
+/// one per column (2026-11-16).
+fn ignition_spans(
+    width: usize,
+    lit: &[Option<char>],
+    flame: ratatui::style::Color,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_lit = false;
+    for x in 0..width {
+        let glyph = lit.get(x).copied().flatten();
+        let is_lit = glyph.is_some();
+        if !run.is_empty() && is_lit != run_lit {
+            out.push(ignition_span(std::mem::take(&mut run), run_lit, flame));
+        }
+        run_lit = is_lit;
+        run.push(glyph.unwrap_or('_'));
+    }
+    if !run.is_empty() {
+        out.push(ignition_span(run, run_lit, flame));
+    }
+    out
+}
+
+/// One coloured run of the divider row.
+fn ignition_span(text: String, lit: bool, flame: ratatui::style::Color) -> Span<'static> {
+    let fg = if lit { flame } else { theme::BORDER_DIM };
+    Span::styled(text, Style::new().fg(fg).bg(theme::BG))
+}
+
+/// Question panel (2026-11-13) — the ask extension stages question.json and
+/// the operator's menu is drawn where their eyes already are: just above the
+/// prompt. Rendered LAST of the chat screen (2026-11-16 operator report: the
+/// panel used to be painted before the transcript and composer, so their
+/// rows drew over the menu's upper border — it seemed to open BEHIND the
+/// text). Enter answers, esc cancels, digits quick-pick; it disappears the
+/// moment the answer is written.
+fn render_question_panel(frame: &mut Frame, state: &AppState, area: Rect, input_area: Rect) {
+    let Some(q) = state.question.as_ref() else {
+        return;
+    };
+    let panel_w = area.width.min(72);
+    let opt_h = q.options.len() as u16;
+    let panel_h = (opt_h + 5).min(area.height.saturating_sub(4));
+    let panel = Rect {
+        x: area.x + area.width.saturating_sub(panel_w) / 2,
+        y: input_area.y.saturating_sub(panel_h + 1),
+        width: panel_w,
+        height: panel_h,
+    };
+    frame.render_widget(ratatui::widgets::Clear, panel);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GREEN).bg(theme::PANEL))
+        .title(Span::styled(
+            format!(" {} question ", theme::GLYPH_AI),
+            Style::new()
+                .fg(theme::GREEN)
+                .bg(theme::PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::new().bg(theme::PANEL));
+    let inner = block.inner(panel);
+    frame.render_widget(block, panel);
+    if inner.height < 1 || inner.width < 20 {
+        return;
+    }
+    let mut qlines: Vec<Line> = Vec::new();
+    let qw = inner.width.saturating_sub(2) as usize;
+    for seg in crate::tui::state::wrap_text(&q.question, qw) {
+        qlines.push(Line::from(Span::styled(
+            format!(" {seg}"),
+            Style::new().fg(theme::TEXT).bg(theme::PANEL),
+        )));
+    }
+    for (i, opt) in q.options.iter().enumerate() {
+        let sel = i == state.question_sel;
+        let marker = if sel { "▸" } else { " " };
+        let st = if sel {
+            Style::new().fg(theme::BG).bg(theme::GREEN)
+        } else {
+            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        };
+        qlines.push(Line::from(Span::styled(
+            format!(" {marker}{} {opt}", i + 1),
+            st,
+        )));
+    }
+    qlines.truncate(inner.height as usize);
+    frame.render_widget(
+        Paragraph::new(qlines).style(Style::new().bg(theme::PANEL)),
+        inner,
+    );
+}
 
 /// /permissions modal: ask / auto / yolo with the protected-roots note.
 fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let h = (AppState::PERM_MODES.len() as u16 + 5).min(area.height.saturating_sub(2));
-    let w = area.width.min(78).max(30);
+    let w = area.width.clamp(30, 78);
     let modal = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -1173,7 +1217,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         DialogKind::Editor => 12,
     };
     let h = wanted.min(area.height.saturating_sub(2)).max(5);
-    let w = area.width.min(82).max(30);
+    let w = area.width.clamp(30, 82);
     let modal = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -1237,11 +1281,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         DialogKind::Select => {
             let visible = body.height as usize;
             let sel = dialog.selected;
-            let skip = if sel + 1 > visible {
-                sel + 1 - visible
-            } else {
-                0
-            };
+            let skip = (sel + 1).saturating_sub(visible);
             for (i, option) in dialog.options.iter().enumerate().skip(skip) {
                 if lines.len() >= visible {
                     break;
@@ -1444,9 +1484,9 @@ fn render_command_popup(
     let total = cands.len();
     let visible = (area.height as usize).saturating_sub(2);
     let title = if total > visible {
-        format!(" commands {} · Tab completes ", total)
+        format!(" commands {} · → completes ", total)
     } else {
-        " commands · Tab completes ".to_string()
+        " commands · → completes ".to_string()
     };
     let block = block.title(Span::styled(title, Style::new().fg(theme::MUTED)));
     let inner = block.inner(area);
@@ -1487,11 +1527,7 @@ fn render_command_popup(
     );
 
     let visible = rows_rect.height as usize;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let cands = &cands[skip.min(total)..];
     let mut lines: Vec<Line> = Vec::new();
     for (i, c) in cands.iter().enumerate() {
@@ -1559,7 +1595,7 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut spans = vec![
         Span::styled("enter send", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
-        Span::styled("tab complete", theme::muted()),
+        Span::styled("→ complete", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
         Span::styled("esc dissolve", theme::muted()),
         Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
@@ -1625,11 +1661,7 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let visible = inner.height as usize;
     let filtered = state.filtered_resume_entries();
     let sel = state.resume_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
 
     let mut lines: Vec<Line> = Vec::new();
     if filtered.is_empty() {
@@ -1690,10 +1722,23 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 /// 2026-11-10). Lists `get_available_models`, marks the active model, and
 /// switches on Enter via `set_model`.
 fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let filtered: Vec<crate::rpc::protocol::Model> =
-        state.filtered_models().into_iter().cloned().collect();
+    // Display rows are group headers + model rows. Selection indexes the
+    // flattened MODEL list, never the headers.
+    let groups = state.filtered_model_groups();
+    let mut flat: Vec<&crate::rpc::protocol::Model> = Vec::new();
+    let mut rows: Vec<(Option<String>, Option<usize>)> = Vec::new();
+    for group in &groups {
+        rows.push((
+            Some(format!("{} · {}", group.title, group.models.len())),
+            None,
+        ));
+        for model in &group.models {
+            flat.push(model);
+            rows.push((None, Some(flat.len() - 1)));
+        }
+    }
     // + borders(2) + search(1) + bottom gap(1)
-    let h = area.height.min((filtered.len() as u16 + 4).max(9));
+    let h = area.height.min((rows.len() as u16 + 4).max(9));
     let w = area.width.min(86);
     let modal = Rect {
         y: area.y + area.height.saturating_sub(h + 1),
@@ -1711,7 +1756,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             format!(
                 " {} select model · {} of {} ",
                 theme::GLYPH_CRUCIBLE,
-                filtered.len(),
+                flat.len(),
                 state.models.len()
             ),
             Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
@@ -1760,10 +1805,18 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let width = list.width as usize;
     let sel = state.models_sel;
     let visible = list.height as usize;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
+    let sel_row = rows
+        .iter()
+        .position(|(_, model)| *model == Some(sel))
+        .unwrap_or(0);
+    let start = if rows.len() <= visible {
         0
+    } else {
+        let mut start = sel_row.saturating_sub(visible / 2);
+        if sel_row >= start + visible {
+            start = sel_row + 1 - visible;
+        }
+        start.min(rows.len() - visible)
     };
 
     let name_w = (width * 34 / 100).clamp(12, 32);
@@ -1773,7 +1826,27 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let id_w = width.saturating_sub(fixed + 1);
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, m) in filtered.iter().enumerate().skip(skip) {
+    for (header, model_idx) in rows.iter().skip(start).take(visible) {
+        if let Some(header) = header {
+            let rule = width.saturating_sub(header.chars().count() + 2);
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {header} "),
+                    Style::new()
+                        .fg(theme::GOLD)
+                        .bg(theme::PANEL)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "─".repeat(rule),
+                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                ),
+            ]));
+            continue;
+        }
+        let Some(index) = model_idx else { continue };
+        let m = flat[*index];
+        let i = *index;
         let selected = i == sel;
         let current = state
             .model
@@ -1850,7 +1923,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
         lines.push(Line::from(spans));
     }
-    if filtered.is_empty() {
+    if flat.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no matching models",
             Style::new()
@@ -1903,11 +1976,7 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.tree_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let width = inner.width as usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -2492,11 +2561,7 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.xsessions_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let mut lines: Vec<Line> = Vec::new();
     if view.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -2541,7 +2606,7 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         };
         lines.push(Line::from(Span::styled(text, style)));
     }
-    let body: Vec<Line> = lines.into_iter().skip(0).take(visible).collect();
+    let body: Vec<Line> = lines.into_iter().take(visible).collect();
     frame.render_widget(
         Paragraph::new(body).style(Style::new().bg(theme::PANEL)),
         inner,
@@ -3150,9 +3215,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
     let visible = chunks[2].height as usize;
-    let start = if visible == 0 {
-        0
-    } else if page.sel < visible {
+    let start = if visible == 0 || page.sel < visible {
         0
     } else {
         (page.sel + 1).saturating_sub(visible)
@@ -3273,7 +3336,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
         footer.push(Line::from(Span::styled(
             format!(
                 "  ARMED: press {} again to confirm engine {} (any other key cancels)",
-                arm.chars().next().unwrap_or('?').to_string(),
+                arm.chars().next().unwrap_or('?'),
                 arm
             ),
             Style::new().fg(theme::ORANGE).bg(theme::PANEL),
@@ -3366,11 +3429,7 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let width = list.width as usize;
     let visible = list.height as usize;
     let sel = state.cache_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let age_w = 5usize;
     let size_w = 10usize;
     let name_w = width.saturating_sub(2 + age_w + 1 + size_w);
@@ -3475,11 +3534,7 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.tools_modal_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
 
     let mut lines: Vec<Line> = Vec::new();
     for row in skip..row_count {
@@ -3568,7 +3623,6 @@ fn motto_for(width: usize) -> Option<String> {
     }
 }
 
-/// Carved ink — the same faint cut as the watermark stone.
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /// Braille left-column bits for one quicksilver gauge row. The mercury
@@ -3624,11 +3678,7 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let visible = inner.height as usize;
     let sel = state.help_sel;
-    let skip = if sel + 1 > visible {
-        sel + 1 - visible
-    } else {
-        0
-    };
+    let skip = (sel + 1).saturating_sub(visible);
     let label_w = 16usize;
 
     let mut lines: Vec<Line> = Vec::new();
@@ -3851,11 +3901,10 @@ mod motto_tests {
 // text still ran off the right edge. These tests pin the fix: row count is
 // derived from WRAPPED rows, and the rendered buffer proves the text
 // actually lands on a second physical row.
+#[cfg(test)]
 mod composer_wrap_tests {
     use super::*;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::widgets::Widget;
+    use ratatui::{buffer::Buffer, widgets::Widget};
 
     #[test]
     fn short_input_is_one_row() {
@@ -4032,6 +4081,19 @@ mod render_smoke {
             s.xsessions_open = true;
             s.xsessions_open_with(Vec::new());
             draw_at(&mut s, w, h);
+            // model picker (grouped: OFFICINA → OpenCode Go → providers)
+            let mut s = base_state();
+            s.models_open = true;
+            s.models = serde_json::from_value(serde_json::json!([
+                {"id":"lapis","provider":"officina","name":"Lapis Occultus"},
+                {"id":"nimbus","provider":"officina","name":"Nimbus"},
+                {"id":"glm-5.2","provider":"opencode-go","name":"GLM-5.2","contextWindow":1000000},
+                {"id":"glm-5.2","provider":"caduceus","name":"GLM-5.2 gateway","contextWindow":1000000},
+                {"id":"glm-4.6","provider":"zai","name":"GLM 4.6","contextWindow":200000}
+            ]))
+            .unwrap();
+            s.models_sel = 2;
+            draw_at(&mut s, w, h);
             // status
             let mut s = base_state();
             s.status_open_modal();
@@ -4065,19 +4127,18 @@ mod render_smoke {
     fn watchdog_card_and_fire_render_with_facts() {
         let mut s = base_state();
         let now = crate::tui::caduceus::now_ms();
-        s.watchdog = crate::tui::state::load_watchdog_doc().or_else(|| {
-            Some(crate::tui::state::WatchdogDoc {
-                version: 1,
-                ts: now,
-                kind: "verdict".into(),
-                command: "brievc build c4probe.bv".into(),
-                elapsed_s: 252,
-                stalled_s: 189,
-                verdict: "HUNG".into(),
-                reason: "waiting on stdin".into(),
-                next_check_at: now + 21_000,
-                phase: "rejudge".into(),
-            })
+        s.watchdog = Some(crate::tui::state::WatchdogDoc {
+            version: 1,
+            ts: now,
+            kind: "verdict".into(),
+            command: "brievc build c4probe.bv".into(),
+            elapsed_s: 252,
+            stalled_s: 189,
+            verdict: "HUNG".into(),
+            reason: "waiting on stdin".into(),
+            next_check_at: now + 21_000,
+            phase: "rejudge".into(),
+            ..Default::default()
         });
         s.fire_on = true;
         s.fire_target = 0.8;
@@ -4103,5 +4164,233 @@ mod grind_chip_tests {
         let text: String = title.iter().map(|sp| sp.content.to_string()).collect();
         assert!(text.contains("GRIND"), "{text}");
         assert!(text.contains('∞'), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod settings_chat_render_tests {
+    use super::*;
+
+    fn screen(state: &mut AppState, w: u16, h: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| render(f, state)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn settings_choices_fit_small_screens() {
+        for command in [
+            "/fire",
+            "/shimmer",
+            "/sidebar",
+            "/thinking",
+            "/thinking-view",
+            "/settings",
+            "/diag",
+        ] {
+            check_menu_sizes(command);
+        }
+    }
+
+    fn check_menu_sizes(command: &str) {
+        for (w, h) in [(20, 8), (40, 12), (80, 24), (120, 40)] {
+            let mut state = AppState::default();
+            settings::command(&mut state, command);
+            let last = state.setting_menu.as_ref().unwrap().choices.len() - 1;
+            state.setting_menu.as_mut().unwrap().selected = last;
+            let text = screen(&mut state, w, h);
+            assert!(
+                text.contains('›'),
+                "selected choice absent at {w}x{h}: {command}\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_is_in_chat_once_and_respects_scrollback() {
+        let mut state = AppState::default();
+        state.is_compacting = true;
+        state.compaction_started_at = Some(std::time::Instant::now());
+        state
+            .entries
+            .push(ChatEntry::Notice("transcript message".into()));
+        let text = screen(&mut state, 80, 24);
+        assert_eq!(text.matches("compacting context").count(), 1, "{text}");
+        assert!(!text.contains("summarizing the session"));
+        for i in 0..70 {
+            state
+                .entries
+                .push(ChatEntry::Notice(format!("older message {i}")));
+        }
+        state.scroll = u16::MAX;
+        let text = screen(&mut state, 80, 24);
+        assert!(
+            !text.contains("compacting context"),
+            "compaction must scroll with chat: {text}"
+        );
+    }
+
+    /// Row with the most underscores — the divider line.
+    fn divider_row(text: &str) -> String {
+        text.lines()
+            .max_by_key(|l| l.chars().filter(|c| *c == '_').count())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    #[test]
+    fn divider_is_all_underscores_without_fire() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.fire_on = false;
+        let text = screen(&mut state, 80, 24);
+        let row = divider_row(&text);
+        assert!(row.contains('_'), "divider missing:\n{text}");
+        assert!(
+            row.chars().all(|c| c == '_' || c == ' '),
+            "no fire ⇒ plain underscore rule, got {row:?}"
+        );
+    }
+
+    /// 2026-11-16 (owner): the fire ignites ON the divider — a dead fire is a
+    /// plain underscore rule, a live one lights it selectively with the
+    /// thinnest braille dot.
+    #[test]
+    fn divider_lights_ignition_dots_when_the_fire_burns() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.fire_on = true;
+        state.fire_level = 1.0;
+        state.fire_target = 1.0;
+        let text = screen(&mut state, 80, 24);
+        let row = divider_row(&text);
+        assert!(
+            row.contains('⡀'),
+            "ignition dot missing from the divider: {row:?}"
+        );
+        assert!(
+            row.chars().all(|c| c == '_' || c == ' ' || c == '⡀'),
+            "the divider carries only underscores and ignition dots, got {row:?}"
+        );
+        assert!(
+            row.chars().filter(|c| *c == '⡀').count() < row.chars().count(),
+            "ignition is selective, never the whole row"
+        );
+    }
+
+    /// Index of the status-band row that carries the context fill.
+    fn ctx_row_index(text: &str) -> Option<usize> {
+        text.lines().position(|l| l.contains(" ctx "))
+    }
+
+    fn band_state() -> AppState {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.ctx_usage = Some((12_345, 262_144));
+        // Pretend the parts have already settled (the dwell is wall-clock).
+        state.band_ind.force(1);
+        state.band_ctx.force(1);
+        state.set_widget_placed(
+            "vitriol-decode",
+            vec!["◈ VITRIOL  12.3 tok/s".into()],
+            Some("belowEditor".into()),
+        );
+        state
+    }
+
+    /// Operator report (2026-11-16): "the ctx field occasionally flickers to
+    /// look like a different field for one frame". A transient indicator line
+    /// must never take the ctx row's slot.
+    #[test]
+    fn ctx_row_keeps_its_slot_when_an_indicator_appears() {
+        let mut state = band_state();
+        let before = ctx_row_index(&screen(&mut state, 80, 24))
+            .expect("ctx row must be present in the steady state");
+
+        // A second indicator line for one frame (decode strips do this).
+        state.set_widget_placed(
+            "phase-model",
+            vec!["◇ plan: some-model".into()],
+            Some("belowEditor".into()),
+        );
+        let during = screen(&mut state, 80, 24);
+        assert_eq!(
+            ctx_row_index(&during),
+            Some(before),
+            "transient indicator moved the ctx row:\n{during}"
+        );
+        assert!(
+            during.contains(" ctx "),
+            "the ctx field must still be rendered:\n{during}"
+        );
+
+        // And back to one line: still the same row.
+        state.set_widget_placed("phase-model", vec![], Some("belowEditor".into()));
+        let after = screen(&mut state, 80, 24);
+        assert_eq!(ctx_row_index(&after), Some(before));
+    }
+
+    /// The ctx row is bottom-anchored in the band: its position depends only
+    /// on settled heights, so indicator churn can never shift it.
+    #[test]
+    fn ctx_row_is_bottom_anchored() {
+        for ind in 0..=2u16 {
+            let mut state = band_state();
+            state.band_ind.force(ind);
+            state.band_ctx.force(1);
+            state.widgets.clear();
+            for line in 0..ind {
+                state.set_widget_placed(
+                    &format!("w{line}"),
+                    vec![format!("indicator {line}")],
+                    Some("belowEditor".into()),
+                );
+            }
+            let text = screen(&mut state, 80, 24);
+            let ctx = ctx_row_index(&text).expect("ctx row missing");
+            // The divider is the row above the band; ctx is the band's last
+            // row, i.e. one above the composer's top border.
+            let composer_top = text
+                .lines()
+                .position(|l| l.trim_start().starts_with('╭'))
+                .expect("composer border");
+            assert_eq!(
+                ctx + 1,
+                composer_top,
+                "ctx row must sit on the last band row (ind={ind}):\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn question_panel_draws_over_the_transcript() {
+        // 2026-11-16 operator report: the question menu opened BEHIND the
+        // text because the transcript painted after it. The panel is an
+        // overlay and must win every cell it covers.
+        let mut state = AppState::default();
+        for i in 0..60 {
+            state
+                .entries
+                .push(ChatEntry::Notice(format!("older message {i}")));
+        }
+        state.question = Some(crate::tui::question::QuestionDoc {
+            version: 1,
+            id: "q1".into(),
+            question: "Which plan?".into(),
+            options: vec!["alpha".into(), "beta".into()],
+            ts: 0,
+        });
+        let text = screen(&mut state, 80, 24);
+        assert!(text.contains("Which plan?"), "question hidden:\n{text}");
+        assert!(text.contains("alpha") && text.contains("beta"), "{text}");
+        assert!(
+            text.contains("question"),
+            "panel title (*question*) hidden behind the transcript:\n{text}"
+        );
     }
 }

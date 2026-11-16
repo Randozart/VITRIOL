@@ -6,10 +6,62 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use ratatui::text::Span;
 
-use crate::rpc::protocol::{Model, RpcCommand};
+use crate::rpc::protocol::{ImageContent, Model, RpcCommand};
 use crate::theme;
+use crate::tui::heal;
 
 // ── Tool verbosity (owner request 2026-09-03) ────────────────────────────
+/// How long a status-band height candidate must hold before the layout
+/// adopts it (2026-11-16). Widget/ctx data flickers on its own schedule; the
+/// band must be still. 700 ms is shorter than a human notices a legitimate
+/// change and longer than any transient datum lives.
+pub const BAND_SETTLE: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// A row count with settle hysteresis (2026-11-16).
+///
+/// Live values (context fill, belowEditor widget lines) arrive on their own
+/// schedule; a candidate is adopted only once it has been stable for
+/// `BAND_SETTLE`, so a datum that lives for a frame or two can never move the
+/// layout. Each part of the status band keeps its own instance: the band's
+/// total height AND the split between indicator rows and the context row must
+/// both be settled, otherwise a transient indicator line takes the ctx row's
+/// slot for a frame ("the ctx field looks like a different field").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Settled {
+    pub applied: u16,
+    pending: Option<(u16, std::time::Instant)>,
+}
+
+impl Settled {
+    /// Adopt `candidate` once it has held for `BAND_SETTLE`; until then keep
+    /// the applied value.
+    pub fn settle(&mut self, candidate: u16, now: std::time::Instant) -> u16 {
+        if candidate == self.applied {
+            self.pending = None;
+            return self.applied;
+        }
+        match self.pending {
+            Some((pending, since)) if pending == candidate => {
+                if now.saturating_duration_since(since) >= BAND_SETTLE {
+                    self.applied = candidate;
+                    self.pending = None;
+                }
+                self.applied
+            }
+            _ => {
+                self.pending = Some((candidate, now));
+                self.applied
+            }
+        }
+    }
+
+    /// Adopt `candidate` immediately, clearing any pending change (test and
+    /// session-reset helper).
+    pub fn force(&mut self, value: u16) {
+        self.applied = value;
+        self.pending = None;
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolVerbosity {
@@ -88,12 +140,12 @@ impl ToolOverride {
 
     /// Parse "block!" / "block+" / "block-"
     pub fn parse(s: &str) -> Option<ToolOverride> {
-        let (mode_s, suffix) = if s.ends_with('!') {
-            (&s[..s.len() - 1], '!')
-        } else if s.ends_with('+') {
-            (&s[..s.len() - 1], '+')
-        } else if s.ends_with('-') {
-            (&s[..s.len() - 1], '-')
+        let (mode_s, suffix) = if let Some(mode) = s.strip_suffix('!') {
+            (mode, '!')
+        } else if let Some(mode) = s.strip_suffix('+') {
+            (mode, '+')
+        } else if let Some(mode) = s.strip_suffix('-') {
+            (mode, '-')
         } else {
             (s, '+') // bare mode = at-least (the user's default)
         };
@@ -193,6 +245,14 @@ pub const SIDEBAR_GLOSSARY: &[(&str, &str)] = &[
         "live engine rate (tok/s / idle); 'N decoded this boot' = engine decode total",
     ),
     (
+        "api",
+        "this session's own last request when the provider is a cloud lane: model, tokens in→out, latency, cost, outcome",
+    ),
+    (
+        "nimbus",
+        "free-lane pool for officina/nimbus: lane count, cooling lanes, next lane that fits the context",
+    ),
+    (
         "[>] / [ ] / ✓ / ✗",
         "Todo: in-progress / pending / done / cancelled counts",
     ),
@@ -239,7 +299,8 @@ pub const HELP_KEYS: &[(&str, &str)] = &[
     ("alt+enter", "queue a follow-up instead of steering"),
     ("ctrl+q", "toggle the plan agent (also /plan)"),
     ("F2", "toggle deep research (also /deep-research)"),
-    ("tab", "autocomplete / cycle agent"),
+    ("→", "accept autocomplete at end of input"),
+    ("tab", "cycle agent"),
     ("esc", "abort streaming · close overlays — NEVER quits"),
     (
         "drag",
@@ -315,6 +376,16 @@ const TOOL_OUTPUT_PREVIEW: usize = 30;
 /// from the chair that reads as a hang, so after this window we say so.
 const NO_OUTPUT_HINT_SECS: u64 = 30;
 
+/// Cache ownership is separate so ordinary chat entries stay compact.
+#[derive(Debug, Clone)]
+pub struct ToolRenderCache {
+    width: usize,
+    generation: u64,
+    output_len: usize,
+    tick: u64,
+    lines: Vec<Line<'static>>,
+}
+
 /// One rendered chat entry.
 #[derive(Debug, Clone)]
 pub enum ChatEntry {
@@ -330,7 +401,7 @@ pub enum ChatEntry {
         tool_call_id: Option<String>,
         name: String,
         summary: String,
-        args: Option<serde_json::Value>,
+        args: Option<Box<serde_json::Value>>,
         /// Click override (2026-11-14): the operator cycles
         /// closed (line) → formatted (block) → full → closed. None follows
         /// the /tools config until the first click.
@@ -340,7 +411,7 @@ pub enum ChatEntry {
         /// `write` overwrite: file content captured before the tool ran.
         pre_content: Option<String>,
         /// Post-call check outcomes (format / syntax / praetor facts file).
-        checks: Option<ToolChecks>,
+        checks: Option<Box<ToolChecks>>,
         output: Vec<String>,
         output_truncated: bool,
         running: bool,
@@ -355,8 +426,7 @@ pub enum ChatEntry {
         /// Invalidated when any component changes — streaming output grows,
         /// config toggles bump tools_gen, and the elapsed tick advances
         /// once per second while the tool is running.
-        #[allow(clippy::type_complexity)]
-        render_cache: Option<(usize, u64, usize, u64, Vec<Line<'static>>)>,
+        render_cache: Option<Box<ToolRenderCache>>,
     },
     /// Informational notice (neutral, 2026-11-14): settings/janitor/scan
     /// reports and other ordinary output. Never rendered in the failure red.
@@ -374,7 +444,10 @@ pub enum ChatEntry {
     Notice(String),
     /// hang-watchdog entry (2026-11-13): rendered as a compact amber-bordered
     /// block instead of a red Diag line — it is an observation, not an error.
-    Watchdog(String),
+    Watchdog {
+        text: String,
+        doc: Option<Box<WatchdogDoc>>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -411,17 +484,23 @@ pub struct AnswerDoc {
 /// Structured watchdog facts (2026-11-13): written by the hang-watchdog
 /// extension; the transcript renders fields and the tool row shows a
 /// countdown, instead of dumping prose.
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, Hash, serde::Deserialize)]
 #[serde(default)]
 pub struct WatchdogDoc {
     pub version: u32,
     pub ts: u64,
     pub kind: String,
+    pub session_id: Option<String>,
+    pub tool_call_id: Option<String>,
+    pub valid_until: Option<u64>,
     pub command: String,
     pub elapsed_s: u64,
     pub stalled_s: u64,
     pub verdict: String,
     pub reason: String,
+    /// Where the verdict came from (2026-11-16): "decision" (typed SystemOne
+    /// lane), "lane" (free cloud judge), "unavailable", or empty on notices.
+    pub source: Option<String>,
     pub next_check_at: u64,
     pub phase: String,
 }
@@ -447,6 +526,7 @@ pub struct FormatCheck {
 #[serde(default)]
 pub struct SyntaxCheck {
     pub ok: bool,
+    pub available: Option<bool>,
     pub output: Option<String>,
 }
 
@@ -508,24 +588,13 @@ pub struct GhostSuggestion {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct SuggestionFile {
     version: u32,
     id: String,
     text: String,
     source: String,
     expires: u64,
-}
-
-impl Default for SuggestionFile {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            id: String::new(),
-            text: String::new(),
-            source: String::new(),
-            expires: 0,
-        }
-    }
 }
 
 /// One staged clipboard image (codex-qol stage 9).
@@ -640,7 +709,6 @@ impl Dialog {
     }
 }
 
-#[allow(dead_code)]
 /// A message typed while the agent is busy — shown as held until it
 /// actually enters the conversation (2026-11-13, operator request).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -657,7 +725,124 @@ pub enum HeldKind {
 pub struct HeldMsg {
     pub text: String,
     pub kind: HeldKind,
-    pub at: std::time::Instant,
+}
+
+/// The last real prompt sent to pi. Recovery uses it for the one-shot,
+/// tool-free replay gate (2026-11-15 self-heal).
+/// One provider/owner section in the /model picker.
+#[derive(Debug, Clone)]
+pub struct ModelGroup<'a> {
+    pub key: String,
+    pub title: String,
+    pub rank: u8,
+    pub models: Vec<&'a Model>,
+}
+
+fn model_tail(id: &str) -> &str {
+    id.rsplit('/').next().unwrap_or(id)
+}
+
+fn title_words(key: &str) -> String {
+    key.split(['-', '_'])
+        .filter(|w| !w.is_empty())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn provider_title(key: &str) -> String {
+    match key {
+        "officina" => "OFFICINA".to_string(),
+        "opencode-go" => "OpenCode Go".to_string(),
+        "opencode" => "OpenCode".to_string(),
+        "llamacpp" => "VITRIOL local".to_string(),
+        "zai" => "Z.AI".to_string(),
+        "glm" => "GLM".to_string(),
+        "agentrouter" => "AgentRouter".to_string(),
+        "cloudflare-playground" => "Cloudflare Playground".to_string(),
+        "duckduckgo-web" => "DuckDuckGo".to_string(),
+        "freeinference" => "FreeInference".to_string(),
+        "freemodel-dev" => "FreeModel".to_string(),
+        "api-airforce" => "API Airforce".to_string(),
+        "no-think" => "No-think".to_string(),
+        "kimi-coding" => "Kimi Coding".to_string(),
+        "zai-coding-plan" => "Z.AI Coding Plan".to_string(),
+        "zai-coding-cn" => "Z.AI Coding CN".to_string(),
+        _ => title_words(key),
+    }
+}
+
+/// (key, title, rank). rank 0 = OFFICINA specials, 1 = OpenCode Go,
+/// 2 = every other provider/owner.
+fn model_group_identity(m: &Model) -> (String, String, u8) {
+    if m.provider == "officina" {
+        return ("officina".to_string(), provider_title("officina"), 0);
+    }
+    let owner = if m.provider == "caduceus" {
+        model_tail(
+            m.id.split_once('/')
+                .map(|(owner, _)| owner)
+                .unwrap_or(m.provider.as_str()),
+        )
+    } else {
+        m.provider.as_str()
+    };
+    let key = owner.to_ascii_lowercase();
+    let rank = if key == "opencode-go" { 1 } else { 2 };
+    let title = provider_title(&key);
+    (key, title, rank)
+}
+
+/// Who asked for the running turn to stop. Esc is the operator's own decision:
+/// it must never kill or restart the pi child (E1, 2026-11-16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortSource {
+    Operator,
+    Watchdog,
+}
+
+#[derive(Debug, Clone)]
+pub struct LastPrompt {
+    pub text: String,
+    pub images: Option<Vec<ImageContent>>,
+    /// Drives the pre-agent_start hang detector (pi never opened the turn).
+    pub sent_at: std::time::Instant,
+    pub tool_started: bool,
+    pub assistant_output: bool,
+    pub failed: bool,
+    pub replayed: bool,
+    /// A running tool was abandoned without ever producing output, so no side
+    /// effect can have happened and the prompt is safe to replay once
+    /// (2026-11-15 stall recovery).
+    pub stalled_tool: bool,
+}
+
+/// A tool call that has not received its result yet.
+#[derive(Debug, Clone)]
+pub struct RunningTool {
+    /// Stable watchdog key: pi's tool call id, else a name fallback.
+    pub key: String,
+    pub name: String,
+    pub age: std::time::Duration,
+    /// Timeout declared by the model; authoritative when present.
+    pub timeout_s: Option<u64>,
+    /// Not one output line has arrived for this call.
+    pub silent: bool,
+}
+
+impl RunningTool {
+    /// Age budget: a declared timeout wins, never below the watchdog base.
+    pub fn limit(&self, base: std::time::Duration) -> std::time::Duration {
+        self.timeout_s
+            .map(|s| std::time::Duration::from_secs(s.saturating_add(60)))
+            .map_or(base, |t| t.max(base))
+    }
 }
 
 #[derive(Debug)]
@@ -668,6 +853,9 @@ pub struct AppState {
     pub model: Option<Model>,
     pub thinking_level: Option<String>,
     pub session_id: String,
+    /// Active session JSONL path from `get_state` (pi's `sessionFile`).
+    /// Recovery reopens exactly this file instead of guessing "latest".
+    pub session_file: Option<std::path::PathBuf>,
     pub session_name: Option<String>,
     pub message_count: u64,
 
@@ -679,6 +867,12 @@ pub struct AppState {
     // (tokens used / window size). None until the first turn completes —
     // the bottom status row hides itself rather than showing a guess.
     pub ctx_usage: Option<(u64, u64)>,
+
+    // Status-band settle state (2026-11-16). TWO parts, settled separately:
+    // the indicator strip height and the context-fill row. Settling only their
+    // sum let a transient indicator line eat the ctx row's slot for a frame.
+    pub band_ind: Settled,
+    pub band_ctx: Settled,
 
     // Terminal title (setTitle)
     pub title: String,
@@ -853,6 +1047,7 @@ pub struct AppState {
     pub pending_images: Vec<PendingImage>,
 
     // Diagnostics overlay (F9)
+    pub setting_menu: Option<super::settings::SettingMenu>,
     pub show_diag: bool,
     /// Snapshot of the bridge stderr ring, refreshed each frame by run_loop.
     pub diag_view: Vec<String>,
@@ -866,20 +1061,22 @@ pub struct AppState {
     /// Working directory — session scan root for /resume.
     pub cwd: std::path::PathBuf,
 
-    /// Agent mode tracking — the widget's own "/mode <next>" hint (Tab).
+    /// Agent mode tracking — the widget's own "/agent <next>" hint (Tab).
     pub agent_mode: Option<String>,
+    /// Mode already requested from Tab, with the instant: a second Tab inside
+    /// the grace must not re-send the same target (the widget has not caught up
+    /// yet, which used to read as "Tab is blocked again").
+    pub agent_mode_pending: Option<(String, std::time::Instant)>,
     /// Current mode label (e.g. "BUILD") + badge glyph, parsed from the same
     /// widget — drives the header mode chip (owner request 2026-09-02).
     pub agent_mode_label: Option<String>,
     pub agent_mode_glyph: Option<String>,
-    #[allow(dead_code)]
-    pub agent_modes: Vec<String>,
 
     // UI state
     pub should_quit: bool,
 
     /// Watermark glimmer animation mode (owner request 2026-09-02) —
-    /// /glimmer cycles it; persistence lives in the run loop.
+    /// /glimmer opens its choices; persistence lives in the run loop.
     pub glimmer: crate::watermark::GlimmerMode,
     /// Composer fire (owner request 2026-09-02): GPU-load-driven braille
     /// flames above the prompt box. `fire_target` is the last `engine-fire`
@@ -895,6 +1092,10 @@ pub struct AppState {
     pub fire_tint: bool,
     pub fire_target: f64,
     pub fire_level: f64,
+    /// Flame strip height applied last frame — the dead band in
+    /// `fire::rows_for_stable` keeps a breathing level from flapping it
+    /// (2026-11-16: the strip's height changes moved a whole row of text).
+    pub fire_rows_prev: usize,
 
     // Tool verbosity (owner request 2026-09-03)
     pub tool_default: ToolVerbosity,
@@ -919,9 +1120,35 @@ pub struct AppState {
     pub tool_watchdog_secs: u64,
     /// Tool call ids already watched/aborted once this turn.
     pub watchdog_fired: std::collections::HashSet<String>,
-    /// Set after a watchdog abort; if the agent has not settled by this
-    /// instant the TUI surfaces a restart hint instead of looking hung.
-    pub abort_deadline: Option<std::time::Instant>,
+    /// Tool call ids that already received their one bounded stall grace.
+    pub stall_graced: std::collections::HashSet<String>,
+    /// Per-tool instant before which the stall ladder must not re-evaluate
+    /// (the evidence probe opens a TCP socket; a 90 ms tick must not do that).
+    pub stall_grace_until: std::collections::HashMap<String, std::time::Instant>,
+    /// Wall clock of the last wire message (any response/event/UI request).
+    /// Drives the wire-idle detector (2026-11-15).
+    pub last_wire_at: std::time::Instant,
+    /// Set when an engine probe proved prefill/decode is still active, so
+    /// the wire-idle detector must not kill a legitimate long prefill.
+    pub wire_grace_until: Option<std::time::Instant>,
+    /// Last real prompt (replay gate).
+    pub last_prompt: Option<LastPrompt>,
+    /// Harness recovery state (bounded attempts, pending replay, phase).
+    pub recovery: heal::RecoveryState,
+    /// `/recover` asks the async loop for a manual recovery attempt.
+    pub heal_requested: bool,
+    /// The composer line came from Up/Down history recall. While set the
+    /// command menu must not open and must not steal the arrows, or recalling a
+    /// `/command` entry freezes history navigation (2026-11-16, operator
+    /// report).
+    pub history_recall: bool,
+    /// The operator dismissed the command menu for exactly this line content;
+    /// any edit clears it (Esc closes the menu without touching the composer).
+    pub menu_dismissed_for: Option<String>,
+    /// Set after an abort; if the agent has not settled by this instant the TUI
+    /// releases the UI. The source decides whether a child restart may follow:
+    /// only the watchdog may escalate, never an operator Esc (2026-11-16).
+    pub abort_deadline: Option<(std::time::Instant, AbortSource)>,
     /// Prompts typed while a tool is still running. They are delivered after
     /// the turn settles instead of being sent as RPC `Steer` behind a tool
     /// that may never finish (and would then never be persisted).
@@ -929,7 +1156,7 @@ pub struct AppState {
     /// Messages typed while busy, visible above the prompt until the
     /// agent actually reaches them (2026-11-13, operator request).
     pub held: Vec<HeldMsg>,
-    /// Compaction start (drives the prominent banner's timer).
+    /// Compaction start (drives the in-chat progress timer).
     pub compaction_started_at: Option<std::time::Instant>,
     /// Tool calls announced by the assistant turn but not yet observed via
     /// `tool_execution_start`. Covers the failure where pi persists the
@@ -987,10 +1214,13 @@ impl Default for AppState {
             model: None,
             thinking_level: None,
             session_id: String::new(),
+            session_file: None,
             session_name: None,
             message_count: 0,
             widgets: Vec::new(),
             ctx_usage: None,
+            band_ind: Settled::default(),
+            band_ctx: Settled::default(),
             title: String::new(),
             notice: None,
             commands: Vec::new(),
@@ -1065,6 +1295,7 @@ impl Default for AppState {
             xsessions_sel: 0,
             xsessions_filter: String::new(),
             pending_images: Vec::new(),
+            setting_menu: None,
             show_diag: false,
             diag_view: Vec::new(),
             input: String::new(),
@@ -1072,9 +1303,9 @@ impl Default for AppState {
             cand_sel: 0,
             cwd: std::path::PathBuf::from("."),
             agent_mode: None,
+            agent_mode_pending: None,
             agent_mode_label: None,
             agent_mode_glyph: None,
-            agent_modes: Vec::new(),
             should_quit: false,
             glimmer: crate::watermark::GlimmerMode::Shimmer,
             fire_on: true,
@@ -1082,6 +1313,7 @@ impl Default for AppState {
             fire_tint: true,
             fire_target: 0.0,
             fire_level: 0.0,
+            fire_rows_prev: 0,
             tool_default: ToolVerbosity::Line,
             tool_overrides: HashMap::new(),
             tools_gen: 0,
@@ -1092,6 +1324,15 @@ impl Default for AppState {
             compaction_auto_armed: false,
             tool_watchdog_secs: 300,
             watchdog_fired: std::collections::HashSet::new(),
+            stall_graced: std::collections::HashSet::new(),
+            stall_grace_until: std::collections::HashMap::new(),
+            last_wire_at: std::time::Instant::now(),
+            wire_grace_until: None,
+            last_prompt: None,
+            recovery: heal::RecoveryState::default(),
+            heal_requested: false,
+            history_recall: false,
+            menu_dismissed_for: None,
             abort_deadline: None,
             queued_prompts: Vec::new(),
             held: Vec::new(),
@@ -1372,7 +1613,7 @@ impl AppState {
         if self.is_streaming {
             return UiPhase::Streaming;
         }
-        if self.models_open || self.cache_open || self.resume_open {
+        if self.setting_menu.is_some() || self.models_open || self.cache_open || self.resume_open {
             return UiPhase::Modal;
         }
         UiPhase::Idle
@@ -1448,21 +1689,117 @@ impl AppState {
         ))
     }
 
+    /// Status-band parts with settle hysteresis (2026-11-16).
+    /// Returns `(indicator_rows, ctx_rows)` as the renderer should place them.
+    /// Each part settles on its own: a transient push on the indicator count
+    /// can never displace the context row (operator: "the ctx field flickers
+    /// to look like a different field for one frame"). The total therefore
+    /// changes only when a part has genuinely changed.
+    pub fn stabilize_band_parts(&mut self, indicator: u16, ctx: u16) -> (u16, u16) {
+        self.stabilize_band_parts_at(indicator, ctx, std::time::Instant::now())
+    }
+
+    /// Clock-explicit form of `stabilize_band_parts` (unit-testable).
+    pub fn stabilize_band_parts_at(
+        &mut self,
+        indicator: u16,
+        ctx: u16,
+        now: std::time::Instant,
+    ) -> (u16, u16) {
+        (
+            self.band_ind.settle(indicator, now),
+            self.band_ctx.settle(ctx, now),
+        )
+    }
+
+    /// Drop the band's settled geometry (session switch): a fresh session has
+    /// no band yet, and inheriting the old one would show a row of the
+    /// previous session's layout for a frame.
+    pub fn reset_band(&mut self) {
+        self.band_ind.force(0);
+        self.band_ctx.force(0);
+    }
+
+    fn model_matches(&self, m: &Model) -> bool {
+        let needle = self.models_filter.trim().to_lowercase();
+        if needle.is_empty() {
+            return true;
+        }
+        let name = m.name.as_deref().unwrap_or("");
+        let hay = format!("{} {} {}", m.provider, m.id, name).to_lowercase();
+        needle.split_whitespace().all(|w| hay.contains(w))
+    }
+
     /// Models matching the picker filter (case-insensitive, AND of words
     /// across provider/id/name). Empty filter = all models.
+    ///
+    /// Ordered for display: OFFICINA first (Lapis, Nimbus, then the rest),
+    /// OpenCode Go next, then every other provider/owner group.
     pub fn filtered_models(&self) -> Vec<&Model> {
-        let needle = self.models_filter.trim().to_lowercase();
-        self.models
-            .iter()
-            .filter(|m| {
-                if needle.is_empty() {
-                    return true;
-                }
-                let name = m.name.as_deref().unwrap_or("");
-                let hay = format!("{} {} {}", m.provider, m.id, name).to_lowercase();
-                needle.split_whitespace().all(|w| hay.contains(w))
-            })
+        self.filtered_model_groups()
+            .into_iter()
+            .flat_map(|g| g.models)
             .collect()
+    }
+
+    /// Grouped picker rows. Caduceus model ids are `owner/model`, so the
+    /// owner becomes the group (opencode-go, glm, zai, agentrouter, …).
+    /// OpenCode Go is deduped in favour of the native provider entry when
+    /// both the native and gateway catalogs expose the same model.
+    pub fn filtered_model_groups(&self) -> Vec<ModelGroup<'_>> {
+        let mut groups: Vec<ModelGroup<'_>> = Vec::new();
+        for m in &self.models {
+            if !self.model_matches(m) {
+                continue;
+            }
+            let (key, title, rank) = model_group_identity(m);
+            let idx = match groups.iter().position(|g| g.key == key) {
+                Some(i) => i,
+                None => {
+                    groups.push(ModelGroup {
+                        key: key.clone(),
+                        title,
+                        rank,
+                        models: Vec::new(),
+                    });
+                    groups.len() - 1
+                }
+            };
+            let group = &mut groups[idx];
+            if key == "opencode-go" {
+                let tail = model_tail(&m.id);
+                if let Some(pos) = group
+                    .models
+                    .iter()
+                    .position(|existing| model_tail(&existing.id) == tail)
+                {
+                    // Prefer the native opencode-go provider (per-model api,
+                    // full capability metadata) over the gateway copy.
+                    if group.models[pos].provider == "caduceus" && m.provider != "caduceus" {
+                        group.models[pos] = m;
+                    }
+                    continue;
+                }
+            }
+            group.models.push(m);
+        }
+        for group in &mut groups {
+            if group.key == "officina" {
+                group.models.sort_by_key(|m| match m.id.as_str() {
+                    "lapis" => 0,
+                    "nimbus" => 1,
+                    _ => 2,
+                });
+            } else {
+                group.models.sort_by(|a, b| {
+                    let an = a.name.as_deref().unwrap_or(&a.id).to_lowercase();
+                    let bn = b.name.as_deref().unwrap_or(&b.id).to_lowercase();
+                    an.cmp(&bn).then_with(|| a.id.cmp(&b.id))
+                });
+            }
+        }
+        groups.sort_by(|a, b| a.rank.cmp(&b.rank).then_with(|| a.title.cmp(&b.title)));
+        groups
     }
 
     /// Keep the selection inside the filtered list after a filter edit.
@@ -1568,6 +1905,7 @@ impl AppState {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn clamp_resume_sel(&mut self) {
         let n = self.filtered_resume_entries().len();
         if self.resume_sel >= n {
@@ -1579,6 +1917,7 @@ impl AppState {
     /// stage 4). Testable core: `editor` is the raw $VISUAL/$EDITOR string.
     /// The draft is written to a temp file and kept verbatim in the request,
     /// so a failed spawn/reload never loses text (I4).
+    #[cfg(test)]
     pub fn stage_editor(&mut self, editor: &str) {
         if self.editor_suspend.is_some() {
             return;
@@ -1737,6 +2076,8 @@ impl AppState {
         self.cursor = g.text.chars().count();
         self.input = g.text;
         self.ghost_dismissed_for = None;
+        self.note_input_typed();
+        self.cursor = self.input.chars().count();
         self.log_ghost_event(&g.id, &g.source, "accepted");
         true
     }
@@ -1859,6 +2200,8 @@ impl AppState {
         if self.prompt_history.is_empty() {
             return false;
         }
+        self.history_recall = true;
+        self.menu_dismissed_for = None;
         match self.history_idx {
             None => {
                 self.history_draft = self.input.clone();
@@ -1898,7 +2241,7 @@ impl AppState {
     /// tree at most every 2 s while a tool runs; flat samples accumulate
     /// `liveness_flat_secs`. No-op when nothing runs.
     pub fn probe_liveness(&mut self, pi_pid: Option<u32>) {
-        if !self.has_running_tool() {
+        if !self.has_running_tool() && !self.is_streaming && !self.is_compacting {
             self.liveness_cpu_total = 0.0;
             self.liveness_prev_total = 0.0;
             self.liveness_delta = 0.0;
@@ -2073,6 +2416,49 @@ impl AppState {
         }
     }
 
+    /// Own each card's facts and update only the matching session/call observation.
+    fn record_watchdog_notice(&mut self, message: &str) {
+        let path = self
+            .watchdog_file
+            .clone()
+            .unwrap_or_else(|| watchdog_path(&self.session_id));
+        let (message, doc) = watchdog_notice(message, &path, &self.session_id);
+        let replacement = doc.as_ref().and_then(|next| {
+            self.entries
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(index, entry)| {
+                    let ChatEntry::Watchdog {
+                        doc: Some(previous),
+                        ..
+                    } = entry
+                    else {
+                        return None;
+                    };
+                    let same = if next.tool_call_id.is_some() {
+                        previous.session_id == next.session_id
+                            && previous.tool_call_id == next.tool_call_id
+                    } else {
+                        index + 1 == self.entries.len()
+                            && previous.command == next.command
+                            && previous.verdict == next.verdict
+                    };
+                    same.then_some(index)
+                })
+        });
+        self.watchdog = doc.clone();
+        let entry = ChatEntry::Watchdog {
+            text: message.to_string(),
+            doc: doc.map(Box::new),
+        };
+        if let Some(index) = replacement {
+            self.entries[index] = entry;
+            return;
+        }
+        self.entries.push(entry);
+    }
+
     /// Extension notify (stage 3, 2026-11-12): errors/warnings land in the
     /// transcript as Diag; info keeps the 40-char glance row, and anything
     /// the truncation would mangle (multi-line tables or >100-char payloads)
@@ -2081,29 +2467,7 @@ impl AppState {
     pub fn apply_notify(&mut self, msg: &str, ntype: &str) {
         // Watchdog observations are not errors — give them their own block.
         if msg.starts_with("hang-watchdog") {
-            let path = self.watchdog_file.clone().unwrap_or_else(watchdog_path);
-            let prev_key = self
-                .watchdog
-                .as_ref()
-                .map(|d| format!("{}|{}", d.command, d.verdict));
-            self.watchdog = load_watchdog_doc_at(&path);
-            let new_key = self
-                .watchdog
-                .as_ref()
-                .map(|d| format!("{}|{}", d.command, d.verdict));
-            // Same command+verdict as the card on screen: update in place
-            // instead of stacking duplicates (2026-11-14).
-            let replace = matches!(
-                (self.entries.last(), prev_key.as_deref(), new_key.as_deref()),
-                (Some(ChatEntry::Watchdog(_)), Some(p), Some(n)) if p == n
-            );
-            if replace {
-                if let Some(ChatEntry::Watchdog(prev)) = self.entries.last_mut() {
-                    *prev = msg.to_string();
-                }
-            } else {
-                self.entries.push(ChatEntry::Watchdog(msg.to_string()));
-            }
+            self.record_watchdog_notice(msg);
             return;
         }
         if ntype == "error" {
@@ -2208,7 +2572,6 @@ impl AppState {
         self.held.push(HeldMsg {
             text: text.to_string(),
             kind,
-            at: std::time::Instant::now(),
         });
     }
 
@@ -2378,16 +2741,267 @@ impl AppState {
         }
     }
 
-    pub fn apply_state(
-        &mut self,
-        model: Option<Model>,
-        thinking_level: Option<String>,
-        is_streaming: bool,
-        is_compacting: bool,
-        session_id: Option<String>,
-        session_name: Option<String>,
-        message_count: Option<u64>,
-    ) {
+    /// Any wire message proves pi's event loop is alive.
+    pub fn note_wire_activity(&mut self) {
+        self.last_wire_at = std::time::Instant::now();
+        self.wire_grace_until = None;
+    }
+
+    /// A local engine probe saw active prefill/decode. Do not escalate on
+    /// wire silence until this grace expires.
+    pub fn grant_wire_grace(&mut self, grace: std::time::Duration) {
+        self.wire_grace_until = Some(std::time::Instant::now() + grace);
+    }
+
+    /// Remember the prompt the operator actually sent. Slash commands are
+    /// extension invocations, never replayed by recovery.
+    pub fn note_prompt_sent(&mut self, text: &str, images: Option<Vec<ImageContent>>) {
+        if text.trim_start().starts_with('/') {
+            self.last_prompt = None;
+            return;
+        }
+        self.last_wire_at = std::time::Instant::now();
+        self.last_prompt = Some(LastPrompt {
+            text: text.to_string(),
+            images,
+            sent_at: std::time::Instant::now(),
+            tool_started: false,
+            assistant_output: false,
+            failed: false,
+            replayed: false,
+            stalled_tool: false,
+        });
+    }
+
+    pub fn note_prompt_tool_started(&mut self) {
+        if self.recovery.phase == heal::Phase::Rehydrating {
+            return; // historical transcript, not the failed turn
+        }
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.tool_started = true;
+        }
+    }
+
+    pub fn note_prompt_assistant_output(&mut self) {
+        if self.recovery.phase == heal::Phase::Rehydrating {
+            return;
+        }
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.assistant_output = true;
+        }
+    }
+
+    pub fn note_prompt_failed(&mut self) {
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.failed = true;
+        }
+    }
+
+    /// Turn settled cleanly, or the one-shot replay already ran: nothing
+    /// left to replay. A failed first attempt is kept until its replay.
+    pub fn settle_last_prompt(&mut self) {
+        if self
+            .last_prompt
+            .as_ref()
+            .is_some_and(|p| !p.failed || p.replayed)
+        {
+            self.last_prompt = None;
+        }
+    }
+
+    /// Replay gate (I3): failed, tool-free, no assistant output, no images,
+    /// not a slash command, not already replayed. Taking the prompt marks it
+    /// replayed so a recovery cannot loop.
+    ///
+    /// Narrow 2026-11-15 exception: a prompt whose only tool was abandoned
+    /// before it ever produced output (`stalled_tool`) is replayable once even
+    /// though the call started — nothing executed, so nothing can repeat.
+    pub fn take_replayable_prompt(&mut self) -> Option<(String, Option<Vec<ImageContent>>)> {
+        // One gate, no bypasses: the side-effect veto is part of the predicate
+        // so a caller cannot replay a turn that already ran a tool.
+        if !self.last_prompt_replayable() {
+            return None;
+        }
+        let p = self.last_prompt.as_mut()?;
+        p.replayed = true;
+        Some((p.text.clone(), None))
+    }
+
+    pub fn last_prompt_replayable(&self) -> bool {
+        let Some(p) = self.last_prompt.as_ref() else {
+            return false;
+        };
+        if p.replayed
+            || p.text.trim_start().starts_with('/')
+            || p.images.as_ref().is_some_and(|i| !i.is_empty())
+            || self.replay_has_side_effects()
+        {
+            return false;
+        }
+        if p.stalled_tool {
+            return true; // nothing executed, so nothing can repeat
+        }
+        p.failed && !p.tool_started && !p.assistant_output
+    }
+
+    /// Mark the prompt as stalled-before-execution so the recovery ladder may
+    /// replay it once (2026-11-15; see `stall`).
+    pub fn note_stall_unexecuted(&mut self) {
+        if let Some(p) = self.last_prompt.as_mut() {
+            p.stalled_tool = true;
+        }
+    }
+
+    /// Arm the abort settle deadline, tagged with who asked for the stop.
+    pub fn arm_abort(&mut self, now: std::time::Instant, source: AbortSource) {
+        self.abort_deadline = Some((now + std::time::Duration::from_secs(10), source));
+    }
+
+    /// The armed abort's source once its settle deadline has passed.
+    pub fn abort_due(&self, now: std::time::Instant) -> Option<AbortSource> {
+        match self.abort_deadline {
+            Some((deadline, source)) if now >= deadline => Some(source),
+            _ => None,
+        }
+    }
+
+    pub fn abort_pending(&self) -> bool {
+        self.abort_deadline.is_some()
+    }
+
+    /// Operator Esc: stop the turn and drop every queued/held message plus any
+    /// pending recovery obligation. Returns how many messages were dropped so
+    /// the caller can report it (E4: no silent loss).
+    pub fn operator_stop(&mut self) -> usize {
+        let dropped = self.queued_prompts.len();
+        self.queued_prompts.clear();
+        self.held.clear();
+        self.expected_tool_calls.clear();
+        self.clear_stall_state();
+        self.recovery.pending_replay = None;
+        self.note_prompt_failed();
+        dropped
+    }
+
+    pub fn model_is_lapis(&self) -> bool {
+        heal::is_lapis(&self.model)
+    }
+
+    /// Wire-idle gate: streaming/compacting, no tool watches armed, and no
+    /// grace granted by a live prefill probe.
+    pub fn wire_idle_due(&self, now: std::time::Instant, threshold: std::time::Duration) -> bool {
+        // A prompt sent but never acknowledged (no agent_start) is also a
+        // hang surface — do not wait for the streaming flag forever.
+        let prompt_waiting = self.last_prompt.as_ref().is_some_and(|p| {
+            !p.failed && !p.replayed && now.duration_since(p.sent_at) >= threshold
+        });
+        if threshold.is_zero() || !(self.is_streaming || self.is_compacting || prompt_waiting) {
+            return false;
+        }
+        if self.has_running_tool() || !self.expected_tool_calls.is_empty() {
+            return false;
+        }
+        if self.wire_grace_until.is_some_and(|until| now < until) {
+            return false;
+        }
+        // CPU grace: an active pi tree means real work, not a hang. When
+        // /proc is unavailable, liveness is unknown and must not block the
+        // detector forever.
+        let pi_flat = if self.liveness_unavailable || prompt_waiting {
+            // No turn started yet: pi has nothing to compute, so silence is
+            // itself the evidence. The streaming path keeps the CPU gate.
+            threshold
+        } else {
+            std::time::Duration::from_secs(self.liveness_flat_secs)
+        };
+        heal::wire_idle_escalate(
+            threshold,
+            heal::WireEvidence {
+                idle: now.duration_since(self.last_wire_at),
+                pi_flat,
+                engine_busy: false,
+            },
+        )
+    }
+
+    /// True when the rehydrated transcript contains a tool entry after the
+    /// last user message — replaying that prompt would re-run side effects.
+    pub fn transcript_has_tool_after_last_user(&self) -> bool {
+        for e in self.entries.iter().rev() {
+            match e {
+                ChatEntry::User(_) => return false,
+                ChatEntry::Tool { .. } => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Tool entries after the last user message that actually produced a
+    /// result. Abandoned/errored calls (the stall path) do not count: they ran
+    /// nothing, so replaying the prompt cannot repeat a side effect.
+    pub fn transcript_has_successful_tool_after_last_user(&self) -> bool {
+        for e in self.entries.iter().rev() {
+            match e {
+                ChatEntry::User(_) => return false,
+                ChatEntry::Tool { error, .. } => {
+                    if !*error {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Would replaying the pending prompt repeat a side effect? A tool that
+    /// produced a real result blocks it; a never-executed stall does not
+    /// (2026-11-15 stall replay).
+    pub fn replay_has_side_effects(&self) -> bool {
+        if self.last_prompt.as_ref().is_some_and(|p| p.stalled_tool) {
+            return self.transcript_has_successful_tool_after_last_user();
+        }
+        self.transcript_has_tool_after_last_user()
+    }
+
+    /// Clear the view before a recovery replay. The session file is the
+    /// source of truth; pending replay and the composer survive.
+    pub fn reset_for_rehydrate(&mut self) {
+        self.entries.clear();
+        self.md_cache_clear();
+        self.widgets.clear();
+        self.dialogs.clear();
+        self.held.clear();
+        self.queued_prompts.clear();
+        self.expected_tool_calls.clear();
+        self.abandon_running_tools("harness recovery");
+        self.clear_stall_state();
+        self.is_streaming = false;
+        self.is_compacting = false;
+        self.abort_deadline = None;
+        self.turn_started_at = None;
+        self.watchdog_fired.clear();
+        self.compaction_started_at = None;
+        self.compaction_auto_armed = false;
+        // The context-fill label is NOT cleared: recovery respawns the same
+        // conversation, and dropping the row would move the whole transcript
+        // by one line mid-turn (operator report 2026-11-16: "status band
+        // flashes an extra row"). A stale-by-one-turn number is honest; a
+        // jumping layout is not.
+    }
+
+    pub fn apply_state(&mut self, snapshot: crate::rpc::protocol::RpcSessionState) {
+        let crate::rpc::protocol::RpcSessionState {
+            model,
+            thinking_level,
+            is_streaming,
+            is_compacting,
+            session_id,
+            session_file,
+            session_name,
+            message_count,
+        } = snapshot;
         if let Some(m) = model {
             self.model = Some(m);
         }
@@ -2400,6 +3014,9 @@ impl AppState {
         self.is_streaming = is_streaming;
         self.is_compacting = is_compacting;
         self.session_id = session_id.unwrap_or_default();
+        if let Some(path) = session_file {
+            self.session_file = Some(std::path::PathBuf::from(path));
+        }
         self.session_name = session_name;
         self.message_count = message_count.unwrap_or(0);
     }
@@ -2407,6 +3024,7 @@ impl AppState {
     /// Append a text delta to the last assistant entry (or open a new one).
     pub fn push_text_delta(&mut self, delta: &str) {
         self.stream_heat = (self.stream_heat + 0.4).min(1.6);
+        self.note_prompt_assistant_output();
         match self.entries.last_mut() {
             Some(ChatEntry::Assistant(t)) => t.push_str(delta),
             _ => self.entries.push(ChatEntry::Assistant(delta.to_string())),
@@ -2415,6 +3033,7 @@ impl AppState {
 
     /// Append a thinking delta to the last thinking entry (or open a new one).
     pub fn push_thinking_delta(&mut self, delta: &str) {
+        self.note_prompt_assistant_output();
         self.stream_heat = (self.stream_heat + 0.4).min(1.6);
         match self.entries.last_mut() {
             Some(ChatEntry::Thinking { text, .. }) => text.push_str(delta),
@@ -2483,6 +3102,7 @@ impl AppState {
 
     /// Tool execution started — add a running tool entry with full args.
     pub fn tool_start(&mut self, tool_call_id: Option<&str>, name: &str, args: &serde_json::Value) {
+        self.note_prompt_tool_started();
         let summary = summarize_args(name, args);
         // write overwrites: snapshot the old content so the block can show a
         // real diff (2026-11-14). Capped; read failures are silent.
@@ -2512,7 +3132,7 @@ impl AppState {
             tool_call_id: tool_call_id.map(String::from),
             name: name.to_string(),
             summary,
-            args: Some(args.clone()),
+            args: Some(Box::new(args.clone())),
             click_mode: None,
             diff: None,
             pre_content,
@@ -2633,7 +3253,7 @@ impl AppState {
                     } = e
                     {
                         if checks.is_some() {
-                            *slot = checks;
+                            *slot = checks.map(Box::new);
                             *render_cache = None;
                         }
                     }
@@ -2643,11 +3263,8 @@ impl AppState {
         }
     }
 
-    /// Oldest still-running tool: stable key, display name, age, declared
-    /// timeout. Used by the stall watchdog.
-    pub fn oldest_running_tool(
-        &self,
-    ) -> Option<(String, String, std::time::Duration, Option<u64>)> {
+    /// Oldest still-running tool with its watchdog facts.
+    pub fn oldest_running_tool(&self) -> Option<RunningTool> {
         let now = std::time::Instant::now();
         self.entries
             .iter()
@@ -2658,17 +3275,61 @@ impl AppState {
                     running: true,
                     started_at,
                     timeout_s,
+                    output,
                     ..
                 } => {
                     let started = started_at.unwrap_or(now);
                     let key = tool_call_id
                         .clone()
                         .unwrap_or_else(|| format!("name:{name}"));
-                    Some((key, name.clone(), now.duration_since(started), *timeout_s))
+                    Some(RunningTool {
+                        key,
+                        name: name.clone(),
+                        age: now.duration_since(started),
+                        timeout_s: *timeout_s,
+                        silent: output.is_empty(),
+                    })
                 }
                 _ => None,
             })
-            .max_by_key(|(_, _, age, _)| *age)
+            .max_by_key(|tool| tool.age)
+    }
+
+    /// True while the ladder for this tool is parked (grace or live evidence).
+    pub fn stall_parked(&self, key: &str, now: std::time::Instant) -> bool {
+        self.stall_grace_until
+            .get(key)
+            .is_some_and(|until| now < *until)
+    }
+
+    /// Park the ladder for one tool so a fast heartbeat cannot repeat the
+    /// evidence probe (and cannot thrash the engine endpoint).
+    pub fn park_stall(&mut self, key: &str, grace: std::time::Duration) {
+        self.stall_grace_until
+            .insert(key.to_string(), std::time::Instant::now() + grace);
+    }
+
+    /// Reset every stall decision for a new turn or a rehydrated view.
+    pub fn clear_stall_state(&mut self) {
+        self.stall_graced.clear();
+        self.stall_grace_until.clear();
+    }
+
+    /// Running tool count; the "no descendant process" fast path is only
+    /// conclusive when exactly one tool is in flight (2026-11-15).
+    pub fn running_tool_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, ChatEntry::Tool { running: true, .. }))
+            .count()
+    }
+
+    /// True when no sampled liveness fact contradicts a hang. Unknown samples
+    /// count as flat: they must never buy a stuck tool more time.
+    pub fn pi_is_flat(&self) -> bool {
+        self.liveness_unavailable
+            || self.liveness_sampled_at.is_none()
+            || self.liveness_flat_secs > 0
     }
 
     /// True while any tool call is still awaiting `tool_execution_end`.
@@ -2745,6 +3406,7 @@ impl AppState {
     }
 
     /// Insert or update a widget block by key.
+    #[cfg(test)]
     pub fn set_widget(&mut self, key: &str, lines: Vec<String>) {
         self.set_widget_placed(key, lines, None);
     }
@@ -2824,6 +3486,10 @@ impl AppState {
                         .chars()
                         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 {
+                    // The hint advancing settles any Tab request in flight.
+                    if self.agent_mode.as_deref() != Some(next.as_str()) {
+                        self.agent_mode_pending = None;
+                    }
                     self.agent_mode = Some(next);
                     return;
                 }
@@ -2835,6 +3501,24 @@ impl AppState {
     /// tells us.
     pub fn next_agent_mode(&self) -> Option<String> {
         self.agent_mode.clone()
+    }
+
+    /// Remember that Tab asked for `next`. The pending mark clears itself when
+    /// the widget advances to a different target (or after the grace).
+    pub fn note_mode_switch_sent(&mut self, next: &str) {
+        self.agent_mode_pending = Some((next.to_string(), std::time::Instant::now()));
+    }
+
+    /// True while a Tab-requested switch to `next` is still in flight — the
+    /// widget hint has not advanced yet, so re-sending it would be a visible
+    /// no-op (2026-11-16, operator report: "tabbing through modes is blocked so
+    /// often").
+    pub fn mode_switch_in_flight(&self, next: &str) -> bool {
+        self.agent_mode_pending
+            .as_ref()
+            .is_some_and(|(pending, at)| {
+                pending == next && at.elapsed() < std::time::Duration::from_secs(2)
+            })
     }
 
     /// Cycle the watermark glimmer (Shimmer → Breathe → Twinkle → Off).
@@ -2872,6 +3556,14 @@ impl AppState {
             "style" => self.fire_style = self.fire_style.next(),
             // Text discoloration toggle (owner request 2026-09-03) —
             // independent of the flame itself.
+            "tint on" => {
+                self.fire_tint = true;
+                return "tint on".into();
+            }
+            "tint off" => {
+                self.fire_tint = false;
+                return "tint off".into();
+            }
             "tint" => {
                 self.fire_tint = !self.fire_tint;
                 return if self.fire_tint {
@@ -3008,7 +3700,7 @@ impl AppState {
     pub fn watchdog_countdown(&self) -> Option<u64> {
         let doc = self.watchdog.as_ref()?;
         let now = crate::tui::caduceus::now_ms();
-        if now.saturating_sub(doc.ts) > 120_000 || doc.next_check_at == 0 {
+        if !watchdog_fresh(doc, now) || doc.next_check_at == 0 {
             return None;
         }
         if doc.next_check_at <= now {
@@ -3200,8 +3892,11 @@ impl AppState {
             | ChatEntry::Diag(t)
             | ChatEntry::Warn(t)
             | ChatEntry::Error(t)
-            | ChatEntry::Notice(t)
-            | ChatEntry::Watchdog(t) => t.len().hash(&mut h),
+            | ChatEntry::Notice(t) => t.len().hash(&mut h),
+            ChatEntry::Watchdog { text, doc } => {
+                text.hash(&mut h);
+                doc.hash(&mut h);
+            }
             ChatEntry::Thinking { text, collapsed } => {
                 text.len().hash(&mut h);
                 collapsed.hash(&mut h);
@@ -3231,11 +3926,10 @@ impl AppState {
                         .as_ref()
                         .map(|f| (f.tool.as_str(), f.changed))
                         .hash(&mut h);
-                    c.syntax.as_ref().map(|s| s.ok).hash(&mut h);
+                    c.syntax.as_ref().map(|s| (s.ok, s.available)).hash(&mut h);
                     c.praetor.as_ref().map(|p| p.count).hash(&mut h);
                 }
             }
-            _ => {}
         }
         h.finish()
     }
@@ -3257,7 +3951,6 @@ impl AppState {
                 None => (format!("watch {secs}s"), true),
             });
         }
-        let wd = self.watchdog.clone();
         for (idx, entry) in self.entries.iter_mut().enumerate() {
             let before = lines.len();
             // Dynamic entries (the streaming tail's thinking block, running
@@ -3442,7 +4135,7 @@ impl AppState {
                         } else {
                             ("✓", Style::default().fg(theme::GREEN).bg(theme::BG))
                         };
-                        if let Some((title, cmd)) = bash_title_and_cmd(name, args.as_ref()) {
+                        if let Some((title, cmd)) = bash_title_and_cmd(name, args.as_deref()) {
                             // The model's purpose is the primary scan target;
                             // command is secondary (owner request 2026-11-10:
                             // title and command must be different colors).
@@ -3511,35 +4204,45 @@ impl AppState {
                         } else {
                             0
                         };
-                        let fresh = matches!(render_cache,
-                            Some((w, g, o, tk, _)) if *w == body_w && *g == gen && *o == olen && *tk == tick);
+                        let fresh = render_cache.as_ref().is_some_and(|cache| {
+                            cache.width == body_w
+                                && cache.generation == gen
+                                && cache.output_len == olen
+                                && cache.tick == tick
+                        });
                         if !fresh {
                             let elapsed = started_at.map(|t| t.elapsed().as_secs());
                             let no_output_hint = *running
                                 && output.is_empty()
                                 && elapsed.is_some_and(|s| s >= NO_OUTPUT_HINT_SECS);
-                            let block = render_tool_block(
+                            let block = render_tool_block(ToolBlock {
                                 mode,
                                 name,
                                 summary,
-                                args.as_ref(),
+                                args: args.as_deref(),
                                 output,
-                                *output_truncated,
-                                *running,
-                                *error,
-                                body_w,
+                                truncated: *output_truncated,
+                                running: *running,
+                                error: *error,
+                                width: body_w,
                                 elapsed,
-                                *timeout_s,
+                                timeout_s: *timeout_s,
                                 no_output_hint,
-                                liveness.clone(),
-                                diff.as_deref(),
-                                pre_content.as_deref(),
-                                checks.as_ref(),
-                            );
-                            *render_cache = Some((body_w, gen, olen, tick, block));
+                                liveness: liveness.clone(),
+                                diff: diff.as_deref(),
+                                pre_content: pre_content.as_deref(),
+                                checks: checks.as_deref(),
+                            });
+                            *render_cache = Some(Box::new(ToolRenderCache {
+                                width: body_w,
+                                generation: gen,
+                                output_len: olen,
+                                tick,
+                                lines: block,
+                            }));
                         }
-                        if let Some((_, _, _, _, block)) = render_cache.as_ref() {
-                            for bl in block {
+                        if let Some(cache) = render_cache.as_ref() {
+                            for bl in &cache.lines {
                                 lines.push(Line::from(
                                     std::iter::once(Span::raw("  "))
                                         .chain(bl.spans.iter().cloned())
@@ -3628,14 +4331,15 @@ impl AppState {
                         }
                     }
                 }
-                ChatEntry::Watchdog(text) => {
+                ChatEntry::Watchdog { text, doc } => {
+                    let wd = doc.as_deref();
                     // Structured card when the facts file is fresh; raw text
                     // fallback so a message is never lost (I3).
                     let edge_color = watchdog_edge_color(wd.as_ref().map(|d| d.verdict.as_str()));
                     let edge = Style::new().fg(edge_color).bg(theme::BG);
                     let body = Style::new().fg(theme::TEXT).bg(theme::BG);
                     let muted = Style::new().fg(theme::MUTED).bg(theme::BG);
-                    let span_w = width.saturating_sub(4) as usize;
+                    let span_w = width.saturating_sub(4);
                     let (chip, chip_style) = match wd.as_ref().map(|d| d.verdict.as_str()) {
                         Some("ALIVE") => (
                             " ALIVE ",
@@ -3651,6 +4355,7 @@ impl AppState {
                                 .bg(theme::BG)
                                 .add_modifier(Modifier::BOLD),
                         ),
+                        Some("UNKNOWN") => (" UNKNOWN ", muted),
                         Some("JUDGING") => (
                             " JUDGING ",
                             Style::new()
@@ -3702,6 +4407,15 @@ impl AppState {
                             ));
                             if !doc.reason.is_empty() {
                                 lines.push(field("reason", doc.reason.clone()));
+                            }
+                            if let Some(src) = doc.source.as_deref() {
+                                let tag = match src {
+                                    "decision" => "decision model",
+                                    "lane" => "free lane",
+                                    "unavailable" => "unavailable",
+                                    other => other,
+                                };
+                                lines.push(field("source", tag.to_string()));
                             }
                             let hint = match doc.verdict.as_str() {
                                 "ALIVE" => "compiling/working \u{2014} no action needed",
@@ -3767,6 +4481,9 @@ impl AppState {
         ("review-findings", "review results", "/review-findings — the last /review findings, severity-sorted (read-only; written by /review)"),
         ("janitor", "stale cache cleanup", "/janitor [dry] — remove stale prompt/watchdog/longjob/probe/KV/session-chain artifacts (protected: newest store file, slot0.bin, corrupt quarantines, ledgers); auto-runs daily"),
         ("thinking-view", "hide thinking blocks", "/thinking-view [hide|show] — collapse thinking blocks to a marker line (display only; the model's thinking level stays at /thinking)"),
+        ("fire", "fire settings", "/fire [on|off|prismatic|emerald|alchemy|tint on|tint off] — bare opens choices"),
+        ("glimmer", "watermark animation", "/glimmer [shimmer|breathe|twinkle|off] — bare opens choices"),
+        ("shimmer", "watermark animation", "/shimmer — alias for the glimmer picker"),
         ("fx", "fire + glimmer", "/fx — fire/glimmer panel with live preview (fire only animates while the session is actually working)"),
         ("answers", "last inquiry answer", "/answers — the last INQUIRE-mode question + answer (scrollable; written by the agent-mode extension)"),
         ("engine", "engine control", "/engine [start|stop|restart|status] — control the vitriol-server systemd unit (no sudo: polkit scopes you to the two vitriol units; your daily-driver config is untouched)"),
@@ -3775,22 +4492,23 @@ impl AppState {
         ("cache", "manage the KV cache", "/cache — list engine KV cache entries with age/size; /cache wipe [age] — prune (slot0.bin protected)"),
         ("clear", "clear the transcript", "/clear — wipe the local transcript view (pi keeps the session history)"),
         ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),
-        ("diag", "toggle diagnostics", "/diag or F9 — stderr overlay from the agent process"),
+        ("diag", "diagnostic settings", "/diag [on|off] — picker; F9 toggles stderr overlay"),
         ("help", "glossary + keys + commands", "/help or F1 — the reference modal"),
         ("clone", "duplicate the session", "/clone — duplicate the active branch into a fresh session"),
         ("export", "export session to HTML", "/export [path] — write a self-contained HTML transcript"),
         ("rename", "rename the session", "/rename <name> — set the session display name"),
-        ("sidebar", "cycle sidebar visibility", "/sidebar — auto (hide when narrow) → show → hide"),
+        ("sidebar", "sidebar visibility", "/sidebar [auto|show|hide] — bare opens choices"),
         ("permissions", "permission mode", "/permissions — ask | auto | yolo (sensitive roots always guarded)"),
-        ("yolo", "toggle YOLO mode", "/yolo — toggle ask <-> yolo (sensitive roots still prompt)"),
+        ("yolo", "permission mode", "/yolo — open permission choices (sensitive roots still prompt)"),
         ("import-opencode", "import an OpenCode session", "/import-opencode [latest|<id>|list] [full] — convert an OpenCode session and switch to it (default: newest ~40k tokens + a digest of older history; full = everything)"),
         ("model", "select a model", "/model [provider/id] — picker from available models; provider/id switches directly"),
         ("new", "new session", "/new — fresh session (old one stays resumable)"),
+        ("recover", "harness recovery", "/recover — restart a hung pi child and restore the session (auto-runs on watchdog failures)"),
         ("quit", "quit the TUI", "/quit — deliberate quit; the only other path is ^esc"),
         ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
-        ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare lists current values"),
+        ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare opens choices"),
         ("stats", "refresh stats", "/stats — refresh session statistics"),
-        ("thinking", "thinking level", "/thinking [off..max] — bare cycles"),
+        ("thinking", "thinking level", "/thinking [off..max] — bare opens choices"),
         ("tools", "tool verbosity", "/tools [<tool> <mode>[!+|-] | <tool> clear | default <mode>] — modes: line/block/full; bare opens the picker; ctrl+t too"),
     ];
 
@@ -3906,7 +4624,9 @@ impl AppState {
     pub fn is_local_command(&self, msg: &str) -> bool {
         let word = msg.split_whitespace().next().unwrap_or("");
         let word = word.trim_start_matches('/');
-        Self::LOCAL_COMMANDS.iter().any(|(n, _, _)| *n == word) || word == "config"
+        Self::LOCAL_COMMANDS.iter().any(|(n, _, _)| *n == word)
+            || word == "heal"
+            || word == "config"
     }
 
     /// Longest common prefix completion for the current command word.
@@ -3959,9 +4679,47 @@ impl AppState {
         true
     }
 
-    /// True when the command popup is open (candidates available).
+    /// True when the command menu should be open: a typed command line, not a
+    /// recalled one, and not dismissed for this exact content (K1/D6/D7,
+    /// 2026-11-16).
     pub fn cand_sel_logic_open(&self) -> bool {
+        if self.history_recall || !self.input.starts_with('/') {
+            return false;
+        }
+        if self.menu_dismissed_for.as_deref() == Some(self.input.as_str()) {
+            return false;
+        }
         !self.command_candidates().is_empty()
+    }
+
+    /// The operator edited the line: it is no longer a mere recall, and any
+    /// menu dismissal is void.
+    pub fn note_input_typed(&mut self) {
+        self.history_recall = false;
+        self.menu_dismissed_for = None;
+        self.cand_sel = 0;
+    }
+
+    /// Esc closed the command menu for the current content (composer untouched).
+    pub fn dismiss_command_menu(&mut self) {
+        self.menu_dismissed_for = Some(self.input.clone());
+        self.cand_sel = 0;
+    }
+
+    /// `/q` → `/quit` when exactly one command matches the typed prefix.
+    /// Ambiguous prefixes, arguments and plain text are returned unchanged (D8).
+    pub fn expand_unique_command(&self, msg: &str) -> String {
+        if !msg.starts_with('/') || msg.contains(' ') {
+            return msg.to_string();
+        }
+        let word = msg.trim_start_matches('/');
+        if word.is_empty() {
+            return msg.to_string();
+        }
+        match self.command_candidates_for(msg).as_slice() {
+            [only] if only.name != word => format!("/{}", only.name),
+            _ => msg.to_string(),
+        }
     }
 }
 
@@ -4493,16 +5251,28 @@ fn edit_diff_from_args(path: &str, args: &serde_json::Value) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-fn push_diff_block(
-    out: &mut Vec<Line<'static>>,
-    text: &str,
-    label: &str,
-    cap: usize,
+#[derive(Clone, Copy)]
+struct PanelStyle {
     width: usize,
-    surf: ratatui::style::Color,
+    surface: ratatui::style::Color,
     border: Style,
     muted: Style,
-) {
+}
+
+struct DiffPreview<'a> {
+    text: &'a str,
+    label: &'a str,
+    cap: usize,
+}
+
+fn push_diff_block(out: &mut Vec<Line<'static>>, preview: DiffPreview<'_>, style: PanelStyle) {
+    let DiffPreview { text, label, cap } = preview;
+    let PanelStyle {
+        width,
+        surface: surf,
+        border,
+        muted,
+    } = style;
     if text.trim().is_empty() {
         return;
     }
@@ -4555,13 +5325,17 @@ fn code_view_lines(
         if let Some(text) = computed {
             push_diff_block(
                 &mut out,
-                &text,
-                "diff",
-                if full { 200 } else { 24 },
-                width,
-                surf,
-                border,
-                muted,
+                DiffPreview {
+                    text: &text,
+                    label: "diff",
+                    cap: if full { 200 } else { 24 },
+                },
+                PanelStyle {
+                    width,
+                    surface: surf,
+                    border,
+                    muted,
+                },
             );
         }
         return out;
@@ -4578,13 +5352,17 @@ fn code_view_lines(
         if let Some(text) = overwrite_diff.as_deref() {
             push_diff_block(
                 &mut out,
-                text,
-                "diff (overwrite)",
-                24,
-                width,
-                surf,
-                border,
-                muted,
+                DiffPreview {
+                    text,
+                    label: "diff (overwrite)",
+                    cap: 24,
+                },
+                PanelStyle {
+                    width,
+                    surface: surf,
+                    border,
+                    muted,
+                },
             );
             return out;
         }
@@ -4639,25 +5417,29 @@ fn code_view_lines(
         if let Some(text) = overwrite_diff.as_deref() {
             push_diff_block(
                 &mut out,
-                text,
-                "diff (overwrite)",
-                80,
-                width,
-                surf,
-                border,
-                muted,
+                DiffPreview {
+                    text,
+                    label: "diff (overwrite)",
+                    cap: 80,
+                },
+                PanelStyle {
+                    width,
+                    surface: surf,
+                    border,
+                    muted,
+                },
             );
         }
     }
     out
 }
 
-fn render_tool_block(
+struct ToolBlock<'a> {
     mode: ToolVerbosity,
-    name: &str,
-    summary: &str,
-    args: Option<&serde_json::Value>,
-    output: &[String],
+    name: &'a str,
+    summary: &'a str,
+    args: Option<&'a serde_json::Value>,
+    output: &'a [String],
     truncated: bool,
     running: bool,
     error: bool,
@@ -4666,10 +5448,30 @@ fn render_tool_block(
     timeout_s: Option<u64>,
     no_output_hint: bool,
     liveness: Option<(String, bool)>,
-    diff: Option<&str>,
-    pre_content: Option<&str>,
-    checks: Option<&ToolChecks>,
-) -> Vec<Line<'static>> {
+    diff: Option<&'a str>,
+    pre_content: Option<&'a str>,
+    checks: Option<&'a ToolChecks>,
+}
+
+fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
+    let ToolBlock {
+        mode,
+        name,
+        summary,
+        args,
+        output,
+        truncated,
+        running,
+        error,
+        width,
+        elapsed,
+        timeout_s,
+        no_output_hint,
+        liveness,
+        diff,
+        pre_content,
+        checks,
+    } = view;
     let full = mode == ToolVerbosity::Full;
     // The panel is an OPAQUE PLATE (owner request 2026-09-03: fire must
     // not interrupt it — "it stands apart from the background"). Every
@@ -4782,11 +5584,8 @@ fn render_tool_block(
             } else {
                 status_line_style(ol, text_st)
             };
-            for (i, seg) in wrap_text(ol, width.saturating_sub(5))
-                .into_iter()
-                .enumerate()
-            {
-                let prefix = if i == 0 { "│   " } else { "│   " };
+            for seg in wrap_text(ol, width.saturating_sub(5)) {
+                let prefix = "│   ";
                 lines.push(Line::from(vec![
                     Span::styled(prefix, border),
                     Span::styled(seg, line_st),
@@ -4863,13 +5662,16 @@ fn render_tool_block(
             if any {
                 spans.push(Span::styled(" · ", muted_st));
             }
+            let (label, color) = if sy.available == Some(false) {
+                ("? syntax unavailable", theme::MUTED)
+            } else if sy.ok {
+                ("✓ syntax", theme::GREEN)
+            } else {
+                ("✗ syntax", theme::RED)
+            };
             spans.push(Span::styled(
-                if sy.ok { "✓ syntax" } else { "✗ syntax" }.to_string(),
-                if sy.ok {
-                    Style::default().fg(theme::GREEN).bg(surf)
-                } else {
-                    Style::default().fg(theme::RED).bg(surf)
-                },
+                label.to_string(),
+                Style::default().fg(color).bg(surf),
             ));
             any = true;
         }
@@ -4953,9 +5755,6 @@ fn fmt_elapsed(total: u64) -> String {
     }
 }
 
-/// Pretty-JSON line colorized into spans: `"key":` cyan, braces muted,
-/// scalar values text-colored. Truncated to `width` chars.
-
 /// Char-count truncation with ellipsis.
 fn trunc_str(s: &str, w: usize) -> String {
     if s.chars().count() <= w {
@@ -5034,9 +5833,11 @@ mod tests {
 
     #[test]
     fn thinking_renders_markdown_and_maps_lines_to_entries() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("**bold** reasoning and `code` here");
         let lines = s.chat_lines(80);
         assert!(!lines.is_empty());
@@ -5062,9 +5863,11 @@ mod tests {
 
     #[test]
     fn thinking_click_toggles_collapse_and_reopen() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("line one\n\nline two");
         let expanded = s.chat_lines(80);
         assert!(expanded.len() > 1, "expanded block spans rows");
@@ -5100,25 +5903,29 @@ mod tests {
 
     #[test]
     fn thinking_hidden_still_maps_lines_to_entries() {
-        let mut s = AppState::default();
-        s.hide_thinking = true;
+        let mut s = AppState {
+            hide_thinking: true,
+            ..Default::default()
+        };
         s.push_thinking_delta("hidden reasoning");
         s.push_user("hello".into());
         let lines = s.chat_lines(80);
         assert_eq!(s.line_entries.len(), lines.len());
         assert!(
-            s.line_entries.iter().any(|i| *i == 0),
+            s.line_entries.contains(&0),
             "hidden thinking marker maps to its entry (plus the blank)"
         );
-        assert!(s.line_entries.iter().any(|i| *i == 1));
+        assert!(s.line_entries.contains(&1));
     }
 
     #[test]
     fn scroll_lock_freezes_the_view_and_releases_at_the_tail() {
-        let mut s = AppState::default();
-        s.last_start = 100;
-        s.last_chat_total = 200;
-        s.scroll_max = 120;
+        let mut s = AppState {
+            last_start: 100,
+            last_chat_total: 200,
+            scroll_max: 120,
+            ..Default::default()
+        };
         s.scroll_up(5);
         assert_eq!(s.scroll_lock, Some(95), "lock pins the top line");
         assert_eq!(s.scroll, 5);
@@ -5142,9 +5949,11 @@ mod tests {
 
     #[test]
     fn new_user_turn_releases_the_scroll_lock() {
-        let mut s = AppState::default();
-        s.last_start = 40;
-        s.scroll_max = 80;
+        let mut s = AppState {
+            last_start: 40,
+            scroll_max: 80,
+            ..Default::default()
+        };
         s.scroll_up(4);
         assert!(s.scroll_lock.is_some());
         s.push_user("hello".into());
@@ -5154,9 +5963,11 @@ mod tests {
 
     #[test]
     fn thinking_default_collapsed_applies_to_new_blocks_and_is_configurable() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = true;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: true,
+            ..Default::default()
+        };
         s.push_thinking_delta("first block");
         assert!(matches!(
             s.entries[0],
@@ -5195,9 +6006,11 @@ mod tests {
 
     #[test]
     fn thinking_collapse_and_expand_all_commands() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("one");
         s.push_text_delta("mid");
         s.push_thinking_delta("two");
@@ -5241,9 +6054,11 @@ mod tests {
 
     #[test]
     fn tool_click_cycles_closed_formatted_full() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.tool_start(
             Some("t1"),
             "bash",
@@ -5304,9 +6119,11 @@ mod tests {
 
     #[test]
     fn tool_and_thinking_hitboxes_are_separate() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_thinking_delta("reasoning");
         s.tool_start(Some("t1"), "read", &serde_json::json!({"path": "/tmp/x"}));
         let lines = s.chat_lines(80);
@@ -5402,8 +6219,10 @@ mod tests {
         assert_eq!(watchdog_edge_color(None), theme::MUTED);
         // ALIVE must never wear the warning/failure hue (I3).
         let mut s = AppState::default();
-        s.entries
-            .push(ChatEntry::Watchdog("hang-watchdog ALIVE".into()));
+        s.entries.push(ChatEntry::Watchdog {
+            text: "hang-watchdog ALIVE".into(),
+            doc: None,
+        });
         s.watchdog = Some(WatchdogDoc {
             version: 1,
             ts: crate::tui::caduceus::now_ms(),
@@ -5415,7 +6234,11 @@ mod tests {
             reason: "compiling".into(),
             next_check_at: 0,
             phase: "watch".into(),
+            ..Default::default()
         });
+        if let Some(ChatEntry::Watchdog { doc, .. }) = s.entries.last_mut() {
+            *doc = s.watchdog.clone().map(Box::new);
+        }
         let lines = s.chat_lines(90);
         let colors = flat_colors(&lines);
         assert!(colors.contains(&theme::GREEN));
@@ -5437,17 +6260,19 @@ mod tests {
             )
         };
         std::fs::write(&path, doc("ALIVE", "working")).unwrap();
-        let mut s = AppState::default();
-        s.watchdog_file = Some(path.clone());
+        let mut s = AppState {
+            watchdog_file: Some(path.clone()),
+            ..Default::default()
+        };
         s.apply_notify("hang-watchdog: alive check 1", "info");
         s.apply_notify("hang-watchdog: alive check 2", "info");
         let cards = s
             .entries
             .iter()
-            .filter(|e| matches!(e, ChatEntry::Watchdog(_)))
+            .filter(|e| matches!(e, ChatEntry::Watchdog { .. }))
             .count();
         assert_eq!(cards, 1, "identical facts replace the card");
-        if let Some(ChatEntry::Watchdog(t)) = s.entries.last() {
+        if let Some(ChatEntry::Watchdog { text: t, .. }) = s.entries.last() {
             assert!(t.contains("alive check 2"), "card carries the latest text");
         } else {
             panic!("expected a watchdog card");
@@ -5458,7 +6283,7 @@ mod tests {
         assert_eq!(
             s.entries
                 .iter()
-                .filter(|e| matches!(e, ChatEntry::Watchdog(_)))
+                .filter(|e| matches!(e, ChatEntry::Watchdog { .. }))
                 .count(),
             2
         );
@@ -5497,9 +6322,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("write-diff-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.txt"), "old line\nkeep\n").unwrap();
-        let mut s = AppState::default();
-        s.cwd = dir.clone();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            cwd: dir.clone(),
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("w2"),
             "write",
@@ -5515,8 +6342,10 @@ mod tests {
 
     #[test]
     fn edit_block_shows_diff_from_args_and_canonical_details() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("e1"),
             "edit",
@@ -5538,6 +6367,34 @@ mod tests {
     }
 
     #[test]
+    fn unavailable_syntax_is_neither_a_pass_nor_a_code_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("toolchecks-unavailable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("u1.json"),
+            r#"{"version":1,"syntax":{"ok":false,"available":false,"output":"EPERM"}}"#,
+        )
+        .unwrap();
+        let mut state = AppState {
+            tool_default: ToolVerbosity::Block,
+            tool_checks_dir: Some(dir.clone()),
+            ..AppState::default()
+        };
+        state.tool_start(
+            Some("u1"),
+            "write",
+            &serde_json::json!({"path":"a.py", "content":"x = 1"}),
+        );
+        state.tool_end(Some("u1"), "write", "ok", false);
+        let text = flat_text(&state.chat_lines(100));
+        assert!(text.contains("? syntax unavailable"), "{text}");
+        assert!(!text.contains("✓ syntax"), "{text}");
+        assert!(!text.contains("✗ syntax"), "{text}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn tool_block_shows_check_footer_from_facts() {
         let dir = std::env::temp_dir().join(format!("toolchecks-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -5546,9 +6403,11 @@ mod tests {
             r#"{"version":1,"ts":1,"format":{"tool":"rustfmt","changed":true},"syntax":{"ok":true},"praetor":{"count":2}}"#,
         )
         .unwrap();
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
-        s.tool_checks_dir = Some(dir.clone());
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            tool_checks_dir: Some(dir.clone()),
+            ..Default::default()
+        };
         s.tool_start(
             Some("c1"),
             "write",
@@ -5564,8 +6423,10 @@ mod tests {
 
     #[test]
     fn code_tool_output_colors_status_lines() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(Some("c2"), "code", &serde_json::json!({}));
         s.tool_end(
             Some("c2"),
@@ -5588,9 +6449,11 @@ mod tests {
 
     #[test]
     fn transcript_cache_is_transparent_and_invalidates() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_user("hello".into());
         s.push_text_delta("answer text\n");
         s.push_thinking_delta("reasoning");
@@ -5631,9 +6494,11 @@ mod tests {
 
     #[test]
     fn streaming_tail_rerenders_per_frame() {
-        let mut s = AppState::default();
-        s.hide_thinking = false;
-        s.thinking_default_collapsed = false;
+        let mut s = AppState {
+            hide_thinking: false,
+            thinking_default_collapsed: false,
+            ..Default::default()
+        };
         s.push_user("go".into());
         s.is_streaming = true;
         s.push_text_delta("first");
@@ -5656,8 +6521,10 @@ mod tests {
 
     #[test]
     fn write_block_renders_markdown_files_as_markdown() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("m1"),
             "write",
@@ -5731,8 +6598,10 @@ mod tests {
     #[test]
     fn editor_staging_preserves_the_draft() {
         // codex-qol stage 4 (I4): staging never loses the draft
-        let mut s = AppState::default();
-        s.input = "refactor the flux capacitor\nsecond line".into();
+        let mut s = AppState {
+            input: "refactor the flux capacitor\nsecond line".into(),
+            ..Default::default()
+        };
         s.stage_editor("nvim -f");
         let (argv, tmp, original) = s.editor_suspend.take().expect("staged");
         assert_eq!(argv[0], "nvim");
@@ -5785,14 +6654,16 @@ mod tests {
     #[test]
     fn watchdog_notifies_get_their_own_block() {
         // 2026-11-13: warnings from the watchdog are observations, not diags
-        let mut s = AppState::default();
-        s.watchdog_file = Some(std::path::PathBuf::from("/nonexistent/watchdog.json"));
+        let mut s = AppState {
+            watchdog_file: Some(std::path::PathBuf::from("/nonexistent/watchdog.json")),
+            ..Default::default()
+        };
         s.apply_notify(
             "hang-watchdog: \"brievc build\" — no output for 61s (61s total)",
             "warning",
         );
         assert_eq!(s.entries.len(), 1);
-        assert!(matches!(s.entries[0], ChatEntry::Watchdog(_)));
+        assert!(matches!(s.entries[0], ChatEntry::Watchdog { .. }));
         assert!(
             s.notice.is_none(),
             "watchdog entries do not use the glance row"
@@ -5848,8 +6719,10 @@ mod tests {
             now + 21_000
         ))
         .expect("parses");
-        let mut s = AppState::default();
-        s.watchdog = Some(doc.clone());
+        let mut s = AppState {
+            watchdog: Some(doc.clone()),
+            ..Default::default()
+        };
         let secs = s.watchdog_countdown().expect("countdown armed");
         assert!((20..=21).contains(&secs), "countdown ~21s, got {secs}");
         // facts older than 2 min are ignored
@@ -5865,8 +6738,10 @@ mod tests {
         });
         assert!(s.watchdog_countdown().is_none());
         // the card renders fields, not prose
-        let mut s2 = AppState::default();
-        s2.watchdog_file = Some(std::path::PathBuf::from("/nonexistent/watchdog.json"));
+        let mut s2 = AppState {
+            watchdog_file: Some(std::path::PathBuf::from("/nonexistent/watchdog.json")),
+            ..Default::default()
+        };
         s2.apply_notify("hang-watchdog verdict: HUNG", "warning");
         // apply_notify reloads facts from disk (absent in tests) — inject
         // the parsed doc after, which is the same state production reaches
@@ -5875,16 +6750,21 @@ mod tests {
             serde_json::from_str(&format!(
                 r#"{{"version":1,"ts":{now},"kind":"verdict","command":"brievc build c4probe.bv",
                  "elapsed_s":252,"stalled_s":189,"verdict":"HUNG","reason":"waiting on stdin",
-                 "next_check_at":0,"phase":"done"}}"#
+                 "source":"decision","next_check_at":0,"phase":"done"}}"#
             ))
             .unwrap(),
         );
+        if let Some(ChatEntry::Watchdog { doc, .. }) = s2.entries.last_mut() {
+            *doc = s2.watchdog.clone().map(Box::new);
+        }
         let text = s2
             .chat_lines(80)
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
+        assert!(text.contains("source"), "card must name the verdict source");
+        assert!(text.contains("decision model"));
         assert!(text.contains("HUNG"), "verdict chip: {text}");
         assert!(text.contains("brievc build"), "cmd field: {text}");
         assert!(text.contains("4m 12s"), "elapsed field: {text}");
@@ -5896,9 +6776,11 @@ mod tests {
     fn flames_derive_from_stream_when_engine_telemetry_absent() {
         // 2026-11-13: cloud-lane turns (engine down) get honest flames from
         // token flow — deltas burn, a stalled stream decays to nothing.
-        let mut s = AppState::default();
-        s.fire_on = true;
-        s.is_streaming = true;
+        let mut s = AppState {
+            fire_on: true,
+            is_streaming: true,
+            ..Default::default()
+        };
         s.mark_activity();
         // no engine-fire telemetry ever seen → stream-derived
         s.push_text_delta("token ");
@@ -5964,9 +6846,11 @@ mod tests {
     #[test]
     fn prompt_history_navigation_and_draft_restore() {
         // 2026-11-13: Up/Down through earlier prompts, draft preserved
-        let mut s = AppState::default();
-        s.prompt_history = vec!["first".into(), "second".into(), "third".into()];
-        s.input = "draft in progress".into();
+        let mut s = AppState {
+            prompt_history: vec!["first".into(), "second".into(), "third".into()],
+            input: "draft in progress".into(),
+            ..Default::default()
+        };
         assert!(s.history_prev());
         assert_eq!(s.input, "third");
         assert!(s.history_prev());
@@ -6124,9 +7008,11 @@ mod tests {
 
     #[test]
     fn probe_resets_when_no_tool_runs() {
-        let mut s = AppState::default();
-        s.liveness_cpu_total = 42.0;
-        s.liveness_sampled_at = Some(std::time::Instant::now());
+        let mut s = AppState {
+            liveness_cpu_total: 42.0,
+            liveness_sampled_at: Some(std::time::Instant::now()),
+            ..Default::default()
+        };
         s.probe_liveness(None); // nothing running → reset
         assert_eq!(s.liveness_cpu_total, 0.0);
         assert!(s.liveness_sampled_at.is_none());
@@ -6145,9 +7031,11 @@ mod tests {
             r#"{"version":1,"id":"sug-1","text":"run the full verify suite","source":"llm","expires":0}"#,
         )
         .unwrap();
-        let mut s = AppState::default();
-        s.prompt_suggestion_file = Some(sug.clone());
-        s.ghost_events_file = Some(events.clone());
+        let mut s = AppState {
+            prompt_suggestion_file: Some(sug.clone()),
+            ghost_events_file: Some(events.clone()),
+            ..Default::default()
+        };
         s.refresh_ghost();
         assert_eq!(
             s.prompt_ghost.as_ref().unwrap().text,
@@ -6187,8 +7075,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let sug = dir.join("prompt-suggestion.json");
-        let mut s = AppState::default();
-        s.prompt_suggestion_file = Some(sug.clone());
+        let mut s = AppState {
+            prompt_suggestion_file: Some(sug.clone()),
+            ..Default::default()
+        };
         // corrupt
         std::fs::write(&sug, "{nope").unwrap();
         s.refresh_ghost();
@@ -6196,7 +7086,7 @@ mod tests {
         // expired
         std::fs::write(
             &sug,
-            format!(r#"{{"version":1,"id":"e","text":"x","source":"llm","expires":1}}"#),
+            r#"{"version":1,"id":"e","text":"x","source":"llm","expires":1}"#,
         )
         .unwrap();
         s.refresh_ghost();
@@ -6220,17 +7110,19 @@ mod tests {
     #[test]
     fn status_rows_cover_session_facts() {
         // codex-qol stage 2: read-only snapshot content
-        let mut s = AppState::default();
-        s.cwd = std::path::PathBuf::from("/tmp");
-        s.model = Some(crate::rpc::protocol::Model {
-            id: "deepseek-v4.1-flash".into(),
-            name: Some("DeepSeek V4.1 Flash".into()),
-            provider: "caduceus".into(),
-            context_window: Some(1_000_000),
-            max_tokens: None,
-            reasoning: None,
-        });
-        s.perm_mode = "yolo".into();
+        let s = AppState {
+            cwd: std::path::PathBuf::from("/tmp"),
+            model: Some(crate::rpc::protocol::Model {
+                id: "deepseek-v4.1-flash".into(),
+                name: Some("DeepSeek V4.1 Flash".into()),
+                provider: "caduceus".into(),
+                context_window: Some(1_000_000),
+                max_tokens: None,
+                reasoning: None,
+            }),
+            perm_mode: "yolo".into(),
+            ..Default::default()
+        };
         let rows = s.status_rows(
             None,
             Some("free_only=on · per_owner=8 · max=48".into()),
@@ -6284,8 +7176,10 @@ mod tests {
 
     #[test]
     fn ctx_bar_label_formats_fill_and_percent() {
-        let mut s = AppState::default();
-        s.ctx_usage = Some((12_345, 262_144));
+        let s = AppState {
+            ctx_usage: Some((12_345, 262_144)),
+            ..Default::default()
+        };
         assert_eq!(
             s.ctx_bar_label().as_deref(),
             Some("🜖 ctx 12.3k / 262.1k (4.7%)")
@@ -6294,8 +7188,10 @@ mod tests {
 
     #[test]
     fn ctx_bar_label_handles_millions_and_full_window() {
-        let mut s = AppState::default();
-        s.ctx_usage = Some((1_500_000, 2_000_000));
+        let mut s = AppState {
+            ctx_usage: Some((1_500_000, 2_000_000)),
+            ..Default::default()
+        };
         assert_eq!(
             s.ctx_bar_label().as_deref(),
             Some("🜖 ctx 1.5M / 2.0M (75.0%)")
@@ -6309,8 +7205,10 @@ mod tests {
 
     #[test]
     fn ctx_bar_label_ignores_zero_window() {
-        let mut s = AppState::default();
-        s.ctx_usage = Some((1234, 0));
+        let s = AppState {
+            ctx_usage: Some((1234, 0)),
+            ..Default::default()
+        };
         assert_eq!(s.ctx_bar_label(), None);
     }
 
@@ -6324,6 +7222,27 @@ mod tests {
         assert_eq!(s.agent_mode_label.as_deref(), Some("BUILD"));
         assert_eq!(s.agent_mode_glyph.as_deref(), Some("▪"));
         assert_eq!(s.agent_mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn tab_switch_pending_settles_when_the_hint_advances() {
+        let mut s = AppState::default();
+        s.parse_agent_mode(&["▪ BUILD · writes unlocked · TAB / /agent plan".to_string()]);
+        assert_eq!(s.next_agent_mode().as_deref(), Some("plan"));
+        assert!(!s.mode_switch_in_flight("plan"), "nothing sent yet");
+
+        s.note_mode_switch_sent("plan");
+        assert!(
+            s.mode_switch_in_flight("plan"),
+            "re-sending would be a no-op"
+        );
+        assert!(!s.mode_switch_in_flight("build"), "only the same target");
+
+        // The widget advancing is what settles the mark.
+        s.parse_agent_mode(&["◈ PLAN · research only · TAB / /agent build".to_string()]);
+        assert_eq!(s.next_agent_mode().as_deref(), Some("build"));
+        assert!(!s.mode_switch_in_flight("plan"));
+        assert!(!s.mode_switch_in_flight("build"));
     }
 
     #[test]
@@ -6501,13 +7420,19 @@ mod tests {
             "bash",
             &serde_json::json!({"command": "ls"}),
         );
-        let (key, name, _, _) = s.oldest_running_tool().expect("running tool");
-        assert_eq!(key, "call-1");
-        assert_eq!(name, "bash");
+        let tool = s.oldest_running_tool().expect("running tool");
+        assert_eq!(tool.key, "call-1");
+        assert_eq!(tool.name, "bash");
+        // No output line ever arrived for either call.
+        assert!(tool.silent);
 
         s.tool_end(Some("call-1"), "bash", "done", false);
-        let (key, _, _, _) = s.oldest_running_tool().expect("still running");
-        assert_eq!(key, "call-2");
+        let tool = s.oldest_running_tool().expect("still running");
+        assert_eq!(tool.key, "call-2");
+        assert_eq!(s.running_tool_count(), 1);
+
+        s.tool_update(Some("call-2"), "bash", "partial");
+        assert!(!s.oldest_running_tool().expect("running").silent);
 
         assert_eq!(s.abandon_running_tools("no result"), 1);
         assert!(s.oldest_running_tool().is_none());
@@ -6522,6 +7447,176 @@ mod tests {
             )
         });
         assert!(failed);
+    }
+
+    #[test]
+    fn operator_stop_drops_the_queue_and_recovery_obligations() {
+        let mut s = AppState::default();
+        s.queued_prompts.push("one".into());
+        s.queued_prompts.push("two".into());
+        s.held_push("steer me", HeldKind::Steer);
+        s.held_push("follow up", HeldKind::FollowUp);
+        s.expected_tool_calls
+            .insert("call-1".into(), std::time::Instant::now());
+        s.park_stall("call-1", std::time::Duration::from_secs(60));
+        s.recovery.pending_replay = Some(heal::PendingReplay {
+            at: std::time::Instant::now(),
+            requires_lapis: false,
+        });
+
+        let dropped = s.operator_stop();
+
+        assert_eq!(dropped, 2, "every queued message is counted (E4)");
+        assert!(s.queued_prompts.is_empty());
+        assert!(s.held.is_empty());
+        assert!(s.expected_tool_calls.is_empty());
+        assert!(!s.stall_parked("call-1", std::time::Instant::now()));
+        assert!(
+            s.recovery.pending_replay.is_none(),
+            "a stopped turn must not be replayed"
+        );
+    }
+
+    #[test]
+    fn abort_source_decides_who_may_escalate() {
+        let mut s = AppState::default();
+        let now = std::time::Instant::now();
+        assert_eq!(s.abort_due(now), None, "nothing armed");
+
+        s.arm_abort(now, AbortSource::Operator);
+        assert!(s.abort_pending());
+        assert_eq!(s.abort_due(now), None, "deadline not reached yet");
+        assert_eq!(
+            s.abort_due(now + std::time::Duration::from_secs(10)),
+            Some(AbortSource::Operator)
+        );
+
+        s.arm_abort(now, AbortSource::Watchdog);
+        assert_eq!(
+            s.abort_due(now + std::time::Duration::from_secs(60)),
+            Some(AbortSource::Watchdog),
+            "the watchdog keeps its own escalation path (E3)"
+        );
+    }
+
+    #[test]
+    fn history_recall_does_not_open_or_freeze_the_command_menu() {
+        let mut s = AppState::default();
+        s.record_prompt_history("/model");
+        s.record_prompt_history("what's next?");
+        s.record_prompt_history("/quit");
+
+        assert!(s.history_prev());
+        assert_eq!(s.input, "/quit");
+        assert!(
+            !s.cand_sel_logic_open(),
+            "a recalled line must not open the menu (K1)"
+        );
+        // The arrows still walk history instead of cycling the popup.
+        assert!(s.history_prev());
+        assert_eq!(s.input, "what's next?");
+        assert!(s.history_prev());
+        assert_eq!(s.input, "/model");
+
+        // Typing makes it the operator's own line again: the menu may open.
+        s.note_input_typed();
+        assert!(s.cand_sel_logic_open(), "edited command line reopens it");
+    }
+
+    #[test]
+    fn dismissed_command_menu_stays_closed_until_the_line_changes() {
+        let mut s = AppState::default();
+        s.input = "/q".to_string();
+        assert!(s.cand_sel_logic_open());
+        s.dismiss_command_menu();
+        assert!(!s.cand_sel_logic_open(), "Esc closed it (D7)");
+        assert_eq!(s.input, "/q", "closing must not touch the composer");
+        s.note_input_typed();
+        assert!(s.cand_sel_logic_open(), "any edit reopens it");
+    }
+
+    #[test]
+    fn a_unique_partial_command_expands_and_executes_in_one_press() {
+        let mut s = AppState::default();
+        s.commands = vec![
+            crate::rpc::protocol::SlashCommand {
+                name: "model".into(),
+                description: None,
+                source: None,
+            },
+            crate::rpc::protocol::SlashCommand {
+                name: "models-extra".into(),
+                description: None,
+                source: None,
+            },
+        ];
+        // `/mod…` is ambiguous → unchanged (still completes below).
+        assert_eq!(s.expand_unique_command("/model"), "/model");
+        assert_eq!(s.expand_unique_command("/mod"), "/mod");
+        // Unique prefix → the full command (D8).
+        assert_eq!(s.expand_unique_command("/models"), "/models-extra");
+        // Arguments and plain text are never rewritten.
+        assert_eq!(s.expand_unique_command("/model gpt"), "/model gpt");
+        assert_eq!(s.expand_unique_command("hello"), "hello");
+        assert_eq!(s.expand_unique_command("/"), "/");
+    }
+
+    #[test]
+    fn stall_park_prevents_repeated_evidence_probes() {
+        let mut s = AppState::default();
+        let now = std::time::Instant::now();
+        assert!(!s.stall_parked("call-1", now));
+        s.park_stall("call-1", std::time::Duration::from_secs(60));
+        assert!(s.stall_parked("call-1", now));
+        assert!(!s.stall_parked("call-2", now), "park is per tool call");
+        s.clear_stall_state();
+        assert!(!s.stall_parked("call-1", now));
+    }
+
+    #[test]
+    fn stall_replay_needs_a_never_executed_tool_and_happens_once() {
+        let mut s = AppState::default();
+        s.note_prompt_sent("finish the audit", None);
+        s.tool_start(
+            Some("call-1"),
+            "bash",
+            &serde_json::json!({"command": "ls /proc"}),
+        );
+        s.note_prompt_tool_started();
+        // Without the stall marker a started tool blocks replay (I3 parity).
+        s.note_prompt_failed();
+        assert!(!s.last_prompt_replayable());
+        assert!(s.take_replayable_prompt().is_none());
+
+        s.note_stall_unexecuted();
+        // Recovery abandons the running call before replaying (abandon marks it
+        // errored, so it is not a side effect).
+        s.abandon_running_tools("harness recovery");
+        assert!(s.last_prompt_replayable());
+        let (text, images) = s.take_replayable_prompt().expect("stall replay");
+        assert_eq!(text, "finish the audit");
+        assert!(images.is_none());
+        assert!(
+            s.take_replayable_prompt().is_none(),
+            "a stall replay must never loop"
+        );
+    }
+
+    #[test]
+    fn stall_replay_is_blocked_by_a_real_tool_result() {
+        let mut s = AppState::default();
+        s.push_user("finish the audit".into());
+        s.note_prompt_sent("finish the audit", None);
+        s.tool_start(
+            Some("call-1"),
+            "bash",
+            &serde_json::json!({"command": "ls"}),
+        );
+        s.tool_end(Some("call-1"), "bash", "ok", false);
+        s.note_prompt_failed();
+        s.note_stall_unexecuted();
+        assert!(s.replay_has_side_effects());
+        assert!(s.take_replayable_prompt().is_none());
     }
 
     #[test]
@@ -6623,13 +7718,16 @@ mod tests {
 
     #[test]
     fn slash_completion_uses_hovered_candidate() {
-        let mut s = AppState::default();
-        s.commands = vec![crate::rpc::protocol::SlashCommand {
-            name: "helper".to_string(),
-            description: None,
-            source: None,
-        }];
-        s.input = "/hel".to_string();
+        let mut s = AppState {
+            commands: vec![crate::rpc::protocol::SlashCommand {
+                name: "helper".to_string(),
+                description: None,
+                source: None,
+            }],
+            input: "/hel".to_string(),
+            cand_sel: 1,
+            ..Default::default()
+        };
         // Candidates: /help (local) and /helper (pi), sorted.
         s.cand_sel = 1;
         s.complete_command();
@@ -6650,8 +7748,10 @@ mod tests {
 
     #[test]
     fn sidebar_scroll_clamps_to_content() {
-        let mut s = AppState::default();
-        s.sidebar_scroll_max = 10;
+        let mut s = AppState {
+            sidebar_scroll_max: 10,
+            ..Default::default()
+        };
         s.sidebar_scroll_up(100);
         assert_eq!(s.sidebar_scroll, 10);
         s.sidebar_scroll_down(4);
@@ -6713,8 +7813,10 @@ mod tests {
 
     #[test]
     fn full_mode_shows_all_args_as_key_values() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Full;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Full,
+            ..Default::default()
+        };
         s.tool_start(
             Some("c"),
             "edit",
@@ -6736,8 +7838,10 @@ mod tests {
 
     #[test]
     fn cache_invalidates_on_gen_and_stream() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(Some("c"), "bash", &serde_json::json!({}));
         s.tool_update(Some("c"), "bash", "one\n");
         let g0 = s.tools_gen;
@@ -6835,8 +7939,10 @@ mod tests {
 
     #[test]
     fn scratchpad_block_renders_sections_not_raw_json() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("c"),
             "scratchpad_write",
@@ -6856,8 +7962,10 @@ mod tests {
 
     #[test]
     fn task_block_renders_checklist_not_raw_json() {
-        let mut s = AppState::default();
-        s.tool_default = ToolVerbosity::Block;
+        let mut s = AppState {
+            tool_default: ToolVerbosity::Block,
+            ..Default::default()
+        };
         s.tool_start(
             Some("c"),
             "update_tasks",
@@ -6888,25 +7996,35 @@ mod panel_tests {
     /// renders AROUND it, never through it. Every line fills its width and
     /// every span carries the PANEL surface.
     #[test]
-    fn tool_block_is_an_opaque_panel() {
-        let lines = render_tool_block(
-            ToolVerbosity::Block,
-            "edit",
-            "/home/x/docs/GUARDS.md",
-            Some(&serde_json::json!({ "path": "/home/x/docs/GUARDS.md", "edits": [1] })),
-            &["Successfully replaced 1 block(s).".to_string()],
-            false,
-            false,
-            false,
-            40,
-            Some(7),
-            Some(30),
-            false,
-            None,
-            None,
-            None,
-            None,
+    fn transcript_entries_have_a_bounded_inline_footprint() {
+        let bytes = std::mem::size_of::<ChatEntry>();
+        eprintln!("ChatEntry inline storage: {bytes} bytes (baseline 352)");
+        assert!(
+            bytes <= 224,
+            "ordinary transcript entries reserve {bytes} bytes each"
         );
+    }
+
+    #[test]
+    fn tool_block_is_an_opaque_panel() {
+        let lines = render_tool_block(ToolBlock {
+            mode: ToolVerbosity::Block,
+            name: "edit",
+            summary: "/home/x/docs/GUARDS.md",
+            args: Some(&serde_json::json!({ "path": "/home/x/docs/GUARDS.md", "edits": [1] })),
+            output: &["Successfully replaced 1 block(s).".to_string()],
+            truncated: false,
+            running: false,
+            error: false,
+            width: 40,
+            elapsed: Some(7),
+            timeout_s: Some(30),
+            no_output_hint: false,
+            liveness: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+        });
         assert!(
             lines.len() >= 4,
             "header + args + out + status: {}",
@@ -6923,24 +8041,24 @@ mod panel_tests {
 
     #[test]
     fn running_tool_block_is_also_opaque() {
-        let lines = render_tool_block(
-            ToolVerbosity::Full,
-            "bash",
-            "",
-            Some(&serde_json::json!({ "command": "cargo test" })),
-            &[],
-            false,
-            true,
-            false,
-            40,
-            Some(90),
-            Some(1800),
-            true,
-            None,
-            None,
-            None,
-            None,
-        );
+        let lines = render_tool_block(ToolBlock {
+            mode: ToolVerbosity::Full,
+            name: "bash",
+            summary: "",
+            args: Some(&serde_json::json!({ "command": "cargo test" })),
+            output: &[],
+            truncated: false,
+            running: true,
+            error: false,
+            width: 40,
+            elapsed: Some(90),
+            timeout_s: Some(1800),
+            no_output_hint: true,
+            liveness: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+        });
         for l in &lines {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(w, 40);
@@ -6953,24 +8071,24 @@ mod panel_tests {
     /// timeout, and a pipe-buffer hint once output stays empty.
     #[test]
     fn running_tool_shows_elapsed_timeout_and_buffer_hint() {
-        let lines = render_tool_block(
-            ToolVerbosity::Full,
-            "bash",
-            "",
-            Some(&serde_json::json!({ "command": "cargo test", "timeout": 1800 })),
-            &[],
-            false,
-            true,
-            false,
-            60,
-            Some(93),
-            Some(1800),
-            true,
-            None,
-            None,
-            None,
-            None,
-        );
+        let lines = render_tool_block(ToolBlock {
+            mode: ToolVerbosity::Full,
+            name: "bash",
+            summary: "",
+            args: Some(&serde_json::json!({ "command": "cargo test", "timeout": 1800 })),
+            output: &[],
+            truncated: false,
+            running: true,
+            error: false,
+            width: 60,
+            elapsed: Some(93),
+            timeout_s: Some(1800),
+            no_output_hint: true,
+            liveness: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+        });
         let text = lines
             .iter()
             .map(|l| l.to_string())
@@ -7091,7 +8209,7 @@ mod transition_tests {
         // agent_settled), so that pair is deliberately legal; a compaction
         // ending with nothing compacting is not.
         assert!(matches!(s.check(UiEvent::AgentEnd), Ok(UiPhase::Idle)));
-        assert!(matches!(s.check(UiEvent::CompactionEnd), Err(_)));
+        assert!(s.check(UiEvent::CompactionEnd).is_err());
         set_phase(&mut s, UiPhase::Streaming);
         // Streaming legitimately allows picker open/close; a compaction_end
         // with nothing compacting is the impossible pair.
@@ -7099,11 +8217,11 @@ mod transition_tests {
             s.check(UiEvent::CloseModal),
             Ok(UiPhase::Streaming)
         ));
-        assert!(matches!(s.check(UiEvent::CompactionEnd), Err(_)));
+        assert!(s.check(UiEvent::CompactionEnd).is_err());
         set_phase(&mut s, UiPhase::Compacting);
         assert!(matches!(s.check(UiEvent::CompactionEnd), Ok(UiPhase::Idle)));
         set_phase(&mut s, UiPhase::Modal);
-        assert!(matches!(s.check(UiEvent::AgentEnd), Err(_)));
+        assert!(s.check(UiEvent::AgentEnd).is_err());
     }
 
     #[test]
@@ -7208,6 +8326,24 @@ fn child_pids(pid: u32) -> Vec<u32> {
         .collect()
 }
 
+/// Live descendant count under `pid` (tool subtrees live there). `None` when
+/// /proc is unavailable: unknown liveness is never read as evidence of life.
+pub fn subtree_process_count(root: u32) -> Option<usize> {
+    stat_cpu_secs(root)?; // proof /proc answers for this pid at all
+    let mut total = 0usize;
+    let mut queue = child_pids(root);
+    let mut visited = 0usize;
+    while let Some(pid) = queue.pop() {
+        visited += 1;
+        if visited > 4096 {
+            break; // bounded walk: a fork storm must not stall the UI
+        }
+        total += 1;
+        queue.extend(child_pids(pid));
+    }
+    Some(total)
+}
+
 /// Total CPU seconds of the whole live subtree rooted at `root` (pi).
 /// Any unreadable node is skipped (a process exiting mid-walk is normal).
 fn subtree_cpu_secs(root: u32) -> Option<f64> {
@@ -7222,25 +8358,69 @@ fn subtree_cpu_secs(root: u32) -> Option<f64> {
     Some(total)
 }
 
-fn watchdog_path() -> std::path::PathBuf {
-    let mut p = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
-    p.push(".vitriol");
-    p.push("officina");
-    p.push("watchdog.json");
-    p
+fn watchdog_path(session: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+        .join(".vitriol")
+        .join("officina");
+    watchdog_path_in(&root, session)
 }
 
-/// Facts are only trusted while fresh (2 min) — a stale card would claim
-/// a countdown for a watchdog that no longer watches.
-pub fn load_watchdog_doc() -> Option<WatchdogDoc> {
-    load_watchdog_doc_at(&watchdog_path())
+fn watchdog_path_in(root: &std::path::Path, session: &str) -> std::path::PathBuf {
+    if session.is_empty() {
+        return root.join("watchdog.json");
+    }
+    // Match JavaScript's ASCII replacement over UTF-16 code units exactly.
+    let safe: String = session
+        .encode_utf16()
+        .take(120)
+        .map(|unit| {
+            char::from_u32(u32::from(unit))
+                .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_'))
+                .unwrap_or('_')
+        })
+        .collect();
+    root.join("watchdog").join(format!("{safe}.json"))
 }
 
+/// Decode wire evidence independently of card coalescing; malformed payloads never read newer facts.
+fn watchdog_notice<'a>(
+    message: &'a str,
+    path: &std::path::Path,
+    session: &str,
+) -> (&'a str, Option<WatchdogDoc>) {
+    let (message, doc) = match message.split_once("\n<officina-watchdog-v1>") {
+        Some((text, payload)) => (text, serde_json::from_str::<WatchdogDoc>(payload).ok()),
+        None => (message, load_watchdog_doc_at(path)),
+    };
+    let doc = doc.filter(|doc| {
+        watchdog_fresh(doc, crate::tui::caduceus::now_ms())
+            && (session.is_empty() || doc.session_id.as_deref() == Some(session))
+            && (doc.session_id.is_none()
+                || doc.tool_call_id.as_ref().is_some_and(|id| !id.is_empty()))
+    });
+    (message, doc)
+}
+
+fn watchdog_fresh(doc: &WatchdogDoc, now: u64) -> bool {
+    if doc.version != 1 || doc.ts > now.saturating_add(5000) {
+        return false;
+    }
+    match doc.valid_until {
+        Some(expiry) => {
+            expiry >= doc.ts && expiry <= doc.ts.saturating_add(360_000) && now <= expiry
+        }
+        None => now.saturating_sub(doc.ts) <= 120_000,
+    }
+}
+
+/// Legacy facts expire after two minutes; scoped facts carry a bounded explicit lease.
 pub fn load_watchdog_doc_at(path: &std::path::Path) -> Option<WatchdogDoc> {
     let raw = std::fs::read_to_string(path).ok()?;
     let doc: WatchdogDoc = serde_json::from_str(&raw).ok()?;
-    let now = crate::tui::caduceus::now_ms();
-    if doc.version != 1 || now.saturating_sub(doc.ts) > 120_000 {
+    if !watchdog_fresh(&doc, crate::tui::caduceus::now_ms()) {
+        return None;
+    }
+    if doc.session_id.is_some() && doc.tool_call_id.as_deref().is_none_or(str::is_empty) {
         return None;
     }
     Some(doc)
@@ -7450,5 +8630,507 @@ fn phase_priority(dialog: bool, compacting: bool, streaming: bool, modal: bool) 
         UiPhase::Modal
     } else {
         UiPhase::Idle
+    }
+}
+
+#[cfg(test)]
+mod watchdog_ownership_tests {
+    use super::*;
+
+    fn document(session: &str, call: &str, command: &str, verdict: &str) -> serde_json::Value {
+        serde_json::json!({"version":1,"ts":crate::tui::caduceus::now_ms(),"session_id":session,"tool_call_id":call,
+            "command":command,"verdict":verdict,"reason":format!("evidence for {call}"),"kind":"verdict","phase":"rejudge"})
+    }
+
+    #[test]
+    fn owned_cards_keep_their_own_facts_and_update_without_stacking() {
+        let dir = std::env::temp_dir().join(format!("watchdog-owned-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("facts.json");
+        let mut state = AppState {
+            session_id: "session-a".into(),
+            watchdog_file: Some(path.clone()),
+            ..Default::default()
+        };
+        for (call, command, verdict) in [
+            ("one", "build-one", "ALIVE"),
+            ("two", "build-two", "HUNG"),
+            ("one", "build-one", "UNKNOWN"),
+        ] {
+            std::fs::write(
+                &path,
+                document("session-a", call, command, verdict).to_string(),
+            )
+            .unwrap();
+            state.apply_notify("hang-watchdog: phase changed", "warning");
+        }
+        assert_eq!(
+            state.entries.len(),
+            2,
+            "updates find their own call even behind another card"
+        );
+        let text = state
+            .chat_lines(100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text.matches("build-one").count(), 1, "{text}");
+        assert_eq!(text.matches("build-two").count(), 1, "{text}");
+        assert!(text.contains("UNKNOWN") && text.contains("HUNG"), "{text}");
+        assert!(
+            !text.contains("ALIVE"),
+            "old verdict must be invalidated: {text}"
+        );
+        std::fs::write(
+            &path,
+            document("foreign-session", "three", "foreign-build", "ALIVE").to_string(),
+        )
+        .unwrap();
+        state.apply_notify("hang-watchdog: unscoped raw notice", "warning");
+        assert!(state.watchdog.is_none(), "foreign facts are not trusted");
+        let text = state
+            .chat_lines(100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!text.contains("foreign-build"), "{text}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn queued_notifications_own_snapshots_even_after_file_overwrite() {
+        let mut state = AppState {
+            session_id: "session-a".into(),
+            watchdog_file: Some(std::path::PathBuf::from("/nonexistent/watchdog-test")),
+            ..Default::default()
+        };
+        for (call, command, verdict) in [
+            ("one", "first-build", "UNKNOWN"),
+            ("two", "second-build", "HUNG"),
+        ] {
+            let message = format!(
+                "hang-watchdog: observed\n<officina-watchdog-v1>{}",
+                document("session-a", call, command, verdict)
+            );
+            state.apply_notify(&message, "warning");
+        }
+        assert_eq!(state.entries.len(), 2);
+        let text = state
+            .chat_lines(100)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("first-build") && text.contains("second-build"),
+            "{text}"
+        );
+        assert!(text.contains("UNKNOWN") && text.contains("HUNG"), "{text}");
+        assert!(
+            !text.contains("officina-watchdog-v1"),
+            "metadata is not visible prose"
+        );
+        state.apply_notify(
+            "hang-watchdog: malformed\n<officina-watchdog-v1>{bad}",
+            "warning",
+        );
+        assert!(state.watchdog.is_none());
+        state.apply_notify(
+            &format!(
+                "hang-watchdog: foreign\n<officina-watchdog-v1>{}",
+                document("other", "foreign", "private-command", "ALIVE")
+            ),
+            "warning",
+        );
+        assert!(state.watchdog.is_none());
+    }
+
+    #[test]
+    fn explicit_leases_cover_rejudge_cadence_but_remain_bounded() {
+        let now = 1_800_000_000_000;
+        let mut doc = WatchdogDoc {
+            version: 1,
+            ts: now - 180_000,
+            valid_until: Some(now + 90_000),
+            ..Default::default()
+        };
+        assert!(
+            watchdog_fresh(&doc, now),
+            "an explicit lease can cover a five-minute rejudge interval"
+        );
+        doc.valid_until = None;
+        assert!(
+            !watchdog_fresh(&doc, now),
+            "legacy freshness stays at two minutes"
+        );
+        doc.valid_until = Some(doc.ts + 360_001);
+        assert!(
+            !watchdog_fresh(&doc, now),
+            "oversized leases are not trusted"
+        );
+        doc.ts = now + 6000;
+        doc.valid_until = Some(now + 30_000);
+        assert!(
+            !watchdog_fresh(&doc, now),
+            "future-dated facts are not health evidence"
+        );
+    }
+
+    #[test]
+    fn session_paths_match_the_javascript_filename_contract() {
+        let root = std::path::Path::new("/private-test");
+        assert_eq!(
+            watchdog_path_in(root, "session/a🌙"),
+            root.join("watchdog/session_a__.json")
+        );
+        assert_eq!(watchdog_path_in(root, ""), root.join("watchdog.json"));
+    }
+}
+
+#[cfg(test)]
+mod self_heal_tests {
+    use super::*;
+
+    fn prompt(s: &mut AppState, text: &str) {
+        s.recovery = heal::RecoveryState::default();
+        s.note_prompt_sent(text, None);
+    }
+
+    #[test]
+    fn replay_gate_requires_failure_without_tools_or_output() {
+        let mut s = AppState::default();
+        prompt(&mut s, "do the work");
+        s.note_prompt_failed();
+        assert!(s.last_prompt_replayable());
+        let taken = s.take_replayable_prompt().expect("replayable");
+        assert_eq!(taken.0, "do the work");
+        assert!(!s.last_prompt_replayable(), "take marks replayed");
+
+        prompt(&mut s, "run tests");
+        s.note_prompt_failed();
+        s.note_prompt_tool_started();
+        assert!(
+            !s.last_prompt_replayable(),
+            "tool-touched turn never replays"
+        );
+
+        prompt(&mut s, "think");
+        s.note_prompt_failed();
+        s.note_prompt_assistant_output();
+        assert!(!s.last_prompt_replayable(), "assistant output is progress");
+    }
+
+    #[test]
+    fn replay_gate_excludes_slash_and_images() {
+        let mut s = AppState::default();
+        prompt(&mut s, "/compact");
+        s.note_prompt_failed();
+        assert!(!s.last_prompt_replayable(), "slash commands never replay");
+
+        let mut s = AppState::default();
+        s.note_prompt_sent(
+            "look",
+            Some(vec![crate::rpc::protocol::ImageContent {
+                content_type: "image".into(),
+                data: "AAAA".into(),
+                mime_type: "image/png".into(),
+            }]),
+        );
+        s.note_prompt_failed();
+        assert!(
+            !s.last_prompt_replayable(),
+            "image prompts are not replayed"
+        );
+    }
+
+    #[test]
+    fn rehydrate_does_not_count_history_as_current_progress() {
+        let mut s = AppState::default();
+        prompt(&mut s, "retry me");
+        s.note_prompt_failed();
+        s.recovery.phase = heal::Phase::Rehydrating;
+        s.note_prompt_tool_started();
+        s.note_prompt_assistant_output();
+        assert!(
+            s.last_prompt_replayable(),
+            "historical transcript replay must not poison the gate"
+        );
+    }
+
+    #[test]
+    fn transcript_tool_after_last_user_blocks_replay() {
+        let mut s = AppState::default();
+        s.push_user("first".into());
+        s.tool_start(Some("t1"), "bash", &serde_json::json!({}));
+        s.tool_end(Some("t1"), "bash", "ok", false);
+        s.push_user("second".into());
+        assert!(!s.transcript_has_tool_after_last_user());
+        s.tool_start(Some("t2"), "bash", &serde_json::json!({}));
+        assert!(s.transcript_has_tool_after_last_user());
+    }
+
+    #[test]
+    fn session_file_is_taken_from_get_state() {
+        let mut s = AppState::default();
+        s.apply_state(crate::rpc::protocol::RpcSessionState {
+            model: None,
+            thinking_level: None,
+            is_streaming: false,
+            is_compacting: false,
+            session_id: Some("s1".into()),
+            session_file: Some("/tmp/live.jsonl".into()),
+            session_name: None,
+            message_count: Some(3),
+        });
+        assert_eq!(
+            s.session_file.as_deref(),
+            Some(std::path::Path::new("/tmp/live.jsonl"))
+        );
+    }
+
+    #[test]
+    fn wire_idle_needs_streaming_flat_cpu_and_no_tool() {
+        let threshold = std::time::Duration::from_secs(300);
+        let mut s = AppState::default();
+        let now = std::time::Instant::now();
+        s.last_wire_at = now - threshold;
+        s.liveness_flat_secs = 300;
+        assert!(!s.wire_idle_due(now, threshold), "idle is not enough");
+        s.is_streaming = true;
+        assert!(s.wire_idle_due(now, threshold));
+        s.liveness_flat_secs = 0;
+        assert!(!s.wire_idle_due(now, threshold), "active pi CPU extends");
+        s.liveness_flat_secs = 300;
+        s.tool_start(Some("t"), "bash", &serde_json::json!({}));
+        assert!(!s.wire_idle_due(now, threshold), "tool watchdog owns this");
+    }
+
+    #[test]
+    fn wire_idle_catches_a_prompt_that_never_started_a_turn() {
+        let threshold = std::time::Duration::from_secs(300);
+        let mut s = AppState::default();
+        s.note_prompt_sent("hello", None);
+        assert!(!s.wire_idle_due(std::time::Instant::now(), threshold));
+        s.last_wire_at = std::time::Instant::now() - threshold;
+        if let Some(p) = s.last_prompt.as_mut() {
+            p.sent_at = s.last_wire_at;
+        }
+        assert!(
+            s.wire_idle_due(std::time::Instant::now(), threshold),
+            "a prompt with no agent_start must escalate"
+        );
+    }
+
+    #[test]
+    fn reset_for_rehydrate_keeps_prompt_and_clears_view() {
+        let mut s = AppState::default();
+        prompt(&mut s, "retry me");
+        s.note_prompt_failed();
+        s.is_streaming = true;
+        s.held_push("held", HeldKind::Queued);
+        s.entries.push(ChatEntry::Diag("stale".into()));
+        s.reset_for_rehydrate();
+        assert!(s.entries.is_empty());
+        assert!(s.held.is_empty());
+        assert!(!s.is_streaming);
+        assert!(s.last_prompt.is_some(), "replay source survives the reset");
+    }
+
+    #[test]
+    fn rehydrate_keeps_the_context_row_so_the_layout_cannot_jump() {
+        let mut s = AppState::default();
+        s.ctx_usage = Some((12_345, 262_144));
+        s.reset_for_rehydrate();
+        assert_eq!(
+            s.ctx_usage,
+            Some((12_345, 262_144)),
+            "recovery respawns the same conversation — dropping the fill would \
+             move the transcript by one line"
+        );
+        assert!(s.ctx_bar_label().is_some());
+    }
+
+    #[test]
+    fn band_indicator_ignores_a_one_frame_candidate() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        assert_eq!(s.stabilize_band_parts_at(0, 0, t0), (0, 0));
+        // A datum that shows up for a single frame must not move anything.
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0),
+            (0, 0),
+            "first sighting holds"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(0, 0, t0 + BAND_SETTLE / 4),
+            (0, 0),
+            "gone again — never applied"
+        );
+        assert_eq!(s.band_ind.applied, 0);
+    }
+
+    #[test]
+    fn band_indicator_ignores_a_candidate_that_flickers_for_a_while() {
+        // Operator report 2026-11-16: "UI occasionally bumps upwards". A
+        // datum living for several frames is still noise — it must not be
+        // adopted just because it repeated.
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        for step in 0..6 {
+            let now = t0 + BAND_SETTLE / 8 * step;
+            assert_eq!(
+                s.stabilize_band_parts_at(if step % 2 == 0 { 1 } else { 0 }, 0, now),
+                (0, 0),
+                "alternating candidate never settles"
+            );
+        }
+        // A candidate that flickers ON twice with a gap must restart its clock.
+        assert_eq!(s.stabilize_band_parts_at(1, 0, t0), (0, 0));
+        assert_eq!(
+            s.stabilize_band_parts_at(0, 0, t0 + BAND_SETTLE / 2),
+            (0, 0)
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE / 2),
+            (0, 0)
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE),
+            (0, 0),
+            "clock restarted"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE * 2),
+            (1, 0),
+            "adopted once it holds"
+        );
+    }
+
+    #[test]
+    fn band_indicator_adopts_a_candidate_that_settles() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        assert_eq!(s.stabilize_band_parts_at(2, 0, t0), (0, 0));
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 0, t0 + BAND_SETTLE / 2),
+            (0, 0),
+            "not yet settled"
+        );
+        assert_eq!(s.stabilize_band_parts_at(2, 0, t0 + BAND_SETTLE), (2, 0));
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE * 2),
+            (2, 0),
+            "shrink waits too"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 0, t0 + BAND_SETTLE * 3),
+            (1, 0)
+        );
+        assert_eq!(s.band_ind.applied, 1);
+    }
+
+    /// The reported bug (2026-11-16): "the ctx field flickers to look like a
+    /// different field for one frame". A transient indicator line must not be
+    /// able to take the context row's slot, so the parts settle separately.
+    #[test]
+    fn band_parts_settle_independently() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        // Steady state: one indicator row + the ctx row.
+        s.stabilize_band_parts_at(1, 1, t0);
+        assert_eq!(s.stabilize_band_parts_at(1, 1, t0 + BAND_SETTLE), (1, 1));
+        // A transient second indicator line for one frame.
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 1, t0 + BAND_SETTLE * 2),
+            (1, 1),
+            "the ctx row keeps its slot"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(1, 1, t0 + BAND_SETTLE * 2 + BAND_SETTLE / 8),
+            (1, 1)
+        );
+        // A real second line that holds is adopted, and the ctx row stays put.
+        // Its clock restarted on the transitional frame, so it needs a full
+        // settle window from there.
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 1, t0 + BAND_SETTLE * 3),
+            (1, 1),
+            "clock restarted when the second line returned"
+        );
+        assert_eq!(
+            s.stabilize_band_parts_at(2, 1, t0 + BAND_SETTLE * 4),
+            (2, 1),
+            "adopted once it holds, ctx row unmoved"
+        );
+    }
+
+    #[test]
+    fn band_ctx_part_ignores_a_one_frame_absence() {
+        let mut s = AppState::default();
+        let t0 = std::time::Instant::now();
+        s.stabilize_band_parts_at(0, 1, t0);
+        assert_eq!(s.stabilize_band_parts_at(0, 1, t0 + BAND_SETTLE), (0, 1));
+        // ctx_usage momentarily unknown: the row must not vanish for a frame.
+        assert_eq!(
+            s.stabilize_band_parts_at(0, 0, t0 + BAND_SETTLE * 2),
+            (0, 1)
+        );
+    }
+}
+
+#[cfg(test)]
+mod model_group_tests {
+    use super::*;
+
+    fn model(provider: &str, id: &str, name: &str) -> Model {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "provider": provider, "name": name
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn picker_groups_officina_first_then_opencode_go_then_providers() {
+        let mut s = AppState::default();
+        s.models = vec![
+            model("caduceus", "opencode-go/glm-5.2", "GLM via gateway"),
+            model("opencode-go", "glm-5.2", "GLM-5.2"),
+            model("officina", "nimbus", "Nimbus"),
+            model("officina", "lapis", "Lapis Occultus"),
+            model("zai", "glm-4.6", "GLM 4.6"),
+            model("caduceus", "zai/glm-5", "GLM 5 via gateway"),
+        ];
+        let groups = s.filtered_model_groups();
+        let titles: Vec<&str> = groups.iter().map(|g| g.title.as_str()).collect();
+        assert_eq!(titles, vec!["OFFICINA", "OpenCode Go", "Z.AI"]);
+        let officina: Vec<&str> = groups[0].models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(officina, vec!["lapis", "nimbus"]);
+        // Native OpenCode Go entry wins over the gateway duplicate.
+        assert_eq!(groups[1].models.len(), 1);
+        assert_eq!(groups[1].models[0].provider, "opencode-go");
+        assert_eq!(groups[1].models[0].name.as_deref(), Some("GLM-5.2"));
+        // Flattened order is exactly the rendered order (selection indexes it).
+        let flat: Vec<&str> = s.filtered_models().iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(flat[0], "lapis");
+        assert_eq!(flat[1], "nimbus");
+        assert_eq!(flat[2], "glm-5.2");
+        assert_eq!(flat.len(), 5);
+    }
+
+    #[test]
+    fn filter_keeps_only_matching_groups() {
+        let mut s = AppState::default();
+        s.models = vec![
+            model("officina", "lapis", "Lapis"),
+            model("opencode-go", "grok-4.7", "Grok 4.7"),
+            model("zai", "glm-4.6", "GLM 4.6"),
+        ];
+        s.models_filter = "grok".into();
+        let groups = s.filtered_model_groups();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "OpenCode Go");
+        assert_eq!(s.filtered_models().len(), 1);
     }
 }

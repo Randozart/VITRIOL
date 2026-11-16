@@ -22,6 +22,7 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Vendored gateway API client (same module caduceus/index.ts uses). */
 function vendorApiModule(): string {
@@ -139,7 +140,8 @@ function shared(): Cache {
 }
 
 async function fetchConnections(): Promise<GatewayConnection[]> {
-  const mod = await import(`file://${vendorApiModule()}`);
+  const vendorUrl = pathToFileURL(vendorApiModule()).href;
+  const mod = await import(vendorUrl);
   const res = await mod.apiFetch("/api/providers?limit=5000", {
     baseUrl: (process.env.OFFICINA_CADUCEUS_BASE_URL || "http://127.0.0.1:20128/v1").replace(/\/v1\/?$/, ""),
     timeout: 5_000,

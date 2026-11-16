@@ -15,6 +15,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Clone, serde::Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct QuestionDoc {
     pub version: u32,
     pub id: String,
@@ -22,18 +23,6 @@ pub struct QuestionDoc {
     pub options: Vec<String>,
     /// ms epoch — the panel ignores questions older than 10 minutes.
     pub ts: u64,
-}
-
-impl Default for QuestionDoc {
-    fn default() -> Self {
-        Self {
-            version: 0,
-            id: String::new(),
-            question: String::new(),
-            options: Vec::new(),
-            ts: 0,
-        }
-    }
 }
 
 const FRESH_MS: u64 = 10 * 60 * 1000;
@@ -47,7 +36,7 @@ pub fn question_path() -> PathBuf {
 }
 
 pub fn response_path() -> PathBuf {
-    let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let _home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
     question_path().with_file_name("question-response.json")
 }
 

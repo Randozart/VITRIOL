@@ -146,8 +146,9 @@
   demoted behind healthy ones, and provider-health cooldowns (429/5xx)
   rotate lanes reactively. `/nimbus` prints the lane table with gateway
   marks, cooldowns, and the next pick.
-- **Autofill**: press **Tab** to cycle keyword/target completions (shown on the
-  ⧉ bar under the prompt). BackTab still cycles tabs.
+- **Autofill**: press **Right Arrow** at the end of input to accept the selected
+  slash completion or suggested prompt. Up/Down selects slash candidates; Enter
+  confirms a command selection. Tab cycles agent mode and never accepts autofill.
 - **Scroll**: **PgUp**/**PgDn** (and the wheel) scroll the output. Scrolling
   up **locks the view**: incoming streaming output never drags the lines
   you are reading. A hint row above the prompt shows the lock; click it or
@@ -300,6 +301,9 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
 - **/mode is gone** — the old alias shadowed typing `/model`; agent modes
   live at `/agent` (the legacy `/mode plan` widget format still parses).
 
+- **Compaction**: progress and elapsed time appear in the chat and scroll with
+  the transcript; the completion or failure message stays in chat.
+
 ## Headless, cost, and automation
 
 - **Voice suggestions** — after a turn, the empty composer shows a dimmed
@@ -332,19 +336,59 @@ See `docs/OFFICINA.md` for cache-safe rules, Praetor budgets, and egress policy.
   rule scopes you to the two vitriol units. Your daily-driver config is
   untouched: the unit runs the live config; profile changes stay with
   `vitriol config load <name>`.
-- **Hang watchdog** — long bash calls that stop producing output get a
-  notice at 60 s (`OFFICINA_HANG_SOFT_S`), and at 180 s
-  (`OFFICINA_HANG_JUDGE_S`) the session asks a FREE cloud lane to judge
-  liveliness. Verdicts render as a structured card (cmd / elapsed /
-  stalled / reason, verdict chip) and the running-tool row carries a
-  `watch Ns` countdown to the next check — silence with visible feedback.
-  It NEVER kills or aborts; Esc remains the only abort. Re-judges every
-  5 min, max 3 per call. `OFFICINA_NO_HANG_WATCHDOG=1` disables.
-- **/fx** — fire + glimmer panel with a live preview. `/fire` and
-  `/glimmer` are gone. Fire obeys the liveliness contract: it only burns
+- **Hang watchdog** — quiet bash calls get a notice at 60 s
+  (`OFFICINA_HANG_SOFT_S`) and an advisory judgment at 180 s
+  (`OFFICINA_HANG_JUDGE_S`). Structured Pi output updates and equal-length
+  rolling output count as activity; unchanged repeated callbacks do not.
+  Malformed replies, unavailable judges and abstentions show **UNKNOWN**.
+  There are at most three semantic attempts per quiet episode, spaced five
+  minutes apart; deterministic notices continue after that budget is spent.
+  Fresh output rearms the episode. Tool completion, progress and session changes
+  invalidate pending old judgments. Facts live under
+  `~/.vitriol/officina/watchdog/<session-id>.json`; cards retain their own call's
+  facts carried in each notification, so queued events cannot read a newer call's
+  file snapshot. Countdown leases cover the next check and remain bounded to six minutes.
+  This advisory extension never kills or aborts. The Rust harness's existing
+  hard-recovery deadlines remain separate; Esc is the operator's abort control.
+
+  Optional typed judge: set `OFFICINA_WATCHDOG_DECISION_URL` to an independently
+  served Laya-compatible `POST /v1/systemone` URL (for example
+  `http://127.0.0.1:8000/v1/systemone`). Optional bearer authentication uses
+  `OFFICINA_WATCHDOG_DECISION_KEY`; keep it outside source control. The adapter
+  sends only the bounded command/output evidence and a fixed ALIVE/HUNG/UNKNOWN
+  question. `OFFICINA_WATCHDOG_DECISION_MIN_SCORE` defaults to `0.9` for both
+  answer and action scores. Truncated coverage, collapsed options, abstention,
+  invalid scores and service failures remain UNKNOWN; they do not add a cloud
+  retry. Without the URL, the existing free-cloud judge remains selected.
+  Both paths share the 30-second deadline, episode budget and stale-result guards.
+  A high answer score is not measured watchdog accuracy; no checkpoint has been
+  qualified for VITRIOL here. This setting does not install or load a model.
+
+  Opportunistic preparation currently has an **offline admission policy only**
+  ([source](../.pi/extensions/hang-watchdog/preparation.ts),
+  [test matrix](../.pi/extensions/hang-watchdog/preparation.test.ts)); no background
+  scheduler or GPU warmup is enabled. It requires fresh resource facts (at most
+  two seconds old), no foreground prefill/queue, explicit decode-overlap
+  qualification, bounded work, explicit model/tokenizer/schema identities, and
+  memory headroom including a reserve. GPU utilization must be at most 50% and
+  the decision model must already be resident; CPU preparation has a separate
+  load/memory check. Missing telemetry denies admission. These are conservative
+  candidate rules, not measured latency guarantees. See the
+  [source assessment](../../.opencode/plans/2026-11-15-143726-watchdog-decision-warmup.md)
+  for runtime qualification and encoder/KV limitations.
+
+- **Settings**: `/fire`, `/glimmer` (alias `/shimmer`), `/sidebar`, `/thinking`,
+  `/thinking-view`, and `/diag` open small choice menus. Up/Down selects, Enter
+  applies, Escape cancels. `/settings` opens the settings list; explicit arguments
+  still work (for example `/sidebar hide` or `/settings fire emerald`). `/yolo`
+  opens the permissions picker. `/fx` retains its live preview.
+  Fire obeys the liveliness contract: it only burns
   while the session is actually working (streaming text or live tool
   CPU); when stalled the flames die and the preview says so. Glimmer
   stays decorative on a fresh screen.
+- **Compaction**: progress and elapsed time appear in the chat and scroll with
+  the transcript; the completion or failure message stays in chat.
+
 ## Headless, cost, and automation
 
 - **`vitriol officina exec "task"`** — one-shot run through the full
@@ -410,6 +454,71 @@ Accounts remain gateway state (`vitriol caduceus accounts … --sync`); the
 TUI only changes routing preferences.
 
 ## Running multiple sessions
+
+With VITRIOL, `vitriol cache-lifetime --disk-dir /path/to/disk-mirror` runs the
+native Rust snapshot-lifetime audit (`--json` gives structured output). It
+reports retained entries and conditional retirement eligibility. Existing
+anonymous mirror files lack session/branch ownership, so this audit retains
+them all. It has no delete mode. Automatic reclamation still requires engine
+ownership and lifecycle acknowledgments; newer session heads alone are not
+enough to discard recurrent rollback states safely.
+
+Local background code reviews require at least two reported engine slots.
+With one slot (or unknown capacity), pending reviews wait rather than replace
+the foreground KV cache. On recurrent models, restoring a displaced cache can
+require a full prefill when its state cannot rewind to the matching prefix.
+This guard also applies to `OFFICINA_BG_GATE=always`; idle-only scheduling
+does not protect a single slot's cached state. Reload extensions in each running
+session to apply the guard; it cannot recover a prefill already underway.
+
+Sessions can share the same Caduceus cloud model. The gateway queues requests
+at its configured account/model concurrency limit and releases capacity when
+each response finishes. Officina retries explicit gateway queue-full/queue-timeout
+429 errors on that same model up to twice, within a 120-second admission budget,
+using an abortable wait of at least one second and respecting `Retry-After`.
+These rejected admissions do not start inference or cool the lane as exhausted
+quota. Accepted streams run to completion; no answer is interrupted to switch
+sessions. Genuine quota errors and exhausted admission retries follow ordinary
+SDK retry and routing handling. `OFFICINA_NO_CAPACITY_WAIT=1` disables the extra
+capacity retries. Reload extensions in running sessions to activate changes.
+
+The same internal recovery also handles temporary HTTP failures (408, 500,
+502–504, 520, 524 and 529). It shares the two-extra-attempt budget with queue
+recovery, backs off for one then two seconds by default, and respects
+`Retry-After` and `x-should-retry: false`. Successful recovery emits the normal
+answer without intermediate assistant errors. `OFFICINA_NO_CAPACITY_WAIT=1`
+disables this recovery too. Invalid requests, authentication failures and
+unrecognized/quota 429 errors retain ordinary handling. Accepted streams are
+not silently replayed after partial output; final failure still reaches the
+existing session retry/failover path. Recovery cannot create capacity or quota.
+Internal waits leave `lc-route` / `gateway-recovery-wait` records in the harness
+event log with status, retry count and delay; they contain no request bodies.
+
+Gateway model-cooldown refusals retain an explicit `429 model_cooldown` signal
+and reset hints through SDK error normalization. Nimbus uses that failure to
+exclude the failed lane and select another admitted cloud model, even when the
+SDK emits no response callback for HTTP errors. It never resurrects a cooling
+lane merely because its context window fits. If every candidate is unavailable,
+or the configured cloud retry budget is spent, Nimbus reports the final refusal
+and remains cloud-only. Running extensions need `/reload` to apply this behavior.
+
+Local llama.cpp streams request native prefill progress (`return_progress`)
+by default. These events belong to the actual inference request, keeping
+its HTTP response active while the prompt is processed; they are not
+assistant text and generate no extra model tokens. This prevents a healthy
+long prefill from becoming a silent stream that hits the transport's
+inactivity timeout. Cloud transports and timeout limits are unchanged;
+cancellation, genuine stream failures and silent stalls still work normally.
+`OFFICINA_NO_PREFILL_PROGRESS=1` restores the previous local streaming path.
+The server must support `return_progress`; queued requests that have not
+started processing remain subject to normal transport timeouts. Reload
+extensions or restart Officina to apply the adapter; no engine restart is
+required for servers that already support the flag.
+The engine also supports SSE comment keepalives, so a timeout alone does
+not establish why a live stream went silent. Local completion transport
+errors now record their raw code (such as `UND_ERR_BODY_TIMEOUT`) as
+`lc-local-http` events in `~/.vitriol/officina/state/events.jsonl`, with
+process and endpoint identity but no request headers or prompt content.
 
 No flags, no per-launch env — the router adapts per session, per turn
 (multi-session routing, 2026-11-10; hardening 2026-11-11):
@@ -484,3 +593,28 @@ No flags, no per-launch env — the router adapts per session, per turn
 - `parallel` stays 1 unless the operator wants true dual-local; the
   routing works identically at `parallel=1` (one senior local, the rest
   cloud).
+
+### Checker execution failures
+
+Post-edit syntax checks distinguish rejected source from unavailable execution. A
+missing executable, denied launch, timeout, or interrupted checker displays
+`? syntax unavailable` on the tool result and warns once per checker outage. It
+does not tell the model to repair the source or count the file as passing. A
+completed nonzero syntax-check exit still produces the normal bounded repair
+message. Successful checks stay silent. Older facts without an availability
+field retain their existing pass/fail display.
+
+### Native frontend verification
+
+From the Officina directory, run `cargo test --locked --manifest-path tui/Cargo.toml`
+and `cargo clippy --locked --all-targets --manifest-path tui/Cargo.toml -- -D warnings`.
+The crate exposes the pinned, golden-tested Pi wire types as
+`officina_tui::protocol`; the terminal client consumes that same schema.
+The unused HTTP client dependency has been removed. On this 64-bit host,
+inline `ChatEntry` storage decreased from 352 to 208 bytes; optional tool JSON,
+check facts and render caches have separate heap ownership. Existing rendering,
+cache invalidation, tool-liveness and wire-contract tests cover behavior parity.
+
+The extension test runner uses four isolated workers by default to limit SDK/jiti
+startup contention while inference shares the host. This keeps all test cases and
+existing timeouts; Vitest's `--maxWorkers` option can override the resource budget.

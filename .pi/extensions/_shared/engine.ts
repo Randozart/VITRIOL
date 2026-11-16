@@ -10,7 +10,17 @@
 // Provenance: original work, this repo; parsers from vitriol-decode/decode.ts
 // (own; this repo, Apache-2.0 OR MIT).
 import { execFile } from "node:child_process";
-import { busySlots, counterDelta, gpuFireLoad, parseLoadedModel, parseMetrics, parseModelPath, parseRpcServers, parseSlots, type SlotInfo } from "../vitriol-decode/decode.ts";
+import {
+  busySlots,
+  counterDelta,
+  gpuFireLoad,
+  parseLoadedModel,
+  parseMetrics,
+  parseModelPath,
+  parseRpcServers,
+  parseSlots,
+  type SlotInfo,
+} from "../vitriol-decode/decode.ts";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8279";
 const DEFAULT_POLL_MS = 700;
@@ -132,12 +142,14 @@ const state: EngineState =
 // (no NVIDIA driver → stop spawning forever). Never throws (observability
 // contract).
 
-
 function pollNvidiaSmi(): void {
   if (state.nvidiaMissing) return;
   execFile(
     "nvidia-smi",
-    ["--query-gpu=power.draw,power.limit,utilization.gpu", "--format=csv,noheader,nounits"],
+    [
+      "--query-gpu=power.draw,power.limit,utilization.gpu",
+      "--format=csv,noheader,nounits",
+    ],
     { timeout: 1500 },
     (err, stdout) => {
       if (err) {
@@ -162,14 +174,18 @@ function pollNvidiaSmi(): void {
         const [p, lim, util] = cols;
         if (!Number.isFinite(p) || !Number.isFinite(lim) || lim <= 0) continue;
         saw = true;
-        load = Math.max(load, gpuFireLoad(p, lim, Number.isFinite(util) ? util : -1));
+        load = Math.max(
+          load,
+          gpuFireLoad(p, lim, Number.isFinite(util) ? util : -1),
+        );
       }
       if (saw) state.gpuLoadLatest = load;
     },
   );
 }
 
-export type FetchOutcome = { kind: "ok"; text: string } | { kind: "stalled" } | { kind: "down" };
+export type FetchOutcome =
+  { kind: "ok"; text: string } | { kind: "stalled" } | { kind: "down" };
 
 /**
  * Map a fetch failure to stalled-vs-down. Abort (our timeout) after the
@@ -181,26 +197,32 @@ export type FetchOutcome = { kind: "ok"; text: string } | { kind: "stalled" } | 
  */
 export function classifyFetchError(err: unknown): "stalled" | "down" {
   const code = (err as { cause?: { code?: string } })?.cause?.code ?? "";
-  if (code === "ECONNREFUSED" || code === "ECONNRESET" || code === "EHOSTUNREACH" || code === "ENETUNREACH") {
+  if (
+    code === "ECONNREFUSED" ||
+    code === "ECONNRESET" ||
+    code === "EHOSTUNREACH" ||
+    code === "ENETUNREACH"
+  ) {
     return "down";
   }
   if (err instanceof Error && err.name === "AbortError") return "stalled";
   return "down";
 }
 
-async function fetchText(url: string, timeoutMs: number): Promise<FetchOutcome> {
+async function fetchText(
+  url: string,
+  timeoutMs: number,
+): Promise<FetchOutcome> {
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
+    // One signal for connect AND body: a stalled body read after a fast
+    // connect must not park the poller forever (2026-11-15).
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return { kind: "down" };
     return { kind: "ok", text: await res.text() };
   } catch (err) {
     return { kind: classifyFetchError(err) };
   }
 }
-
 
 // Endpoint fetch timeout — rides short stalls; poll CADENCE stays state.pollMs.
 const HTTP_TIMEOUT_MS = 1500;
@@ -224,7 +246,22 @@ async function poll(): Promise<void> {
       state.before = null;
       state.polledOnce = true;
       if (metrics.kind === "down") {
-        state.snap = { ...state.snap, up: false, polled: true, stalled: false, busy: 0, queueWaitMs: 0, processing: 0, deferred: 0, ingest: { tps: 0, tokens: 0 }, cumulativeIngest: 0, ejected: 0, loaded_model: "", loaded_path: "", rpc: [] };
+        state.snap = {
+          ...state.snap,
+          up: false,
+          polled: true,
+          stalled: false,
+          busy: 0,
+          queueWaitMs: 0,
+          processing: 0,
+          deferred: 0,
+          ingest: { tps: 0, tokens: 0 },
+          cumulativeIngest: 0,
+          ejected: 0,
+          loaded_model: "",
+          loaded_path: "",
+          rpc: [],
+        };
       } else {
         // alive-but-busy: queue-backed endpoint didn't answer in time
         state.snap = { ...state.snap, up: true, polled: true, stalled: true };
@@ -237,7 +274,9 @@ async function poll(): Promise<void> {
     const seconds = state.lastPoll ? (sampledAt - state.lastPoll) / 1000 : 0;
     const delta = counterDelta(state.before, after, seconds);
     // ingestion (prefill) rate from the prompt-tokens counter, same math
-    const ingestTokens = state.before ? Math.max(0, after.promptTokens - state.before.promptTokens) : 0;
+    const ingestTokens = state.before
+      ? Math.max(0, after.promptTokens - state.before.promptTokens)
+      : 0;
     const ingest = {
       tps: seconds > 0 ? ingestTokens / seconds : 0,
       tokens: ingestTokens,
@@ -255,22 +294,55 @@ async function poll(): Promise<void> {
     state.before = after;
     state.lastPoll = sampledAt;
     const slotsOut = await fetchText(`${state.base}/slots`, HTTP_TIMEOUT_MS);
-    const slots = slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : state.snap.slots;
+    const slots =
+      slotsOut.kind === "ok" ? parseSlots(slotsOut.text) : state.snap.slots;
     const slotsSeen = slotsOut.kind === "ok" || state.snap.slotsSeen;
     const busy = busySlots(slots, delta.tokens);
     // The ENGINE's loaded model (owner request 2026-09-03): /v1/models
     // reports the alias of whatever the server actually loaded — distinct
     // from pi's selected-model label.
-    const modelsOut = await fetchText(`${state.base}/v1/models`, HTTP_TIMEOUT_MS);
-    const loaded_model = modelsOut.kind === "ok" ? parseLoadedModel(modelsOut.text) : state.snap.loaded_model;
+    const modelsOut = await fetchText(
+      `${state.base}/v1/models`,
+      HTTP_TIMEOUT_MS,
+    );
+    const loaded_model =
+      modelsOut.kind === "ok"
+        ? parseLoadedModel(modelsOut.text)
+        : state.snap.loaded_model;
     const propsOut = await fetchText(`${state.base}/props`, HTTP_TIMEOUT_MS);
-    const loaded_path = propsOut.kind === "ok" ? parseModelPath(propsOut.text) : state.snap.loaded_path;
-    const rpc = propsOut.kind === "ok" ? parseRpcServers(propsOut.text) : state.snap.rpc;
+    const loaded_path =
+      propsOut.kind === "ok"
+        ? parseModelPath(propsOut.text)
+        : state.snap.loaded_path;
+    const rpc =
+      propsOut.kind === "ok" ? parseRpcServers(propsOut.text) : state.snap.rpc;
     // Secondary endpoints queue-wait by design (/slots) — their stall is the
     // live busy signal once /metrics itself is non-blocking (engine 2026-09-04).
-    const stalled = slotsOut.kind === "stalled" || modelsOut.kind === "stalled" || propsOut.kind === "stalled";
+    const stalled =
+      slotsOut.kind === "stalled" ||
+      modelsOut.kind === "stalled" ||
+      propsOut.kind === "stalled";
     // cumulativeIngest = total prompt tokens processed since engine boot
-    state.snap = { up: true, polled: true, stalled, delta, ingest, cumulativeIngest: after.promptTokens, total: after.predictedTokens, slots, slotsSeen, busy, queueWaitMs, processing: after.processing ?? 0, deferred: after.deferred ?? 0, gpuLoad: state.gpuLoadLatest, ejected: after.ejected ?? 0, loaded_model, loaded_path, rpc };
+    state.snap = {
+      up: true,
+      polled: true,
+      stalled,
+      delta,
+      ingest,
+      cumulativeIngest: after.promptTokens,
+      total: after.predictedTokens,
+      slots,
+      slotsSeen,
+      busy,
+      queueWaitMs,
+      processing: after.processing ?? 0,
+      deferred: after.deferred ?? 0,
+      gpuLoad: state.gpuLoadLatest,
+      ejected: after.ejected ?? 0,
+      loaded_model,
+      loaded_path,
+      rpc,
+    };
     state.polledOnce = true;
     notify();
   } finally {
@@ -289,9 +361,20 @@ function notify(): void {
 }
 
 /** Idempotent: starts the shared poll loop (no-op if already running). */
-export function startEnginePolling(opts?: { base?: string; pollMs?: number }): void {
-  state.base = (opts?.base || process.env.VITRIOL_BASE_URL || DEFAULT_ENDPOINT).replace(/\/$/, "");
-  state.pollMs = Math.max(200, Number(opts?.pollMs ?? process.env.VITRIOL_DECODE_POLL_MS) || DEFAULT_POLL_MS);
+export function startEnginePolling(opts?: {
+  base?: string;
+  pollMs?: number;
+}): void {
+  state.base = (
+    opts?.base ||
+    process.env.VITRIOL_BASE_URL ||
+    DEFAULT_ENDPOINT
+  ).replace(/\/$/, "");
+  state.pollMs = Math.max(
+    200,
+    Number(opts?.pollMs ?? process.env.VITRIOL_DECODE_POLL_MS) ||
+      DEFAULT_POLL_MS,
+  );
   if (state.timer) return;
   state.timer = setInterval(() => void poll(), state.pollMs);
   // unref (2026-09-27): telemetry must never pin the process. TUI callers

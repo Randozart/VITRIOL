@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { PatchSink, buildReviewPrompt, laneConfig, renderCard, shouldLaunch } from "./lane.ts";
 
 const cfg = { ...laneConfig({} as NodeJS.ProcessEnv), gate: "idle" as const };
+const slots = [{ id: 0 }, { id: 1 }];
 const idle = (since: number | null, now = 10_000) =>
-  shouldLaunch({ up: true, busy: 0, delta: { tps: 0 } }, 5000, since, now, cfg);
+  shouldLaunch({ slots, up: true, busy: 0, delta: { tps: 0 } }, 5000, since, now, cfg);
 
 describe("laneConfig", () => {
   it("defaults on, kill-switches, parses slot", () => {
@@ -15,19 +16,24 @@ describe("laneConfig", () => {
 });
 
 describe("shouldLaunch gate", () => {
+  it.each([undefined, [], [{ id: 0 }]])("protects foreground KV with unknown/insufficient slots %#", (reported) => {
+    for (const gate of ["always", "idle"] as const) {
+      expect(shouldLaunch({ up: true, busy: 0, delta: { tps: 0 }, slots: reported }, 5000, 0, 10_000, { ...cfg, gate })).toBe(false);
+    }
+  });
   it("always gate launches even while the foreground decodes", () => {
     const acfg = { ...laneConfig({} as NodeJS.ProcessEnv), gate: "always" as const };
-    expect(shouldLaunch({ up: true, busy: 1, delta: { tps: 12 } }, 5000, null, 0, acfg)).toBe(true);
-    expect(shouldLaunch({ up: false, busy: 0, delta: { tps: 0 } }, 5000, null, 0, acfg)).toBe(false);
+    expect(shouldLaunch({ slots, up: true, busy: 1, delta: { tps: 12 } }, 5000, null, 0, acfg)).toBe(true);
+    expect(shouldLaunch({ slots, up: false, busy: 0, delta: { tps: 0 } }, 5000, null, 0, acfg)).toBe(false);
   });
   it("launches only when idle for idleMs with a big-enough patch", () => {
     expect(idle(6_000)).toBe(true); // idleMs=4000 default
     expect(idle(9_000)).toBe(false); // not idle long enough
     expect(idle(null)).toBe(false); // never saw idle
-    expect(shouldLaunch({ up: false, busy: 0, delta: { tps: 0 } }, 5000, 6_000, 10_000, cfg)).toBe(false);
-    expect(shouldLaunch({ up: true, busy: 1, delta: { tps: 0 } }, 5000, 6_000, 10_000, cfg)).toBe(false);
-    expect(shouldLaunch({ up: true, busy: 0, delta: { tps: 12 } }, 5000, 6_000, 10_000, cfg)).toBe(false);
-    expect(shouldLaunch({ up: true, busy: 0, delta: { tps: 0 } }, 100, 6_000, 10_000, cfg)).toBe(false);
+    expect(shouldLaunch({ slots, up: false, busy: 0, delta: { tps: 0 } }, 5000, 6_000, 10_000, cfg)).toBe(false);
+    expect(shouldLaunch({ slots, up: true, busy: 1, delta: { tps: 0 } }, 5000, 6_000, 10_000, cfg)).toBe(false);
+    expect(shouldLaunch({ slots, up: true, busy: 0, delta: { tps: 12 } }, 5000, 6_000, 10_000, cfg)).toBe(false);
+    expect(shouldLaunch({ slots, up: true, busy: 0, delta: { tps: 0 } }, 100, 6_000, 10_000, cfg)).toBe(false);
   });
 });
 

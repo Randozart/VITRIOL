@@ -13,6 +13,7 @@ import { join } from "node:path";
 // silence, no separate events kill switch needed).
 
 export type EventSource =
+  | "lc-local-http"
   | "lc-clearer"
   | "lc-rtk"
   | "lc-ckpt"

@@ -647,20 +647,33 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // after live testing): the fire is drawn BEFORE the chat so the
     // transcript renders on top — flames read as a backdrop, visible only
     // in the gaps, never over a character.
+    //
+    // 2026-11-16 (owner): the fire IGNITES ON THE DIVIDER ROW. The braille
+    // field sits strictly above it; the divider lights per column (⡀) where
+    // the flame has reach, so a dead fire is a plain underscore rule and a
+    // live one grows out of it. Height comes through `rows_for_stable` so a
+    // breathing level cannot flap the strip (that flapping re-coloured a
+    // whole row of text).
     let fire_rows = if state.fire_on {
-        crate::fire::rows_for(state.fire_level)
+        crate::fire::rows_for_stable(state.fire_level, state.fire_rows_prev)
     } else {
         0
     };
-    // Flames start at the TOP of the status band so they rise into the
-    // transcript above it; the band's own background occludes the base.
-    let fire_base_y = indicator_area.y;
-    let fire_map = if fire_rows > 0 && fire_rows as u16 <= fire_base_y {
+    state.fire_rows_prev = fire_rows;
+    // The divider row is the base; the glyph field gets the remaining rows
+    // (it used to spend one on a base row the divider then erased).
+    let ign_y = area.y + chat_area.height;
+    let flame_rows = if fire_rows > 0 {
+        fire_rows.saturating_sub(1).max(1)
+    } else {
+        0
+    };
+    let fire_map = if flame_rows > 0 && flame_rows as u16 <= ign_y {
         crate::fire::render(
             frame,
             Rect {
-                y: fire_base_y.saturating_sub(fire_rows as u16),
-                height: fire_rows as u16,
+                y: ign_y.saturating_sub(flame_rows as u16),
+                height: flame_rows as u16,
                 ..input_area
             },
             state.started.elapsed().as_millis(),
@@ -670,6 +683,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         Vec::new()
     };
+    let fire_base_y = ign_y.saturating_sub(fire_map.len() as u16);
 
     // Question panel: drawn LAST (see the tail of this function) so the
     // transcript can never paint over its upper rows.
@@ -682,17 +696,22 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // user-space band vs the log the agent writes into. Fire dots rising
     // through the gap keep their flame fg because set_style patches bg only.
     // 2026-11-16: underscore (not box-drawing) so the line hugs the status
-    // band below it, reading as an underline rather than a floating rule.
+    // band below it, reading as an underline rather than a floating rule —
+    // and it is the fire's ignition line: with flames up, the columns that
+    // have reach are replaced by a thin braille dot in the flame's base
+    // colour. The selection is hashed once a second, so the line drifts
+    // slowly and never flickers.
     {
         let gap = Rect {
             y: area.y + chat_area.height,
             height: 1,
             ..area
         };
-        let line = Line::from(vec![Span::styled(
-            "_".repeat(gap.width as usize),
-            Style::new().fg(theme::BORDER_DIM),
-        )]);
+        let w = gap.width as usize;
+        let phase_ms = state.started.elapsed().as_millis();
+        let lit = crate::fire::ignition_row(w, phase_ms, state.fire_level);
+        let flame = crate::fire::ignition_color(phase_ms, state.fire_level, state.fire_style);
+        let line = Line::from(ignition_spans(w, &lit, flame));
         frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);
     }
 
@@ -777,7 +796,9 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // every fire row alone.
     if !fire_map.is_empty() {
         let tint_all = state.fire_tint;
-        let fire_y = input_area.y.saturating_sub(fire_rows as u16);
+        // The mask's row 0 is the TOP of the braille field (one row above
+        // the divider since 2026-11-16).
+        let fire_y = fire_base_y;
         let buffer = frame.buffer_mut();
         for (ry, map_row) in fire_map.iter().enumerate() {
             if !tint_all {
@@ -990,6 +1011,38 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Question panel last of all: it is an overlay on top of everything the
     // transcript, band and composer paint (2026-11-16).
     render_question_panel(frame, state, area, input_area);
+}
+
+/// Divider-row spans: `_` for unlit columns, the thin braille dot for lit
+/// ones, run-length grouped so a wide row costs a handful of spans instead of
+/// one per column (2026-11-16).
+fn ignition_spans(
+    width: usize,
+    lit: &[Option<char>],
+    flame: ratatui::style::Color,
+) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_lit = false;
+    for x in 0..width {
+        let glyph = lit.get(x).copied().flatten();
+        let is_lit = glyph.is_some();
+        if !run.is_empty() && is_lit != run_lit {
+            out.push(ignition_span(std::mem::take(&mut run), run_lit, flame));
+        }
+        run_lit = is_lit;
+        run.push(glyph.unwrap_or('_'));
+    }
+    if !run.is_empty() {
+        out.push(ignition_span(run, run_lit, flame));
+    }
+    out
+}
+
+/// One coloured run of the divider row.
+fn ignition_span(text: String, lit: bool, flame: ratatui::style::Color) -> Span<'static> {
+    let fg = if lit { flame } else { theme::BORDER_DIM };
+    Span::styled(text, Style::new().fg(fg).bg(theme::BG))
 }
 
 /// Question panel (2026-11-13) — the ask extension stages question.json and
@@ -4175,6 +4228,54 @@ mod settings_chat_render_tests {
         assert!(
             !text.contains("compacting context"),
             "compaction must scroll with chat: {text}"
+        );
+    }
+
+    /// Row with the most underscores — the divider line.
+    fn divider_row(text: &str) -> String {
+        text.lines()
+            .max_by_key(|l| l.chars().filter(|c| *c == '_').count())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    #[test]
+    fn divider_is_all_underscores_without_fire() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.fire_on = false;
+        let text = screen(&mut state, 80, 24);
+        let row = divider_row(&text);
+        assert!(row.contains('_'), "divider missing:\n{text}");
+        assert!(
+            row.chars().all(|c| c == '_' || c == ' '),
+            "no fire ⇒ plain underscore rule, got {row:?}"
+        );
+    }
+
+    /// 2026-11-16 (owner): the fire ignites ON the divider — a dead fire is a
+    /// plain underscore rule, a live one lights it selectively with the
+    /// thinnest braille dot.
+    #[test]
+    fn divider_lights_ignition_dots_when_the_fire_burns() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hello".into()));
+        state.fire_on = true;
+        state.fire_level = 1.0;
+        state.fire_target = 1.0;
+        let text = screen(&mut state, 80, 24);
+        let row = divider_row(&text);
+        assert!(
+            row.contains('⡀'),
+            "ignition dot missing from the divider: {row:?}"
+        );
+        assert!(
+            row.chars().all(|c| c == '_' || c == ' ' || c == '⡀'),
+            "the divider carries only underscores and ignition dots, got {row:?}"
+        );
+        assert!(
+            row.chars().filter(|c| *c == '⡀').count() < row.chars().count(),
+            "ignition is selective, never the whole row"
         );
     }
 

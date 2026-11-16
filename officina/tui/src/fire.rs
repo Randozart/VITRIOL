@@ -168,14 +168,98 @@ pub fn rows_for(level: f64) -> usize {
     (2.0 + level * 4.0).round().clamp(2.0, 6.0) as usize
 }
 
-/// Draw the fire inside `area` (anchored so its bottom row touches the
-/// composer's top edge). `level` in [0,1] drives height, density and heat;
-/// `style` picks the color arc.
+/// Half a row in level space (4 rows per unit of level).
+const ROW_STEP_LEVEL: f64 = 0.125;
+/// Extra slack before the strip changes height. Without it, a breathing
+/// `level` crosses a rounding boundary repeatedly and adds/removes the tint on
+/// a whole row of transcript text each time (operator: "text now occasionally
+/// flickers", 2026-11-16).
+const ROW_DEADBAND: f64 = 0.05;
+
+/// Flame rows with a dead band: the strip changes height only once the level
+/// has clearly left the current step, so a breathing signal cannot flap it.
+/// Ignition (`previous == 0`) and extinction are immediate — the fire must
+/// appear and vanish when the load does.
+pub fn rows_for_stable(level: f64, previous: usize) -> usize {
+    let raw = rows_for(level);
+    if raw == 0 || previous == 0 {
+        return raw;
+    }
+    let prev = previous.clamp(2, 6);
+    let centre = (prev as f64 - 2.0) / 4.0;
+    let keep = (level - centre).abs() <= ROW_STEP_LEVEL + ROW_DEADBAND;
+    if keep {
+        prev
+    } else {
+        raw
+    }
+}
+
+/// Column envelope — the fire CLIMBS THE SIDES: dead in the middle band, full
+/// burn at the edges, soft shoulder so the inner falloff isn't a hard cliff.
+fn column_edge(x: usize, w: usize) -> f64 {
+    let u = if w <= 2 {
+        0.5
+    } else {
+        x as f64 / (w - 1) as f64
+    };
+    (((2.0 * u - 1.0).abs() - 0.12).max(0.0) / 0.88).powf(0.65)
+}
+
+/// A column's **unanimated** flame reach in [0, 1] of the strip height. This is
+/// the flame's *shape*; `render` multiplies it by a per-frame hash for the
+/// ragged tips. Quadruple-bookkeeping: shape drives the stable consumers (text
+/// tint, ignition line), noise drives only the glyph field.
+pub fn column_light(edge: f64, level: f64) -> f64 {
+    (edge * level * 1.15).clamp(0.0, 1.0)
+}
+
+/// Ignition slot — the divider line re-rolls once a second, not once a frame.
+const IGNITION_STEP_MS: u128 = 1000;
+
+/// Per-column ignition for the divider row: the flame's base.
 ///
-/// Returns the fire's per-cell colors (rows × cols, `None` = not burning)
-/// so the chat renderer can tint text glyphs sitting over flames (owner
-/// request 2026-09-02: "user text discolors based on the fire beneath it —
-/// do the same for AI text"). Empty vec when nothing burns.
+/// `None` keeps the divider glyph; `Some(⡀)` replaces it with the thinnest
+/// braille dot, so a dead fire leaves a plain underscore rule and a live one
+/// lights it selectively (owner request 2026-11-16). Selection uses the SLOW
+/// hash and the unanimated envelope, so the line can never flicker.
+pub fn ignition_row(width: usize, phase_ms: u128, level: f64) -> Vec<Option<char>> {
+    let mut out = vec![None; width];
+    if width == 0 || level < MIN_LEVEL {
+        return out;
+    }
+    let step = (phase_ms / IGNITION_STEP_MS) as u32;
+    for (x, slot) in out.iter_mut().enumerate() {
+        let light = column_light(column_edge(x, width), level);
+        if light <= 0.0 {
+            continue;
+        }
+        // Odds rise with the column's base reach: embers light a few side
+        // columns, a full draw lights nearly all of them.
+        if hash01(x as u32, 313, step) < light {
+            *slot = Some(DENSITY[1]);
+        }
+    }
+    out
+}
+
+/// Colour of the ignition dots — the flame's base heat.
+pub fn ignition_color(phase_ms: u128, level: f64, style: FireStyle) -> ratatui::style::Color {
+    let base_heat = (0.2 + 0.8 * level).clamp(0.0, 1.0);
+    style.color(base_heat, phase_ms)
+}
+
+/// Draw the fire inside `area` (anchored so its bottom row sits on the
+/// DIVIDER row the caller draws above the status band). `level` in [0,1]
+/// drives height, density and heat; `style` picks the color arc.
+///
+/// Returns the **tint mask**: per-cell colours for text glyphs sitting over the
+/// flames (owner request 2026-09-02: "user text discolors based on the fire
+/// beneath it"). Since 2026-11-16 the mask follows the flame's *shape*
+/// (`column_light`), not its per-frame noise: a glyph's tint changes when the
+/// envelope crosses its row, not on every hash reroll — the flames keep
+/// flickering, the text they lend colour to stops doing so. Embers are
+/// decoration and never tint. Empty vec when nothing burns.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -183,8 +267,8 @@ pub fn render(
     level: f64,
     style: FireStyle,
 ) -> Vec<Vec<Option<ratatui::style::Color>>> {
-    let mut fire_map: Vec<Vec<Option<ratatui::style::Color>>> = Vec::new();
     let rows = rows_for(level).min(area.height as usize);
+    let mut fire_map: Vec<Vec<Option<ratatui::style::Color>>> = Vec::new();
     if rows == 0 || area.width < 8 {
         return fire_map;
     }
@@ -200,29 +284,20 @@ pub fn render(
         // Fraction of the flame column height, 0 at the base (bottom row,
         // touching the composer) → 1 at the tips.
         let from_base = (rows - 1 - r) as f64 + 0.5;
-        let mut map_row: Vec<Option<ratatui::style::Color>> = vec![None; w];
         let mut spans: Vec<Span> = Vec::with_capacity(w);
-        for (x, cell) in map_row.iter_mut().enumerate() {
-            // Column envelope — the fire CLIMBS THE SIDES (owner request):
-            // dead in the middle band, full burn at the edges, soft
-            // shoulder so the inner falloff isn't a hard cliff.
-            let u = if w <= 2 {
-                0.5
-            } else {
-                x as f64 / (w - 1) as f64
-            };
-            let edge = (((2.0 * u - 1.0).abs() - 0.12).max(0.0) / 0.88).powf(0.65);
-            // Column height in [0,1] of the strip + per-column flicker so
-            // the tips stay ragged and alive; the 1.15 reach lets a full
-            // load run the whole strip height along the edges.
-            let col_h =
-                (edge * level * 1.15).clamp(0.0, 1.0) * (0.7 + 0.6 * hash01(x as u32, 0, step));
+        for x in 0..w {
+            let edge = column_edge(x, w);
+            // Unanimated reach = the flame's shape; the hash only roughens the
+            // glyphs drawn on top of it.
+            let col_light = column_light(edge, level);
+            let col_h = col_light * (0.7 + 0.6 * hash01(x as u32, 0, step));
             let frac_from_base = from_base / rows as f64;
             if frac_from_base > col_h {
                 // Above the flame — a rising ember? (owner request: little
                 // embers flare up alongside the columns.) Side columns
                 // only; each ember lives EMBER_SLOTS flicker slots, drifting
-                // up one row-ish per slot, then the hash rerolls it.
+                // up one row-ish per slot, then the hash rerolls it. Embers
+                // are decoration: they never enter the tint mask.
                 let near_side = edge > 0.3;
                 if near_side && hash01(x as u32, 777, ember_step) < EMBER_ODDS {
                     let e_top = col_h + 0.12 + ember_sub * 0.14;
@@ -230,7 +305,6 @@ pub fn render(
                         // Sparks are cool: silver/gold, barely there.
                         let heat = 0.25 + 0.2 * hash01(x as u32, 888, ember_step);
                         let c = style.color(heat, phase_ms);
-                        *cell = Some(c);
                         spans.push(Span::styled(
                             "⠁".to_string(),
                             Style::new().fg(c).bg(theme::BG),
@@ -252,17 +326,48 @@ pub fn render(
             let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
             let ch = DENSITY[idx.min(DENSITY.len() - 1)];
             let c = style.color(heat, phase_ms);
-            *cell = Some(c);
             spans.push(Span::styled(
                 ch.to_string(),
                 Style::new().fg(c).bg(theme::BG),
             ));
         }
-        fire_map.push(map_row);
         lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), area);
+    fire_map = tint_rows(rows, w, phase_ms, level, style);
     fire_map
+}
+
+/// The tint mask as a pure function (2026-11-16): which cells carry flame
+/// colour for text sitting over them. Derived from the flame's SHAPE
+/// (`column_light`, unanimated), never from the per-frame hash, so the tinted
+/// set is identical for every frame at a given level — the fire may flicker,
+/// the text it colours may not. `None` colours mean "no flame here".
+pub fn tint_rows(
+    rows: usize,
+    width: usize,
+    phase_ms: u128,
+    level: f64,
+    style: FireStyle,
+) -> Vec<Vec<Option<ratatui::style::Color>>> {
+    let base_heat = (0.2 + 0.8 * level).clamp(0.0, 1.0);
+    let mut out = Vec::with_capacity(rows);
+    for r in 0..rows {
+        let from_base = (rows - 1 - r) as f64 + 0.5;
+        let frac_from_base = from_base / rows.max(1) as f64;
+        let mut row: Vec<Option<ratatui::style::Color>> = vec![None; width];
+        for (x, cell) in row.iter_mut().enumerate() {
+            let light = column_light(column_edge(x, width), level);
+            if frac_from_base > light {
+                continue;
+            }
+            let frac = (frac_from_base / light.max(1e-3)).clamp(0.0, 1.0);
+            let heat = (base_heat * (1.0 - frac * 0.75)).clamp(0.0, 1.0);
+            *cell = Some(style.color(heat, phase_ms));
+        }
+        out.push(row);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -298,5 +403,175 @@ mod density_tests {
             assert_ne!(bits(w[0]), bits(w[1]));
         }
         assert_eq!(*DENSITY.last().unwrap(), '⣷');
+    }
+}
+
+#[cfg(test)]
+mod stability_tests {
+    use super::*;
+
+    /// The strip height must survive a breathing level: without the dead band
+    /// a level hovering on a rounding boundary flipped the row count (and the
+    /// tint on a whole row of transcript text) every frame.
+    #[test]
+    fn rows_for_stable_holds_through_level_jitter() {
+        for prev in 2..=6 {
+            let centre = (prev as f64 - 2.0) / 4.0;
+            for jitter in [-0.04, -0.01, 0.0, 0.01, 0.04] {
+                let level = (centre + jitter).clamp(MIN_LEVEL, 1.0);
+                assert_eq!(
+                    rows_for_stable(level, prev),
+                    prev,
+                    "level {level} near the centre {centre} must hold {prev} rows"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rows_for_stable_follows_a_clear_move() {
+        assert_eq!(rows_for_stable(0.95, 2), rows_for(0.95));
+        assert_eq!(rows_for_stable(0.10, 6), rows_for(0.10));
+    }
+
+    #[test]
+    fn rows_for_stable_ignites_and_dies_without_lag() {
+        // Embers appear the moment there is any fire, and the strip vanishes
+        // the moment the level drops below MIN_LEVEL — no dead band there.
+        assert_eq!(rows_for_stable(0.10, 0), 2);
+        assert_eq!(rows_for_stable(0.0, 4), 0);
+    }
+
+    #[test]
+    fn ignition_line_is_dark_without_fire() {
+        for phase in [0u128, 700, 1234] {
+            let row = ignition_row(80, phase, 0.0);
+            assert_eq!(row.len(), 80);
+            assert!(row.iter().all(Option::is_none), "no fire ⇒ plain divider");
+        }
+        assert!(ignition_row(80, 0, MIN_LEVEL * 0.5)
+            .iter()
+            .all(Option::is_none));
+        assert!(ignition_row(0, 0, 1.0).is_empty());
+    }
+
+    /// The fire climbs the sides: the middle band of the divider stays dark.
+    #[test]
+    fn ignition_line_lights_the_sides_only() {
+        let w = 120;
+        let row = ignition_row(w, 500, 1.0);
+        let lit: Vec<usize> = row
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_some())
+            .map(|(x, _)| x)
+            .collect();
+        assert!(!lit.is_empty(), "a full draw must light the base");
+        for x in lit {
+            let edge = column_edge(x, w);
+            assert!(edge > 0.0, "column {x} is inside the dead middle band");
+        }
+        // Both sides carry ignition, not just one.
+        assert!(row.iter().take(w / 4).any(Option::is_some));
+        assert!(row.iter().skip(w - w / 4).any(Option::is_some));
+    }
+
+    #[test]
+    fn ignition_count_rises_with_load() {
+        let count = |level: f64| {
+            ignition_row(200, 500, level)
+                .iter()
+                .filter(|c| c.is_some())
+                .count()
+        };
+        let mut prev = 0;
+        for level in [0.05, 0.15, 0.3, 0.5, 0.75, 1.0] {
+            let now = count(level);
+            assert!(
+                now >= prev,
+                "ignition count must not fall as load rises ({level}: {now} < {prev})"
+            );
+            prev = now;
+        }
+        assert!(prev > 0);
+    }
+
+    /// One-second slot: the lit set must be identical inside a second, so the
+    /// ignition line cannot flicker at frame rate.
+    #[test]
+    fn ignition_line_is_stable_within_a_slot() {
+        let base = ignition_row(120, 0, 0.6);
+        for phase in [120u128, 240, 600, 960] {
+            assert_eq!(
+                ignition_row(120, phase, 0.6),
+                base,
+                "slot must not re-roll at {phase}ms"
+            );
+        }
+        assert_ne!(
+            ignition_row(120, 1000, 0.6),
+            base,
+            "the next slot is allowed to drift"
+        );
+    }
+
+    /// F3, the regression this whole change exists for: the set of cells that
+    /// lend their colour to text must be identical on consecutive frames at a
+    /// constant level. It used to follow the per-frame hash, so glyphs flipped
+    /// tinted/untinted at ~11 fps.
+    #[test]
+    fn tint_mask_is_identical_across_frames_at_one_level() {
+        let pattern = |phase: u128| -> Vec<Vec<bool>> {
+            tint_rows(6, 80, phase, 0.6, FireStyle::Pulse)
+                .iter()
+                .map(|row| row.iter().map(Option::is_some).collect())
+                .collect()
+        };
+        let base = pattern(0);
+        for phase in [120u128, 240, 360, 480, 600] {
+            assert_eq!(
+                pattern(phase),
+                base,
+                "tinted cell set changed at {phase}ms — text would flicker"
+            );
+        }
+        assert!(base.iter().flatten().any(|b| *b), "expected tint at 0.6");
+        assert!(
+            base.iter().flatten().any(|b| !*b),
+            "expected clear cells (the middle band never tints)"
+        );
+    }
+
+    #[test]
+    fn tint_mask_is_empty_without_fire() {
+        let rows = tint_rows(4, 40, 0, 0.0, FireStyle::Emerald);
+        assert!(rows.iter().flatten().all(Option::is_none));
+    }
+
+    /// More load ⇒ the envelope covers more rows, so the tinted set grows.
+    #[test]
+    fn tint_mask_grows_with_load() {
+        let count = |level: f64| {
+            tint_rows(6, 80, 0, level, FireStyle::Alchemy)
+                .iter()
+                .flatten()
+                .filter(|c| c.is_some())
+                .count()
+        };
+        let mut prev = 0;
+        for level in [0.1, 0.3, 0.6, 1.0] {
+            let now = count(level);
+            assert!(now >= prev, "tint area shrank at {level}: {now} < {prev}");
+            prev = now;
+        }
+    }
+
+    #[test]
+    fn ignition_glyph_is_the_thinnest_dot() {
+        let row = ignition_row(120, 0, 1.0);
+        let glyphs: Vec<char> = row.iter().filter_map(|c| *c).collect();
+        assert!(!glyphs.is_empty());
+        assert!(glyphs.iter().all(|g| *g == DENSITY[1]));
+        assert_eq!(DENSITY[1], '⡀');
     }
 }

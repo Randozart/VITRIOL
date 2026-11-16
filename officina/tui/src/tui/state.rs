@@ -1049,6 +1049,10 @@ pub struct AppState {
     pub fire_tint: bool,
     pub fire_target: f64,
     pub fire_level: f64,
+    /// Flame strip height applied last frame — the dead band in
+    /// `fire::rows_for_stable` keeps a breathing level from flapping it
+    /// (2026-11-16: the strip's height changes moved a whole row of text).
+    pub fire_rows_prev: usize,
 
     // Tool verbosity (owner request 2026-09-03)
     pub tool_default: ToolVerbosity,
@@ -1266,6 +1270,7 @@ impl Default for AppState {
             fire_tint: true,
             fire_target: 0.0,
             fire_level: 0.0,
+            fire_rows_prev: 0,
             tool_default: ToolVerbosity::Line,
             tool_overrides: HashMap::new(),
             tools_gen: 0,

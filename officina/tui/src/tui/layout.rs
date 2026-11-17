@@ -4360,6 +4360,51 @@ mod settings_chat_render_tests {
         }
     }
 
+    /// The card's two horizontal rules must be the same length (owner report
+    /// 2026-11-16: the top edge stopped at 60 columns while the bottom spanned
+    /// the card).
+    #[test]
+    fn watchdog_card_borders_match_width() {
+        let mut s = AppState::default();
+        s.entries.push(ChatEntry::Watchdog {
+            text: "hang-watchdog: watch".into(),
+            doc: None,
+        });
+        let text = screen(&mut s, 120, 24);
+        let lines: Vec<&str> = text.lines().collect();
+        // The card is the block whose title row carries the watch label; its
+        // closing rule is the next row with a bottom-left corner.
+        let top = lines
+            .iter()
+            .position(|l| l.contains(" watch "))
+            .expect("card top rule");
+        let bottom = lines
+            .iter()
+            .enumerate()
+            .skip(top + 1)
+            .find(|(_, l)| l.contains('\u{2570}'))
+            .map(|(i, _)| i)
+            .expect("card bottom rule");
+        // Compare the CARD's own span, not the whole screen row: the sidebar
+        // sits beside it and has rules of its own. Char indices throughout —
+        // braille/box glyphs are multi-byte.
+        let span = |line: &str, open: char, close: char| -> usize {
+            let chars: Vec<char> = line.chars().collect();
+            let from = chars.iter().position(|c| *c == open).unwrap_or(0);
+            let to = chars[from..]
+                .iter()
+                .position(|c| *c == close)
+                .map(|i| from + i)
+                .unwrap_or_else(|| chars.len().saturating_sub(1));
+            to.saturating_sub(from) + 1
+        };
+        assert_eq!(
+            span(lines[top], '\u{256d}', '\u{256e}'),
+            span(lines[bottom], '\u{2570}', '\u{256f}'),
+            "top and bottom rules differ:\n{text}"
+        );
+    }
+
     /// Row with the most underscores — the divider line.
     fn divider_row(text: &str) -> String {
         text.lines()

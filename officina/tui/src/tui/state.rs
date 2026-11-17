@@ -4391,8 +4391,15 @@ impl AppState {
                     } else {
                         format!(" {chip}")
                     };
+                    // Exact arithmetic, not a guess: the top rule is
+                    // "  ╭─"(4) + label(9) + dashes + chip + "─╮"(2); the bottom
+                    // is "  ╰"(3) + dashes + "╯"(1). Matching the totals needs
+                    // dashes = span_w - label - chip - 3. (The old -1 made the
+                    // top edge two columns wider; the min(60) cap hid it on
+                    // narrow screens and made it obviously short on wide ones —
+                    // owner report 2026-11-16.)
                     let dashes =
-                        span_w.saturating_sub(label.chars().count() + right.chars().count() + 1);
+                        span_w.saturating_sub(label.chars().count() + right.chars().count() + 3);
                     lines.push(Line::from(vec![
                         Span::styled("  \u{256d}\u{2500}", edge),
                         Span::styled(
@@ -4402,7 +4409,10 @@ impl AppState {
                                 .bg(theme::BG)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled("\u{2500}".repeat(dashes.min(60)), edge),
+                        // Full width, like the bottom border: capping this at 60
+                        // left the card with a short top edge on wide terminals
+                        // (owner report 2026-11-16).
+                        Span::styled("\u{2500}".repeat(dashes), edge),
                         Span::styled(right, chip_style),
                         Span::styled("\u{2500}\u{256e}", edge),
                     ]));

@@ -57,8 +57,28 @@ export type GeminiOutcome =
       reply: DecisionReply;
       reason: string;
       probabilities: Record<string, number>;
+      /** Round-trip time of the decisions call, for `/decision test` and the ledger. */
+      latencyMs?: number;
+      status?: number;
     }
-  | { ok: false; reason: string };
+  | {
+      ok: false;
+      reason: string;
+      /** HTTP status when the failure came from the service (absent on transport errors). */
+      status?: number;
+      /** Machine class: auth | model-not-found | invalid-request | rate-limit | safety | service. */
+      kind?: DecisionErrorKind;
+      latencyMs?: number;
+    };
+
+/** Failure classes the operator can act on differently. */
+export type DecisionErrorKind =
+  | "auth"
+  | "model-not-found"
+  | "invalid-request"
+  | "rate-limit"
+  | "safety"
+  | "service";
 
 const OPTIONS = {
   ALIVE:
@@ -99,6 +119,28 @@ export function buildDecisionsRequest(
       },
     },
   };
+}
+
+/**
+ * Reasons a request can never reach the decisions endpoint (measured 2026-11-17):
+ * criteria needs 2..255 options, there must be at least one question, and the
+ * input text must not be empty. Checked BEFORE the call so an impossible request
+ * fails with a name instead of a round-tripped 400.
+ */
+export function preflightDecision(body: {
+  input?: unknown;
+  questions?: Record<string, { criteria?: Record<string, unknown> }>;
+}): string | null {
+  const input = typeof body.input === "string" ? body.input : "";
+  if (input.trim().length === 0) return "empty evidence";
+  const questions = Object.entries(body.questions ?? {});
+  if (questions.length === 0) return "no questions";
+  for (const [name, q] of questions) {
+    const n = Object.keys(q?.criteria ?? {}).length;
+    if (n < 2) return `${name} has ${n} option${n === 1 ? "" : "s"}`;
+    if (n > 255) return `${name} has ${n} options (max 255)`;
+  }
+  return null;
 }
 
 interface RawAnswer {
@@ -192,6 +234,49 @@ export function mapDecisionsReply(
   return reply(true, `choice ${choice} p=${pmax.toFixed(3)}${label}`);
 }
 
+/**
+ * Turn a non-2xx decisions response into a reason the operator can act on
+ * (2026-11-17). The API names the offending field ("criteria: must have between
+ * 2 and 255 options"), and that sentence used to be parsed and thrown away, so
+ * every failure read as a bare "HTTP 400" and nothing was recoverable later.
+ */
+export function classifyDecisionError(
+  status: number,
+  doc: unknown,
+): { kind: DecisionErrorKind; reason: string } {
+  const err = (doc as { error?: { code?: unknown; status?: unknown; message?: unknown } } | null)
+    ?.error;
+  const rawCode = typeof err?.code === "string" ? err.code : String(err?.status ?? "");
+  const message =
+    typeof err?.message === "string"
+      ? err.message.replace(/\s+/g, " ").trim().slice(0, 240)
+      : "";
+  const detail = message ? `: ${message}` : "";
+  if (SAFETY_CODES.has(rawCode)) {
+    return { kind: "safety", reason: `safety block (${rawCode})` };
+  }
+  if (status === 429) return { kind: "rate-limit", reason: "rate limited (429)" };
+  if (status === 401 || status === 403) {
+    return { kind: "auth", reason: `auth rejected (HTTP ${status})${detail}` };
+  }
+  if (status === 404 || rawCode === "not_found") {
+    return {
+      kind: "model-not-found",
+      reason: `model not found (HTTP ${status})${detail}`,
+    };
+  }
+  if (status === 400 || rawCode === "invalid_request" || rawCode === "INVALID_ARGUMENT") {
+    return {
+      kind: "invalid-request",
+      reason: `invalid request (HTTP ${status} ${rawCode || "bad_request"})${detail}`,
+    };
+  }
+  return {
+    kind: "service",
+    reason: `decision service error (HTTP ${status})${detail}`,
+  };
+}
+
 /** One decisions call. Transport failures are returned, never thrown. */
 export async function askGeminiDecision(
   evidence: DecisionEvidence,
@@ -199,6 +284,16 @@ export async function askGeminiDecision(
 ): Promise<GeminiOutcome> {
   const key = String(opts.key ?? "").trim();
   if (!key) return { ok: false, reason: "no gemini key configured" };
+  const body = buildDecisionsRequest(
+    evidence,
+    opts.model ?? DEFAULT_DECISION_MODEL,
+    opts.redact ?? true,
+  );
+  const blocked = preflightDecision(body as Parameters<typeof preflightDecision>[0]);
+  if (blocked) {
+    return { ok: false, kind: "invalid-request", reason: `not sent: ${blocked}` };
+  }
+  const startedAt = Date.now();
   const doFetch = opts.fetchImpl ?? fetch;
   const controller = new AbortController();
   const timer = setTimeout(
@@ -230,25 +325,27 @@ export async function askGeminiDecision(
       return { ok: false, reason: "unusable reply (not JSON)" };
     }
     if (!response.ok) {
-      const code = (
-        doc as { error?: { code?: unknown; status?: unknown } } | undefined
-      )?.error;
-      const raw =
-        typeof code?.code === "string" ? code.code : String(code?.status ?? "");
-      if (SAFETY_CODES.has(raw))
-        return { ok: false, reason: `safety block (${raw})` };
-      if (response.status === 429)
-        return { ok: false, reason: "rate limited (429)" };
+      const classified = classifyDecisionError(response.status, doc);
       return {
         ok: false,
-        reason: `decision service error (HTTP ${response.status})`,
+        status: response.status,
+        kind: classified.kind,
+        reason: classified.reason,
+        latencyMs: Date.now() - startedAt,
       };
     }
-    return mapDecisionsReply(doc, { floor: opts.floor, margin: opts.margin });
+    const mapped = mapDecisionsReply(doc, { floor: opts.floor, margin: opts.margin });
+    return {
+      ...mapped,
+      status: response.status,
+      latencyMs: Date.now() - startedAt,
+    };
   } catch (error) {
     const name = (error as { name?: string } | undefined)?.name;
-    if (name === "AbortError") return { ok: false, reason: "timeout" };
-    return { ok: false, reason: "unreachable" };
+    if (name === "AbortError") {
+      return { ok: false, reason: "timeout", latencyMs: Date.now() - startedAt };
+    }
+    return { ok: false, reason: "unreachable", latencyMs: Date.now() - startedAt };
   } finally {
     clearTimeout(timer);
   }

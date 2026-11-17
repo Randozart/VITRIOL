@@ -3,6 +3,7 @@
 import type { WatchedCall } from "./judge.ts";
 import { resolveDecisionConfig } from "./config.ts";
 import { askGeminiDecision } from "./decision-gemini.ts";
+import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 
 /** Where a watchdog verdict came from (2026-11-16): the typed decision lane,
  *  the free cloud lane, or unavailable when both could not answer. */
@@ -139,6 +140,16 @@ export async function judgeWithDecision(
         margin: cfg.margin,
         redact: cfg.redact,
       },
+    );
+    // Every lane outcome is recorded (2026-11-17): a failing judge used to leave
+    // no trace at all, so "getting invalid request errors" could not be
+    // investigated after the fact. No evidence text, no key — reason strings only.
+    emitHarnessEvent(
+      harnessEvent("lc-lane", "decision", {
+        detail: outcome.ok
+          ? `${cfg.model} ${outcome.status ?? 200} ${outcome.latencyMs ?? 0}ms ok: ${outcome.reason}`
+          : `${cfg.model} ${outcome.status ?? "-"} ${outcome.latencyMs ?? 0}ms ${outcome.kind ?? "error"}: ${outcome.reason}`,
+      }),
     );
     if (!outcome.ok) return unknown(`decision model unavailable — ${outcome.reason}`);
     const verdict = decisionVerdict(outcome.reply, floor);

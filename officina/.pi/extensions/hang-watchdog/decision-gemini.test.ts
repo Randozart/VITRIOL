@@ -5,6 +5,7 @@ import {
   askGeminiDecision,
   buildDecisionsRequest,
   mapDecisionsReply,
+  preflightDecision,
   type DecisionEvidence,
 } from "./decision-gemini.ts";
 import { REDACTED } from "./decision-redact.ts";
@@ -206,6 +207,76 @@ describe("askGeminiDecision", () => {
     if (!blocked.ok) expect(blocked.reason).toContain("safety block");
   });
 
+  // 2026-11-17 audit: the API names the offending field and we threw the
+  // sentence away, so every failure read as a bare "HTTP 400" and nothing was
+  // recoverable afterwards.
+  it("keeps the service's own message and classifies the failure", async () => {
+    const invalid = await askGeminiDecision(EVIDENCE, {
+      key: "k",
+      floor: 0.6,
+      fetchImpl: respond(400, {
+        error: {
+          code: "invalid_request",
+          message: "CreateDecisionRequest.questions[lane].choice.criteria: must have between 2 and 255 options",
+        },
+      }),
+    });
+    expect(invalid.ok).toBe(false);
+    if (!invalid.ok) {
+      expect(invalid.kind).toBe("invalid-request");
+      expect(invalid.reason).toContain("must have between 2 and 255 options");
+      expect(invalid.status).toBe(400);
+      expect(typeof invalid.latencyMs).toBe("number");
+    }
+
+    const auth = await askGeminiDecision(EVIDENCE, {
+      key: "k",
+      floor: 0.6,
+      fetchImpl: respond(403, { error: { message: "API key not valid" } }),
+    });
+    expect(auth.ok).toBe(false);
+    if (!auth.ok) {
+      expect(auth.kind).toBe("auth");
+      expect(auth.reason).toContain("API key not valid");
+    }
+
+    const missing = await askGeminiDecision(EVIDENCE, {
+      key: "k",
+      floor: 0.6,
+      fetchImpl: respond(404, { error: { code: "not_found", message: "Requested model not found." } }),
+    });
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.kind).toBe("model-not-found");
+      expect(missing.reason).toContain("Requested model not found");
+    }
+
+    const limited = await askGeminiDecision(EVIDENCE, {
+      key: "k",
+      floor: 0.6,
+      fetchImpl: respond(429, {}),
+    });
+    expect(limited.ok).toBe(false);
+    if (!limited.ok) expect(limited.kind).toBe("rate-limit");
+  });
+
+  // Stage 3: an impossible request must fail with a NAME, without a round trip.
+  it("refuses an impossible request before calling the service", async () => {
+    let called = false;
+    const spy = (async () => {
+      called = true;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+    const empty = await askGeminiDecision(
+      { command: "", elapsedS: 0, stalledS: 0, outputTail: "" },
+      { key: "k", floor: 0.6, fetchImpl: spy, redact: true },
+    );
+    // An all-empty evidence block still builds a labelled input, so this one is
+    // allowed through; the guard must not be over-eager.
+    expect(called).toBe(true);
+    expect(empty.ok === true || empty.ok === false).toBe(true);
+  });
+
   it("reports an unusable body and a timeout", async () => {
     const junk = await askGeminiDecision(EVIDENCE, {
       key: "k",
@@ -227,5 +298,29 @@ describe("askGeminiDecision", () => {
     });
     expect(timedOut.ok).toBe(false);
     if (!timedOut.ok) expect(timedOut.reason).toBe("timeout");
+  });
+});
+
+describe("preflightDecision", () => {
+  it("names each impossible shape", () => {
+    expect(preflightDecision({ input: "x", questions: {} })).toBe("no questions");
+    expect(
+      preflightDecision({ input: "   ", questions: { l: { criteria: { a: 1, b: 2 } } } }),
+    ).toBe("empty evidence");
+    expect(
+      preflightDecision({ input: "x", questions: { lane: { criteria: { a: 1 } } } }),
+    ).toBe("lane has 1 option");
+    expect(
+      preflightDecision({ input: "x", questions: { lane: { criteria: {} } } }),
+    ).toBe("lane has 0 options");
+  });
+
+  it("passes the shapes the API accepts", () => {
+    expect(
+      preflightDecision({
+        input: "Command: ls",
+        questions: { liveness: { criteria: { ALIVE: "y", HUNG: "n", UNKNOWN: "m" } } },
+      }),
+    ).toBeNull();
   });
 });

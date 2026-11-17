@@ -510,8 +510,16 @@ export default function (pi: ExtensionAPI) {
           return;
         }
         const label = verdict.alive === null ? "UNKNOWN" : verdict.alive ? "ALIVE" : "HUNG";
+        // A failing judge must name WHY (2026-11-17 audit): status, latency and
+        // the service's own message, not just "HTTP 400".
+        const grade =
+          verdict.alive === null
+            ? "the judge did not commit — the watchdog stays advisory"
+            : label === "HUNG"
+              ? "the judge would act on this call"
+              : "the judge would leave this call alone";
         show(
-          `decision[${verdict.source}] ${label} in ${ms}ms — ${verdict.reason}`,
+          `decision[${verdict.source}] ${label} in ${ms}ms — ${verdict.reason} · ${grade}`,
           verdict.alive === null ? "warning" : "info",
         );
         return;

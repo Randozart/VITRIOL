@@ -881,7 +881,10 @@ pub struct AppState {
     pub notice: Option<(String, String)>, // (message, type)
     /// Once a notice has been shown, its row is reserved for the session: the
     /// layout must not grow/shrink when notices come and go (2026-11-16).
-    pub notice_row_sticky: bool,
+    /// Notice strip height with settle hysteresis (BAND-2, 2026-11-17): the row
+    /// is reserved while a notice exists and released once it has been gone for
+    /// BAND_SETTLE, instead of latching for the rest of the process.
+    pub notice_row: Settled,
 
     // Slash commands (get_commands) — autocomplete source
     pub commands: Vec<crate::rpc::protocol::SlashCommand>,
@@ -1234,7 +1237,7 @@ impl Default for AppState {
             band_ctx: Settled::default(),
             title: String::new(),
             notice: None,
-            notice_row_sticky: false,
+            notice_row: Settled::default(),
             commands: Vec::new(),
             tree_lines: Vec::new(),
             tree_open: false,
@@ -1732,6 +1735,19 @@ impl AppState {
     pub fn reset_band(&mut self) {
         self.band_ind.force(0);
         self.band_ctx.force(0);
+        self.notice_row.force(0);
+    }
+
+    /// Height of the notice strip for this frame (0 or 1), settled so the
+    /// composer never jitters when a notice appears or expires.
+    pub fn notice_row_height(&mut self) -> u16 {
+        self.notice_row_height_at(std::time::Instant::now())
+    }
+
+    /// Clock-explicit form (unit-testable).
+    pub fn notice_row_height_at(&mut self, now: std::time::Instant) -> u16 {
+        let candidate = u16::from(self.notice.is_some());
+        self.notice_row.settle(candidate, now)
     }
 
     fn model_matches(&self, m: &Model) -> bool {

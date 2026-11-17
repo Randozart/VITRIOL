@@ -32,8 +32,10 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     // collided with the hints and made that row shimmer). The row is reserved
     // from the first notice onward — sticky, never released — so notices cannot
     // change the layout after the first one arrives.
-    state.notice_row_sticky |= state.notice.is_some();
-    let notice_h = u16::from(state.notice_row_sticky);
+    // Settled, not latched (BAND-2, 2026-11-17): a notice reserves its row while
+    // it exists and gives it back BAND_SETTLE after it is dismissed, so the
+    // composer does not lose a row for the rest of the process.
+    let notice_h = state.notice_row_height();
     let rows = Layout::vertical([
         Constraint::Length(1),        // header
         Constraint::Length(1),        // breathing room (owner request 2026-09-03)
@@ -225,41 +227,43 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
         .as_ref()
         .map(AppState::model_label)
         .unwrap_or_default();
+    // Header geometry by CONSTRAINT, not by magic numbers (HEADER-1,
+    // 2026-11-17): the model chip used to be truncated to `width - right_w - 24`,
+    // a guess at how wide the banner is. A long session label or a narrow
+    // terminal made the chip collide with the label. Now the session label gets
+    // at most a third of the row, and the middle cell is whatever is left.
+    let max_right = (area.width / 3).max(12) as usize;
     let right = session_label(state)
-        .map(|l| elide_path_tail(&l, (area.width.saturating_sub(24) as usize).max(16)))
+        .map(|l| elide_path_tail(&l, max_right))
         .unwrap_or_default();
-
-    // Right-align the session label; model id sits before it.
-    let right_w = (crate::tui::width::cols(&right) + 2) as u16;
-    let mid_w = if right.is_empty() {
-        area.width
+    let right_w = if right.is_empty() {
+        0
     } else {
-        area.width.saturating_sub(right_w)
+        (crate::tui::width::cols(&right) + 2).min(area.width as usize) as u16
     };
     let cols = Layout::horizontal([Constraint::Min(10), Constraint::Length(right_w)]).split(Rect {
         width: area.width,
         ..area
     });
+    let mid_w = cols[0].width;
 
-    let mut mid_spans = left;
+    let mut mid_spans = left.clone();
     if !model.is_empty() {
-        let avail = mid_w.saturating_sub(24) as usize;
+        // Whatever the banner and the label leave over, with a floor so a chip
+        // is always identifiable (the name, then `…`, then the provider).
+        let banner_w: usize = left
+            .iter()
+            .map(|sp| crate::tui::width::cols(&sp.content))
+            .sum();
+        let avail = (mid_w as usize).saturating_sub(banner_w + 2).max(8);
         mid_spans.push(Span::styled(
-            format!("  {}", trunc(&model, avail.max(8))),
+            format!("  {}", trunc(&model, avail)),
             theme::live(),
         ));
     }
-    let mut line = Line::from(mid_spans);
-    // pad to push right span flush
-    let _ = &mut line;
+    let line = Line::from(mid_spans);
 
-    frame.render_widget(
-        Paragraph::new(line),
-        Rect {
-            width: mid_w,
-            ..cols[0]
-        },
-    );
+    frame.render_widget(Paragraph::new(line), cols[0]);
     if !right.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(right, theme::muted())))
@@ -4513,9 +4517,10 @@ mod settings_chat_render_tests {
         let mut state = AppState::default();
         state.entries.push(ChatEntry::User("hi".into()));
         state.notice = Some(("nimbus · ctx 12k · next: caduceus/x".into(), "info".into()));
-        // The strong form: the hints row must be BYTE-IDENTICAL with and
-        // without a notice. That cannot be satisfied by "the notice merely
-        // landed somewhere else".
+        state.notice_row.force(1); // the strip settles; a single frame must still draw it
+                                   // The strong form: the hints row must be BYTE-IDENTICAL with and
+                                   // without a notice. That cannot be satisfied by "the notice merely
+                                   // landed somewhere else".
         let plain = screen(&mut state, 200, 20);
         let plain_hints = plain
             .lines()
@@ -4552,6 +4557,7 @@ mod settings_chat_render_tests {
             "nimbus · 3 lane(s)\n  lane a\n  lane b".to_string(),
             "info".to_string(),
         ));
+        state.notice_row.force(1); // the strip settles; a single frame must still draw it
         let text = screen(&mut state, 120, 20);
         assert!(text.contains("nimbus · 3 lane(s)"), "{text}");
         assert!(text.contains("(+2 lines)"), "{text}");
@@ -4563,6 +4569,7 @@ mod settings_chat_render_tests {
         let mut state = AppState::default();
         state.entries.push(ChatEntry::User("hi".into()));
         state.notice = Some(("x".repeat(300), "warning".to_string()));
+        state.notice_row.force(1);
         let text = screen(&mut state, 80, 20);
         let notice_row = text
             .lines()
@@ -4575,21 +4582,86 @@ mod settings_chat_render_tests {
         );
     }
 
-    /// The notice row is reserved from the first notice onward, so notices can
-    /// never move the transcript afterwards.
+    /// BAND-2 (2026-11-17): the notice row used to LATCH — once any notice had
+    /// appeared, its row stayed reserved for the rest of the process (and across
+    /// session switches), quietly costing the composer one row forever. It now
+    /// behaves like the rest of the band: reserved while a notice exists,
+    /// released one settle-period after it is gone.
+    /// HEADER-1 (2026-11-17): the header used a magic `- 24` allowance for the
+    /// banner. At narrow widths, or with a long session label, the model chip
+    /// collided with the label and ran past the frame.
     #[test]
-    fn notice_row_is_reserved_once_seen() {
+    fn header_never_overflows_or_collides() {
+        let long = "a-really-long-session-name-that-keeps-going-and-going";
+        for width in [60u16, 80, 120, 200] {
+            let mut state = AppState::default();
+            state.session_name = Some(long.into());
+            state.model = Some(crate::rpc::protocol::Model {
+                id: "caduceus/glm-5.2".into(),
+                name: Some("GLM 5.2".into()),
+                provider: "caduceus".into(),
+                context_window: Some(262_144),
+                max_tokens: None,
+                reasoning: None,
+            });
+            let text = screen(&mut state, width, 12);
+            let header = text.lines().next().expect("header row");
+            assert!(
+                crate::tui::width::cols(header) <= width as usize,
+                "width {width}: header overflows: {header:?}"
+            );
+            // The banner, the model and the session label all stay on the row.
+            assert!(
+                header.contains("officina") || header.contains("VITRIOL"),
+                "{header:?}"
+            );
+            assert!(
+                header.contains("GLM 5.2"),
+                "width {width}: lost the model chip: {header:?}"
+            );
+            assert!(header.len() > 0);
+        }
+    }
+
+    #[test]
+    fn notice_row_is_reserved_then_released() {
+        let now = std::time::Instant::now();
+        let settle = crate::tui::state::BAND_SETTLE;
         let mut state = AppState::default();
-        state.entries.push(ChatEntry::User("hi".into()));
-        state.notice = Some(("first".to_string(), "info".to_string()));
-        let with_notice = screen(&mut state, 80, 20);
-        assert!(state.notice_row_sticky);
-        // The notice clears; the row stays reserved (the hints row's index must
-        // not move), which is what keeps the layout still.
+
+        // No notice yet: no row.
+        assert_eq!(state.notice_row_height_at(now), 0);
+
+        // A notice appears: the row is adopted after the settle window.
+        state.notice = Some(("first".into(), "info".into()));
+        assert_eq!(state.notice_row_height_at(now), 0, "must not flash in");
+        assert_eq!(
+            state.notice_row_height_at(now + settle + std::time::Duration::from_millis(1)),
+            1
+        );
+
+        // It clears: the row holds through the dwell, then is released.
         state.notice = None;
-        let after = screen(&mut state, 80, 20);
-        let row_of = |t: &str| t.lines().position(|l| l.contains("enter send"));
-        assert_eq!(row_of(&with_notice), row_of(&after));
+        let later = now + settle + settle + std::time::Duration::from_millis(2);
+        assert_eq!(
+            state.notice_row_height_at(later),
+            1,
+            "released too early: the hints row would move under the wipe"
+        );
+        assert_eq!(
+            state.notice_row_height_at(later + settle + std::time::Duration::from_millis(2)),
+            0,
+            "the notice row latched again"
+        );
+
+        // And a session switch drops it outright (the new notice does not get
+        // to inherit the previous session's row).
+        state.notice = Some(("second".into(), "info".into()));
+        let t = later + settle * 3;
+        assert_eq!(state.notice_row_height_at(t), 0, "must settle again");
+        assert_eq!(state.notice_row_height_at(t + settle), 1);
+        state.reset_band();
+        assert_eq!(state.notice_row_height_at(t + settle), 0);
     }
 
     /// F-C1 (owner 2026-11-16, again 2026-11-17): the flames must TAPER — each

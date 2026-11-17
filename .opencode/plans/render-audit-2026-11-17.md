@@ -116,3 +116,42 @@ and BAND-1 next because they are the operator's two complaints and are small. CA
 one-liner with a real user-visible symptom. The WRAP/SCROLL pair must be decided together — doing
 either alone converts a clipping bug into a scrolling bug. The invariants module last, so it can
 encode everything learned here.
+
+## 6. Shipped (2026-11-17, BUILD — all seven stages)
+
+| stage | commit | outcome |
+|---|---|---|
+| S1 width model | `1f3fc4a`… (see log) | `tui/width.rs` (`cols`, `trunc_cols`, `pad_cols`, `pad_cols_right`, `hard_wrap_rows`), `unicode-width` 0.2, every geometry `chars().count()` replaced; 6 tests |
+| S2 FIRE-1 | fire commit | `rn` derived from `from_base` (every body row tapers) + `BASE_INSET = 0.18`; `tint_rows` aligned to the same fraction; taper test rewritten with a same-row differential and a verified negative control; `flame_meets_its_line` now asserts body ⊆ rule (the rule may be the wider pedestal) + rule continuity |
+| S3 BAND-1 | band commit | `band_echoes_draft()` refuses any band row that equals/prefixes the draft — applied to every extension widget; screen-differential test with a negative control (band force-settled, since `BAND_SETTLE` hides it for 700 ms) |
+| S4 CACHE-1 | cache commit | `entry_rev` hashes TEXT (was `t.len()`), `md_cache` keyed by an FNV-1a content fingerprint (was a char count); test asserts a same-length change changes both the key and the render |
+| S5 COMPOSER-1 / WRAP-1 / SCROLL-1 | composer commit | composer height comes from the renderer (`Paragraph::line_count`, hence ratatui's `unstable-rendered-line-info`); overlong transcript lines elide with `…` via `elide_line`, preserving the 1-line=1-row invariant that scrolling depends on (stated at both sites) |
+| S6 BAND-2 / HEADER-1 | header commit | notice row is `Settled` (reserved, then released; dropped by `reset_band`) instead of latched forever; header laid out by constraint (session ≤ ⅓ row, chip gets the remainder) with cell widths |
+| S7 render invariants | `adee09c` | four properties: buffer bounds (with the stringify trap documented), ctx-row stability, render idempotence, hints row purity |
+
+Final state: **344 cargo tests**, `cargo fmt --check` clean, **zero warnings**, clippy clean, installed `a30f65f2`.
+
+### Notable discoveries during implementation
+
+1. **The first I4 test was wrong, and it taught the lesson again.** It asserted
+   display width on `screen()`'s string, which concatenates one symbol per buffer
+   cell — so every double-width glyph inflated the dump by one column and a
+   40-cell row "measured" 42. Same shape as FIRE-1's test: the assertion described
+   the *tool*, not the *behaviour*. Fixed by asserting on the buffer.
+2. **CACHE-1 had two layers.** Fixing the `md_cache` key was not enough: the
+   per-entry cache above it (`entry_rev`) hashed `t.len()`. The test caught it
+   because it asserted the render changed, not merely the key.
+3. **The composer estimate could not be made correct by refinement** — only by
+   asking the widget. That is why an unstable ratatui feature is enabled, and it
+   is documented next to the dependency.
+4. **Two existing composer tests were pinned to the old estimate** (exact row
+   counts). They are now relational (`rows == renderer's line_count`, narrower ⇒
+   more rows), which is the property they were always trying to express.
+
+### Still open (not defects, decisions)
+
+- `tint_rows` under `scroll > 0`: whether the text tint decorates the rows on
+  screen or the rows at the content tail. Needs a measurement, not a guess.
+- Enabling `.wrap()` on the transcript would let long lines flow instead of
+  eliding; that requires switching scroll maths to visual rows (`SCROLL-1`), which
+  is a larger change than this audit's scope.

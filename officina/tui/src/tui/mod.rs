@@ -4615,6 +4615,32 @@ async fn handle_ui_request(
     }
 }
 
+/// Test support shared by every module that spawns the node stub bridge.
+/// The rust CI matrix is cargo-only (no node), so tests that reach
+/// RpcBridge::spawn must skip there instead of failing the whole run
+/// (2026-11-17: four such tests went red on every push).
+#[cfg(test)]
+mod test_support {
+    /// True when this host can run the node stub scripts the bridge tests spawn.
+    pub fn node_available() -> bool {
+        std::process::Command::new("node")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    }
+
+    /// True when the caller should return early (no node on this host).
+    pub fn skip_without_node() -> bool {
+        if node_available() {
+            return false;
+        }
+        eprintln!("skipping: node is not available (rust-only CI runner)");
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4689,17 +4715,7 @@ mod tests {
 
     #[tokio::test]
     async fn real_wire_confirm_with_top_level_id_is_answered_not_dropped() {
-        // The rust CI job has no node (it is a cargo-only matrix), so this test
-        // could never pass there. Skip instead of failing the whole run: the
-        // behaviour it pins is still covered by the pure protocol tests.
-        if std::process::Command::new("node")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
-            eprintln!("skipping: node is not available (rust-only CI runner)");
+        if test_support::skip_without_node() {
             return;
         }
         // pi sends `{type, id, ...request}` — the TUI previously read the id
@@ -4733,6 +4749,9 @@ mod tests {
 
     #[tokio::test]
     async fn id_less_request_stays_a_trail_noop_never_a_queued_dialog() {
+        if test_support::skip_without_node() {
+            return;
+        }
         use crate::rpc::protocol::ExtensionUiRequest;
         let req: ExtensionUiRequest = serde_json::from_value(serde_json::json!({
             "type": "extension_ui_request",
@@ -5443,6 +5462,9 @@ mod input_settings_tests {
 
     #[tokio::test]
     async fn tab_cycles_agent_even_when_a_ghost_suggestion_is_visible() {
+        if test_support::skip_without_node() {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("officina-tab-ghost-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -5478,6 +5500,9 @@ mod input_settings_tests {
 
     #[tokio::test]
     async fn right_tab_cursor_and_menu_keyboard_contract() {
+        if test_support::skip_without_node() {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("officina-input-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("stub.cjs");

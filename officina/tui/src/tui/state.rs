@@ -1213,7 +1213,7 @@ pub struct AppState {
 
     // Markdown render cache: (entry_index, text_len, width) → lines.
     // Finished entries parse once; the growing tail re-renders per frame.
-    md_cache: HashMap<(usize, usize, usize), Vec<Line<'static>>>,
+    md_cache: HashMap<(usize, u64, usize), Vec<Line<'static>>>,
 }
 
 impl Default for AppState {
@@ -3967,18 +3967,21 @@ impl AppState {
         width.hash(&mut h);
         std::mem::discriminant(entry).hash(&mut h);
         match entry {
+            // Hash the TEXT, not its length (2026-11-17 CACHE-1): a same-length
+            // change — bash `\r` progress, an in-place token fix — kept the
+            // revision equal and the transcript served the previous render.
             ChatEntry::User(t)
             | ChatEntry::Assistant(t)
             | ChatEntry::Diag(t)
             | ChatEntry::Warn(t)
             | ChatEntry::Error(t)
-            | ChatEntry::Notice(t) => t.len().hash(&mut h),
+            | ChatEntry::Notice(t) => t.hash(&mut h),
             ChatEntry::Watchdog { text, doc } => {
                 text.hash(&mut h);
                 doc.hash(&mut h);
             }
             ChatEntry::Thinking { text, collapsed } => {
-                text.len().hash(&mut h);
+                text.hash(&mut h);
                 collapsed.hash(&mut h);
             }
             ChatEntry::Tool {
@@ -4012,6 +4015,22 @@ impl AppState {
             }
         }
         h.finish()
+    }
+
+    /// Cheap content fingerprint for the markdown cache.
+    ///
+    /// The key used to carry `text.chars().count()` (2026-11-17 CACHE-1), so a text
+    /// change that kept the LENGTH served the stale render: bash `\r` progress
+    /// lines, in-place token fixes and any equal-length replacement showed the
+    /// previous frame. FNV-1a over the bytes: stable, dependency-free, and a
+    /// same-length edit changes it.
+    fn text_fingerprint(text: &str) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for b in text.as_bytes() {
+            hash ^= *b as u64;
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
     }
 
     pub fn chat_lines(&mut self, width: usize) -> Vec<Line<'static>> {
@@ -4084,7 +4103,7 @@ impl AppState {
                     if text.is_empty() {
                         continue;
                     }
-                    let key = (idx, text.chars().count(), width);
+                    let key = (idx, Self::text_fingerprint(text), width);
                     let md = if let Some(cached) = self.md_cache.get(&key) {
                         cached.clone()
                     } else {
@@ -4156,7 +4175,7 @@ impl AppState {
                         // request): same renderer + cache as assistant
                         // replies, dimmed italic so it still reads as
                         // reasoning rather than output. Click to close.
-                        let key = (idx, n, width);
+                        let key = (idx, Self::text_fingerprint(text), width);
                         let md = if let Some(cached) = self.md_cache.get(&key) {
                             cached.clone()
                         } else {
@@ -9101,6 +9120,32 @@ mod self_heal_tests {
         assert_eq!(AppState::model_label(&m), "caduceus · caduceus/glm-5.2");
         m.name = Some("GLM 5.2".into());
         assert_eq!(AppState::model_label(&m), "GLM 5.2 · caduceus");
+    }
+
+    /// CACHE-1 (2026-11-17): the markdown cache was keyed by `chars().count()`,
+    /// so an equal-length text change served the previous render — exactly what
+    /// bash `\r` progress lines and in-place token fixes produce.
+    #[test]
+    fn equal_length_text_changes_the_fingerprint() {
+        let a = AppState::text_fingerprint("step 1/3");
+        let b = AppState::text_fingerprint("step 2/3");
+        assert_ne!(a, b, "a same-length change must invalidate the cache");
+        assert_eq!(
+            a,
+            AppState::text_fingerprint("step 1/3"),
+            "the same text must keep its key"
+        );
+        // And the render really does change, not just the key.
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Assistant("step 1/3".into()));
+        let before = state.chat_lines(80);
+        state.entries[0] = ChatEntry::Assistant("step 9/3".into());
+        let after = state.chat_lines(80);
+        assert_ne!(
+            format!("{before:?}"),
+            format!("{after:?}"),
+            "the transcript served a stale render for an equal-length change"
+        );
     }
 
     #[test]

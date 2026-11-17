@@ -170,3 +170,46 @@ Key resolution reuses `ascensusGeminiKey()` (`~/.vitriol/secrets`).
    judge the look immediately.
 2. **B** behind `--decision off` default: builder + policy + memo + ledger, then
    enable it and watch the ledger for a day before trusting it.
+
+---
+
+# As landed (2026-11-16)
+
+| part | commit | note |
+|---|---|---|
+| A — fire spawns on the rule | `25f1c34` | installed `c571a796` |
+| B — decision-model lane choice | `26db095` | off by default |
+
+## A — what the dumps show
+
+```
+level 0.3   body ⡄⡆⡆ …   rule ⣇⡇⣇__⣇  (denser, with `_` gaps)
+level 0.6   body ⡇⡆⡇ …   rule ⣇⣇⣇⣇_⣧
+level 1.0   body ⡇⣧⡇ …   rule ⣇⣷⣧⣷⣧
+```
+
+`rule_heat = 0.55 + 0.45·level` stays above the base-row taper
+(`0.3 + 0.5·level`), so the rule is the column's hottest row — the fire is born
+there — and the two rows cannot come out identical. Presence is probabilistic
+(`hash < col_light·1.5`), which is what keeps `_` between flamelets at low load:
+the smoulder survives as *gaps*, not as a permanent dot.
+
+## B — the pin invariant was violated first, and the e2e caught it
+
+The first e2e run showed the decision model demoting the **requested** model to
+attempt 2 — i.e. it would have overridden an operator pin. Fixed before commit:
+the model may only lead the *fallback tail*; `candidates[0]` stays the requested
+id (R-A1). The e2e now asserts `attempt=2` for the model's pick, which is the
+proof that the requested model is still tried first.
+
+## Still off by default
+
+The proxy reports `decision: off — deterministic order`. To enable:
+
+```
+vitriol caduceus router --install --enable --decision on --decision-floor 0.6
+```
+
+Cost/latency on the ambiguous path only: one Decisions call (metadata only,
+~$0.0001, 2.5 s cap), memoised 30 s per (requested, token bucket, lane set).
+With `--decision off`, candidate order is byte-identical to before (R-A4).

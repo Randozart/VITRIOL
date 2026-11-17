@@ -220,6 +220,10 @@ fn base_frac(rows: usize) -> f64 {
     0.5 / rows.max(1) as f64
 }
 
+/// At and above this load the rule is the flame's UNBROKEN base; below it the
+/// fire is embers and the rule keeps `_` between flamelets.
+const BASE_CONTINUOUS_LEVEL: f64 = 0.25;
+
 /// How hot the rule row runs, relative to the field's base row.
 ///
 /// Must stay above `0.3 + 0.5*level` (the base-row taper in `render`): the rule
@@ -263,11 +267,16 @@ pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<
         // the two rows can never come out identical. At low load the scaled
         // value falls under the smoulder threshold in most columns, which is
         // what leaves the underscores *between* the flamelets.
-        // Presence is probabilistic and load-scaled, so first embers light only
-        // a minority of columns and the underscores survive between them.
-        let light = (col_light * 1.5).clamp(0.0, 1.0);
-        if light <= 0.0 || hash01(x as u32, 313, step) >= light {
-            continue;
+        // THE BASE IS UNBROKEN AT WORKING LOAD (owner report 2026-11-16: "the
+        // bottom divider row has gaps, rather than truly being the start of the
+        // fire"). Below the threshold the fire is embers, so `_` survives
+        // between flamelets; at/above it every column inside the envelope is
+        // claimed and the rule is the flame's continuous base.
+        if level < BASE_CONTINUOUS_LEVEL {
+            let light = (col_light * 1.5).clamp(0.0, 1.0);
+            if light <= 0.0 || hash01(x as u32, 313, step) >= light {
+                continue;
+            }
         }
         let dens = base_dens * rule_heat(level);
         let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
@@ -627,6 +636,49 @@ mod stability_tests {
                 assert!(idx <= 5, "column {x} too dense for embers: {g:?}");
             }
         }
+    }
+
+    /// F-B1 (owner report 2026-11-16): at working load the rule is the flame's
+    /// UNBROKEN base — no `_` anywhere inside the envelope.
+    #[test]
+    fn base_is_unbroken_at_working_load() {
+        let w = 160;
+        for level in [0.25, 0.3, 0.6, 1.0] {
+            let row = line_cells(w, 4, 500, level);
+            for x in 0..w {
+                let light = column_light(column_edge(x, w), level);
+                if light <= 0.0 {
+                    assert!(
+                        row[x].is_none(),
+                        "middle band must keep the rule at {level}"
+                    );
+                    continue;
+                }
+                assert!(
+                    row[x].is_some(),
+                    "level {level}: gap in the base at column {x}"
+                );
+            }
+        }
+    }
+
+    /// F-B2: below the ember level the smoulder survives — `_` between
+    /// flamelets, because a fully claimed rule with nothing above it reads as a
+    /// bare bright line.
+    #[test]
+    fn base_still_smoulders_below_the_ember_level() {
+        let w = 200;
+        let row = line_cells(w, 4, 500, 0.1);
+        let lit_zone: Vec<usize> = (0..w)
+            .filter(|x| column_light(column_edge(*x, w), 0.1) > 0.0)
+            .collect();
+        let claimed = lit_zone.iter().filter(|x| row[**x].is_some()).count();
+        assert!(claimed > 0, "embers must light something");
+        assert!(
+            claimed < lit_zone.len(),
+            "underscores must survive between embers ({claimed}/{})",
+            lit_zone.len()
+        );
     }
 
     /// Once it is burning, the flame consumes the line where it burns.

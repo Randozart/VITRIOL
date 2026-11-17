@@ -101,33 +101,83 @@ def save_ledger(led):
     os.replace(tmp, LEDGER_PATH)
 
 
-def read_secrets():
-    """Return (provider, key, model). Provider resolution: env ASCENSUS_PROVIDER
-    beats the secrets `provider` line; bare keys are sniffed (AIza… = gemini)."""
+def read_provider_secrets(path=None):
+    """Parse the secret store into providers, sections included (2026-11-16).
+
+    Shape: {"provider", "key", "model", "sections": {"gemini": {"key","model"}}}.
+
+    Why: the store was single-key, so a Gemini key could only live as an
+    unqualified `api_key` — which silently flipped the escalation provider. A
+    `[gemini]` section (or a `gemini_api_key` line in any section) lets both keys
+    coexist without changing the default provider.
+    """
+    path = path or GEMINI_KEY_FILE
+    provider = os.environ.get("ASCENSUS_PROVIDER", "")
     key = os.environ.get("GEMINI_API_KEY", "")
     model = os.environ.get("GEMINI_MODEL", "")
-    provider = os.environ.get("ASCENSUS_PROVIDER", "")
+    section = ""
+    named = ""       # gemini_api_key / gemini_key, any section
+    sectioned = ""   # [gemini] api_key
+    sectioned_model = ""
     try:
-        with open(GEMINI_KEY_FILE) as f:
+        with open(path) as f:
             for line in f:
                 m = re.match(r"\s*(\w+)\s*=\s*(.+?)\s*$", line)
+                header = re.match(r"\s*\[([^\]]+)\]\s*$", line)
+                if header:
+                    section = header.group(1).strip().lower()
+                    continue
                 if not m:
                     continue
                 k, v = m.groups()
                 v = v.strip().strip('"')
-                if k == "api_key" and not key:
+                if not v:
+                    continue
+                kl = k.lower()
+                if kl in ("gemini_api_key", "gemini_key") and not named:
+                    named = v
+                elif section == "gemini" and kl in ("api_key", "key") and not sectioned:
+                    sectioned = v
+                elif section == "gemini" and kl == "model" and not sectioned_model:
+                    sectioned_model = v
+                elif section != "gemini" and kl == "api_key" and not key:
+                    # The default provider's key lives wherever the operator put
+                    # it — the original parser ignored section headers entirely,
+                    # so honouring a `[ascensus]` wrapper is PARITY, not a new
+                    # rule (A-B1). Only a `[gemini]` section owns its key.
                     key = v
-                elif k == "model" and not model:
+                elif section != "gemini" and kl == "model" and not model:
                     model = v
-                elif k == "provider" and not provider:
+                elif section != "gemini" and kl == "provider" and not provider:
                     provider = v
     except Exception:
         pass
     if not provider:
-        provider = "gemini" if key.startswith("AIza") else "zai-coding-plan"
+        if named or sectioned:
+            provider = "gemini"
+        else:
+            provider = "gemini" if key.startswith("AIza") else "zai-coding-plan"
+    if provider == "gemini" and not os.environ.get("GEMINI_API_KEY"):
+        # The section is authoritative for the gemini provider.
+        key = sectioned or named or key
     if not model:
-        model = "gemini-2.5-flash" if provider == "gemini" else "glm-4.6"
-    return provider, key, model
+        if provider == "gemini":
+            model = sectioned_model or "gemini-2.5-flash"
+        else:
+            model = "glm-4.6"
+    sections = {}
+    if sectioned or named or sectioned_model:
+        sections["gemini"] = {
+            "key": sectioned or named,
+            "model": sectioned_model or "gemini-2.5-flash",
+        }
+    return {"provider": provider, "key": key, "model": model, "sections": sections}
+
+
+def read_secrets():
+    """Return (provider, key, model) — unchanged signature (parity, A-B1)."""
+    doc = read_provider_secrets()
+    return doc["provider"], doc["key"], doc["model"]
 
 
 def call_gemini(key, model, user_text):
@@ -145,7 +195,7 @@ def call_gemini(key, model, user_text):
                 "required": ["answer", "reasoning", "confidence"]}}}
     res = http_json(
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={key}", payload)
+        f"{model}:generateContent", payload, headers={"x-goog-api-key": key})
     raw = "".join(p.get("text", "") for p in
                   (res.get("candidates", [{}])[0].get("content", {})
                    .get("parts", []))).strip()

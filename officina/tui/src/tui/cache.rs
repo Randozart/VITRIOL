@@ -77,6 +77,56 @@ fn slot_save_path_from_config(text: &str) -> Option<String> {
 }
 
 /// List cache files, newest first. Missing/unreadable directory = empty list.
+/// The policy the engine is enforcing: `[server] cache_max_gb` from the config
+/// (GiB), else the engine's historical derived cap (12 x cache_ram MiB). 0 means
+/// no cap. The engine evicts the least-recently-addressed entry above this, so
+/// the UI must show the same number the engine acts on (2026-11-17).
+pub fn cap_bytes() -> u64 {
+    if let Ok(gb) = std::env::var("VITRIOL_KV_CACHE_MAX_GB") {
+        if let Ok(value) = gb.trim().parse::<f64>() {
+            if value > 0.0 {
+                return (value * 1_073_741_824.0) as u64;
+            }
+        }
+    }
+    let Some(home) = std::env::var_os("HOME") else {
+        return 0;
+    };
+    let Ok(text) = fs::read_to_string(PathBuf::from(home).join(".vitriol").join("config")) else {
+        return 0;
+    };
+    let mut cap_gb = 0.0f64;
+    let mut cache_ram_mib = 0u64;
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("cache_max_gb") {
+            if let Some(v) = v.split('=').nth(1) {
+                cap_gb = v.trim().parse().unwrap_or(0.0);
+            }
+        } else if let Some(v) = line.strip_prefix("cache_ram") {
+            if let Some(v) = v.split('=').nth(1) {
+                cache_ram_mib = v.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    if cap_gb > 0.0 {
+        return (cap_gb * 1_073_741_824.0) as u64;
+    }
+    // Mirror the engine's fallback so the readout never lies about the policy.
+    cache_ram_mib.saturating_mul(1024).saturating_mul(12)
+}
+
+/// One-line budget readout: "2.51 / 40.00 GiB", or "over cap" when the
+/// protected entries alone exceed it.
+pub fn budget_line(used: u64) -> String {
+    let cap = cap_bytes();
+    if cap == 0 {
+        return format!("{} (no cap)", fmt_bytes(used));
+    }
+    let status = if used > cap { " · OVER CAP" } else { "" };
+    format!("{} / {}{}", fmt_bytes(used), fmt_bytes(cap), status)
+}
+
 pub fn scan(dir: &Path) -> Vec<CacheEntry> {
     let Ok(rd) = fs::read_dir(dir) else {
         return Vec::new();

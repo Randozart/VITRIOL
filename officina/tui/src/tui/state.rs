@@ -2745,7 +2745,7 @@ impl AppState {
                 self.entries.push(ChatEntry::Diag(format!(
                     "cache: {} entries · {} · {}",
                     self.cache_entries.len(),
-                    crate::tui::cache::fmt_bytes(self.cache_total),
+                    crate::tui::cache::budget_line(self.cache_total),
                     self.cache_dir
                 )));
             }

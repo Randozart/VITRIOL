@@ -3487,7 +3487,7 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 " {} kv cache · {} entries · {} ",
                 theme::GLYPH_CRUCIBLE,
                 state.cache_entries.len(),
-                c::fmt_bytes(state.cache_total)
+                c::budget_line(state.cache_total)
             ),
             Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
         ))

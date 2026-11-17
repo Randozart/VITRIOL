@@ -189,6 +189,11 @@ pub const DICTIONARY: &[(&str, &str, bool)] = &[
         true,
     ),
     (
+        "server.cache_max_gb",
+        "disk cache budget GiB (states + snapshots); above it the engine evicts the least-recently-addressed entry (2026-11-17)",
+        true,
+    ),
+    (
         "server.cache_idle_slots",
         "idle-slot KV to host RAM (off since the 09-04 host-memory trim)",
         false,

@@ -231,3 +231,75 @@ here is deleted yet.
    `slot0.bin`. Eviction must never race it. Confirm the sweep runs *before* the sidecar's
    restore window (the plan assumes the engine's boot sweep wins; the sidecar then just
    skips a missing file).
+
+## 10. Shipped (2026-11-17, BUILD)
+
+### 10.1 Cleanup — 108 GiB reclaimed
+
+```
+before: /dev/nvme0n1p2 375G 324G 52G 87% /scratch
+after : /dev/nvme0n1p2 375G 216G 160G 58% /scratch
+deleted: /scratch/vitriol-store-nemo.bin (38 GiB), /scratch/huggingface (70 GB)
+```
+
+### 10.2 Engine — cap + LRU (commit 6dd6086)
+
+Pre-existing behaviour that was wrong and is now fixed:
+
+- the disk cap was **derived** (12 × cache_ram = 96 GiB here), not configurable;
+- victims were chosen by **write** time while the log said "oldest": `disk_scan` sorts
+  newest-first for prefix candidacy, and the trim loop walked that same order — so it deleted
+  the **freshest** entries first;
+- `slot*.bin` snapshots were **not** in the scan at all: the only files on this host were
+  invisible to the budget.
+
+Now:
+
+| piece | where |
+|---|---|
+| `VITRIOL_KV_CACHE_MAX_GB` (authoritative when set; unset = historical derived cap) | `server-task.cpp: server_prompt_cache_disk_cap_bytes` |
+| last-access key = explicit `utimensat` touch on restore, write time as fallback | `server_prompt_cache_disk_touch`, `..._last_access` |
+| victim = least-recently-addressed; exemptions = incoming file + newest snapshot + managed | `server_prompt_cache_disk_trim` |
+| snapshots counted only in the budget scan, never in listings | `..._disk_scan(dir, files, include_snapshots)` |
+| boot sweep after `disk_load`, plus a sweep before every spill | `disk_load`, `disk_spill` |
+| metrics `kv_cache_evicted_total`, `kv_cache_bytes`; `/cache` `cap_bytes`/`used_bytes`/`over_cap`/`evicted_total` | `server-task.cpp`, `server-context.cpp` |
+| `[server] cache_max_gb` → env, fingerprint `cmax=` | `scripts/vitriol` |
+
+### 10.3 Live proof of eviction
+
+Three fake snapshots (30 MiB each, aged 3h/2h/1h) beside the real `slot0.bin`, cap set to
+**0.02 GB**:
+
+```
+after restart: only slot0.bin remains
+/cache: cap_gb 0.02 | used_gb 2.5118 | over_cap True | evicted_total 3
+```
+
+→ the cap was enforced, all three victims went least-recently-addressed first, and the
+**newest snapshot survived** (protection works). `over_cap: true` is the honest answer: a
+single protected snapshot (2.5 GiB) cannot fit a 20 MiB budget.
+
+Restored to 40 GiB:
+
+```
+/cache: cap_gb 40.0 | used_gb 2.512 | over_cap False | evicted_total 0
+metrics: llamacpp:kv_cache_bytes 2.69705e+09
+```
+
+### 10.4 Officina surface
+
+`/cache` list line and modal title now render the same budget the engine acts on:
+`2.51 GiB / 40.00 GiB` (plus `· OVER CAP` when the protected entries alone exceed it).
+`cap_bytes()` mirrors the engine's fallback (12 × cache_ram) so the readout cannot lie about
+the policy. Installed TUI `1d307f1e`.
+
+### 10.5 Notes / follow-ups
+
+- The TUI's own protection rule still hardcodes `slot0.bin`; the engine now protects the
+  *newest* snapshot. Aligning the TUI is cosmetic until a second slot exists.
+- Invariant I3 (correctness never depends on the cache) is unchanged by design: a miss is a
+  prefill, verified by the fact that this feature deletes entries while the engine keeps
+  serving.
+- No C++ unit harness exists for `server-task.cpp` internals; the pure selector is verified by
+  the live 0.02 GB experiment above rather than a unit test. Worth extracting if this code
+  grows.

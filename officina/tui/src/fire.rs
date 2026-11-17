@@ -220,6 +220,32 @@ fn base_frac(rows: usize) -> f64 {
     0.5 / rows.max(1) as f64
 }
 
+/// How far a tongue narrows by the top of the strip (0 = a rectangle, the
+/// pre-2026-11-16 behaviour; owner: "the row above is the same width rather than
+/// tapering off").
+pub const DEFAULT_TAPER: f64 = 0.55;
+/// Mid-point of a tongue in `edge` space: 0 at the inner boundary (next to the
+/// dead middle band), 1 at the screen edge.
+const TONGUE_CENTER: f64 = 0.55;
+
+/// Envelope width kept at height fraction `rn` (0 base → 1 tip).
+fn taper_scale(rn: f64, taper: f64) -> f64 {
+    // sqrt: the FIRST row above the base must already be narrower, or the taper
+    // is invisible exactly where the owner looks ("the rule row and the row
+    // above it are the same width", 2026-11-16). A linear ramp spends its effect
+    // on the top rows, which are 1-2 cells wide anyway.
+    1.0 - taper.clamp(0.0, 1.0) * rn.clamp(0.0, 1.0).sqrt()
+}
+
+/// Is this column inside the tapered tongue at this height?
+///
+/// The window SHRINKS around the tongue's midline, which is how a flame narrows
+/// toward its own tip. Dropping an end instead would either detach the flame
+/// from the centre (inner) or leave the screen edge dark (outer).
+pub fn inside_tongue(edge: f64, rn: f64, taper: f64) -> bool {
+    (edge - TONGUE_CENTER).abs() <= 0.5 * taper_scale(rn, taper)
+}
+
 /// At and above this load the rule is the flame's UNBROKEN base; below it the
 /// fire is embers and the rule keeps `_` between flamelets.
 const BASE_CONTINUOUS_LEVEL: f64 = 0.25;
@@ -308,6 +334,7 @@ pub fn render(
     phase_ms: u128,
     level: f64,
     style: FireStyle,
+    taper: f64,
 ) -> Vec<Vec<Option<ratatui::style::Color>>> {
     let rows = rows_for(level).min(area.height as usize);
     let mut fire_map: Vec<Vec<Option<ratatui::style::Color>>> = Vec::new();
@@ -341,7 +368,12 @@ pub fn render(
             };
             let col_h = (col_light * (0.7 + 0.6 * hash01(x as u32, 0, step))).max(floor);
             let frac_from_base = from_base / rows as f64;
-            if frac_from_base > col_h {
+            // Taper (2026-11-16): each tongue narrows with height. The BASE row
+            // (rn == 0) is exempt, so the rule keeps the envelope's full width
+            // and stays unbroken.
+            let rn = ((rows - 1 - r) as f64) / (rows.saturating_sub(1).max(1) as f64);
+            let outside_taper = rn > 0.0 && !inside_tongue(edge, rn, taper);
+            if outside_taper || frac_from_base > col_h {
                 // Above the flame — a rising ember? (owner request: little
                 // embers flare up alongside the columns.) Side columns
                 // only; each ember lives EMBER_SLOTS flicker slots, drifting
@@ -403,7 +435,7 @@ pub fn render(
         lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines), area);
-    fire_map = tint_rows(rows, w, phase_ms, level, style);
+    fire_map = tint_rows(rows, w, phase_ms, level, style, taper);
     fire_map
 }
 
@@ -418,6 +450,7 @@ pub fn tint_rows(
     phase_ms: u128,
     level: f64,
     style: FireStyle,
+    taper: f64,
 ) -> Vec<Vec<Option<ratatui::style::Color>>> {
     let base_heat = (0.2 + 0.8 * level).clamp(0.0, 1.0);
     let mut out = Vec::with_capacity(rows);
@@ -426,7 +459,14 @@ pub fn tint_rows(
         let frac_from_base = from_base / rows.max(1) as f64;
         let mut row: Vec<Option<ratatui::style::Color>> = vec![None; width];
         for (x, cell) in row.iter_mut().enumerate() {
-            let light = column_light(column_edge(x, width), level);
+            let edge = column_edge(x, width);
+            let light = column_light(edge, level);
+            // Same silhouette the field draws, so text is never tinted outside
+            // the visible flame (2026-11-16).
+            let rn = ((rows - 1 - r) as f64) / (rows.saturating_sub(1).max(1) as f64);
+            if rn > 0.0 && !inside_tongue(edge, rn, taper) {
+                continue;
+            }
             if frac_from_base > light {
                 continue;
             }
@@ -516,7 +556,7 @@ mod stability_tests {
     #[test]
     fn tint_mask_is_identical_across_frames_at_one_level() {
         let pattern = |phase: u128| -> Vec<Vec<bool>> {
-            tint_rows(6, 80, phase, 0.6, FireStyle::Pulse)
+            tint_rows(6, 80, phase, 0.6, FireStyle::Pulse, DEFAULT_TAPER)
                 .iter()
                 .map(|row| row.iter().map(Option::is_some).collect())
                 .collect()
@@ -538,7 +578,7 @@ mod stability_tests {
 
     #[test]
     fn tint_mask_is_empty_without_fire() {
-        let rows = tint_rows(4, 40, 0, 0.0, FireStyle::Emerald);
+        let rows = tint_rows(4, 40, 0, 0.0, FireStyle::Emerald, DEFAULT_TAPER);
         assert!(rows.iter().flatten().all(Option::is_none));
     }
 
@@ -546,7 +586,7 @@ mod stability_tests {
     #[test]
     fn tint_mask_grows_with_load() {
         let count = |level: f64| {
-            tint_rows(6, 80, 0, level, FireStyle::Alchemy)
+            tint_rows(6, 80, 0, level, FireStyle::Alchemy, DEFAULT_TAPER)
                 .iter()
                 .flatten()
                 .filter(|c| c.is_some())

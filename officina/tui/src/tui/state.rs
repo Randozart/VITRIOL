@@ -1093,6 +1093,10 @@ pub struct AppState {
     /// leave text their original color"). Default on — the discolor
     /// effect is the original beloved behavior.
     pub fire_tint: bool,
+    /// How far each flame tongue narrows with height (0 = rectangle). Owner
+    /// report 2026-11-16: "the row above is the same width rather than tapering
+    /// off." `/fire taper <0-1>`.
+    pub fire_taper: f64,
     /// Paint a quiet background band behind the operator's own turns
     /// (owner request 2026-11-16). Default on; `/chat-bg off` restores the
     /// unbanded transcript byte-for-byte.
@@ -1319,6 +1323,7 @@ impl Default for AppState {
             fire_on: true,
             fire_style: crate::fire::FireStyle::default(),
             fire_tint: true,
+            fire_taper: crate::fire::DEFAULT_TAPER,
             user_turn_bg: true,
             fire_target: 0.0,
             fire_level: 0.0,
@@ -3600,6 +3605,16 @@ impl AppState {
                 self.fire_target = 0.0;
             }
             "style" => self.fire_style = self.fire_style.next(),
+            other if other.starts_with("taper") => {
+                let value = other.trim_start_matches("taper").trim();
+                match value.parse::<f64>() {
+                    Ok(v) if (0.0..=1.0).contains(&v) => {
+                        self.fire_taper = v;
+                        return format!("taper {v:.2}");
+                    }
+                    _ => return "taper needs 0..1".to_string(),
+                }
+            }
             // Text discoloration toggle (owner request 2026-09-03) —
             // independent of the flame itself.
             "tint on" => {

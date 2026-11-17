@@ -694,6 +694,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             state.started.elapsed().as_millis(),
             state.fire_level,
             state.fire_style,
+            state.fire_taper,
         )
     } else {
         Vec::new()
@@ -2180,6 +2181,7 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             phase,
             level,
             state.fire_style,
+            state.fire_taper,
         );
     } else {
         let msg = if state.fire_on {
@@ -4486,6 +4488,77 @@ mod settings_chat_render_tests {
         let after = screen(&mut state, 80, 20);
         let row_of = |t: &str| t.lines().position(|l| l.contains("enter send"));
         assert_eq!(row_of(&with_notice), row_of(&after));
+    }
+
+    /// F-C1 (owner report 2026-11-16): the flames must TAPER — each row above
+    /// the base is narrower than the one below it.
+    ///
+    /// Differential on purpose: the SAME state is rendered twice, once with the
+    /// taper disabled and once with the shipped value, so the assertion cannot
+    /// be satisfied by the pre-existing jitter alone (my first attempt was, and
+    /// the negative control passed with the taper removed).
+    #[test]
+    fn flames_taper_with_height() {
+        // Lit width per body row, base row LAST.
+        fn widths(taper: f64) -> Vec<usize> {
+            let mut state = AppState::default();
+            state.entries.push(ChatEntry::Notice("hello".into()));
+            state.fire_on = true;
+            state.fire_level = 1.0;
+            state.fire_target = 1.0;
+            state.fire_taper = taper;
+            let text = screen(&mut state, 120, 24);
+            let lines: Vec<&str> = text.lines().collect();
+            let rule = lines
+                .iter()
+                .position(|l| l.chars().filter(|c| *c == '_').count() > 3)
+                .expect("divider row");
+            let lit = |y: usize| {
+                lines[y]
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && !matches!(c, '\u{2500}'))
+                    .count()
+            };
+            let mut out: Vec<usize> = (rule.saturating_sub(6)..rule).map(lit).collect();
+            out.push(lit(rule));
+            out
+        }
+
+        let flat = widths(0.0);
+        let tapered = widths(0.55);
+        // The base row is exempt from the taper, so it must not change.
+        assert_eq!(
+            flat.last(),
+            tapered.last(),
+            "the taper must not narrow the rule: flat={flat:?} tapered={tapered:?}"
+        );
+        // Compare the whole body (sum) and the row immediately above the rule —
+        // the one the owner pointed at. Individual tip rows are 1-2 cells wide
+        // and too noisy to compare.
+        let sum = |v: &[usize]| v.iter().take(v.len() - 1).sum::<usize>();
+        assert!(
+            sum(&tapered) < sum(&flat),
+            "the taper did not narrow the body: flat={flat:?} tapered={tapered:?}"
+        );
+        // v.len()-2 is the body's bottom row, which is the taper's EXEMPT base
+        // (rn = 0) — the assert must look one row higher, at the first tapered
+        // row.
+        let above = |v: &[usize]| v[v.len() - 3];
+        assert!(
+            above(&tapered) < above(&flat),
+            "the row above the rule is not narrower: flat={flat:?} tapered={tapered:?}"
+        );
+        // And within the tapered render, widths must not increase going UP from
+        // the base: order them base-first, then row by row toward the top.
+        let base = *tapered.last().unwrap();
+        let mut seen: Vec<usize> = vec![base];
+        seen.extend(tapered[..tapered.len() - 1].iter().rev().copied());
+        for pair in seen.windows(2) {
+            assert!(
+                pair[1] <= pair[0],
+                "widths increase going up from the base: {seen:?} (base-first)"
+            );
+        }
     }
 
     /// The card's two horizontal rules must be the same length (owner report

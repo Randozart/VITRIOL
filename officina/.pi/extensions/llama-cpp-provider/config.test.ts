@@ -255,8 +255,9 @@ describe("fillModelDefaults (issue #36)", () => {
     expect(out.reasoning).toBe(true);
     expect(out.input).toEqual(["text", "image"]);
     expect(out.contextWindow).toBe(262144);
-    // Still defaulted:
-    expect(out.maxTokens).toBe(4096);
+    // Still defaulted — now derived from the window (2026-11-17): a 262k model
+    // must not advertise a 4096 output cap, or its compaction summary truncates.
+    expect(out.maxTokens).toBe(16384);
     expect(out.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
   });
 
@@ -307,7 +308,7 @@ describe("loadProviders with an under-specified user override (issue #36)", () =
     const result = loadProviders(dir, { LITTLE_CODER_MODELS_FILE: userPath });
     const m = result.providers.llamacpp.models[0];
     expect(m.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
-    expect(m.maxTokens).toBe(4096);
+    expect(m.maxTokens).toBe(16384); // derived from the 262144 window
     expect(m.name).toBe("Qwen3.6-27B-Q4_K_M.gguf");
     // User-supplied values must win:
     expect(m.contextWindow).toBe(262144);

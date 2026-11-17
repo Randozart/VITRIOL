@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { observeLocalTransport } from "./transport-diagnostics.ts";
@@ -17,6 +18,11 @@ export const streamLocalWithProgress: NonNullable<ProviderConfig["streamSimple"]
   return api.streamSimple(model, context, {
     ...options,
     onPayload: async (payload, requestModel) => {
+      if (process.env.OFFICINA_TRACE_MAXTOKENS) {
+        try {
+          appendFileSync(process.env.OFFICINA_TRACE_MAXTOKENS, `${JSON.stringify({ id: model.id, ctxWindow: model.contextWindow, maxTokens: model.maxTokens, payloadMax: (payload as Record<string, unknown>)?.max_tokens })}\n`);
+        } catch { /* tracing must never break a stream */ }
+      }
       const request = { ...(payload as Record<string, unknown>),
         ...(progress ? { return_progress: true } : {}),
         ...(owner ? { cache_owner_session: owner.session, cache_owner_branch: owner.branch } : {}),

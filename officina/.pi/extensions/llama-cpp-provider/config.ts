@@ -99,6 +99,17 @@ function parseModelsFile(raw: string): ModelsFile {
  * pointer when it's missing so the caller can route this to the source-list
  * diagnostics rather than crashing pi.
  */
+/**
+ * Output budget for a model given its window. A summary of a deep conversation
+ * needs thousands of tokens and pi rejects a summary that hit the cap, so the
+ * historical 4096 default silently broke every local compaction (2026-11-17).
+ * 32k+ windows afford 16k; smaller windows keep the conservative floor.
+ */
+export function engineMaxTokens(contextWindow: number | undefined): number {
+  const ctx = Number(contextWindow) || 0;
+  return ctx >= 32768 ? 16384 : 4096;
+}
+
 export function fillModelDefaults(m: any, providerName: string, index: number): ProviderModelEntry {
   if (!m || typeof m !== "object" || typeof m.id !== "string" || m.id.length === 0) {
     throw new Error(`provider '${providerName}' model at index ${index}: missing or invalid "id"`);
@@ -108,7 +119,7 @@ export function fillModelDefaults(m: any, providerName: string, index: number): 
     reasoning: false,
     input: ["text"] as ("text" | "image")[],
     contextWindow: 32768,
-    maxTokens: 4096,
+    maxTokens: engineMaxTokens(m.contextWindow),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   };
   return { ...defaults, ...m };

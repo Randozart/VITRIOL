@@ -23,6 +23,7 @@ import { registerCacheOwners } from "./owner.ts";
 import {
   aliasRetryDelay,
   fillModelDefaults,
+  engineMaxTokens,
   formatContextWindow,
   loadProviders,
   modelsUrlFor,
@@ -157,6 +158,12 @@ export default async function (pi: ExtensionAPI) {
 
       lc.models = withContextWindow(lc.models, change.to);
       lc.registeredCtx = change.to;
+      // The window is the only thing the probe learns; the alias's output budget
+      // is derived from it, so it has to move too (2026-11-17: a stale 4096 cap
+      // truncated every local compaction summary).
+      lc.models = lc.models.map((m) =>
+        m.id === lc.engineAlias ? { ...m, maxTokens: engineMaxTokens(change.to) } : m,
+      );
       pi.registerProvider("llamacpp", {
         streamSimple: streamLocalWithProgress,
         baseUrl: lc.baseUrl,
@@ -210,6 +217,9 @@ export default async function (pi: ExtensionAPI) {
                 id: alias,
                 name: alias,
                 contextWindow: lc.registeredCtx,
+                // Same budget as the other alias-registration path (2026-11-17):
+                // without it a compaction summary hits the 4096 default cap.
+                maxTokens: engineMaxTokens(lc.registeredCtx),
               }, "llamacpp", lc.models.length)];
               pi.registerProvider("llamacpp", {
                 streamSimple: streamLocalWithProgress,
@@ -294,7 +304,17 @@ export default async function (pi: ExtensionAPI) {
           lc.models = [
             ...lc.models,
             fillModelDefaults(
-              { id: alias, name: alias, contextWindow: lc.registeredCtx },
+              {
+                id: alias,
+                name: alias,
+                contextWindow: lc.registeredCtx,
+                // Output budget for the engine alias (2026-11-17). Without it
+                // fillModelDefaults gives 4096, and pi's compaction summary — which
+                // runs on this model and writes one section per topic — hit that cap
+                // ("generation hit the token cap and the summary is incomplete") on a
+                // 134k-token conversation, so every local compaction failed.
+                maxTokens: engineMaxTokens(lc.registeredCtx),
+              },
               "llamacpp",
               lc.models.length,
             ),

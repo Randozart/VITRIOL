@@ -600,7 +600,12 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     state.last_chat_total = total;
     // Only the visible window is materialised (2026-11-14 perf: long
     // transcripts used to clone thousands of out-of-view lines per frame).
-    let view: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
+    let view: Vec<Line> = lines
+        .into_iter()
+        .skip(start)
+        .take(visible)
+        .map(|l| elide_line(l, chat_width))
+        .collect();
 
     // Scrolled-back hint + click target (2026-11-13): the breathing row
     // between transcript and prompt says the view is locked and offers a
@@ -3826,6 +3831,49 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Elide one rendered line to exactly `width` columns, keeping its styles.
+///
+/// WRAP-1 (2026-11-17): the transcript is painted WITHOUT `.wrap()`, so a line
+/// wider than the pane was silently cut at the edge with no marker — long
+/// tokens, URLs and wide-char runs vanished mid-word. Eliding here keeps the
+/// "one logical line = one visual row" invariant that the scroll maths below
+/// depends on (SCROLL-1): do NOT enable `.wrap()` on this paragraph without
+/// switching `max_scroll`/`start` to visual rows.
+fn elide_line(line: ratatui::text::Line<'static>, width: usize) -> ratatui::text::Line<'static> {
+    use ratatui::text::Span;
+    if width == 0 {
+        return ratatui::text::Line::from("");
+    }
+    let used: usize = line
+        .spans
+        .iter()
+        .map(|sp| crate::tui::width::cols(&sp.content))
+        .sum();
+    if used <= width {
+        return line;
+    }
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut budget = width;
+    for span in line.spans {
+        if budget == 0 {
+            break;
+        }
+        let w = crate::tui::width::cols(&span.content);
+        if w < budget {
+            budget -= w;
+            out.push(span);
+            continue;
+        }
+        // This span is the one that overflows: cut it and mark the elision.
+        out.push(Span::styled(
+            crate::tui::width::trunc_cols(&span.content, budget),
+            span.style,
+        ));
+        budget = 0;
+    }
+    ratatui::text::Line::from(out)
+}
+
 fn trunc(s: &str, w: usize) -> String {
     // Cells, not chars: a CJK glyph or emoji is two columns wide, so
     // `chars().count()` overflowed every fixed-width cell (2026-11-17).
@@ -3838,15 +3886,19 @@ const COMPOSER_MAX_ROWS: u16 = 8;
 
 /// Visual rows the composer content needs at `width` columns.
 ///
-/// Includes the two-column `"> "` prompt prefix on the first row. Hard
-/// (character) wrapping is assumed, which is what a Paragraph does to an
-/// unbroken token; word-wrapped text can need MORE rows, never fewer, so
-/// callers treat this as a lower bound when sizing the box.
+/// COMPOSER-1 (2026-11-17): this used to compute hard (character) wrapping
+/// while the widget renders with `Wrap { trim: false }` (word wrapping), so a
+/// prose prompt needing MORE rows than the estimate had its last line clipped —
+/// precisely while the operator was writing it. Ask the widget itself instead:
+/// `Paragraph::line_count(width)` is the renderer's own answer, so the estimate
+/// cannot drift from the drawing again.
 fn composer_rows(input: &str, width: u16) -> u16 {
-    let avail = (width as usize).max(1);
-    let chars = crate::tui::width::cols(&input) + 2; // "> " prefix
-    let rows = chars.div_ceil(avail).max(1);
-    rows.min(COMPOSER_MAX_ROWS as usize) as u16
+    let width = width.max(1);
+    let line = composer_line(input, input.chars().count());
+    let rows = Paragraph::new(Text::from(vec![line]))
+        .wrap(Wrap { trim: false })
+        .line_count(width);
+    (rows.max(1).min(COMPOSER_MAX_ROWS as usize)) as u16
 }
 
 /// Total composer box height: wrapped content rows plus the rounded border.
@@ -4023,24 +4075,47 @@ mod composer_wrap_tests {
     use super::*;
     use ratatui::{buffer::Buffer, widgets::Widget};
 
+    /// The renderer's own row count for the composer's line, which is what
+    /// `composer_rows` must return for anything under COMPOSER_MAX_ROWS.
+    fn width_rows(input: &str, width: u16) -> usize {
+        let line = composer_line(input, input.chars().count());
+        Paragraph::new(Text::from(vec![line]))
+            .wrap(Wrap { trim: false })
+            .line_count(width.max(1))
+    }
+
     #[test]
     fn short_input_is_one_row() {
         assert_eq!(composer_rows("hello", 60), 1);
         assert_eq!(composer_rows("", 60), 1);
     }
 
+    /// Relation, not a magic number (2026-11-17): the composer asks the
+    /// RENDERER for its row count, so pinning exact counts here would encode
+    /// one ratatui version instead of the property we care about — an unbroken
+    /// token needs several rows, and those rows are what the box reserves.
     #[test]
     fn unbroken_token_counts_wrapped_rows() {
-        // "> " prefix (2 cols) + 200 chars at 60 cols => ceil(202/60) = 4.
         let input = "x".repeat(200);
-        assert_eq!(composer_rows(&input, 60), 4);
+        let rows = composer_rows(&input, 60);
+        assert!(
+            (4..=6).contains(&rows),
+            "unbroken token at 60 cols gave {rows} rows"
+        );
+        assert_eq!(width_rows(&input, 60), rows as usize);
     }
 
     #[test]
     fn rows_follow_available_width_not_a_fixed_threshold() {
         let input = "y".repeat(100);
-        assert_eq!(composer_rows(&input, 40), 3); // ceil(102/40)
-        assert_eq!(composer_rows(&input, 200), 1); // fits on one row
+        let narrow = composer_rows(&input, 40);
+        let wide = composer_rows(&input, 200);
+        assert!(
+            narrow > wide,
+            "narrow box needs more rows: {narrow} vs {wide}"
+        );
+        assert_eq!(wide, 1, "100 chars fit in 200 columns");
+        assert_eq!(width_rows(&input, 40), narrow as usize);
     }
 
     #[test]
@@ -4852,6 +4927,76 @@ mod settings_chat_render_tests {
     /// thing that widget could have changed. The negative control keeps an
     /// unrelated band row, which must change the screen — so the test cannot be
     /// satisfied by dropping every band row.
+    /// COMPOSER-1 (2026-11-17): the box height was computed with hard character
+    /// wrapping while the widget renders word-wrapped, so prose prompts lost
+    /// their last line exactly while being written. The box must now be at least
+    /// as tall as the renderer says the text is.
+    /// WRAP-1 (2026-11-17): the transcript does not wrap, so an overlong line
+    /// must be elided with a visible marker instead of vanishing at the edge.
+    /// SCROLL-1 lives in the same invariant: elision keeps 1 line = 1 row, which
+    /// is what the scroll maths assumes.
+    #[test]
+    fn overlong_lines_are_elided_not_clipped() {
+        use ratatui::text::{Line, Span};
+        // Pure: a wide line loses its tail but keeps its styles and gains a
+        // marker, and never exceeds the budget.
+        let long = Line::from(vec![
+            Span::raw("see "),
+            Span::styled("x".repeat(200), Style::new().fg(theme::GOLD)),
+        ]);
+        let cut = elide_line(long, 40);
+        let out: String = cut.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(out.ends_with('…'), "no elision marker: {out:?}");
+        assert!(
+            crate::tui::width::cols(&out) <= 40,
+            "elision overran: {out:?}"
+        );
+        assert!(
+            cut.spans.iter().any(|s| s.style.fg == Some(theme::GOLD)),
+            "elision dropped the styling"
+        );
+        // A line that fits is returned untouched (no marker).
+        let fits = Line::from(Span::raw("short"));
+        assert_eq!(elide_line(fits.clone(), 40).spans.len(), fits.spans.len());
+        // Screen level: with an overlong line in the transcript, no drawn row
+        // exceeds the frame. (Elision is the mechanism that guarantees it —
+        // markdown pre-wraps most content, so this uses a raw entry.)
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Warn(format!(
+            "https://example.com/{}",
+            "y".repeat(300)
+        )));
+        let text = screen(&mut state, 60, 20);
+        for line in text.lines() {
+            assert!(
+                crate::tui::width::cols(line) <= 60,
+                "a drawn row exceeds the frame: {:?}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn composer_box_fits_a_wrapped_prompt() {
+        let prose = "please refactor the render audit findings one at a time and \
+                     keep every existing test green while doing it, then summarise";
+        for width in [40u16, 60, 80, 120] {
+            let content_w = width.saturating_sub(2);
+            let line = composer_line(prose, prose.chars().count());
+            let needed = Paragraph::new(Text::from(vec![line]))
+                .wrap(Wrap { trim: false })
+                .line_count(content_w);
+            let boxed = composer_box_height(prose, width);
+            assert!(
+                boxed as usize >= needed + 2,
+                "width {width}: box {boxed} < needed {}",
+                needed + 2
+            );
+        }
+        // And a short prompt still gets the minimal two-row box.
+        assert_eq!(composer_box_height("hi", 80), 3);
+    }
+
     #[test]
     fn band_never_echoes_the_draft() {
         fn base() -> AppState {

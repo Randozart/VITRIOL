@@ -12,7 +12,10 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ratatui = "0.30"
+# `unstable-rendered-line-info` exposes Paragraph::line_count, which lets the
+# composer size itself from the renderer's own wrap calculation instead of a
+# parallel estimate that can drift (COMPOSER-1, 2026-11-17).
+ratatui = { version = "0.30", features = ["unstable-rendered-line-info"] }
 crossterm = { version = "0.29", features = ["event-stream"] }
 anyhow = "1"
 futures-lite = "2"

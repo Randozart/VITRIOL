@@ -107,7 +107,8 @@ fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>>
     let mut used = 0usize;
     let mut out: Vec<Span<'static>> = Vec::new();
     for sp in spans {
-        let len = sp.content.chars().count();
+        // Cells, not chars (2026-11-17): a wide glyph would overrun `width`.
+        let len = crate::tui::width::cols(&sp.content);
         if used + len <= width {
             used += len;
             out.push(sp);
@@ -115,8 +116,7 @@ fn truncate_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>>
         }
         let room = width.saturating_sub(used);
         if room > 1 {
-            let mut text: String = sp.content.chars().take(room - 1).collect();
-            text.push('…');
+            let text = crate::tui::width::trunc_cols(&sp.content, room);
             out.push(Span::styled(text, sp.style));
         } else if room == 1 {
             out.push(Span::styled("…".to_string(), sp.style));

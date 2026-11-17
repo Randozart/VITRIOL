@@ -2608,7 +2608,7 @@ impl AppState {
     pub fn held_label(&self) -> Option<String> {
         let first = self.held.first()?;
         let mut t = first.text.replace('\n', " ");
-        if t.chars().count() > 48 {
+        if crate::tui::width::cols(&t) > 48 {
             t = t.chars().take(47).collect::<String>() + "…";
         }
         let kind = match first.kind {
@@ -4222,7 +4222,10 @@ impl AppState {
                             let budget = width.saturating_sub(8);
                             let title_s = trunc_str(title, 40);
                             let display = tool_display_name(name);
-                            let used = display.chars().count() + 3 + title_s.chars().count() + 3;
+                            let used = crate::tui::width::cols(&display)
+                                + 3
+                                + crate::tui::width::cols(&title_s)
+                                + 3;
                             let cmd_s = trunc_str(&cmd, budget.saturating_sub(used));
                             let mut spans = vec![
                                 Span::styled(format!("  {} ", icon), st),

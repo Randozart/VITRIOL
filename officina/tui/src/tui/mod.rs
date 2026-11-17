@@ -16,6 +16,7 @@ pub mod session_check;
 pub mod settings;
 pub mod stall;
 pub mod state;
+pub mod width;
 
 use std::io::{self, IsTerminal};
 use std::path::Path;

@@ -994,6 +994,7 @@ dependencies = [
  "serde_json",
  "syntect",
  "tokio",
+ "unicode-width",
 ]
 
 [[package]]

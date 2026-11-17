@@ -156,7 +156,7 @@ fn session_label(state: &AppState) -> Option<String> {
 /// the path after " @ " elides from the LEFT (a path's tail identifies it),
 /// snapping the cut to a `/` component boundary when one is close.
 fn elide_path_tail(label: &str, cap: usize) -> String {
-    let total = label.chars().count();
+    let total = crate::tui::width::cols(&label);
     if total <= cap {
         return label.to_string();
     }
@@ -230,7 +230,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
         .unwrap_or_default();
 
     // Right-align the session label; model id sits before it.
-    let right_w = (right.chars().count() + 2) as u16;
+    let right_w = (crate::tui::width::cols(&right) + 2) as u16;
     let mid_w = if right.is_empty() {
         area.width
     } else {
@@ -765,7 +765,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let w = ctx_area.width as usize;
         let text = format!(" {} ", label);
         let rule_len = w
-            .saturating_sub(text.chars().count().saturating_add(2))
+            .saturating_sub(crate::tui::width::cols(&text).saturating_add(2))
             .max(2);
         let mut spans = vec![
             Span::styled(format!("{:^w$}", "", w = 1), Style::default()),
@@ -945,7 +945,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Drawn after the chat: the badge itself is text and keeps priority.
     if state.scroll > 0 {
         let badge = format!(" ↑ {}/{} ", state.scroll, max_scroll);
-        let bw = badge.chars().count() as u16;
+        let bw = crate::tui::width::cols(&badge) as u16;
         if chat_area.width > bw {
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(badge, theme::muted())))
@@ -1224,7 +1224,7 @@ fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect)
             width.saturating_sub(1),
         );
         let mut spans = vec![Span::styled(text, base)];
-        let used = spans[0].content.chars().count();
+        let used = crate::tui::width::cols(&spans[0].content);
         if used < width {
             spans.push(Span::styled(" ".repeat(width - used), base));
         }
@@ -1345,7 +1345,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 let text = format!("{marker}{}", trunc(option, width.saturating_sub(3)));
                 let style = if is_sel { selected } else { base };
                 let mut spans = vec![Span::styled(text, style)];
-                let used = spans[0].content.chars().count() + 1;
+                let used = crate::tui::width::cols(&spans[0].content) + 1;
                 if used < width {
                     spans.push(Span::styled(" ".repeat(width - used + 1), style));
                 }
@@ -1388,7 +1388,10 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     if yes { base } else { selected },
                 ),
             ];
-            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+            let used: usize = spans
+                .iter()
+                .map(|s| crate::tui::width::cols(&s.content))
+                .sum();
             if used < width {
                 spans.push(Span::styled(" ".repeat(width - used), base));
             }
@@ -1659,8 +1662,8 @@ fn render_notice(frame: &mut Frame, area: Rect, state: &AppState) {
         _ => theme::GOLD,
     };
     let prefix = "  · ";
-    let avail = (area.width as usize).saturating_sub(prefix.chars().count() + 1);
-    let text = if head.chars().count() > avail {
+    let avail = (area.width as usize).saturating_sub(crate::tui::width::cols(prefix) + 1);
+    let text = if crate::tui::width::cols(&head) > avail {
         let mut cut: String = head.chars().take(avail.saturating_sub(1)).collect();
         cut.push('…');
         cut
@@ -1912,7 +1915,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     for (header, model_idx) in rows.iter().skip(start).take(visible) {
         if let Some(header) = header {
-            let rule = width.saturating_sub(header.chars().count() + 2);
+            let rule = width.saturating_sub(crate::tui::width::cols(header) + 2);
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(" {header} "),
@@ -1981,15 +1984,15 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         } else {
             String::new()
         };
-        let used = sel_marker.chars().count()
-            + cur_marker.chars().count()
-            + name_cell.chars().count()
+        let used = crate::tui::width::cols(&sel_marker)
+            + crate::tui::width::cols(&cur_marker)
+            + crate::tui::width::cols(&name_cell)
             + 1
-            + prov_cell.chars().count()
+            + crate::tui::width::cols(&prov_cell)
             + 1
-            + ctx_cell.chars().count()
-            + reasoning.chars().count()
-            + id_cell.chars().count();
+            + crate::tui::width::cols(&ctx_cell)
+            + crate::tui::width::cols(&reasoning)
+            + crate::tui::width::cols(&id_cell);
 
         let mut spans = vec![
             Span::styled(sel_marker, accent),
@@ -3560,12 +3563,12 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let name_cell = format!("{:<width$}", trunc(&label, name_w), width = name_w);
         let age_cell = format!("{:>width$}", c::fmt_age(e.age()), width = age_w);
         let size_cell = format!("{:>width$}", c::fmt_bytes(e.size), width = size_w);
-        let used = marker.chars().count()
-            + name_cell.chars().count()
+        let used = crate::tui::width::cols(&marker)
+            + crate::tui::width::cols(&name_cell)
             + 1
-            + age_cell.chars().count()
+            + crate::tui::width::cols(&age_cell)
             + 1
-            + size_cell.chars().count();
+            + crate::tui::width::cols(&size_cell);
         let mut spans = vec![
             Span::styled(marker, accent),
             Span::styled(name_cell, base),
@@ -3703,7 +3706,7 @@ fn motto_for(width: usize) -> Option<String> {
         } else {
             format!("{cur} {w}")
         };
-        if candidate.chars().count() > width {
+        if crate::tui::width::cols(&candidate) > width {
             break;
         }
         cur = candidate;
@@ -3803,12 +3806,9 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 fn trunc(s: &str, w: usize) -> String {
-    if s.chars().count() <= w {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(w.saturating_sub(1)).collect();
-        format!("{}…", cut)
-    }
+    // Cells, not chars: a CJK glyph or emoji is two columns wide, so
+    // `chars().count()` overflowed every fixed-width cell (2026-11-17).
+    crate::tui::width::trunc_cols(s, w)
 }
 
 /// Maximum composer content rows — beyond this the transcript would be
@@ -3823,7 +3823,7 @@ const COMPOSER_MAX_ROWS: u16 = 8;
 /// callers treat this as a lower bound when sizing the box.
 fn composer_rows(input: &str, width: u16) -> u16 {
     let avail = (width as usize).max(1);
-    let chars = input.chars().count() + 2; // "> " prefix
+    let chars = crate::tui::width::cols(&input) + 2; // "> " prefix
     let rows = chars.div_ceil(avail).max(1);
     rows.min(COMPOSER_MAX_ROWS as usize) as u16
 }
@@ -3916,7 +3916,7 @@ mod tests {
         assert_eq!(elide_path_tail(l, 60), l); // fits — untouched
         let e = elide_path_tail(l, 34);
         assert!(e.starts_with("SESSION ID: #01a06380 @ …"), "got {}", e);
-        assert!(e.chars().count() <= 34);
+        assert!(crate::tui::width::cols(&e) <= 34);
         assert!(e.ends_with("VITRIOL"), "component preserved: {}", e);
         // No " @ " separator → hard truncation to the cap.
         assert_eq!(elide_path_tail("plainlabel", 4), "plai");
@@ -3980,7 +3980,11 @@ mod motto_tests {
         // Every returned form fits its width.
         for w in 0..=70usize {
             if let Some(m) = motto_for(w) {
-                assert!(m.chars().count() <= w, "width {w}: {:?} overflows", m);
+                assert!(
+                    crate::tui::width::cols(&m) <= w,
+                    "width {w}: {:?} overflows",
+                    m
+                );
             }
         }
     }
@@ -4041,7 +4045,7 @@ mod composer_wrap_tests {
         // (Ratatui's word wrap moves an over-long token to a fresh row, so
         // row 0 may legitimately hold only the "> " prompt.)
         let input = "x".repeat(40);
-        let line = composer_line(&input, input.chars().count());
+        let line = composer_line(&input, crate::tui::width::cols(&input));
         let area = Rect::new(0, 0, 20, 3);
         let mut buf = Buffer::empty(area);
         Paragraph::new(Text::from(vec![line]))
@@ -4469,9 +4473,9 @@ mod settings_chat_render_tests {
             .find(|l| l.contains('x'))
             .expect("notice strip");
         assert!(
-            notice_row.chars().count() <= 80,
+            crate::tui::width::cols(&notice_row) <= 80,
             "notice overflows the row: {} cols",
-            notice_row.chars().count()
+            crate::tui::width::cols(&notice_row)
         );
     }
 

@@ -8,6 +8,7 @@ import {
   shrinkMessages,
   laneCompactionOutcome,
   resolveLaneConfig,
+  fallbackDetail,
 } from "./lane.ts";
 
 // Small-lane compaction (M1, docs/CRUSH-MINING-PLAN-2026-08-31.md, 2026-08-31).
@@ -205,6 +206,13 @@ export default function (pi: ExtensionAPI) {
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         if (signal.aborted) return;
+        // Name the summarizer that failed: without this the only trace is a
+        // generic fallback notice (2026-11-17 compaction forensics).
+        emitHarnessEvent(
+          harnessEvent("lc-lane", "compact-fail", {
+            detail: `${cand.provider}/${cand.id}: ${lastError}`,
+          }),
+        );
         // Try the next fitting summarizer.
       }
     }
@@ -214,7 +222,9 @@ export default function (pi: ExtensionAPI) {
         `compaction: every summarizer failed (${lastError}) — falling back to default compaction`,
         "warning",
       );
-      emitHarnessEvent(harnessEvent("lc-lane", "fallback", { detail: lastError }));
+      emitHarnessEvent(
+        harnessEvent("lc-lane", "fallback", { detail: fallbackDetail(chain, lastError) }),
+      );
     }
     return; // pi default compaction — the task still gets done
   });

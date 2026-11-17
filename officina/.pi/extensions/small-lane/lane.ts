@@ -181,3 +181,22 @@ export function chooseSummarizer(
 ): SummarizerCandidate | undefined {
   return orderSummarizers(candidates, estimateTokens, reserveTokens)[0];
 }
+
+/**
+ * One line explaining why compaction fell through to pi's default path
+ * (2026-11-17). The chain and the last error, plus the actionable hint when the
+ * error was a client timeout: local prefill of a deep transcript outlives pi's
+ * 300 s HTTP idle timeout, which looks identical to a hung engine in the UI.
+ */
+export function fallbackDetail(
+  chain: ReadonlyArray<{ provider: string; id: string }>,
+  lastError: string,
+): string {
+  const tried = chain.map((c) => `${c.provider}/${c.id}`).join(" → ") || "none";
+  const reason = String(lastError ?? "").trim() || "no error reported";
+  const timedOut = /timed out|timeout/i.test(reason);
+  const hint = timedOut
+    ? " (client timeout: raise httpIdleTimeoutMs or compact on a fast lane)"
+    : "";
+  return `tried ${tried}: ${reason}${hint}`;
+}

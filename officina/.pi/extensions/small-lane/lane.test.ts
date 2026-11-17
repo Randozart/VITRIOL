@@ -1,6 +1,6 @@
 import { chooseSummarizer, estimateMessagesTokens, shrinkMessages } from "./lane.ts";
 import { describe, expect, it } from "vitest";
-import { buildSummaryText, laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
+import { buildSummaryText, fallbackDetail, laneCompactionOutcome, resolveLaneConfig } from "./lane.ts";
 
 describe("resolveLaneConfig", () => {
   it("is hard off with the kill switch (Rule 15)", () => {
@@ -120,5 +120,31 @@ describe("shrinkMessages", () => {
     const out = shrinkMessages(messages, 10_000);
     expect(out.omitted).toBe(0);
     expect(out.messages).toEqual(messages);
+  });
+});
+
+// Regression (2026-11-17): a compaction fallback was invisible — the only trace
+// was a generic notice, so a 300 s client timeout on a deep local prefill read
+// as "compaction is broken". The fallback line must name the chain, the error,
+// and the fix when the error is a timeout.
+describe("fallbackDetail", () => {
+  it("names every summarizer that was tried and the last error", () => {
+    const detail = fallbackDetail(
+      [{ provider: "caduceus", id: "agnes-3.0-flash" }, { provider: "llamacpp", id: "Lapis Occultus" }],
+      "429 rate limited",
+    );
+    expect(detail).toContain("caduceus/agnes-3.0-flash → llamacpp/Lapis Occultus");
+    expect(detail).toContain("429 rate limited");
+    expect(detail).not.toContain("httpIdleTimeoutMs"); // not a timeout: no red herring
+  });
+
+  it("points at the timeout fix only when the client timed out", () => {
+    const detail = fallbackDetail([{ provider: "llamacpp", id: "Lapis Occultus" }], "Request timed out.");
+    expect(detail).toContain("Request timed out.");
+    expect(detail).toContain("httpIdleTimeoutMs");
+  });
+
+  it("survives an empty chain and an empty error", () => {
+    expect(fallbackDetail([], "")).toBe("tried none: no error reported");
   });
 });

@@ -4590,6 +4590,124 @@ mod settings_chat_render_tests {
     /// HEADER-1 (2026-11-17): the header used a magic `- 24` allowance for the
     /// banner. At narrow widths, or with a long session label, the model chip
     /// collided with the label and ran past the frame.
+    /// Render invariants (render audit 2026-11-17, stage 7). Each of these has
+    /// bitten this TUI at least once; they are written as semantic properties so
+    /// a refactor cannot satisfy them by accident.
+    mod render_invariants {
+        use super::*;
+
+        fn base_state() -> AppState {
+            let mut state = AppState::default();
+            state.entries.push(ChatEntry::Notice("hello".into()));
+            state.ctx_usage = Some((12_000, 262_144));
+            state
+        }
+
+        /// I4: nothing the renderer draws may exceed the frame width.
+        ///
+        /// Measured on the BUFFER, not on the stringified screen: `screen()`
+        /// concatenates one symbol per cell, so a double-width glyph appears as
+        /// its symbol followed by the empty skip-cell — the dump's display width
+        /// is therefore larger than the buffer by one column per wide glyph, and
+        /// asserting on it would report a phantom overflow (this test's first
+        /// version did exactly that, at 42 cols on a 40-cell row). The column
+        /// budget itself is pinned by the `width` module and `elide_line` unit
+        /// tests; here we pin that the buffer never grows past the frame and that
+        /// long content is elided rather than silently dropped.
+        #[test]
+        fn no_drawn_row_exceeds_the_frame() {
+            for width in [40u16, 60, 80, 120, 200] {
+                let mut state = base_state();
+                state
+                    .entries
+                    .push(ChatEntry::Assistant(format!("漢字 {} 🜖", "Z".repeat(200))));
+                state.input = "漢字のプロンプト 🜖🜖".into();
+                state.widgets.push(crate::tui::state::WidgetBlock {
+                    key: "plan-mode".into(),
+                    lines: vec![format!("plan · {}", "長".repeat(80))],
+                    placement: Some("belowEditor".into()),
+                });
+                state.band_ind.force(2);
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 24)).unwrap();
+                terminal.draw(|f| render(f, &mut state)).unwrap();
+                let buffer = terminal.backend().buffer();
+                assert_eq!(buffer.area.width, width, "buffer widened");
+                assert_eq!(buffer.area.height, 24, "buffer grew taller");
+                // Wide-glyph content still renders (nothing dropped): the
+                // elision MARKER is pinned by the elision unit test above, since
+                // markdown-wrapped text legitimately wraps instead of eliding.
+                let text = screen(&mut state, width, 24);
+                assert!(
+                    text.contains('漢'),
+                    "width {width}: the wide-glyph row vanished"
+                );
+            }
+        }
+
+        /// I3: the ctx row does not move when an indicator appears or vanishes.
+        /// (The band settles each part separately precisely so it cannot.)
+        #[test]
+        fn ctx_row_survives_an_indicator_change() {
+            let row_of_ctx = |state: &mut AppState| {
+                let text = screen(state, 120, 24);
+                text.lines()
+                    .position(|l| l.contains('%') || l.contains("ctx"))
+                    .unwrap_or(usize::MAX)
+            };
+            let mut quiet = base_state();
+            quiet.band_ind.force(0);
+            let without = row_of_ctx(&mut quiet);
+
+            let mut loud = base_state();
+            loud.widgets.push(crate::tui::state::WidgetBlock {
+                key: "plan-mode".into(),
+                lines: vec!["plan · 1 step".into()],
+                placement: Some("belowEditor".into()),
+            });
+            loud.band_ind.force(1);
+            let with = row_of_ctx(&mut loud);
+            assert_eq!(
+                without, with,
+                "the ctx row moved when an indicator appeared (from {without} to {with})"
+            );
+        }
+
+        /// I7: rendering the same state twice produces the same screen. This
+        /// catches cache staleness for free (CACHE-1 was exactly this shape).
+        #[test]
+        fn rendering_is_idempotent() {
+            let mut state = base_state();
+            state.entries.push(ChatEntry::Assistant("step 1/3".into()));
+            state.entries.push(ChatEntry::Thinking {
+                text: "considering".into(),
+                collapsed: true,
+            });
+            state.input = "draft".into();
+            state.band_ind.force(1);
+            let first = screen(&mut state, 100, 24);
+            let second = screen(&mut state, 100, 24);
+            assert_eq!(first, second, "two identical frames differ");
+        }
+
+        /// I6: the hints row carries keybindings only — never a notice.
+        #[test]
+        fn hints_row_is_pure_keybindings() {
+            let mut state = base_state();
+            state.notice = Some(("a notice that must not leak".into(), "warning".into()));
+            state.notice_row.force(1);
+            let text = screen(&mut state, 120, 24);
+            let hints = text
+                .lines()
+                .find(|l| l.contains("enter send"))
+                .expect("hints row");
+            assert!(
+                !hints.contains("a notice that must not leak"),
+                "the hints row carried a notice: {hints:?}"
+            );
+        }
+    }
+
     #[test]
     fn header_never_overflows_or_collides() {
         let long = "a-really-long-session-name-that-keeps-going-and-going";

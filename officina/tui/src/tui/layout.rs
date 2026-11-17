@@ -401,6 +401,22 @@ fn render_main(frame: &mut Frame, state: &mut AppState, area: Rect) {
     render_chat_and_editor(frame, state, area);
 }
 
+/// True when any of these band lines merely repeats the operator's draft, so
+/// the strip would look like a second, read-only copy of the prompt (BAND-1,
+/// 2026-11-17). A line counts as an echo when its trimmed text equals the draft
+/// or is a prefix of it (a prediction is a continuation, so mid-typing it can
+/// look identical for several keystrokes).
+fn band_echoes_draft(lines: &[String], draft: &str) -> bool {
+    let d = draft.trim();
+    if d.is_empty() {
+        return false;
+    }
+    lines.iter().any(|l| {
+        let l = l.trim();
+        !l.is_empty() && (l == d || d.starts_with(l) || l.starts_with(d))
+    })
+}
+
 fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Fresh screen → the stone rises, lifted four rows clear of the editor,
     // centered in the space it occupies, glimmering (mode: /glimmer).
@@ -425,6 +441,11 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .iter()
         .filter(|w| w.placement.as_deref() == Some("belowEditor"))
         .filter(|w| w.key != "agent-mode" && w.key != "engine-fire")
+        // BAND-1 (2026-11-17 owner report): a belowEditor widget may carry a
+        // prediction that repeats the operator's draft, and then the band reads
+        // as if their text escaped the composer. No band row may echo what is
+        // being typed — the composer owns that text.
+        .filter(|w| !band_echoes_draft(&w.lines, &state.input))
         .collect();
     // Route state is the most important strip (full harness can have more
     // belowEditor widgets than rows). Then plan/research/phase, decode last.
@@ -4822,6 +4843,82 @@ mod settings_chat_render_tests {
 
     /// I24: the flame always *starts* on the rule — wherever the rule is
     /// claimed, the flame's bottom row above it must carry a glyph.
+    /// BAND-1 (owner 2026-11-17: typed text appeared "between ctx and route").
+    /// A belowEditor widget carrying the draft — or a prediction that prefixes
+    /// it — must not reach the band; the composer owns that text.
+    ///
+    /// The render-level assertion compares the WHOLE screen with and without
+    /// the echoing widget: they must be identical, because the band is the only
+    /// thing that widget could have changed. The negative control keeps an
+    /// unrelated band row, which must change the screen — so the test cannot be
+    /// satisfied by dropping every band row.
+    #[test]
+    fn band_never_echoes_the_draft() {
+        fn base() -> AppState {
+            let mut state = AppState::default();
+            state.entries.push(ChatEntry::Notice("hi".into()));
+            state.input = "run the render audit".into();
+            state
+        }
+        fn with_widget(key: &str, line: &str) -> String {
+            let mut state = base();
+            state.widgets.push(crate::tui::state::WidgetBlock {
+                key: key.into(),
+                lines: vec![line.into()],
+                placement: Some("belowEditor".into()),
+            });
+            screen(&mut state, 120, 24)
+        }
+
+        // Pure predicate first: an echo is an equal line or a prefix either way.
+        assert!(band_echoes_draft(
+            &["run the render audit now".to_string()],
+            "run the render audit"
+        ));
+        assert!(band_echoes_draft(
+            &["run the render".to_string()],
+            "run the render audit"
+        ));
+        assert!(!band_echoes_draft(
+            &["plan · 3 steps".to_string()],
+            "run the render audit"
+        ));
+        assert!(!band_echoes_draft(&["anything".to_string()], "   "));
+
+        // Render level: both cases carry the SAME neutral band row (widget
+        // presence itself changes the footer hint), so the only difference is
+        // the prediction. Filtered ⇒ identical; unrelated ⇒ different.
+        fn render(extra: &str) -> String {
+            let mut state = base();
+            state.widgets.push(crate::tui::state::WidgetBlock {
+                key: "plan-mode".into(),
+                lines: vec!["plan · 3 steps".into()],
+                placement: Some("belowEditor".into()),
+            });
+            if !extra.is_empty() {
+                state.widgets.push(crate::tui::state::WidgetBlock {
+                    key: "composer-prediction".into(),
+                    lines: vec![extra.into()],
+                    placement: Some("belowEditor".into()),
+                });
+            }
+            // The band only renders once its height has SETTLED (BAND_SETTLE);
+            // force it so this test measures the filter, not the dwell.
+            state.band_ind.force(2);
+            screen(&mut state, 120, 24)
+        }
+        assert_eq!(
+            render("run the render audit now"),
+            render(""),
+            "an echoing band widget changed the screen"
+        );
+        assert_ne!(
+            render("verify failed — run make test"),
+            render(""),
+            "the control did not render, so the filter is over-broad"
+        );
+    }
+
     #[test]
     fn flame_meets_its_line() {
         let mut state = AppState::default();

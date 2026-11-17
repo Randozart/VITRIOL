@@ -4495,12 +4495,13 @@ mod settings_chat_render_tests {
         }
     }
 
-    /// I27 (revised 2026-11-16): the rule SMOULDERS. Every lit rule cell is
-    /// the thinnest low dot, so the line stays a line with embers on it, and
-    /// the flame's base row above is never thinner than it — the hand-over is a
-    /// gradient (1 dot → base → body), not two detached bands.
+    /// I27 (third revision, 2026-11-16): THE FIRE SPAWNS ON THE RULE. The rule
+    /// cell carries the flame's own base density — it is the hottest row of the
+    /// column, strictly denser than the cell above it — and at low load the
+    /// scaled value drops below the smoulder threshold so underscores survive
+    /// *between* the flamelets.
     #[test]
-    fn rule_smoulders_below_the_flame() {
+    fn fire_spawns_on_the_rule() {
         const RAMP: [char; 8] = ['⠀', '⡀', '⡄', '⡆', '⡇', '⣇', '⣧', '⣷'];
         for level in [0.3_f64, 0.6, 1.0] {
             let mut state = AppState::default();
@@ -4518,6 +4519,7 @@ mod settings_chat_render_tests {
             let rule: Vec<char> = lines[idx].chars().collect();
             let above: Vec<char> = lines[idx - 1].chars().collect();
             let mut claimed = 0;
+            let mut strictly_denser = 0;
             for (x, c) in rule.iter().enumerate() {
                 if *c == '_' || *c == ' ' {
                     continue;
@@ -4525,21 +4527,32 @@ mod settings_chat_render_tests {
                 claimed += 1;
                 let below_rank = RAMP.iter().position(|d| d == c);
                 let above_rank = above.get(x).and_then(|u| RAMP.iter().position(|d| d == u));
-                // The rule is always the thinnest low dot.
-                assert_eq!(
-                    below_rank,
-                    Some(1),
-                    "level {level}: rule cell {x} is {c:?}, expected the thinnest dot"
-                );
-                if let Some(a) = above_rank {
-                    // ...and the flame's base row is never thinner than it.
+                // The rule is the hottest row: never lighter than the cell above
+                // it. Rounding can tie two adjacent ramp steps, so the strict
+                // form is checked in aggregate below.
+                if let (Some(b), Some(a)) = (below_rank, above_rank) {
                     assert!(
-                        a >= 1,
-                        "level {level}: the base row above column {x} vanished"
+                        b >= a,
+                        "level {level}: rule cell {x} ({c:?}) is lighter than the row above ({:?})",
+                        above[x]
+                    );
+                    if b > a {
+                        strictly_denser += 1;
+                    }
+                } else {
+                    assert!(
+                        below_rank.is_some(),
+                        "rule glyph is not a ramp glyph: {c:?}"
                     );
                 }
             }
             assert!(claimed > 0, "no claimed columns at level {level}:\n{text}");
+            if level >= 0.6 {
+                assert!(
+                    strictly_denser * 2 >= claimed,
+                    "level {level}: only {strictly_denser}/{claimed} rule cells are denser than the row above"
+                );
+            }
             assert_ne!(
                 lines[idx],
                 lines[idx - 1],

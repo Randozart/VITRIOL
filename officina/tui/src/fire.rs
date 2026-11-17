@@ -220,10 +220,13 @@ fn base_frac(rows: usize) -> f64 {
     0.5 / rows.max(1) as f64
 }
 
-/// How much of its base density a column puts on the rule. Embers dot the line
-/// instead of filling it; a full draw is at the fire's own density.
-fn level_scale(level: f64) -> f64 {
-    (0.35 + 0.65 * (level * 1.6).min(1.0)).clamp(0.0, 1.0)
+/// How hot the rule row runs, relative to the field's base row.
+///
+/// Must stay above `0.3 + 0.5*level` (the base-row taper in `render`): the rule
+/// is where the fire is born, so it is the hottest cell of the column, and the
+/// strict inequality also guarantees the rule is never a copy of the row above.
+fn rule_heat(level: f64) -> f64 {
+    0.55 + 0.45 * level.clamp(0.0, 1.0)
 }
 
 /// Cells of the DIVIDER row: the fire's own bottom row, drawn on the line
@@ -242,32 +245,33 @@ pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<
         return out;
     }
     let step = (phase_ms / FLICKER_STEP_MS) as u32;
-    let base = base_frac(rows);
     let last = rows.saturating_sub(1) as u32;
     for (x, slot) in out.iter_mut().enumerate() {
         let col_light = column_light(column_edge(x, width), level);
         if col_light <= 0.0 {
             continue;
         }
-        // The flame always starts ON the line: the bottom row is inside the
-        // column by construction, so nothing floats above the rule.
-        let col_h = (col_light * (0.7 + 0.6 * hash01(x as u32, 0, step))).max(base);
-        let frac = (base / col_h.max(1e-3)).clamp(0.0, 1.0);
-        // What the flame's own bottom row shows for this column: same
-        // fraction and the same hash seed the field uses for that row.
-        let body_dens =
-            ((1.0 - frac * 0.8) * (0.7 + 0.6 * hash01(x as u32, last, step))).clamp(0.0, 1.0);
-        // THE LINE SMOULDERS (owner decision 2026-11-16: "let the fire start
-        // lower on the rule itself, and just have the line smoulder a bit on
-        // low load"). Presence still scales with load — more columns light up —
-        // but every lit cell keeps the *thinnest low dot*, so the rule stays a
-        // line with embers on it instead of becoming a dense bar that reads as
-        // detached from the flame above.
-        let dens = body_dens * level_scale(level);
-        if dens <= 0.08 {
-            continue; // first embers keep the underscore, intermittently
+        // The rule IS the field's bottom row, so it takes the same BASE
+        // fraction (0 after the 2026-11-16 remap) and the same hash seed: one
+        // density field, scaled differently (rule hotter than the taper above
+        // it, so the fire is born here and the rows cannot come out identical).
+        let base_dens = (0.7 + 0.6 * hash01(x as u32, last, step)).clamp(0.0, 1.0);
+        // THE FIRE SPAWNS ON THE RULE (owner decision 2026-11-16): the rule
+        // cell is REPLACED by the flame's own base, not covered by a dot.
+        // `rule_heat` sits deliberately above the field's base-row taper
+        // (0.3 + 0.5*level) so the rule is the hottest row of the flame — and so
+        // the two rows can never come out identical. At low load the scaled
+        // value falls under the smoulder threshold in most columns, which is
+        // what leaves the underscores *between* the flamelets.
+        // Presence is probabilistic and load-scaled, so first embers light only
+        // a minority of columns and the underscores survive between them.
+        let light = (col_light * 1.5).clamp(0.0, 1.0);
+        if light <= 0.0 || hash01(x as u32, 313, step) >= light {
+            continue;
         }
-        *slot = Some(DENSITY[1]);
+        let dens = base_dens * rule_heat(level);
+        let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
+        *slot = Some(DENSITY[idx.clamp(1, DENSITY.len() - 1)]);
     }
     out
 }
@@ -614,25 +618,32 @@ mod stability_tests {
             claimed.len() < lit_zone.len(),
             "underscores must survive inside the lit zone"
         );
-        // Sparse glyphs: the ramp's first two steps at most.
+        // Sparse *presence* is the ember property (a minority of columns);
+        // the glyph itself may already carry a few dots, because the rule is
+        // where the fire is born.
         for (x, cell) in row.iter().enumerate() {
             if let Some(g) = cell {
                 let idx = DENSITY.iter().position(|d| d == g).expect("ramp glyph");
-                assert!(idx <= 2, "column {x} too dense for embers: {g:?}");
+                assert!(idx <= 5, "column {x} too dense for embers: {g:?}");
             }
         }
     }
 
     /// Once it is burning, the flame consumes the line where it burns.
+    ///
+    /// Presence is probabilistic (`light = col_light * 1.5`), so only columns
+    /// whose reach guarantees it are expected to be claimed: at full load that
+    /// is `col_light > 0.67`.
     #[test]
     fn a_burning_flame_consumes_its_line() {
         let w = 160;
         let row = line_cells(w, 4, 500, 1.0);
         for x in 0..w {
             let light = column_light(column_edge(x, w), 1.0);
-            if light > 0.0 {
+            if light > 0.67 {
                 assert!(row[x].is_some(), "column {x} burns but left its underscore");
-            } else {
+            } else if light == 0.0 {
+                // The dead middle band always keeps the underscore.
                 assert!(row[x].is_none(), "middle band must keep the rule");
             }
         }

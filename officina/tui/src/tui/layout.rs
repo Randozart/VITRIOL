@@ -4496,22 +4496,26 @@ mod settings_chat_render_tests {
         assert_eq!(row_of(&with_notice), row_of(&after));
     }
 
-    /// F-C1 (owner report 2026-11-16): the flames must TAPER — each row above
-    /// the base is narrower than the one below it.
+    /// F-C1 (owner 2026-11-16, again 2026-11-17): the flames must TAPER — each
+    /// row above the base is narrower than the one below it, INCLUDING the row
+    /// that sits on the rule.
     ///
-    /// Differential on purpose: the SAME state is rendered twice, once with the
-    /// taper disabled and once with the shipped value, so the assertion cannot
-    /// be satisfied by the pre-existing jitter alone (my first attempt was, and
-    /// the negative control passed with the taper removed).
+    /// The previous version asserted that the bottom body row was unchanged by
+    /// the taper and then looked one row higher to find any taper at all. That
+    /// encoded the defect (`rn == 0` exempted that row) instead of catching it:
+    /// the owner saw two identical rows while this test was green.
+    ///
+    /// Differential on purpose: the same state renders with the taper off and
+    /// with the shipped value, so jitter cannot satisfy the assertion.
     #[test]
     fn flames_taper_with_height() {
-        // Lit width per body row, base row LAST.
-        fn widths(taper: f64) -> Vec<usize> {
+        // Lit width per body row, base row LAST (the rule row is last of all).
+        fn widths(taper: f64, level: f64) -> Vec<usize> {
             let mut state = AppState::default();
             state.entries.push(ChatEntry::Notice("hello".into()));
             state.fire_on = true;
-            state.fire_level = 1.0;
-            state.fire_target = 1.0;
+            state.fire_level = level;
+            state.fire_target = level;
             state.fire_taper = taper;
             let text = screen(&mut state, 120, 24);
             let lines: Vec<&str> = text.lines().collect();
@@ -4530,40 +4534,43 @@ mod settings_chat_render_tests {
             out
         }
 
-        let flat = widths(0.0);
-        let tapered = widths(0.55);
-        // The base row is exempt from the taper, so it must not change.
-        assert_eq!(
-            flat.last(),
-            tapered.last(),
-            "the taper must not narrow the rule: flat={flat:?} tapered={tapered:?}"
-        );
-        // Compare the whole body (sum) and the row immediately above the rule —
-        // the one the owner pointed at. Individual tip rows are 1-2 cells wide
-        // and too noisy to compare.
-        let sum = |v: &[usize]| v.iter().take(v.len() - 1).sum::<usize>();
-        assert!(
-            sum(&tapered) < sum(&flat),
-            "the taper did not narrow the body: flat={flat:?} tapered={tapered:?}"
-        );
-        // v.len()-2 is the body's bottom row, which is the taper's EXEMPT base
-        // (rn = 0) — the assert must look one row higher, at the first tapered
-        // row.
-        let above = |v: &[usize]| v[v.len() - 3];
-        assert!(
-            above(&tapered) < above(&flat),
-            "the row above the rule is not narrower: flat={flat:?} tapered={tapered:?}"
-        );
-        // And within the tapered render, widths must not increase going UP from
-        // the base: order them base-first, then row by row toward the top.
-        let base = *tapered.last().unwrap();
-        let mut seen: Vec<usize> = vec![base];
-        seen.extend(tapered[..tapered.len() - 1].iter().rev().copied());
-        for pair in seen.windows(2) {
-            assert!(
-                pair[1] <= pair[0],
-                "widths increase going up from the base: {seen:?} (base-first)"
+        // Levels that produce 2, 3, 4, 5 and 6 flame rows (rows_for(level)).
+        for level in [0.05, 0.3, 0.55, 0.8, 1.0] {
+            let flat = widths(0.0, level);
+            let tapered = widths(0.55, level);
+            let last = tapered.len() - 1;
+
+            // The rule row is never tapered (the base stays unbroken)…
+            assert_eq!(
+                flat[last], tapered[last],
+                "level {level}: the taper must not narrow the rule: flat={flat:?} tapered={tapered:?}"
             );
+            // …but the row ABOVE the rule is narrower than the rule. This is
+            // the assertion the old test skipped.
+            assert!(
+                tapered[last - 1] < tapered[last],
+                "level {level}: the row above the rule is not narrower: tapered={tapered:?}"
+            );
+            // Negative control: the SAME row is wider with the taper off, so
+            // the narrowing above is attributable to the taper and not to the
+            // flame's own shape. (The rule is always at least as wide as a body
+            // row — it claims every lit column — so comparing rule vs row
+            // alone would pass even with the feature removed.)
+            assert!(
+                tapered[last - 1] < flat[last - 1],
+                "level {level}: the taper did not narrow the first body row: \
+                 flat={flat:?} tapered={tapered:?}"
+            );
+            // Monotone: widths never increase going UP from the base.
+            let base = tapered[last];
+            let mut seen: Vec<usize> = vec![base];
+            seen.extend(tapered[..last].iter().rev().copied());
+            for pair in seen.windows(2) {
+                assert!(
+                    pair[1] <= pair[0],
+                    "level {level}: widths increase going up from the base: {seen:?} (base-first)"
+                );
+            }
         }
     }
 
@@ -4831,19 +4838,31 @@ mod settings_chat_render_tests {
         assert!(idx > 0);
         let rule: Vec<char> = lines[idx].chars().collect();
         let above: Vec<char> = lines[idx - 1].chars().collect();
+        // Direction matters (2026-11-17): the RULE is the flame's full-width
+        // base and the taper starts immediately above it, so the rule may be
+        // wider than the body — that is the pedestal the fire stands on. What
+        // must never happen is the reverse: a burning body cell floating where
+        // the rule has no flame, which is the "detached band" the owner
+        // reported on 2026-11-16.
         let mut checked = 0;
-        for (x, c) in rule.iter().enumerate() {
-            if *c == '_' || *c == ' ' {
+        for (x, c) in above.iter().enumerate() {
+            if *c == ' ' {
                 continue;
             }
-            let up = above.get(x).copied().unwrap_or(' ');
+            let down = rule.get(x).copied().unwrap_or(' ');
             assert_ne!(
-                up, ' ',
-                "column {x} burns on the rule but the body is empty above it"
+                down, ' ',
+                "column {x} burns above the rule but the rule is empty there"
             );
             checked += 1;
         }
-        assert!(checked > 0, "no claimed columns at full load:\n{text}");
+        assert!(checked > 0, "no body columns at full load:\n{text}");
+        // And the rule itself is continuous at full load: no gaps.
+        let lit_rule = rule.iter().filter(|c| **c != ' ' && **c != '_').count();
+        assert!(
+            lit_rule > rule.iter().filter(|c| **c == '_').count(),
+            "the rule is not continuous at full load:\n{text}"
+        );
     }
 
     #[test]

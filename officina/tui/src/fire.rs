@@ -234,7 +234,16 @@ fn taper_scale(rn: f64, taper: f64) -> f64 {
     // is invisible exactly where the owner looks ("the rule row and the row
     // above it are the same width", 2026-11-16). A linear ramp spends its effect
     // on the top rows, which are 1-2 cells wide anyway.
-    1.0 - taper.clamp(0.0, 1.0) * rn.clamp(0.0, 1.0).sqrt()
+    //
+    // 2026-11-17 (owner: "the bottom two fire rows are the same width"): sqrt
+    // alone was not enough. At 6 rows the first step was 1 - 0.55*sqrt(1/6) =
+    // 0.78, and with the bottom row exempt (rn = 0) the strip still opened with
+    // two identical rows. BASE_INSET spends part of the taper immediately, so
+    // the first row above the rule is visibly narrower at EVERY strip height,
+    // while the tip still lands exactly on 1 - taper.
+    const BASE_INSET: f64 = 0.18;
+    let r = rn.clamp(0.0, 1.0);
+    1.0 - taper.clamp(0.0, 1.0) * (BASE_INSET + (1.0 - BASE_INSET) * r.sqrt())
 }
 
 /// Is this column inside the tapered tongue at this height?
@@ -371,7 +380,13 @@ pub fn render(
             // Taper (2026-11-16): each tongue narrows with height. The BASE row
             // (rn == 0) is exempt, so the rule keeps the envelope's full width
             // and stays unbroken.
-            let rn = ((rows - 1 - r) as f64) / (rows.saturating_sub(1).max(1) as f64);
+            // Height fraction 0..1 where 0 is the RULE, not the bottom body
+            // row. Deriving rn from the row index made the bottom body row
+            // rn == 0, which the taper gate below exempts — so the rule row and
+            // the row above it came out identical, the exact defect the owner
+            // reported twice (2026-11-16 and again 2026-11-17). `from_base`
+            // starts at half a row, so every body row tapers.
+            let rn = (from_base / rows as f64).clamp(0.0, 1.0);
             let outside_taper = rn > 0.0 && !inside_tongue(edge, rn, taper);
             if outside_taper || frac_from_base > col_h {
                 // Above the flame — a rising ember? (owner request: little
@@ -462,8 +477,10 @@ pub fn tint_rows(
             let edge = column_edge(x, width);
             let light = column_light(edge, level);
             // Same silhouette the field draws, so text is never tinted outside
-            // the visible flame (2026-11-16).
-            let rn = ((rows - 1 - r) as f64) / (rows.saturating_sub(1).max(1) as f64);
+            // the visible flame (2026-11-16). Must use the SAME height fraction
+            // as `render` (base-relative), or the mask and the drawn flame
+            // disagree on the bottom rows (2026-11-17).
+            let rn = (from_base / rows.max(1) as f64).clamp(0.0, 1.0);
             if rn > 0.0 && !inside_tongue(edge, rn, taper) {
                 continue;
             }

@@ -490,6 +490,9 @@ struct server_metrics {
     uint64_t n_kv_cache_disk_unverified = 0;
     uint64_t n_kv_cache_disk_pruned     = 0;
     uint64_t n_kv_cache_mem_entries     = 0;
+    // 2026-11-17: cap-driven LRU evictions and the directory's current size
+    uint64_t n_kv_cache_evicted         = 0;
+    uint64_t n_kv_cache_bytes           = 0;
 
     uint64_t n_draft_tokens      = 0; // Total draft tokens generated
     uint64_t n_draft_accepted    = 0; // Draft tokens actually accepted

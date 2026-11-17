@@ -143,6 +143,7 @@ config_fingerprint() {
     [[ -n "${CFG_SLOT_CONTEXT:-}" ]] && fp="$fp slots=$CFG_SLOT_CONTEXT"
     [[ -n "${CFG_SLOT_SAVE_PATH:-}" ]] && fp="$fp ssp=1"
     [[ -n "${CFG_CACHE_RAM:-}" ]] && fp="$fp cram=$CFG_CACHE_RAM"
+    [[ -n "${CFG_CACHE_MAX_GB:-}" ]] && fp="$fp cmax=$CFG_CACHE_MAX_GB"
     [[ -n "${CFG_CHAT_TEMPLATE:-}" ]] && fp="$fp ct=$(basename "$CFG_CHAT_TEMPLATE")"
     [[ -n "${CFG_MMPROJ:-}" && -f "${CFG_MMPROJ:-}" ]] && fp="$fp vis=on"
     [[ "${CFG_CACHE_IDLE_SLOTS:-on}" == "off" ]] && fp="$fp cis=0"
@@ -321,6 +322,7 @@ CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
+CFG_CACHE_MAX_GB=""
 CFG_CACHE_REUSE=""
 CFG_CTX_RESIZE=""
 CFG_CACHE_IDLE_SLOTS="${CFG_CACHE_IDLE_SLOTS:-on}"
@@ -413,6 +415,7 @@ parse_config() {
                 server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
                 server.slot_save_path)  CFG_SLOT_SAVE_PATH="$val" ;;
         server.cache_ram)      CFG_CACHE_RAM="$val" ;;
+                server.cache_max_gb)   CFG_CACHE_MAX_GB="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
                 server.cache_ram)      CFG_CACHE_RAM="$val" ;;
                 server.cache_idle_slots) CFG_CACHE_IDLE_SLOTS="$val" ;;
@@ -542,6 +545,9 @@ parallel = $CFG_PARALLEL
 slot_context = $CFG_SLOT_CONTEXT
 slot_save_path = $CFG_SLOT_SAVE_PATH
 cache_ram = $CFG_CACHE_RAM
+# Disk cache budget in GiB (mirror states + slot snapshots). Empty = the
+# historical derived cap (12x cache_ram). 2026-11-17 owner: 40, LRU eviction.
+cache_max_gb = ${CFG_CACHE_MAX_GB:-}
 # Idle-slot KV -> host RAM (on | off). OFF = host-memory trim 2026-09-04:
 # the host KV backup was a swappable reservoir inflating engine OOM badness.
 cache_idle_slots = $CFG_CACHE_IDLE_SLOTS
@@ -727,6 +733,7 @@ CFG_LRU_MB_GPU="${DEFAULT_LRU_MB_GPU:-}"
 CFG_SLOT_CONTEXT=""
 CFG_SLOT_SAVE_PATH=""
 CFG_CACHE_RAM=""
+CFG_CACHE_MAX_GB=""
 CFG_CACHE_REUSE=""
 CFG_CTX_RESIZE=""
 CFG_CHAT_TEMPLATE=""
@@ -2429,6 +2436,11 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         SLOT_CONTEXT="${CLI_SLOT_CONTEXT:-${CFG_SLOT_CONTEXT:-}}"
         SLOT_SAVE_PATH="${CLI_SLOT_SAVE_PATH:-${CFG_SLOT_SAVE_PATH:-}}"
         CACHE_RAM="${CLI_CACHE_RAM:-${CFG_CACHE_RAM:-}}"
+        # Disk cache budget (GiB). Exported rather than passed as a flag: it is
+        # a policy for the whole directory (snapshots included) and the engine
+        # reads it at prompt-cache construction. 2026-11-17.
+        CACHE_MAX_GB="${CFG_CACHE_MAX_GB:-}"
+        [[ -n "$CACHE_MAX_GB" ]] && export VITRIOL_KV_CACHE_MAX_GB="$CACHE_MAX_GB"
         CACHE_REUSE="${CFG_CACHE_REUSE:-}"
         CHAT_TEMPLATE="${CFG_CHAT_TEMPLATE:-}"
         MODE="${VITRIOL_MODE:-${CFG_MODE}}"
@@ -2480,6 +2492,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
+        [[ -n "${CACHE_MAX_GB:-}" ]] && FINGERPRINT="$FINGERPRINT cmax=$CACHE_MAX_GB"
         [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && FINGERPRINT="$FINGERPRINT creuse=$CACHE_REUSE"
         [[ "${CFG_CTX_RESIZE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT cxr=1"
         [[ -n "${CHAT_TEMPLATE:-}" ]] && FINGERPRINT="$FINGERPRINT ct=$(basename "$CHAT_TEMPLATE")"

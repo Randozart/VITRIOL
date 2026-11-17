@@ -19,6 +19,7 @@
 #include <thread>
 #include <limits>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include <sys/time.h>
 
 //
@@ -1643,6 +1644,14 @@ std::string server_task_result_metrics::to_metrics() {
             "kv_cache_mem_entries",
             "VITRIOL Optane tier: prompt states currently held in the RAM cache",
             (double) metrics.n_kv_cache_mem_entries
+        }, {
+            "kv_cache_evicted_total",
+            "VITRIOL cache cap: disk entries evicted because the budget was exceeded",
+            (double) metrics.n_kv_cache_evicted
+        }, {
+            "kv_cache_bytes",
+            "VITRIOL cache cap: bytes on disk (mirror states + slot snapshots)",
+            (double) metrics.n_kv_cache_bytes
         },
     };
 
@@ -2442,6 +2451,10 @@ static bool server_prompt_cache_disk_read(const std::string & path, server_promp
 // collect cache-*.bin entries, oldest first; returns total bytes
 struct server_prompt_cache_disk_file {
     time_t mtime;
+    // Last *access* (restore), not last write: the LRU key. Under noatime the
+    // kernel never bumps it implicitly, so restores touch it explicitly; when
+    // it was never touched (atime <= mtime) write time stands in.
+    time_t atime = 0;
     size_t size;
     std::string name;
     bool managed = false;
@@ -2450,8 +2463,11 @@ struct server_prompt_cache_disk_file {
 #endif
 };
 
+// `include_snapshots` = budget view (mirror states + slot snapshots). The
+// listing/loading paths pass false: a snapshot is not a prompt-cache state and
+// reading a 2.6 GiB one to list it would be absurd.
 static size_t server_prompt_cache_disk_scan(const std::string & dir,
-        std::vector<server_prompt_cache_disk_file> & files) {
+        std::vector<server_prompt_cache_disk_file> & files, bool include_snapshots = false) {
     size_t total = 0;
 
     DIR * d = opendir(dir.c_str());
@@ -2462,13 +2478,20 @@ static size_t server_prompt_cache_disk_scan(const std::string & dir,
     dirent * e;
     while ((e = readdir(d)) != nullptr) {
         const std::string name(e->d_name);
-        if (name.rfind("cache-", 0) != 0 || name.size() < 10 ||
-                name.compare(name.size() - 4, 4, ".bin") != 0) {
+        // cache-*.bin = mirror states; slot*.bin = slot snapshots. Snapshots
+        // count toward the budget too (owner 2026-11-17: "that's the whole
+        // point") - they are the warm-resume states, so they are the most
+        // valuable entries and eviction must see them.
+        const bool is_state    = name.rfind("cache-", 0) == 0 && name.size() >= 10 &&
+                                 name.compare(name.size() - 4, 4, ".bin") == 0;
+        const bool is_snapshot = name.rfind("slot", 0) == 0 && name.size() >= 9 &&
+                                 name.compare(name.size() - 4, 4, ".bin") == 0;
+        if (!is_state && !(include_snapshots && is_snapshot)) {
             continue;
         }
         struct stat st;
         if (stat((dir + name).c_str(), &st) == 0 && S_ISREG(st.st_mode)) {
-            files.push_back({ st.st_mtime, (size_t) st.st_size, name });
+            files.push_back({ st.st_mtime, st.st_atime, (size_t) st.st_size, name });
             total += st.st_size;
         }
     }
@@ -2507,6 +2530,24 @@ std::vector<server_prompt_cache_disk_file> server_prompt_cache::disk_files() con
 // mirror cap = multiplier x RAM pool. Was 8x; at cram=12288 the live mirror sat
 // at 95.7/96 GiB, so every spill silently deleted the oldest session and a
 // restart re-prefilled it from token 0. Override: VITRIOL_KV_DISK_TRIM_X (1..1024).
+static size_t server_prompt_cache_disk_trim_limit(size_t limit_size);
+
+// 2026-11-17 (owner): one configurable budget for the whole cache directory,
+// snapshots included. VITRIOL_KV_CACHE_MAX_GB is authoritative when set; unset
+// keeps the historical derived cap (12x the RAM pool) so behaviour is unchanged
+// for any host that does not opt in.
+static size_t server_prompt_cache_disk_cap_bytes(size_t limit_size) {
+    const char * gb = getenv("VITRIOL_KV_CACHE_MAX_GB");
+    if (gb != nullptr && gb[0] != '\0') {
+        const double parsed = atof(gb);
+        if (parsed > 0.0 && parsed <= 1024.0 * 1024.0) {
+            return (size_t) (parsed * 1073741824.0);
+        }
+        SRV_WRN(" - cache cap: VITRIOL_KV_CACHE_MAX_GB=%s out of range, ignoring\n", gb);
+    }
+    return server_prompt_cache_disk_trim_limit(limit_size);
+}
+
 static size_t server_prompt_cache_disk_trim_limit(size_t limit_size) {
     int mult = 12;
     const char * v = getenv("VITRIOL_KV_DISK_TRIM_X");
@@ -2521,19 +2562,67 @@ static size_t server_prompt_cache_disk_trim_limit(size_t limit_size) {
     return limit_size * (size_t) mult;
 }
 
-static void server_prompt_cache_disk_trim(const std::string & dir, size_t limit_bytes, size_t incoming) {
-    if (limit_bytes == 0 || incoming > limit_bytes) {
-        return;
-    }
+// Bump an entry's last-access stamp on a successful restore. The mount is
+// noatime, so the kernel never does this implicitly; utimensat is explicit and
+// works regardless. Best effort - a read-only dir must not fail a restore.
+static void server_prompt_cache_disk_touch(const std::string & path) {
+    (void) utimensat(AT_FDCWD, path.c_str(), nullptr, 0);
+}
 
+// Last-access time of a cache entry: the explicit touch wins, write time is
+// the fallback for entries that were never restored.
+static time_t server_prompt_cache_disk_last_access(const server_prompt_cache_disk_file & f) {
+    return f.atime > f.mtime ? f.atime : f.mtime;
+}
+
+// Entries that must survive a sweep: the file about to be written, the newest
+// slot snapshot (the warm-resume state this process just restored or wrote) and
+// every managed entry (their owner reclaims them, not us).
+static bool server_prompt_cache_disk_protected(const server_prompt_cache_disk_file & f,
+        const std::string & newest_snapshot, const std::string & incoming_name) {
+    if (f.managed || (!incoming_name.empty() && f.name == incoming_name) ||
+            (!newest_snapshot.empty() && f.name == newest_snapshot)) {
+        return true;
+    }
+    return false;
+}
+
+// Bring the directory under `limit_bytes`, evicting the entries addressed
+// longest ago. Returns the number of bytes still over the cap (0 = compliant).
+static size_t server_prompt_cache_disk_trim(const std::string & dir, size_t limit_bytes, size_t incoming,
+        const std::string & incoming_name, uint64_t * n_evicted, size_t * bytes_after) {
     std::vector<server_prompt_cache_disk_file> files;
-    size_t total = server_prompt_cache_disk_scan(dir, files);
-
-    if (total + incoming <= limit_bytes) {
-        return;
+    size_t total = server_prompt_cache_disk_scan(dir, files, true);
+    if (bytes_after != nullptr) {
+        *bytes_after = total;
+    }
+    if (limit_bytes == 0 || total + incoming <= limit_bytes) {
+        return 0;
     }
 
-    SRV_WRN(" - disk trim: mirror at %.1f GiB + incoming %.1f GiB exceeds %.1f GiB limit, removing oldest files\n",
+    // Protect the newest snapshot, not "slot0.bin" by name: with several slots
+    // only the freshest one is the warm-resume state.
+    std::string newest_snapshot;
+    time_t newest_mtime = 0;
+    for (const auto & f : files) {
+        if (f.name.rfind("slot", 0) == 0 && f.mtime > newest_mtime) {
+            newest_mtime = f.mtime;
+            newest_snapshot = f.name;
+        }
+    }
+
+    // Oldest access first. Not the scan order: that one is write-time newest
+    // first so evolved prefixes win, which is the opposite of an LRU.
+    std::sort(files.begin(), files.end(), [](const auto & a, const auto & b) {
+        const time_t ta = server_prompt_cache_disk_last_access(a);
+        const time_t tb = server_prompt_cache_disk_last_access(b);
+        if (ta != tb) {
+            return ta < tb;
+        }
+        return a.name < b.name;
+    });
+
+    SRV_WRN(" - cache cap: %.1f GiB + incoming %.1f GiB exceeds %.1f GiB, evicting least-recently-addressed\n",
             total / 1073741824.0, incoming / 1073741824.0, limit_bytes / 1073741824.0);
 
     size_t n_removed = 0;
@@ -2542,22 +2631,34 @@ static void server_prompt_cache_disk_trim(const std::string & dir, size_t limit_
         if (total + incoming <= limit_bytes) {
             break;
         }
+        if (server_prompt_cache_disk_protected(file, newest_snapshot, incoming_name)) {
+            continue;
+        }
         if (remove((dir + file.name).c_str()) == 0) {
             total -= file.size;
             bytes_removed += file.size;
             n_removed++;
-            SRV_WRN(" - disk trim: removed %s (%.2f GiB)\n", file.name.c_str(), file.size / 1073741824.0);
+            SRV_WRN(" - cache cap: evicted %s (%.2f GiB, last used %lld)\n",
+                    file.name.c_str(), file.size / 1073741824.0,
+                    (long long) server_prompt_cache_disk_last_access(file));
         }
     }
 
-    SRV_WRN(" - disk trim: freed %zu files (%.1f GiB), mirror now %.1f GiB\n",
+    SRV_WRN(" - cache cap: evicted %zu files (%.1f GiB), directory now %.1f GiB\n",
             n_removed, bytes_removed / 1073741824.0, total / 1073741824.0);
+    if (n_evicted != nullptr) {
+        *n_evicted = n_removed;
+    }
+    if (bytes_after != nullptr) {
+        *bytes_after = total;
+    }
+    return total + incoming > limit_bytes ? total + incoming - limit_bytes : 0;
 }
 
 #ifdef VITRIOL_CACHE_STORE
 void server_prompt_cache::owned_init() {
     if (disk_dir.empty() || limit_size == 0 || !server_prompt_cache_env_flag("VITRIOL_KV_OWNED_CACHE", false)) { return; }
-    const size_t maximum = server_prompt_cache_disk_trim_limit(limit_size);
+    const size_t maximum = server_prompt_cache_disk_cap_bytes(limit_size);
     if (maximum == 0) { return; }
     auto runtime = server_owned_runtime::open(disk_dir + "owned-kv-v1", json{
         {"maxBytes", maximum}, {"reclaim", server_prompt_cache_env_flag("VITRIOL_KV_OWNED_RECLAIM", false)},
@@ -2651,9 +2752,19 @@ void server_prompt_cache::disk_spill(server_prompt & prompt,
 
     const size_t spill_size = data_main->size() + (data_drft ? data_drft->size() : 0);
 
-    server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_trim_limit(limit_size), spill_size); // mirror keeps ~12x the RAM pool: evicted-from-RAM states stay fetchable
-
     const std::string name = server_prompt_cache_disk_name(prompt.tokens, identity.model_key);
+    // Enforce the cap before writing: the incoming state is the one entry that
+    // must not be evicted by its own spill.
+    {
+        uint64_t n_evicted = 0;
+        size_t bytes_after = 0;
+        server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_cap_bytes(limit_size), spill_size,
+                name, &n_evicted, &bytes_after);
+        if (n_evicted != 0) {
+            n_cache_evicted += n_evicted;
+        }
+        n_cache_bytes.store(bytes_after + spill_size);
+    }
     const std::string path = disk_dir + name;
     const server_prompt_cache_identity id = identity;
 
@@ -2820,6 +2931,12 @@ bool server_prompt_cache::disk_read_best(const std::string & path, float f_keep)
         return false;
     }
 
+    // This entry is the one being addressed right now: mark it so a later sweep
+    // evicts something older instead of it.
+    if (!managed) {
+        server_prompt_cache_disk_touch(path);
+    }
+
     if (limit_size > 0 && size() + st.size() > limit_size) {
         // make room the same way alloc() does (oldest first), never trim to zero
         while (!states.empty() && size() + st.size() > limit_size) {
@@ -2939,6 +3056,36 @@ void server_prompt_cache::disk_load() {
         SRV_WRN(" - disk load: restored %zu prompt states (%zu skipped, %zu rejected, %zu unverified) from %s\n",
                 n_loaded, n_dropped, n_rejected, n_unverified, disk_dir.c_str());
     }
+
+    // Boot sweep: bound the directory before anything restores from it, so a
+    // capped cache is already compliant when the first request arrives.
+    {
+        uint64_t n_evicted = 0;
+        size_t bytes_after = 0;
+        server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_cap_bytes(limit_size), 0,
+                std::string(), &n_evicted, &bytes_after);
+        if (n_evicted != 0) {
+            n_cache_evicted += n_evicted;
+        }
+        n_cache_bytes.store(bytes_after);
+    }
+}
+
+// The effective cap for this process (bytes; 0 = unlimited).
+size_t server_prompt_cache::disk_cap_bytes() const {
+    if (disk_dir.empty()) {
+        return 0;
+    }
+    return server_prompt_cache_disk_cap_bytes(limit_size);
+}
+
+// Bytes currently on disk, cheaply: stat only, no state parsing.
+size_t server_prompt_cache::disk_usage_bytes() const {
+    if (disk_dir.empty()) {
+        return 0;
+    }
+    std::vector<server_prompt_cache_disk_file> files;
+    return server_prompt_cache_disk_scan(disk_dir, files, true);
 }
 
 std::vector<server_prompt_cache_disk_info> server_prompt_cache::disk_list() const {

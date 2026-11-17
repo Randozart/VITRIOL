@@ -961,6 +961,8 @@ public:
             m.n_kv_cache_disk_unverified = prompt_cache->n_disk_unverified.load();
             m.n_kv_cache_disk_pruned     = prompt_cache->n_disk_pruned.load();
             m.n_kv_cache_mem_entries     = prompt_cache->states.size();
+            m.n_kv_cache_evicted         = prompt_cache->n_cache_evicted.load();
+            m.n_kv_cache_bytes           = prompt_cache->disk_usage_bytes();
         }
         return m;
     }
@@ -1015,6 +1017,14 @@ public:
         res["disk"]       = disk;
         res["disk_bytes"] = disk_bytes;
         res["disk_dir"]   = prompt_cache->disk_dir;
+        // Cache budget (2026-11-17): cap in bytes (0 = unlimited) plus the
+        // directory's real usage, which includes slot snapshots.
+        const size_t cap   = prompt_cache->disk_cap_bytes();
+        const size_t used  = prompt_cache->disk_usage_bytes();
+        res["cap_bytes"]        = cap;
+        res["used_bytes"]       = used;
+        res["over_cap"]         = cap != 0 && used > cap;
+        res["evicted_total"]    = prompt_cache->n_cache_evicted.load();
 #ifdef VITRIOL_CACHE_STORE
         res["managed"] = prompt_cache->owned_info();
 #endif

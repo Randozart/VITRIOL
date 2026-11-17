@@ -77,5 +77,12 @@ export function couplingDisplay(
   }
   const def = couplings.find((c) => providerTagOf(c) === provider);
   if (def) return `${def.name} · ${modelId ?? ""}`.trim();
-  return modelId ?? provider;
+  // Unknown provider (caduceus, opencode, …): this file does not know the
+  // model's formatted name, so show the id's short form WITH the provider —
+  // never a bare code with no hint of who serves it (2026-11-16).
+  const id = String(modelId ?? "").trim();
+  if (!id) return provider;
+  // Full id (the caller truncates to the sidebar width) plus the provider, so
+  // the row names who serves the model without hiding the id's owner segment.
+  return `${id} · ${provider}`;
 }

@@ -81,10 +81,22 @@ export function fmtCost(v: number): string {
 }
 
 /** `dahl/MiniMaxAI/MiniMax-M2.7` → `MiniMax-M2.7`; the sidebar is 34 columns. */
-export function shortModel(model: string, max = 22): string {
-  const last = String(model ?? "").split("/").filter(Boolean).pop() ?? "";
-  const one = last.trim() || String(model ?? "").trim();
-  return one.length > max ? `${one.slice(0, max - 1)}…` : one;
+/**
+ * Sidebar-friendly model label: the short name plus its PROVIDER, so the
+ * operator knows who serves which model (2026-11-16: the sidebar and route strip
+ * showed only the id's last segment, e.g. "deepseek-v4.1-flash", with no hint
+ * that it came from caduceus vs a local engine).
+ */
+export function shortModel(model: string, max = 22, provider?: string): string {
+  const raw = String(model ?? "");
+  const last = raw.split("/").filter(Boolean).pop() ?? "";
+  const one = last.trim() || raw.trim();
+  const short = one.length > max ? `${one.slice(0, max - 1)}…` : one;
+  const owner = String(provider ?? "").trim();
+  // Skip the suffix when the id already names the provider (caduceus/... ids
+  // are owner/model, so the provider is either implicit or redundant).
+  if (!owner || raw.includes("/") || short.includes(owner)) return short;
+  return `${short} · ${owner}`;
 }
 
 function key(provider?: string, model?: string): string {

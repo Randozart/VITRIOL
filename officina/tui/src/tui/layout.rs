@@ -218,10 +218,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
         }
     }
 
+    // Formatted NAME + provider (2026-11-16): the header used to show the raw
+    // model id, which told the operator nothing about who serves it.
     let model = state
         .model
         .as_ref()
-        .map(|m| m.id.clone())
+        .map(AppState::model_label)
         .unwrap_or_default();
     let right = session_label(state)
         .map(|l| elide_path_tail(&l, (area.width.saturating_sub(24) as usize).max(16)))

@@ -3558,6 +3558,25 @@ impl AppState {
     /// /fire handler: bare argument toggles, "on"/"off" set directly, a
     /// style name (emerald|alchemy) switches the color voice, bare "style"
     /// cycles it. Returns the new state for the notify line.
+    /// Human label for the active model: its FORMATTED NAME plus the provider,
+    /// so the operator knows who serves which model (2026-11-16: the header and
+    /// status rows showed the raw id instead). Falls back to `provider/id` when
+    /// the catalog gave no name.
+    pub fn model_label(model: &Model) -> String {
+        let name = model
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| model.id.clone());
+        if name == model.id {
+            format!("{} · {}", model.provider, model.id)
+        } else {
+            format!("{} · {}", name, model.provider)
+        }
+    }
+
     /// The notice as one line: first line only, whitespace collapsed, with a
     /// `(+N lines)` tail. Multi-line notices (the /nimbus table) used to be cut
     /// to 40 chars, silently dropping everything (2026-11-16).
@@ -9063,6 +9082,22 @@ mod self_heal_tests {
              move the transcript by one line"
         );
         assert!(s.ctx_bar_label().is_some());
+    }
+
+    #[test]
+    fn model_label_shows_the_formatted_name_and_provider() {
+        let mut m = crate::rpc::protocol::Model {
+            id: "caduceus/glm-5.2".into(),
+            name: None,
+            provider: "caduceus".into(),
+            context_window: None,
+            max_tokens: None,
+            reasoning: None,
+        };
+        // No catalog name: provider + id, never a bare code.
+        assert_eq!(AppState::model_label(&m), "caduceus · caduceus/glm-5.2");
+        m.name = Some("GLM 5.2".into());
+        assert_eq!(AppState::model_label(&m), "GLM 5.2 · caduceus");
     }
 
     #[test]

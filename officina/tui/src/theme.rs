@@ -12,6 +12,10 @@ use ratatui::style::{Color, Modifier, Style};
 pub const BG: Color = Color::Rgb(0x0D, 0x11, 0x17);
 /// Panel background.
 pub const PANEL: Color = Color::Rgb(0x16, 0x1B, 0x22);
+/// Background band behind a USER turn (2026-11-16): a deliberate half-step from
+/// BG toward PANEL, so it marks the operator's own turn without becoming a
+/// highlighter. Only backgrounds change — glyph contrast is untouched.
+pub const USER_BG: Color = Color::Rgb(0x13, 0x1A, 0x22);
 /// Dim border for unfocused panels.
 pub const BORDER_DIM: Color = Color::Rgb(0x21, 0x26, 0x2D);
 /// VITRIOL primary green (Safety) — borders, headers, gauges.

@@ -787,6 +787,42 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         chat_area,
     );
 
+    // User-turn band (owner request 2026-11-16): paint the rows that belong to
+    // a USER entry, full width minus the gauge column. Drawn AFTER the chat
+    // paragraph (so it replaces BG) and BEFORE the fire tint (which writes fg
+    // only) and the selection (which must win on selected rows). Blank
+    // separator rows are skipped: `chat_lines` tags the gap row with the current
+    // entry's index, and a tinted gap under every turn would read as stripes.
+    if state.user_turn_bg && !state.entries.is_empty() {
+        let start = state.last_start;
+        let visible = chat_area.height as usize;
+        let x_end = chat_area.x + chat_area.width.saturating_sub(1);
+        let buffer = frame.buffer_mut();
+        for row in 0..visible {
+            let idx = state
+                .line_entries
+                .get(start + row)
+                .copied()
+                .unwrap_or(usize::MAX);
+            if !matches!(
+                state.entries.get(idx),
+                Some(crate::tui::state::ChatEntry::User(_))
+            ) {
+                continue;
+            }
+            let y = chat_area.y + row as u16;
+            let blank = (chat_area.x..x_end).all(|x| buffer[(x, y)].symbol().trim().is_empty());
+            if blank {
+                continue;
+            }
+            for x in chat_area.x..x_end {
+                if let Some(cell) = buffer.cell_mut(ratatui::layout::Position { x, y }) {
+                    cell.set_bg(theme::USER_BG);
+                }
+            }
+        }
+    }
+
     // Text-tint pass (owner request 2026-09-02: "user text discolors based
     // on the fire beneath it — do the same for AI text"). Unstyled user
     // spans already inherit the flame fg via ratatui's style-patch
@@ -4197,6 +4233,7 @@ mod settings_chat_render_tests {
     fn settings_choices_fit_small_screens() {
         for command in [
             "/fire",
+            "/chat-bg",
             "/shimmer",
             "/sidebar",
             "/thinking",
@@ -4244,6 +4281,83 @@ mod settings_chat_render_tests {
             !text.contains("compacting context"),
             "compaction must scroll with chat: {text}"
         );
+    }
+
+    /// Background colours of every rendered cell (2026-11-16: the user-turn
+    /// band is a bg-only effect, so symbols alone cannot assert it).
+    fn screen_bgs(state: &mut AppState, w: u16, h: u16) -> Vec<Vec<ratatui::style::Color>> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| render(f, state)).unwrap();
+        let buf = terminal.backend().buffer();
+        (0..h)
+            .map(|y| (0..w).map(|x| buf[(x, y)].bg).collect::<Vec<_>>())
+            .collect()
+    }
+
+    /// Rows whose background is the user-turn band.
+    fn band_rows(bgs: &[Vec<ratatui::style::Color>]) -> Vec<usize> {
+        bgs.iter()
+            .enumerate()
+            .filter(|(_, row)| row.iter().any(|c| *c == theme::USER_BG))
+            .map(|(y, _)| y)
+            .collect()
+    }
+
+    #[test]
+    fn user_turn_gets_a_background_band() {
+        let mut state = AppState::default();
+        state
+            .entries
+            .push(ChatEntry::User("add a band here".into()));
+        state.entries.push(ChatEntry::Assistant("done".into()));
+        let bgs = screen_bgs(&mut state, 60, 18);
+        let rows = band_rows(&bgs);
+        assert_eq!(rows.len(), 1, "exactly the user row is banded: {rows:?}");
+        // The band spans the chat width minus the gauge column.
+        let y = rows[0];
+        assert_eq!(bgs[y][0], theme::USER_BG);
+        // The gauge column is the LAST column of the chat area (chat_width is
+        // width - 1), not the one before it.
+        assert_ne!(bgs[y][59], theme::USER_BG, "gauge column stays clean");
+    }
+
+    #[test]
+    fn band_off_restores_the_plain_transcript() {
+        let mut state = AppState::default();
+        state.user_turn_bg = false;
+        state
+            .entries
+            .push(ChatEntry::User("add a band here".into()));
+        state.entries.push(ChatEntry::Assistant("done".into()));
+        let bgs = screen_bgs(&mut state, 60, 18);
+        assert!(
+            band_rows(&bgs).is_empty(),
+            "/chat-bg off must leave no banded cell"
+        );
+    }
+
+    #[test]
+    fn band_covers_a_wrapped_turn_and_skips_the_gap() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::User(
+            "a long user message that wraps onto more than one row when the column is narrow"
+                .into(),
+        ));
+        state.entries.push(ChatEntry::Assistant("ok".into()));
+        state.entries.push(ChatEntry::User("second".into()));
+        let bgs = screen_bgs(&mut state, 40, 20);
+        let rows = band_rows(&bgs);
+        assert!(rows.len() >= 3, "wrapped turn + second turn: {rows:?}");
+        // No banded row is blank: the inter-entry gap stays BG.
+        let text = screen(&mut state, 40, 20);
+        let lines: Vec<&str> = text.lines().collect();
+        for y in &rows {
+            assert!(
+                !lines[*y].trim().is_empty(),
+                "gap row {y} was banded:\n{text}"
+            );
+        }
     }
 
     /// Row with the most underscores — the divider line.

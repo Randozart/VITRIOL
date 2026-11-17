@@ -59,6 +59,7 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     state.cwd = cwd;
     load_glimmer(&mut state);
     load_fire(&mut state);
+    load_chat_bg(&mut state);
     load_tools_config(&mut state);
     // Crash black-box: the hook reads the diag ring via the shared global
     // (registered inside DiagLog::new), so install order does not matter.
@@ -151,6 +152,10 @@ fn fire_path() -> std::path::PathBuf {
     glimmer_path().with_file_name("tui-fire")
 }
 
+fn chat_bg_path() -> std::path::PathBuf {
+    glimmer_path().with_file_name("tui-chat-bg")
+}
+
 fn load_fire(state: &mut AppState) {
     if std::env::var("OFFICINA_FIRE")
         .map(|v| v == "0")
@@ -188,6 +193,25 @@ fn load_fire(state: &mut AppState) {
             if let Some(&v) = tokens.get(i + 1) {
                 state.fire_tint = v != "off";
             }
+        }
+    }
+}
+
+/// `/chat-bg` persistence (2026-11-16): one word, beside the fire prefs.
+fn persist_chat_bg(state: &AppState) {
+    if let Some(dir) = chat_bg_path().parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let line = if state.user_turn_bg { "on" } else { "off" };
+    let _ = std::fs::write(chat_bg_path(), format!("{line}\n"));
+}
+
+/// Read the persisted band preference at startup; missing/corrupt = on.
+fn load_chat_bg(state: &mut AppState) {
+    if let Ok(text) = std::fs::read_to_string(chat_bg_path()) {
+        let word = text.trim().to_ascii_lowercase();
+        if word == "off" || word == "0" || word == "false" {
+            state.user_turn_bg = false;
         }
     }
 }

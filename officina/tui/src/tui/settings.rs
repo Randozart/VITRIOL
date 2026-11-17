@@ -30,6 +30,7 @@ fn open(state: &mut AppState, title: &str, options: &[&str], current: &str) {
 
 const SETTINGS: &[&str] = &[
     "fire",
+    "chat-bg",
     "glimmer",
     "sidebar",
     "thinking",
@@ -37,6 +38,7 @@ const SETTINGS: &[&str] = &[
     "permissions",
     "diag",
 ];
+const CHAT_BG: &[&str] = &["on", "off"];
 const FIRE: &[&str] = &[
     "off",
     "on",
@@ -92,6 +94,12 @@ fn apply(state: &mut AppState, name: &str, args: &str) -> Option<Option<RpcComma
             super::persist_fire(state);
             format!("fire: {label}")
         }
+        // User-turn background band (owner request 2026-11-16).
+        "/chat-bg" => {
+            let label = state.set_user_turn_bg(args);
+            super::persist_chat_bg(state);
+            format!("chat-bg: {label}")
+        }
         "/glimmer" | "/shimmer" => {
             let label = state.set_glimmer(args);
             super::persist_glimmer(state);
@@ -146,6 +154,7 @@ fn open_setting(state: &mut AppState, name: &str) -> bool {
     let view = if state.hide_thinking { "hide" } else { "show" };
     let (title, options, current): (&str, &[&str], &str) = match name {
         "/fire" => (name, FIRE, fire),
+        "/chat-bg" => (name, CHAT_BG, if state.user_turn_bg { "on" } else { "off" }),
         "/fire style" => ("/fire", STYLES, state.fire_style.label()),
         "/fire tint" => ("/fire", &["tint on", "tint off"], tint),
         "/glimmer" | "/shimmer" => (

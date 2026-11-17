@@ -1090,6 +1090,10 @@ pub struct AppState {
     /// leave text their original color"). Default on — the discolor
     /// effect is the original beloved behavior.
     pub fire_tint: bool,
+    /// Paint a quiet background band behind the operator's own turns
+    /// (owner request 2026-11-16). Default on; `/chat-bg off` restores the
+    /// unbanded transcript byte-for-byte.
+    pub user_turn_bg: bool,
     pub fire_target: f64,
     pub fire_level: f64,
     /// Flame strip height applied last frame — the dead band in
@@ -1311,6 +1315,7 @@ impl Default for AppState {
             fire_on: true,
             fire_style: crate::fire::FireStyle::default(),
             fire_tint: true,
+            user_turn_bg: true,
             fire_target: 0.0,
             fire_level: 0.0,
             fire_rows_prev: 0,
@@ -3544,6 +3549,21 @@ impl AppState {
     /// /fire handler: bare argument toggles, "on"/"off" set directly, a
     /// style name (emerald|alchemy) switches the color voice, bare "style"
     /// cycles it. Returns the new state for the notify line.
+    /// `/chat-bg [on|off]` — the user-turn band (2026-11-16).
+    pub fn set_user_turn_bg(&mut self, args: &str) -> String {
+        match args.trim() {
+            "" => self.user_turn_bg = !self.user_turn_bg,
+            "on" | "1" | "true" => self.user_turn_bg = true,
+            "off" | "0" | "false" => self.user_turn_bg = false,
+            other => return format!("unknown: {other} (use on|off)"),
+        }
+        if self.user_turn_bg {
+            "on".to_string()
+        } else {
+            "off".to_string()
+        }
+    }
+
     pub fn set_fire(&mut self, args: &str) -> String {
         let args = args.trim();
         match args {

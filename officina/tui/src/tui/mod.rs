@@ -5487,8 +5487,17 @@ mod input_settings_tests {
             source: "test".into(),
         });
         press(KeyCode::Tab, &mut state, &mut bridge).await;
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        let sent = std::fs::read_to_string(&log).unwrap_or_default();
+        // Poll instead of sleeping a fixed 150 ms: the write crosses a child
+        // process, and a loaded CI runner loses that race (2026-11-17 flake).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut sent = String::new();
+        while std::time::Instant::now() < deadline {
+            sent = std::fs::read_to_string(&log).unwrap_or_default();
+            if sent.contains("/agent plan") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
         assert!(
             sent.contains("\"type\":\"prompt\"") && sent.contains("/agent plan"),
             "Tab must send the agent cycle despite a ghost: {sent:?}"

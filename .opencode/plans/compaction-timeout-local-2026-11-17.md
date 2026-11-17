@@ -91,6 +91,41 @@ longer advertises 4,096 on a 262k engine. Traced live:
 Regression test: `engine-max-tokens.test.ts` + two updated `config.test.ts`
 expectations.
 
+## 1.7 Third finding: decode at depth is the real constraint (~1.2 tok/s at 113k)
+
+With both fixes in place the compaction got further than ever and then stalled in generation:
+
+```
+slots[0]: n_prompt_tokens 113470 / processed 113470, n_remain 16384, n_decoded 1798 after ~25 min
+```
+
+Prefill is fine — 113k–135k tokens prefilled at **277 tok/s** (487 s for 134,850 tokens).
+Generation is not: `n_decoded` advanced ~1,798 in ~25 min ≈ **1.2 tok/s**, and 8 minutes of
+wall clock moved the global predicted counter by 148. At that rate a 2,000-token summary is
+~28 min and a runaway 16k summary is 3.7 h. The run was stopped after 30+ min; the engine was
+released healthy (`/health` ok), no operator session disturbed beyond the slot's own KV.
+
+So the three real constraints for local compaction, in the order they bite:
+
+| constraint | measured | verdict |
+|---|---|---|
+| client idle timeout | 300 s vs 12–20 min prefill | **fixed** (`httpIdleTimeoutMs: 1800000`) |
+| output cap | 4,096 vs a multi-section summary | **fixed** (window-derived, 16,384) |
+| decode at depth | **~1.2 tok/s at 113k** (prefill 277 tok/s) | **not fixable by config** |
+
+The third one means a *deep* local compaction cannot be made quick; it can only be made
+**small**. Two viable policies, both honest about the trade-off:
+
+- **Compact early (local, no privacy change).** Keep the summarisation prompt ≤ ~36 k tokens,
+  where decode is 11–16 tok/s (depth certs), i.e. a summary in 3–6 min. Requires
+  `reserveTokens ≈ 226000` and `keepRecentTokens ≈ 8000` (fires near ~36 k used). Cost: summaries
+  every ~36 k tokens and a smaller live window between them.
+- **Summarise on a cloud lane (F5, opt-in).** ~10 s instead of ~30–60 min. Cost: the conversation
+  leaves the box — invariant I2, so opt-in only, never a default.
+
+A third option — "raise the timeout and wait" — is what F1 does, and it is only acceptable for
+*shallow* compactions; at 113k it is a 30–60 minute turn.
+
 ## 1.5 Why it looks *endless* rather than "failed once"
 
 - pi retries summarisation (`_summarizationRetryCallbacks`, same retry budget as turns); each retry
@@ -187,3 +222,33 @@ The local model is not broken and the engine is not dying: **pi's 300 s HTTP idl
 than a cold prefill of a ~172 k-token summarisation prompt (~12–20 min at 240 tok/s)**, and
 compaction re-serialises the conversation so that prefill is always cold. Raise
 `httpIdleTimeoutMs`, compact earlier, and make the failure legible.
+
+## 7. Provenance of the proof runs
+
+Driver: `/tmp/compactproof/compact-once.mjs` — spawns
+`node …/pi-coding-agent/dist/cli.js --mode rpc --session <fork> --provider llamacpp
+--model "Lapis Occultus" -e officina/.pi/extensions/llama-cpp-provider/index.ts`
+with `cwd=officina`, `OFFICINA_NO_AUTO_ROUTE=1`, `OFFICINA_ROUTE_MODE=off`, then sends
+`{"type":"compact"}`. The session under test is a **fork**
+(`/tmp/compactproof/stuck.jsonl`) of
+`~/.pi/agent/sessions/--home-randozart-Desktop-Projects-briev-lang--/2026-11-14T13-45-57-796Z_a8092af0-*.jsonl`
+(10 060 entries, 12.9 MB) — the original was never modified.
+
+| run | code state | verdict |
+|---|---|---|
+| 1 | default timeout 300 s | `Request timed out.` at 300 s (the bug) |
+| 2 | timeout 30 min only | `generation hit the token cap` at 233 s (cap 4,096, cached prefill) |
+| 3 | + maxTokens on one alias path | same, 1083 s (cold prefill 269,680 tok) |
+| 4 | + maxTokens on both alias paths | same, 448 s (still 4,096 → later found a third path) |
+| 5 | maxTokens derived in `fillModelDefaults` | ran >30 min with `n_remain: 16384` (cap fixed), stalled at ~1.2 tok/s decode (see §1.7); stopped to release the engine |
+
+Engine after every run: `/health` ok, slot idle, no restart, no wedge.
+
+## 8. What the operator should do next (decision, not code)
+
+1. **Restart Officina** so pi picks up `httpIdleTimeoutMs` and the provider change.
+2. For the currently stuck session, compact on a **fast lane** (switch model → `/compact` →
+   switch back). It takes seconds instead of an hour and needs no config change.
+3. If local summaries must stay local, decide the compaction *policy*: compact-early
+   (`reserveTokens ≈ 226000`, `keepRecentTokens ≈ 8000`) is the only local variant that
+   finishes in minutes; otherwise F5 (opt-in cloud summary lane) is the honest answer.

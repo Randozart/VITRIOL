@@ -1563,6 +1563,9 @@ Type=simple
 ExecStart="${node}" "${resolve(ROUTER_SCRIPT)}" --port ${ROUTER_PORT}
 Environment=CADUCEUS_ROUTER_PORT=${ROUTER_PORT}
 Environment=CADUCEUS_ROUTER_STATE=${ROUTER_STATE_FILE}
+Environment=CADUCEUS_ROUTER_DECISION=${flags.decision ? 1 : 0}
+Environment=CADUCEUS_ROUTER_DECISION_FLOOR=${Number(flags["decision-floor"] ?? 0.6)}
+Environment=CADUCEUS_ROUTER_DECISION_MODEL=${String(flags["decision-model"] ?? "gemini-decision-1")}
 EnvironmentFile=-${ENV_FILE}
 Restart=always
 RestartSec=2
@@ -1632,6 +1635,12 @@ WantedBy=default.target
       .join(", ");
     log(`  parked:    ${parked || "none"}`);
   }
+  const unitText = existsSync(ROUTER_UNIT) ? readFileSync(ROUTER_UNIT, "utf8") : "";
+  const decisionOn = /CADUCEUS_ROUTER_DECISION=1/.test(unitText);
+  const decisionFloor = /CADUCEUS_ROUTER_DECISION_FLOOR=([0-9.]+)/.exec(unitText)?.[1] ?? "0.6";
+  log(
+    `  decision:  ${decisionOn ? `on (floor ${decisionFloor}, gemini-decision-1)` : "off — deterministic order"}`,
+  );
   log(`  state:     ${ROUTER_STATE_FILE}`);
 }
 

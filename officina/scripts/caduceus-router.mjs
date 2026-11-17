@@ -34,6 +34,12 @@ import {
   parseQuotaHint,
   pruneParked,
   resolveFallbacks,
+  buildLaneDecision,
+  needsDecisionModel,
+  pickLaneFromReply,
+  tokenBucket,
+  isParked,
+  geminiKeyFromSecrets,
 } from "./caduceus-router-lib.mjs";
 
 const HOME = process.env.HOME || homedir();
@@ -53,11 +59,115 @@ const FIRST_BYTE_MS = Math.max(
   5_000,
   Number(process.env.CADUCEUS_ROUTER_FIRST_BYTE_MS) || 45_000,
 );
+const DECISION_ON = /^(1|on|true|yes)$/i.test(
+  String(argOf("--decision", process.env.CADUCEUS_ROUTER_DECISION || "0")),
+);
+const DECISION_URL = argOf(
+  "--decision-url",
+  process.env.CADUCEUS_ROUTER_DECISION_URL ||
+    "https://generativelanguage.googleapis.com/v1beta/decisions",
+);
+const DECISION_MODEL = argOf(
+  "--decision-model",
+  process.env.CADUCEUS_ROUTER_DECISION_MODEL || "gemini-decision-1",
+);
+const DECISION_FLOOR = Number(
+  argOf("--decision-floor", process.env.CADUCEUS_ROUTER_DECISION_FLOOR || "0.6"),
+) || 0.6;
+const DECISION_TIMEOUT_MS = 2_500;
+/** One call per (requested, bucket, lane set) per window (2026-11-16). */
+const DECISION_MEMO_MS = 30_000;
+let decisionMemo = { key: "", at: 0, lane: "" };
+/** Context windows, cached: the lane criteria want them, not the prompt. */
+let modelCache = { at: 0, byId: new Map() };
+
+/** Gemini key: env, then the ascensus secret store. */
+function geminiKey() {
+  const env = String(process.env.GEMINI_API_KEY ?? "").trim();
+  if (env) return env;
+  try {
+    return geminiKeyFromSecrets(readFileSync(SECRETS_FILE, "utf8"));
+  } catch {
+    return "";
+  }
+}
+
+/** Context windows for the candidate lanes (cached 60 s, failures ignored). */
+async function laneFacts() {
+  if (Date.now() - modelCache.at < 60_000 && modelCache.byId.size > 0) {
+    return modelCache.byId;
+  }
+  try {
+    const res = await fetch(`${GATEWAY}/v1/models`, {
+      headers: { authorization: `Bearer ${process.env.OFFICINA_CADUCEUS_API_KEY ?? ""}` },
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!res.ok) return modelCache.byId;
+    const doc = await res.json();
+    const byId = new Map();
+    for (const m of doc?.data ?? []) {
+      if (m?.id) byId.set(String(m.id), Number(m.context_length ?? m.context_window ?? 0) || 0);
+    }
+    modelCache = { at: Date.now(), byId };
+    return byId;
+  } catch {
+    return modelCache.byId;
+  }
+}
+
+/**
+ * Ask the decision model which lane to use, when — and only when — the
+ * deterministic order is ambiguous. Metadata only; any failure returns
+ * undefined and the proxy keeps its own order (R-A5).
+ */
+async function decideLane(requested, candidates, parked, tokenEstimate) {
+  if (!DECISION_ON) return undefined;
+  if (!needsDecisionModel(candidates, parked)) return undefined;
+  const key = geminiKey();
+  if (!key) return undefined;
+  const memoKey = `${requested}|${tokenBucket(tokenEstimate)}|${candidates.join(",")}`;
+  if (decisionMemo.key === memoKey && Date.now() - decisionMemo.at < DECISION_MEMO_MS) {
+    return decisionMemo.lane || undefined;
+  }
+  const facts = await laneFacts();
+  const built = buildLaneDecision({
+    requested,
+    candidates: candidates.map((id) => ({ model: id, free: true, contextWindow: facts.get(id) ?? 0 })),
+    tokenEstimate,
+    model: DECISION_MODEL,
+  });
+  let lane;
+  try {
+    const res = await fetch(DECISION_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": key },
+      body: JSON.stringify({ model: built.model, input: built.input, questions: built.questions }),
+      signal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const doc = await res.json();
+    const picked = pickLaneFromReply(doc, {
+      lanes: built.lanes,
+      exclude: parked,
+      floor: DECISION_FLOOR,
+    });
+    lane = picked.lane;
+    if (lane) logReroute({ model: lane, decision: true, reason: picked.reason });
+    else logReroute({ model: requested, decision: true, reason: picked.reason });
+  } catch (error) {
+    logReroute({ model: requested, decision: true, reason: `decision failed: ${String(error?.message ?? error)}` });
+    lane = undefined;
+  }
+  decisionMemo = { key: memoKey, at: Date.now(), lane: lane ?? "" };
+  return lane;
+}
+
 const STATE_FILE =
   process.env.CADUCEUS_ROUTER_STATE ||
   join(HOME, ".vitriol", "officina", "caduceus-router-state.json");
 const REROUTE_LOG = join(dirname(STATE_FILE), "caduceus-router-reroutes.jsonl");
 /** The Caduceus panel writes policy here; the proxy follows it (2026-11-16). */
+const SECRETS_FILE = join(HOME, ".vitriol", "secrets");
 const PREFS_FILE =
   process.env.OFFICINA_CADUCEUS_PREFS_FILE ||
   join(HOME, ".vitriol", "officina", "caduceus-prefs.json");
@@ -190,9 +300,33 @@ const server = createServer(async (req, res) => {
   const fallbacks = effectiveFallbacks();
   const now = Date.now();
   state = pruneParked(state, now);
-  const candidates = requested
+  let candidates = requested
     ? candidateOrder({ requested, fallbacks, state, nowMs: now })
     : [undefined]; // non-model payloads pass straight through
+
+  // Decision tier (2026-11-16): when the deterministic order is ambiguous, ask
+  // the decision model which lane to try FIRST. It can only reorder — the walk
+  // below still falls through on failure, so this never costs a request.
+  if (requested && DECISION_ON) {
+    const parked = new Set(
+      Object.keys(state.parked ?? {}).filter((m) => isParked(state, m, now)),
+    );
+    const lane = await decideLane(
+      requested,
+      candidates,
+      parked,
+      Math.ceil(body.length / 4),
+    );
+    // R-A1: the model may reorder the FALLBACKS, never the requested model —
+    // that id is what the client (and possibly the operator's pin) asked for.
+    // So a pick only moves to the front of the tail.
+    if (lane && candidates.includes(lane)) {
+      const head = candidates[0] === requested ? [requested] : [];
+      const tail = candidates.filter((c) => !head.includes(c) && c !== lane);
+      const next = [...head, lane, ...tail];
+      if (next.join(",") !== candidates.join(",")) candidates = next;
+    }
+  }
 
   if (candidates.length === 0) {
     const message = giveUpMessage({

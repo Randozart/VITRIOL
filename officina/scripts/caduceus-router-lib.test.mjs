@@ -1,15 +1,19 @@
 // Tests for the routing proxy's pure policy (2026-11-16).
 import { describe, expect, it } from "vitest";
 import {
+  buildLaneDecision,
   candidateOrder,
   fallbacksFromEnv,
   fallbacksFromPrefs,
-  resolveFallbacks,
+  geminiKeyFromSecrets,
   giveUpMessage,
   isParked,
+  needsDecisionModel,
   park,
   parseQuotaHint,
+  pickLaneFromReply,
   pruneParked,
+  resolveFallbacks,
   shouldRetry,
 } from "./caduceus-router-lib.mjs";
 
@@ -169,5 +173,110 @@ describe("fallbacks from the Caduceus panel", () => {
     ).toEqual(["env/lane"]);
     expect(resolveFallbacks({ env: {}, prefs: { fallback: ["ui/lane"] } })).toEqual(["ui/lane"]);
     expect(resolveFallbacks({ env: {}, prefs: null })).toEqual([]);
+  });
+});
+
+// Decision-model lane choice (2026-11-16). Privacy is the load-bearing test:
+// the request must never carry prompt text.
+describe("lane decision", () => {
+  const cands = [
+    { model: "caduceus/a", free: true, contextWindow: 128_000 },
+    { model: "caduceus/b", free: true, contextWindow: 200_000 },
+    { model: "caduceus/c", free: false, contextWindow: 400_000 },
+  ];
+
+  it("sends metadata only — never the prompt", () => {
+    const req = buildLaneDecision({
+      requested: "caduceus/a",
+      candidates: cands,
+      tokenEstimate: 40_000,
+      streaming: true,
+    });
+    const text = JSON.stringify(req);
+    expect(text).not.toContain("messages");
+    expect(text).not.toContain("prompt:");
+    expect(req.input).toContain("caduceus/a");
+    expect(req.input).toContain("32k_128k");
+    expect(req.lanes.map((l) => l.model)).toEqual(["caduceus/a", "caduceus/b", "caduceus/c"]);
+    expect(Object.keys(req.questions.lane.criteria)).toEqual(["lane_0", "lane_1", "lane_2"]);
+  });
+
+  it("caps the option list at 24 lanes", () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({ model: `m/${i}`, free: true }));
+    const req = buildLaneDecision({ requested: "m/0", candidates: many, tokenEstimate: 100 });
+    expect(req.lanes).toHaveLength(24);
+    expect(Object.keys(req.questions.lane.criteria)).toHaveLength(24);
+  });
+
+  it("picks the argmax lane, not the API's choice field", () => {
+    const req = buildLaneDecision({ requested: "caduceus/a", candidates: cands, tokenEstimate: 100 });
+    const reply = {
+      answers: {
+        lane: {
+          choice: "lane_0",
+          confidence: 0.71,
+          probabilities: { lane_0: 0.1, lane_1: 0.71, lane_2: 0.19 },
+        },
+      },
+    };
+    const got = pickLaneFromReply(reply, { lanes: req.lanes, floor: 0.6 });
+    expect(got.lane).toBe("caduceus/b");
+    expect(got.reason).toContain("0.710");
+  });
+
+  it("abstains below the floor", () => {
+    const req = buildLaneDecision({ requested: "caduceus/a", candidates: cands, tokenEstimate: 100 });
+    const reply = {
+      answers: { lane: { choice: "lane_1", probabilities: { lane_1: 0.4, lane_0: 0.35 } } },
+    };
+    const got = pickLaneFromReply(reply, { lanes: req.lanes, floor: 0.6 });
+    expect(got.lane).toBeUndefined();
+    expect(got.reason).toContain("below floor");
+  });
+
+  it("skips an excluded (parked) lane even when it is the most probable", () => {
+    const req = buildLaneDecision({ requested: "caduceus/a", candidates: cands, tokenEstimate: 100 });
+    const reply = {
+      answers: { lane: { choice: "lane_1", probabilities: { lane_1: 0.9, lane_0: 0.7 } } },
+    };
+    const got = pickLaneFromReply(reply, {
+      lanes: req.lanes,
+      exclude: new Set(["caduceus/b"]),
+      floor: 0.6,
+    });
+    expect(got.lane).toBe("caduceus/a"); // the parked favourite is passed over
+  });
+
+  it("reports exclusion when nothing usable is left", () => {
+    const req = buildLaneDecision({ requested: "caduceus/a", candidates: cands, tokenEstimate: 100 });
+    const reply = { answers: { lane: { probabilities: { lane_1: 0.9 } } } };
+    const got = pickLaneFromReply(reply, {
+      lanes: req.lanes,
+      exclude: new Set(["caduceus/b"]),
+      floor: 0.6,
+    });
+    expect(got.lane).toBeUndefined();
+    expect(got.reason).toContain("excluded");
+  });
+
+  it("only asks when the deterministic order is ambiguous", () => {
+    expect(needsDecisionModel([{ model: "a", free: true }])).toBe(false);
+    expect(needsDecisionModel(cands)).toBe(false); // mixed free/paid: free wins
+    expect(needsDecisionModel(cands.slice(0, 2))).toBe(true); // both free: tie
+    expect(needsDecisionModel(cands.slice(0, 2), new Set(["caduceus/a"]))).toBe(false);
+  });
+});
+
+describe("geminiKeyFromSecrets", () => {
+  const KEY = "AI" + "za" + "F".repeat(35);
+  it("finds a gemini-named key under any section", () => {
+    const text = ["provider = zai", "api_key = sk-x", "[ascensus]", `gemini_api_key = ${KEY}`].join("\n");
+    expect(geminiKeyFromSecrets(text)).toBe(KEY);
+  });
+  it("accepts a [gemini] section and a bare AIza api_key", () => {
+    expect(geminiKeyFromSecrets(`[gemini]\napi_key = ${KEY}`)).toBe(KEY);
+    expect(geminiKeyFromSecrets(`api_key = ${KEY}`)).toBe(KEY);
+    expect(geminiKeyFromSecrets("provider = zai\napi_key = sk-x")).toBe("");
+    expect(geminiKeyFromSecrets("")).toBe("");
   });
 });

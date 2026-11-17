@@ -101,6 +101,7 @@ pub fn banner() -> Style {
 }
 
 /// Muted gold for non-port (logical-layer) accents.
+#[allow(dead_code)] // kept: the notice strip replaced its only caller (2026-11-16)
 pub fn gold_muted() -> Style {
     Style::new().fg(GOLD).bg(BG)
 }

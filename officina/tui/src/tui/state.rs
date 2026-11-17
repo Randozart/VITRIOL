@@ -879,6 +879,9 @@ pub struct AppState {
 
     // Notifications (notify)
     pub notice: Option<(String, String)>, // (message, type)
+    /// Once a notice has been shown, its row is reserved for the session: the
+    /// layout must not grow/shrink when notices come and go (2026-11-16).
+    pub notice_row_sticky: bool,
 
     // Slash commands (get_commands) — autocomplete source
     pub commands: Vec<crate::rpc::protocol::SlashCommand>,
@@ -1227,6 +1230,7 @@ impl Default for AppState {
             band_ctx: Settled::default(),
             title: String::new(),
             notice: None,
+            notice_row_sticky: false,
             commands: Vec::new(),
             tree_lines: Vec::new(),
             tree_open: false,
@@ -3549,6 +3553,28 @@ impl AppState {
     /// /fire handler: bare argument toggles, "on"/"off" set directly, a
     /// style name (emerald|alchemy) switches the color voice, bare "style"
     /// cycles it. Returns the new state for the notify line.
+    /// The notice as one line: first line only, whitespace collapsed, with a
+    /// `(+N lines)` tail. Multi-line notices (the /nimbus table) used to be cut
+    /// to 40 chars, silently dropping everything (2026-11-16).
+    pub fn notice_head(&self) -> Option<(String, String)> {
+        let (msg, kind) = self.notice.as_ref()?;
+        let mut lines = msg.lines().filter(|l| !l.trim().is_empty());
+        let head = lines
+            .next()?
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let rest = lines.count();
+        Some((
+            if rest > 0 {
+                format!("{head} … (+{rest} lines)")
+            } else {
+                head
+            },
+            kind.clone(),
+        ))
+    }
+
     /// `/chat-bg [on|off]` — the user-turn band (2026-11-16).
     pub fn set_user_turn_bg(&mut self, args: &str) -> String {
         match args.trim() {
@@ -4599,6 +4625,48 @@ impl AppState {
                     Some(args.to_string())
                 },
             }),
+            // `/notices` — the FULL notice text (multi-line notices such as the
+            // /nimbus lane table are otherwise reduced to their first line on
+            // the notice strip, 2026-11-16).
+            "notices" => {
+                let text = match &self.notice {
+                    Some((msg, kind)) => format!("notice ({kind}):\n{msg}"),
+                    None => "notices: none".to_string(),
+                };
+                self.entries.push(ChatEntry::Diag(text));
+                None
+            }
+            // `/band` — what the bottom band is made of this frame, so a future
+            // flicker report is measurable instead of guessed.
+            "band" => {
+                let mut lines = vec!["band composition:".to_string()];
+                for w in self.widgets.iter() {
+                    if w.placement.as_deref() != Some("belowEditor") {
+                        continue;
+                    }
+                    lines.push(format!(
+                        "  {} · {} line(s) · {}",
+                        w.key,
+                        w.lines.len(),
+                        if w.lines.iter().all(|l| l.trim().is_empty()) {
+                            "empty"
+                        } else {
+                            "shown"
+                        }
+                    ));
+                }
+                lines.push(format!(
+                    "  ctx row: {} · notice: {} · footer: hints only",
+                    if self.ctx_bar_label().is_some() {
+                        "on"
+                    } else {
+                        "off"
+                    },
+                    if self.notice.is_some() { "set" } else { "none" }
+                ));
+                self.entries.push(ChatEntry::Diag(lines.join("\n")));
+                None
+            }
             "model" => {
                 if args.is_empty() {
                     // Bare /model opens the picker: the request response fills

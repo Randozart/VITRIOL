@@ -27,17 +27,28 @@ const SIDEBAR_MIN_WIDTH: u16 = 100;
 pub fn render(frame: &mut Frame, state: &mut AppState) {
     let area = frame.area();
 
+    // A notice gets its OWN row above the keybinding strip (2026-11-16: it used
+    // to be appended to the hints line, where a long or multi-line notice
+    // collided with the hints and made that row shimmer). The row is reserved
+    // from the first notice onward — sticky, never released — so notices cannot
+    // change the layout after the first one arrives.
+    state.notice_row_sticky |= state.notice.is_some();
+    let notice_h = u16::from(state.notice_row_sticky);
     let rows = Layout::vertical([
-        Constraint::Length(1), // header
-        Constraint::Length(1), // breathing room (owner request 2026-09-03)
-        Constraint::Min(0),    // body
-        Constraint::Length(1), // footer
+        Constraint::Length(1),        // header
+        Constraint::Length(1),        // breathing room (owner request 2026-09-03)
+        Constraint::Min(0),           // body
+        Constraint::Length(notice_h), // notice strip (0 until the first notice)
+        Constraint::Length(1),        // footer (hints only)
     ])
     .split(area);
 
     render_header(frame, rows[0], state);
     render_body(frame, state, rows[2]);
-    render_footer(frame, rows[3], state);
+    if notice_h > 0 {
+        render_notice(frame, rows[3], state);
+    }
+    render_footer(frame, rows[4], state);
 }
 
 // ── Header ────────────────────────────────────────────────────────────────
@@ -1631,6 +1642,38 @@ fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {
 
 // ── Footer ────────────────────────────────────────────────────────────────
 
+/// Notice strip (2026-11-16): one row, above the keybinding hints, showing the
+/// notice's FIRST line with a `(+N lines)` tail when it has more. Width-aware
+/// truncation — the old fixed-40 cut a /nimbus table down to noise.
+fn render_notice(frame: &mut Frame, area: Rect, state: &AppState) {
+    let Some((head, kind)) = state.notice_head() else {
+        frame.render_widget(Paragraph::new("").style(Style::new().bg(theme::BG)), area);
+        return;
+    };
+    let color = match kind.as_str() {
+        "error" => theme::RED,
+        "warning" => theme::ORANGE,
+        _ => theme::GOLD,
+    };
+    let prefix = "  · ";
+    let avail = (area.width as usize).saturating_sub(prefix.chars().count() + 1);
+    let text = if head.chars().count() > avail {
+        let mut cut: String = head.chars().take(avail.saturating_sub(1)).collect();
+        cut.push('…');
+        cut
+    } else {
+        head
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(prefix, Style::new().fg(theme::BORDER_DIM).bg(theme::BG)),
+            Span::styled(text, Style::new().fg(color).bg(theme::BG)),
+        ]))
+        .style(Style::new().bg(theme::BG)),
+        area,
+    );
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut spans = vec![
         Span::styled("enter send", theme::muted()),
@@ -1652,15 +1695,13 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     // bare projects have no officina extensions — so the hint is muted
     // gray, not an orange "stack unreachable" false alarm (owner report
     // 2026-09-02, launched in Projects/ontic).
+    // The hints row is a pure function of the keybindings + telemetry presence:
+    // NO notice text here (2026-11-16). Everything state-dependent lives on the
+    // notice strip above, so this row cannot shimmer.
     if state.widgets.is_empty() {
         spans.push(Span::styled(
             "  ·  no telemetry",
             Style::new().fg(theme::MUTED).bg(theme::BG),
-        ));
-    } else if let Some((msg, _)) = &state.notice {
-        spans.push(Span::styled(
-            format!("  ·  {}", trunc(msg, 40)),
-            theme::gold_muted(),
         ));
     }
 
@@ -4358,6 +4399,93 @@ mod settings_chat_render_tests {
                 "gap row {y} was banded:\n{text}"
             );
         }
+    }
+
+    /// 2026-11-16: the hints row carries keybindings ONLY. A notice used to be
+    /// appended here, where a long or multi-line notice collided with the hints
+    /// and made the row shimmer whenever it changed.
+    #[test]
+    fn hints_row_never_carries_a_notice() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::User("hi".into()));
+        state.notice = Some(("nimbus · ctx 12k · next: caduceus/x".into(), "info".into()));
+        // The strong form: the hints row must be BYTE-IDENTICAL with and
+        // without a notice. That cannot be satisfied by "the notice merely
+        // landed somewhere else".
+        let plain = screen(&mut state, 200, 20);
+        let plain_hints = plain
+            .lines()
+            .find(|l| l.contains("enter send"))
+            .expect("hints row")
+            .to_string();
+        state.notice = Some(("nimbus · ctx 12k · next: caduceus/x".into(), "info".into()));
+        let text = screen(&mut state, 200, 20);
+        let hints = text
+            .lines()
+            .find(|l| l.contains("enter send"))
+            .expect("hints row")
+            .to_string();
+        assert_eq!(plain_hints, hints, "a notice changed the hints row");
+        assert!(
+            !hints.contains("next:"),
+            "notice leaked into hints: {hints}"
+        );
+        // ...and it is on its own row above.
+        let notice_row = text
+            .lines()
+            .find(|l| l.contains("next:"))
+            .expect("notice strip");
+        assert!(notice_row.trim_start().starts_with('·'), "{notice_row}");
+    }
+
+    /// Multi-line notices (the /nimbus table) render as `head … (+N lines)`
+    /// instead of being cut to 40 characters.
+    #[test]
+    fn multi_line_notice_shows_a_head_and_a_count() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::User("hi".into()));
+        state.notice = Some((
+            "nimbus · 3 lane(s)\n  lane a\n  lane b".to_string(),
+            "info".to_string(),
+        ));
+        let text = screen(&mut state, 120, 20);
+        assert!(text.contains("nimbus · 3 lane(s)"), "{text}");
+        assert!(text.contains("(+2 lines)"), "{text}");
+    }
+
+    /// A long notice is truncated to the row, not to a hard-coded 40 columns.
+    #[test]
+    fn long_notice_is_truncated_to_the_row() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::User("hi".into()));
+        state.notice = Some(("x".repeat(300), "warning".to_string()));
+        let text = screen(&mut state, 80, 20);
+        let notice_row = text
+            .lines()
+            .find(|l| l.contains('x'))
+            .expect("notice strip");
+        assert!(
+            notice_row.chars().count() <= 80,
+            "notice overflows the row: {} cols",
+            notice_row.chars().count()
+        );
+    }
+
+    /// The notice row is reserved from the first notice onward, so notices can
+    /// never move the transcript afterwards.
+    #[test]
+    fn notice_row_is_reserved_once_seen() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::User("hi".into()));
+        state.notice = Some(("first".to_string(), "info".to_string()));
+        let with_notice = screen(&mut state, 80, 20);
+        assert!(state.notice_row_sticky);
+        // The notice clears; the row stays reserved (the hints row's index must
+        // not move), which is what keeps the layout still.
+        state.notice = None;
+        let after = screen(&mut state, 80, 20);
+        let row_of = |t: &str| t.lines().position(|l| l.contains("enter send"));
+        assert_eq!(row_of(&with_notice), row_of(&after));
     }
 
     /// The card's two horizontal rules must be the same length (owner report

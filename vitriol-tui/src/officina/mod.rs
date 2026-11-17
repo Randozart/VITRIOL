@@ -726,10 +726,17 @@ impl Officina {
     /// GUIDE: render the how-to manual (`docs/officina-guide.md`), optionally
     /// filtered to one section by topic.
     fn guide(&mut self, cmd: &Command, ctx: &OpCtx) -> Vec<String> {
-        let path = ctx.cfg.repo_root.join("docs/officina-guide.md");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(e) => return vec![format!("[ERR] read guide: {e}")],
+        // The manual lives under officina/docs since the monorepo move; the
+        // top-level docs/ path is kept as a fallback for published snapshots
+        // (2026-11-17: the guide was unreadable here and CI failed on it).
+        let text = ["officina/docs/officina-guide.md", "docs/officina-guide.md"]
+            .iter()
+            .find_map(|rel| std::fs::read_to_string(ctx.cfg.repo_root.join(rel)).ok());
+        let Some(text) = text else {
+            return vec![format!(
+                "[ERR] read guide: officina/docs/officina-guide.md not found under {}",
+                ctx.cfg.repo_root.display()
+            )];
         };
         let topic = cmd.target.trim().to_lowercase();
         if topic.is_empty() {

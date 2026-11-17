@@ -162,10 +162,8 @@ fn main() -> anyhow::Result<()> {
                         &mi,
                         vitriol_calibrate::synth::SynthScale::Tiny,
                     );
-                    let out = std::env::temp_dir().join(format!(
-                        "officina-synth-{}-tiny.gguf",
-                        spec.layers
-                    ));
+                    let out = std::env::temp_dir()
+                        .join(format!("officina-synth-{}-tiny.gguf", spec.layers));
                     if !out.exists() {
                         vitriol_calibrate::synth::write_synthetic(&out, &spec)?;
                         println!("synth: generated {}", out.display());
@@ -524,7 +522,6 @@ fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
     }
     out
 }
-
 
 fn shape_source_override() -> Option<String> {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());

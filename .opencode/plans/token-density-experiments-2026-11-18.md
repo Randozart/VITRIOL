@@ -176,6 +176,17 @@ answers in Chinese" failure. **Effort:** low. **Kill if:** any correctness regre
 outranks tokens absolutely.
 
 ### E6 — Eviction tuning (the shipped knob nobody has swept)
+
+> **HARNESS READY 2026-11-18:** `density-bench sweep --engine <llama-server> --arg "<base>"
+> --set score_every=8,16,32 --env VITRIOL_KV_SCORE=probe --dry-run` prints the full arm matrix
+> (argv + env per arm) before anything starts; without `--dry-run` it starts one engine per arm on
+> the probe URL, waits for `/health`, measures the shapes, and kills the process before the next arm
+> (two engines on one GPU would measure contention, not configuration). The `deep-recall` shape now
+> carries a **machine-checkable recall guard** (`expect: "cache_max_gb"`) — a sweep that loses the
+> fact reports `RECALL LOST` rather than a pretty number. Verified end-to-end against a stub engine.
+> **Not yet run against the real 27B: that needs a window with the daily driver stopped** (weights
+> occupy both GPUs), which is exactly why the matrix is printed first.
+
 **Hypothesis:** `score_every = 16` and the default `n_sinks` were chosen conservatively, not measured.
 **Method:** sweep `score_every ∈ {8, 16, 32}` × `n_sinks ∈ {4, 32, 128}` at 70k/150k filled, measuring
 `llamacpp:kv_ejected_total`, decode t/s, and a recall probe (does the model still answer a question
@@ -371,6 +382,17 @@ answers in Chinese" failure. **Effort:** low. **Kill if:** any correctness regre
 outranks tokens absolutely.
 
 ### E6 — Eviction tuning (the shipped knob nobody has swept)
+
+> **HARNESS READY 2026-11-18:** `density-bench sweep --engine <llama-server> --arg "<base>"
+> --set score_every=8,16,32 --env VITRIOL_KV_SCORE=probe --dry-run` prints the full arm matrix
+> (argv + env per arm) before anything starts; without `--dry-run` it starts one engine per arm on
+> the probe URL, waits for `/health`, measures the shapes, and kills the process before the next arm
+> (two engines on one GPU would measure contention, not configuration). The `deep-recall` shape now
+> carries a **machine-checkable recall guard** (`expect: "cache_max_gb"`) — a sweep that loses the
+> fact reports `RECALL LOST` rather than a pretty number. Verified end-to-end against a stub engine.
+> **Not yet run against the real 27B: that needs a window with the daily driver stopped** (weights
+> occupy both GPUs), which is exactly why the matrix is printed first.
+
 **Hypothesis:** `score_every = 16` and the default `n_sinks` were chosen conservatively, not measured.
 **Method:** sweep `score_every ∈ {8, 16, 32}` × `n_sinks ∈ {4, 32, 128}` at 70k/150k filled, measuring
 `llamacpp:kv_ejected_total`, decode t/s, and a recall probe (does the model still answer a question

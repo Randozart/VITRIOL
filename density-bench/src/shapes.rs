@@ -18,6 +18,12 @@ pub struct Shape {
     pub user: String,
     /// JSON schema for the machine-consumed lanes (`None` = prose answer).
     pub schema: Option<Value>,
+    /// Substring the answer must contain (a *recall* guard).
+    ///
+    /// Eviction tuning (E6) trades memory for speed; without a fact the model
+    /// must still retrieve after a sweep, a speed win is indistinguishable from
+    /// amnesia. `None` = no recall requirement.
+    pub expect: Option<&'static str>,
 }
 
 /// Filler that makes a deep-context prompt without being nonsense.
@@ -54,6 +60,7 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 "required": ["verdict", "lane", "confidence", "why"],
                 "additionalProperties": false
             })),
+            expect: None,
         },
         Shape {
             id: "structured-nested",
@@ -86,6 +93,7 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 "required": ["findings", "summary"],
                 "additionalProperties": false
             })),
+            expect: None,
         },
         Shape {
             id: "code-edit",
@@ -97,6 +105,7 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                    no new dependencies, and explain the arithmetic in one comment."
                 .to_string(),
             schema: None,
+            expect: None,
         },
         Shape {
             id: "deep-recall",
@@ -113,6 +122,9 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 )
             ),
             schema: None,
+            // The recall guard: the number appears in the filler, so an answer
+            // that lost its memory cannot contain it.
+            expect: Some("cache_max_gb"),
         },
     ]
 }

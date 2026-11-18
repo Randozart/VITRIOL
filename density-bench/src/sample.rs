@@ -65,6 +65,8 @@ pub struct Sample {
     pub content_chars: usize,
     /// True when the content parses as JSON *and* satisfies the schema's required keys.
     pub valid: Option<bool>,
+    /// True when the answer contains the shape's recall guard (None = not asked).
+    pub recall_ok: Option<bool>,
 }
 
 /// Median of a list, ignoring NaN. Empty input yields NaN rather than panicking.
@@ -80,6 +82,11 @@ pub fn median(values: &[f64]) -> f64 {
     } else {
         v[mid]
     }
+}
+
+/// Case-insensitive substring check used by the recall guard.
+pub fn contains(content: &str, needle: &str) -> bool {
+    content.to_lowercase().contains(&needle.to_lowercase())
 }
 
 /// Does this content satisfy the schema's `required` keys?
@@ -129,6 +136,15 @@ mod tests {
         assert_eq!(median(&[1.0, 2.0, 3.0, 4.0]), 2.5);
         assert!(median(&[]).is_nan());
         assert_eq!(median(&[f64::NAN, 5.0]), 5.0);
+    }
+
+    #[test]
+    fn recall_guard_is_a_substring_check_not_a_vibe() {
+        // E6's safety rail: after an eviction sweep the model must still produce
+        // the fact, or the speed number is amnesia dressed up as throughput.
+        assert!(contains("The budget is cache_max_gb = 40.", "cache_max_gb"));
+        assert!(!contains("The budget is 40 GiB.", "cache_max_gb"));
+        assert!(!contains("MISSING", "cache_max_gb"));
     }
 
     #[test]

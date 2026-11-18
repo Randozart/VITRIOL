@@ -21,6 +21,7 @@
 mod engine;
 mod sample;
 mod shapes;
+mod sweep;
 
 use anyhow::Result;
 use engine::Client;
@@ -36,6 +37,13 @@ struct Args {
     max_tokens: u32,
     deep_sections: usize,
     json_out: Option<String>,
+    /// Sweep mode inputs (engine binary, base args, dimensions).
+    engine: Option<String>,
+    base_args: String,
+    sets: Vec<String>,
+    env_sets: Vec<String>,
+    dry_run: bool,
+    wait_health_s: u64,
     /// Skip the streamed pass. Token metrics are contention-independent; timing is
     /// not, so on a shared engine (or while the operator is using it) measure
     /// tokens only rather than reporting timings contaminated by interference.
@@ -74,6 +82,12 @@ fn parse_args() -> Result<Args> {
         deep_sections: 40,
         json_out: None,
         no_stream: false,
+        engine: None,
+        base_args: String::new(),
+        sets: Vec::new(),
+        env_sets: Vec::new(),
+        dry_run: false,
+        wait_health_s: 300,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
@@ -120,6 +134,33 @@ fn parse_args() -> Result<Args> {
                 args.no_stream = true;
                 i += 1;
             }
+            "--engine" => {
+                args.engine = Some(value(i)?);
+                i += 2;
+            }
+            "--arg" => {
+                args.base_args = value(i)?;
+                i += 2;
+            }
+            "--set" => {
+                args.sets.push(value(i)?);
+                i += 2;
+            }
+            "--env" => {
+                args.env_sets.push(value(i)?);
+                i += 2;
+            }
+            "--dry-run" => {
+                args.dry_run = true;
+                i += 1;
+            }
+            "--wait-health" => {
+                args.wait_health_s = value(i)?.parse()?;
+                i += 2;
+            }
+            "sweep" => {
+                i += 1;
+            }
             "-h" | "--help" => {
                 print!("{}", usage());
                 std::process::exit(0);
@@ -158,6 +199,103 @@ fn fingerprint(url: &str) -> String {
     }
 }
 
+/// Run one engine per arm, measure the same shapes, report per-arm medians.
+///
+/// Each arm gets its own process and its own log, and is killed before the next
+/// starts — two engines on one GPU would measure contention, not configuration.
+fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
+    let engine = args
+        .engine
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("sweep needs --engine <path to llama-server>"))?;
+    let arms = sweep::matrix(&args.sets, &args.env_sets);
+    println!("density-bench sweep · {} arm(s)", arms.len());
+    for (i, arm) in arms.iter().enumerate() {
+        println!("  arm {i}: {}", arm.label());
+        println!(
+            "         argv: {}",
+            arm.argv(&args.base_args, &engine).join(" ")
+        );
+    }
+    if args.dry_run {
+        println!("  dry run — nothing started");
+        return Ok(());
+    }
+    for (i, arm) in arms.iter().enumerate() {
+        let argv = arm.argv(&args.base_args, &engine);
+        println!("\n  ── arm {i}: {} ──", arm.label());
+        let log_path = format!("/tmp/density-sweep-arm{i}.log");
+        let log = std::fs::File::create(&log_path)?;
+        let mut command = std::process::Command::new(&argv[0]);
+        command
+            .args(&argv[1..])
+            .stdout(std::process::Stdio::from(log.try_clone()?))
+            .stderr(std::process::Stdio::from(log));
+        for (k, v) in &arm.env {
+            command.env(k, v);
+        }
+        let mut child = command.spawn()?;
+        if !wait_healthy(&args.url, args.wait_health_s) {
+            eprintln!("  arm {i} never became healthy — see {log_path}");
+            let _ = child.kill();
+            let _ = child.wait();
+            continue;
+        }
+        let client = Client {
+            base: args.url.clone(),
+            model: args.model.clone(),
+            max_tokens: args.max_tokens,
+            stream: !args.no_stream,
+        };
+        for shape in shapes {
+            for run in 0..args.repeats {
+                match client.run(shape, &arm.label()) {
+                    Ok(s) => println!(
+                        "  {:<12} run {} · decode {:>6.2} tok/s · {} tok{}{}",
+                        shape.id,
+                        run + 1,
+                        s.timings.decode_tps(),
+                        s.timings.predicted_n,
+                        match s.valid {
+                            Some(true) => " · valid",
+                            Some(false) => " · INVALID",
+                            None => "",
+                        },
+                        match s.recall_ok {
+                            Some(true) => " · recalled",
+                            Some(false) => " · RECALL LOST",
+                            None => "",
+                        }
+                    ),
+                    Err(e) => eprintln!("  {:<12} run {} failed: {e}", shape.id, run + 1),
+                }
+            }
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    println!("\n  sweep complete — logs under /tmp/density-sweep-arm*.log");
+    Ok(())
+}
+
+/// Poll `/health` until the engine answers or the deadline passes.
+fn wait_healthy(url: &str, seconds: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    let health = format!("{}/health", url.trim_end_matches('/'));
+    while std::time::Instant::now() < deadline {
+        if let Ok(res) = ureq::get(&health)
+            .timeout(std::time::Duration::from_secs(3))
+            .call()
+        {
+            if res.status() == 200 {
+                return true;
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+    false
+}
+
 fn main() -> Result<()> {
     let args = parse_args()?;
     let client = Client {
@@ -176,6 +314,10 @@ fn main() -> Result<()> {
     };
     if shapes.is_empty() {
         anyhow::bail!("no shapes selected — check --shapes");
+    }
+
+    if args.engine.is_some() {
+        return run_sweep(&args, &shapes);
     }
 
     println!("density-bench");
@@ -204,7 +346,7 @@ fn main() -> Result<()> {
                     Ok(s) => {
                         println!(
                             "  {:<12} {:<9} run {} · prompt {:>7.1} tok/s · decode {:>6.2} tok/s · \
-                             ttft {:>6.2}s · {} chars{}",
+                             ttft {:>6.2}s · {} chars{}{}",
                             shape.id,
                             arm,
                             run + 1,
@@ -215,6 +357,11 @@ fn main() -> Result<()> {
                             match s.valid {
                                 Some(true) => " · valid",
                                 Some(false) => " · INVALID",
+                                None => "",
+                            },
+                            match s.recall_ok {
+                                Some(true) => " · recalled",
+                                Some(false) => " · RECALL LOST",
                                 None => "",
                             }
                         );
@@ -251,7 +398,7 @@ fn main() -> Result<()> {
 
 /// Per shape+arm medians. The verdict is printed, not left to the reader.
 fn summarize(samples: &[Sample]) {
-    println!("\n  shape        arm       decode tok/s   ttft s    out tok   valid");
+    println!("\n  shape        arm       decode tok/s   ttft s    out tok   valid   recall");
     let mut keys: Vec<(String, String)> = Vec::new();
     for s in samples {
         let key = (s.shape.clone(), s.arm.clone());
@@ -279,8 +426,14 @@ fn summarize(samples: &[Sample]) {
         );
         let validity = group.iter().filter_map(|s| s.valid).filter(|v| *v).count();
         let checks = group.iter().filter(|s| s.valid.is_some()).count();
+        let recalled = group
+            .iter()
+            .filter_map(|s| s.recall_ok)
+            .filter(|v| *v)
+            .count();
+        let recall_checks = group.iter().filter(|s| s.recall_ok.is_some()).count();
         println!(
-            "  {:<12} {:<9} {:>13.2} {:>8.2} {:>7.0} {:>7}",
+            "  {:<12} {:<9} {:>13.2} {:>8.2} {:>7.0} {:>7} {:>8}",
             shape,
             arm,
             decode,
@@ -290,6 +443,11 @@ fn summarize(samples: &[Sample]) {
                 "-".to_string()
             } else {
                 format!("{validity}/{checks}")
+            },
+            if recall_checks == 0 {
+                "-".to_string()
+            } else {
+                format!("{recalled}/{recall_checks}")
             }
         );
     }

@@ -135,6 +135,9 @@ impl Client {
             .schema
             .as_ref()
             .map(|_| satisfies(&content, &required));
+        let recall_ok = shape
+            .expect
+            .map(|needle| crate::sample::contains(&content, needle));
         Ok(Sample {
             shape: shape.id.to_string(),
             arm: arm.to_string(),
@@ -143,6 +146,7 @@ impl Client {
             stream_tps,
             content_chars: content.trim().chars().count(),
             valid,
+            recall_ok,
         })
     }
 }

@@ -251,8 +251,9 @@ themes distinct, **VITRIOL pinned by literal** (so "it is unchanged" is a contra
 scan that fails if any call site still reads a colour as a constant. Total **355 cargo tests**,
 fmt clean, zero warnings.
 
-Installed `2f9dabce`. The worktree stays until the operator has looked at the themes, then:
-`git worktree remove ../VITRIOL-themes && rm -rf /scratch/targets/officina-themes`.
+Installed `2f9dabce`; the worktree, branch and its 5 GB target dir are removed (the branch was
+fast-forwarded, so the worktree added nothing). Preview without installing anything:
+`OFFICINA_TUI_THEME=aether officina` or `/theme aether` (persists).
 
 ### Known follow-ups
 - The fire's `FireStyle` arcs are still operator-selectable and independent of the palette (VITRIOL's
@@ -260,3 +261,15 @@ Installed `2f9dabce`. The worktree stays until the operator has looked at the th
   and is currently consumed by the heat gauge ramp + tests.
 - Alkahest's fire ramp ends in magenta (`#FF79C6`), Aether's in carp; eyeball both before declaring
   the ramps final.
+
+### CI caught what I missed
+
+The Vitriolum **palette parity gate** (`officina/.pi/extensions/_shared/vitriolum.test.ts`) failed on
+the first push: it matched `Color::Rgb(0x..)` literals, and the refactor encodes colours through the
+const-friendly `c_rgb(...)` helper, so it reported "bg #0d1117 missing from theme.rs" while the value
+sat in plain sight. Fixed in `f5348ba` — the regex accepts both spellings and now scans **only the
+VITRIOL block**, so a colour that exists only in Aether can no longer satisfy the parity check for
+the original scheme. The gate is stricter than it was.
+
+That is the second time a test's *representation* assumption (not its intent) hid a change: the same
+shape as the fire-taper test earlier today. Worth remembering when writing source-scanning gates.

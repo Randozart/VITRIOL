@@ -706,6 +706,35 @@ mod theme_suite {
         }
     }
 
+    /// VITRIOL is the original palette and must never drift: these literals are
+    /// the pre-2026-11-18 constants, pinned so a future edit to the palette is a
+    /// deliberate act rather than a side effect of another change.
+    #[test]
+    fn vitriol_is_byte_identical_to_the_original_palette() {
+        use Color::Rgb;
+        assert_eq!(VITRIOL.bg, Rgb(0x0D, 0x11, 0x17));
+        assert_eq!(VITRIOL.panel, Rgb(0x16, 0x1B, 0x22));
+        assert_eq!(VITRIOL.user_bg, Rgb(0x13, 0x1A, 0x22));
+        assert_eq!(VITRIOL.border_dim, Rgb(0x21, 0x26, 0x2D));
+        assert_eq!(VITRIOL.green, Rgb(0x3F, 0xB9, 0x50));
+        assert_eq!(VITRIOL.gold, Rgb(0xFF, 0xD7, 0x00));
+        assert_eq!(VITRIOL.cyan, Rgb(0x00, 0xFF, 0xFF));
+        assert_eq!(VITRIOL.orange, Rgb(0xFF, 0xA0, 0x00));
+        assert_eq!(VITRIOL.red, Rgb(0xF8, 0x51, 0x49));
+        assert_eq!(VITRIOL.text, Rgb(0xE0, 0xE0, 0xE0));
+        assert_eq!(VITRIOL.muted, Rgb(0x8B, 0x94, 0x9E));
+        assert_eq!(VITRIOL.violet, Rgb(0xB2, 0x94, 0xBB));
+        assert_eq!(VITRIOL.cold_blue, Rgb(0x2E, 0x5F, 0xA3));
+        assert_eq!(VITRIOL.light_yellow, Rgb(0xFF, 0xE0, 0x66));
+        assert_eq!(VITRIOL.deep_red, Rgb(0x8A, 0x15, 0x15));
+        assert_eq!(VITRIOL.dark_teal, Rgb(0x0B, 0x5E, 0x4C));
+        assert_eq!(VITRIOL.mercury, Rgb(0x55, 0x60, 0x6E));
+        assert_eq!(VITRIOL.silver, Rgb(0xC0, 0xC7, 0xCF));
+        assert_eq!(VITRIOL.watermark, Rgb(0x2A, 0x3A, 0x52));
+        assert_eq!(VITRIOL.white, Rgb(0xFF, 0xFF, 0xFF));
+        assert_eq!(VITRIOL.syntax, "base16-ocean.dark");
+    }
+
     /// The whole point: the three themes are actually different.
     #[test]
     fn themes_are_distinct() {

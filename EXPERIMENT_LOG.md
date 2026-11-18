@@ -1,3 +1,17 @@
+<!-- 2026-11-18 14:32 — Actual full-avatar private validation complete, no live promotion. -->
+
+## 2026-11-18 14:32 — Client prefix readiness in full pipeline
+
+Fresh-service prefix177 evaluated in1.403s; candidate server3/3, both browser
+playback gates PASS,40msmaxdrift/0skips or frame holes/duplicates. Three reply text
+and WAV pairs exact. Cold first audio9.180/7.264/2.885s versus primed8.172/6.004/
+2.760s; warm browser6.209control/6.431primed, no general warm speedup claim. Cache
+reuse can still be slow under memory pressure (177cached/13newtokens3.733sprefill).
+Largest explicit history403tokens; no deep-window/home-GPU certification. Exact
+live restored after approved bounded guard, original20B PID1304035 unchanged.
+Full native recovery/restart checks pass. See invariant plan and Avatar linked
+research/evidence; defaults remain unchanged and opt-in code can land on main.
+
 <!-- 2026-11-18 14:15 — Actual same20B primer/recovery qualification, playback pending. -->
 
 ## 2026-11-18 14:15 — Private CPU20B prefix loss/recovery

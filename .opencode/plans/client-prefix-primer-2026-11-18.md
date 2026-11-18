@@ -62,3 +62,37 @@ worker PIDs/model/voice pins and original20B PID1304035/command unchanged; publi
 health ready. Brief shared-memory pressure observed; no latency/smoothness claim
 from CPU-limited concurrent checks. Full avatar/browser window still awaits user
 approval; no live promotion, no home-GPU certification or default profile change.
+
+## 2026-11-18 14:32 — Full private speech/video checks completed
+
+User approved one guarded <=10min interval. Actual window14:17:23–14:22:22,
+public v9 warm/client-cache-ready verified by14:24:13; original20B PID1304035/
+command and voice/face/STT/ACK pins preserved. Independent restoration timer off,
+extraction restored. Both arms use same8k window/one slot/CPU12/current8e16421
+engine and current20B, with private bounded checkpoints4/cacheRAM256MiB and no
+idle backup. Fresh private generator before each arm; full startup prime
+cache0+177evaluated in1.403s before the private application loads. No full8192token
+filled-depth certification: largest explicit history was403tokens.
+
+Candidate server gates3/3 PASS; control first case fails3s first-frame lag at3.049s,
+other2PASS. Reply text AND exported WAV bytes exact3/3. First answer audio per case
+cold9.180/7.264/2.885s, primed8.172/6.004/2.760s. These are small serial and
+heterogeneous samples under memory pressure, not a causal generalized speedup.
+Both real browser runs:308expected/wire replyslots exact,0skips/holes/duplicates/
+longpauses/refill/overlap, captionmatch,40msmaxdrift, handoffPASS. Warm browser
+first audio6.209s control/6.431s primed: no warm-turn latency win. Actual videos
+and raw clocks in Avatar npu-avatar-pipeline-20261117/prime-playback-*.
+
+Full-pipeline native displacement/reprime/history/resend/cancel and fresh-process
+restart pass again. Model cache state survives logical reuse but not necessarily
+fast physical execution: candidate177cached/13newtokens took3.733s prompt processing
+and4.222s firstcontent. Observed global memory PSI and zram34.2GiBdata/25.7GiB
+resident are confounds. Hypothesis: working-set residency/initialization order;
+pagefault attribution and final-readiness priming remain future comparisons.
+No production avatar promotion, default profile changes or home-GPU certification.
+Nine primer/model-free tests, Ruff/mypy and earlier cache-store15/native ownership
+checks pass; engine tree equals the previously compiled/tested63cc63f tree.
+Upstream mainTUI work merged into the feature branch, preserving source history;
+no relative-main Officina changes or operator binary replacement in this task.
+Qualified opt-in primer/fix may be merged to origin/main; Avatar report has all
+configuration, scalar evidence and Intel/WBSO0automaticemployeehour accounting.

@@ -1,13 +1,18 @@
 # VITRIOL AI Agent Guidelines
 
-## Anchored summary — 2026-11-18 14:06
+## Anchored summary — 2026-11-18 14:32
 
-Optional client-prefix primer implemented with nine model-free invariant tests;
-no production profile/launcher change. Actual same20B displacement/reprime/resend/history/cancel and private-generator
-restart checks pass; full avatar/browser validation remains approval-pending. Owned-cache atime compile fix carried from63cc63f as7d19ceb; original
-checkout dirty vendor license and live engine must remain untouched. See
-.opencode/plans/client-prefix-primer-2026-11-18.md and docs/client-prefix-primer.md.
-
+Optional generic client-prefix primer qualified against the current PTL20B and
+private full-avatar playback. Native cache loss/reprime/resend/history/cancel and
+fresh-generator restart pass; candidate server3/3 and both browser delivery gates
+pass,40msmaxdrift/0skips. Three exported replies/WAVs exactly match controls.
+No warm-browser speedup; memory pressure/residency remains a latency limit. Exact
+livev9/original20B restored; no home-PC/default-profile change. Invariants and
+configuration in .opencode/plans/client-prefix-primer-2026-11-18.md, CLI usage in
+docs/client-prefix-primer.md. Nine primer tests/type/lint, cache-store15/native
+ownership checks pass. Owned-cache atime fix carried, original dirty vendor
+license preserved. Opt-in code integrated with current upstream main; no new
+Officina work or binary install. Intel/WBSO evidence in Avatar research,0auto hours.
 
 ## Code Style
 

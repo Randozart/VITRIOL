@@ -25,3 +25,14 @@ runtime, model-specific optimization or disk persistence guarantee.
 Model-free tests: `python3 -m unittest libvitriol.test_prompt_prime -v`.
 Actual same20B eviction and avatar playback validation is tracked separately by
 .opencode/plans/client-prefix-primer-2026-11-18.md and the Avatar research report.
+
+## 2026-11-18 14:32 — Validation scope
+
+Current PTL CPU GPT-OSS20B: actual template/counter admission, partial displacement,
+full private-process restart, resend/history/cancel recovery pass. Private Avatar
+server3/3 and both real browser playback gates pass, with exact exported WAV/text
+controls and40msmaximum drift. Startup prefix reuse does not guarantee fast later
+execution under shared-memory pressure. No warm-turn speedup, home-GPU or full
+8192token-depth certification is claimed. Before optimizing placement, compare
+priming after other heavy initialization and measure working-set/pagefault costs.
+No existing launcher/profile is changed by installation.

@@ -4,8 +4,7 @@
 
 Same20B/currentvoice/liveavatar remain unchanged. Optional generic primer and
 owned-cache atime compile fix are on codex/avatar-startup-integration-20261118,
-pushed to origin. Unit/type/lint/cache-store checks pass; actual eviction/playback
-validation awaits the user's explicitly requested guarded-window approval.
+pushed to origin. Unit/type/lint/cache-store checks pass; actual native recovery and private playback validation completed; see below.
 
 The CLI emits VITRIOL-FINGERPRINT and full argv in its JSON result. It uses real
 chat-template tokenization, a bounded deadline and counter/truncation admission;
@@ -20,4 +19,11 @@ S&O time is not inferred from machine/agent execution.
 ## 2026-11-18 14:15 — Cache/restart stage complete
 
 Actual native prefix/recovery checks pass; see plan and experiment log. Public
-avatar stayed active. Only full speech/video comparison remains permission-gated.
+avatar stayed active. The full speech/video comparison subsequently completed in the approved window.
+
+## 2026-11-18 14:32 — Full pipeline stage complete
+
+Servercandidate3/3 and both browser playback gates pass, exact WAV/text3/3.
+No warm-browser latency gain; memory residency is the next hypothesis. Livev9
+restored with original20B/currentvoice/pins; no configuration promotion. Detailed
+measurements, negative control and small-sample caveats in the invariant plan.

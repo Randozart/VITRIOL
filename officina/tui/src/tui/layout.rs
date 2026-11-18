@@ -576,7 +576,10 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{lead}{glyph} {f} "),
+                // `{f}` is the frame INDEX; the spinner is `frames[f]`. Printing
+                // the index showed a counter 0…9 instead of the braille orbit
+                // (owner report 2026-11-18).
+                format!("{lead}{glyph} {} ", frames[f]),
                 Style::default().fg(theme::GOLD()).bg(theme::BG()),
             ),
             Span::styled(label, style),
@@ -4510,6 +4513,28 @@ mod settings_chat_render_tests {
         let rows = activity_rows(&mut state);
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert!(rows[0].contains("working…"), "{rows:?}");
+
+        // The spinner is a BRAILLE FRAME, never the frame index.
+        let mut state = AppState::default();
+        state.is_streaming = true;
+        state.entries.push(ChatEntry::Notice("hi".into()));
+        let text = screen(&mut state, 100, 24);
+        let line = text
+            .lines()
+            .find(|l| l.contains("working…"))
+            .expect("activity line");
+        const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        assert!(
+            line.chars().any(|c| FRAMES.contains(&c)),
+            "the spinner is not a braille frame: {line:?}"
+        );
+        // Only the SPINNER prefix is checked for digits: the label legitimately
+        // carries elapsed seconds ("stalled 0s").
+        let prefix: String = line.chars().take_while(|c| !c.is_alphanumeric()).collect();
+        assert!(
+            !prefix.chars().any(|c| c.is_ascii_digit()),
+            "the spinner prefix shows a counter: {line:?}"
+        );
 
         // Idle: no activity line at all.
         let mut state = AppState::default();

@@ -1,3 +1,14 @@
+<!-- 2026-11-18 14:06 — Optional startup primer, model-free stage qualified. -->
+
+## 2026-11-18 14:06 — Explicit bounded client-prefix primer
+
+Generic standard-library CLI/module; exact chat template and tokenized shared
+prefix, total deadline, complete inference/counter admission, sampled token
+omitted from output/history, argv/fingerprint and context hashes. No default
+launcher/profile/engine changes. Nine model-free tests and Ruff pass. Actual
+same20B eviction/startup and full-avatar playback remain pending; no latency
+claim in this stage. Invariants/usage in client-prefix-primer plan and docs.
+
 <!-- 2026-11-18: private avatar cache build repair; no live deployment. -->
 
 ## 2026-11-18: owned cache LRU aggregate build repair

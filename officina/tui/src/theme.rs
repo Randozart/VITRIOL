@@ -1,58 +1,312 @@
-//! "Vitriolum" theme — dark alchemical green + gold.
+//! Officina themes: **vitriol** (the original), **aether** (Kanagawa Wave) and
+//! **alkahest** (neon alchemy).
 //!
-//! Ported from vitriol-tui/src/theme.rs (canonical Vitriolum definition,
-//! this repo, Apache-2.0). Palette derived from the Alka Officina dark
-//! theme re-centered on the VITRIOL logo colours. Semantics map to
-//! alchemy: solvent cyan = the process flowing; gold = work completed;
-//! green = the living fire (healthy); red = substrate (crash).
+//! Palette history: ported from vitriol-tui/src/theme.rs (canonical Vitriolum
+//! definition, this repo, Apache-2.0), derived from the Alka Officina dark
+//! theme re-centered on the VITRIOL logo colours. Semantics map to alchemy:
+//! solvent cyan = the process flowing; gold = work completed; green = the living
+//! fire (healthy); red = substrate (crash).
+//!
+//! 2026-11-18: the palette became DATA. Every colour is a field of `Theme`, three
+//! statics exist (`VITRIOL`, `AETHER`, `ALKAHEST`), and the accessors below keep
+//! the historical constant names — `theme::GOLD()` became `theme::GOLD()` — so the
+//! change is a mechanical rename at 700+ call sites rather than a rewiring of
+//! every render function. `#[allow(non_snake_case)]` is deliberate: the names are
+//! a palette table, and keeping them 1:1 with the old constants is what makes the
+//! diff reviewable.
 
 use ratatui::style::{Color, Modifier, Style};
+use std::sync::RwLock;
 
-/// Background (GitHub-dark base).
-pub const BG: Color = Color::Rgb(0x0D, 0x11, 0x17);
-/// Panel background.
-pub const PANEL: Color = Color::Rgb(0x16, 0x1B, 0x22);
-/// Background band behind a USER turn (2026-11-16): a deliberate half-step from
-/// BG toward PANEL, so it marks the operator's own turn without becoming a
-/// highlighter. Only backgrounds change — glyph contrast is untouched.
-pub const USER_BG: Color = Color::Rgb(0x13, 0x1A, 0x22);
-/// Dim border for unfocused panels.
-pub const BORDER_DIM: Color = Color::Rgb(0x21, 0x26, 0x2D);
-/// VITRIOL primary green (Safety) — borders, headers, gauges.
-pub const GREEN: Color = Color::Rgb(0x3F, 0xB9, 0x50);
-/// VITRIOL gold (Sovereignty) — titles, active accents.
-pub const GOLD: Color = Color::Rgb(0xFF, 0xD7, 0x00);
-/// Solvent cyan — active/streaming decode.
-pub const CYAN: Color = Color::Rgb(0x00, 0xFF, 0xFF);
-/// Antidote amber — warnings/observations. Shifted from #FF5F1F (2026-11-14,
-/// operator report: reddish orange was mistaken for the failure red).
-pub const ORANGE: Color = Color::Rgb(0xFF, 0xA0, 0x00);
-/// Substrate red — down / critical.
-pub const RED: Color = Color::Rgb(0xF8, 0x51, 0x49);
-/// Foreground text.
-pub const TEXT: Color = Color::Rgb(0xE0, 0xE0, 0xE0);
-/// Muted text.
-pub const MUTED: Color = Color::Rgb(0x8B, 0x94, 0x9E);
-/// Violet — files, custom labels (Vitriolum, from the JS palette).
-pub const VIOLET: Color = Color::Rgb(0xB2, 0x94, 0xBB);
-/// Cold blue — the heat ramp's low end; the officina divider.
-pub const COLD_BLUE: Color = Color::Rgb(0x2E, 0x5F, 0xA3);
-/// Light yellow — capacity ramp start.
-pub const LIGHT_YELLOW: Color = Color::Rgb(0xFF, 0xE0, 0x66);
-/// Deep red — capacity ramp end.
-#[cfg(test)]
-pub const DEEP_RED: Color = Color::Rgb(0x8A, 0x15, 0x15);
-/// Dark teal — activity ramp start.
-#[cfg(test)]
-pub const DARK_TEAL: Color = Color::Rgb(0x0B, 0x5E, 0x4C);
-/// Mercury silver — pulse ramp start.
-#[cfg(test)]
-pub const MERCURY: Color = Color::Rgb(0x55, 0x60, 0x6E);
-/// Bright silver — PLAN mode (the moon metal, owner request 2026-09-02).
-pub const SILVER: Color = Color::Rgb(0xC0, 0xC7, 0xCF);
-/// Watermark tint — the stone rising (brightened 2026-09-02 per owner:
-/// #1c2634 was nearly invisible on BG; #2a3a52 reads as faint stone).
-pub const WATERMARK: Color = Color::Rgb(0x2A, 0x3A, 0x52);
+/// One complete colour scheme.
+///
+/// `ramp_*` fields are gradients the UI interpolates (gauges, fire heat); they
+/// live here because a theme that only swaps flat colours leaves its gauge ramps
+/// and its flames in the old palette.
+pub struct Theme {
+    pub name: &'static str,
+    pub bg: Color,
+    pub panel: Color,
+    pub user_bg: Color,
+    pub border_dim: Color,
+    pub green: Color,
+    pub gold: Color,
+    pub cyan: Color,
+    pub orange: Color,
+    pub red: Color,
+    pub text: Color,
+    pub muted: Color,
+    pub faint: Color,
+    pub violet: Color,
+    pub cold_blue: Color,
+    pub light_yellow: Color,
+    pub deep_red: Color,
+    pub dark_teal: Color,
+    pub mercury: Color,
+    pub silver: Color,
+    pub watermark: Color,
+    pub white: Color,
+    /// Cold → hot gradient: index 0 is embers, the last stop is the hot end.
+    ///
+    /// Consumed by `BrailleRamp::Heat` (gauge instrumentation, `cfg(test)`) and
+    /// asserted by `theme_suite`. The flames themselves draw from `FireStyle`,
+    /// whose arcs are operator-selectable — keeping this field means the palette
+    /// still describes its own heat, and a theme-aware flame can adopt it without
+    /// another struct change.
+    #[allow(dead_code)]
+    pub fire: &'static [Color],
+    /// syntect (fenced code) theme name; resolved in `markdown::highlight_theme`.
+    pub syntax: &'static str,
+}
+
+const fn c_rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::Rgb(r, g, b)
+}
+
+/// The original Officina scheme — gold on GitHub-dark.
+pub static VITRIOL: Theme = Theme {
+    name: "vitriol",
+    bg: c_rgb(0x0D, 0x11, 0x17),
+    panel: c_rgb(0x16, 0x1B, 0x22),
+    user_bg: c_rgb(0x13, 0x1A, 0x22),
+    border_dim: c_rgb(0x21, 0x26, 0x2D),
+    green: c_rgb(0x3F, 0xB9, 0x50),
+    gold: c_rgb(0xFF, 0xD7, 0x00),
+    cyan: c_rgb(0x00, 0xFF, 0xFF),
+    orange: c_rgb(0xFF, 0xA0, 0x00),
+    red: c_rgb(0xF8, 0x51, 0x49),
+    text: c_rgb(0xE0, 0xE0, 0xE0),
+    muted: c_rgb(0x8B, 0x94, 0x9E),
+    faint: c_rgb(0x6E, 0x76, 0x81),
+    violet: c_rgb(0xB2, 0x94, 0xBB),
+    cold_blue: c_rgb(0x2E, 0x5F, 0xA3),
+    light_yellow: c_rgb(0xFF, 0xE0, 0x66),
+    deep_red: c_rgb(0x8A, 0x15, 0x15),
+    dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
+    mercury: c_rgb(0x55, 0x60, 0x6E),
+    silver: c_rgb(0xC0, 0xC7, 0xCF),
+    watermark: c_rgb(0x2A, 0x3A, 0x52),
+    white: c_rgb(0xFF, 0xFF, 0xFF),
+    fire: &[
+        c_rgb(0x2E, 0x5F, 0xA3),
+        c_rgb(0x00, 0xFF, 0xFF),
+        c_rgb(0xFF, 0xD7, 0x00),
+        c_rgb(0xFF, 0xA0, 0x00),
+        c_rgb(0xF8, 0x51, 0x49),
+    ],
+    syntax: "base16-ocean.dark",
+};
+
+/// Kanagawa Wave ("Aether") — sumi ink ground, carp yellow accent.
+///
+/// Values taken from `themes/kanagawa-aetherskiff/vscode/.../kanagawa-wave-color-theme.json`
+/// so the TUI matches the editor and the Plasma theme exactly.
+pub static AETHER: Theme = Theme {
+    name: "aether",
+    bg: c_rgb(0x1F, 0x1F, 0x28),         // sumiInk1
+    panel: c_rgb(0x16, 0x16, 0x1D),      // sumiInk0 (statusBar/sideBar)
+    user_bg: c_rgb(0x24, 0x24, 0x2E),    // half-step toward sumiInk2
+    border_dim: c_rgb(0x2A, 0x2A, 0x37), // sumiInk2
+    green: c_rgb(0x98, 0xBB, 0x6C),      // springGreen (strings)
+    gold: c_rgb(0xE6, 0xC3, 0x84),       // carpYellow — the accent, NOT gold
+    cyan: c_rgb(0x7F, 0xB4, 0xCA),       // springBlue (streaming)
+    orange: c_rgb(0xFF, 0xA0, 0x66),     // surimiOrange (warnings)
+    red: c_rgb(0xE8, 0x24, 0x24),        // surfRed (critical)
+    text: c_rgb(0xDC, 0xD7, 0xBA),       // fujiWhite
+    muted: c_rgb(0xC8, 0xC0, 0x93),      // oldWhite — readable secondary
+    faint: c_rgb(0x72, 0x71, 0x69),      // katanaGray — comments only
+    violet: c_rgb(0x95, 0x7F, 0xB8),     // waveViolet (keywords)
+    cold_blue: c_rgb(0x2D, 0x4F, 0x67),  // waveBlue2
+    light_yellow: c_rgb(0xE6, 0xC3, 0x84),
+    deep_red: c_rgb(0xC3, 0x40, 0x43),  // autumnRed
+    dark_teal: c_rgb(0x22, 0x35, 0x3B), // waveBlue1-ish, dormant
+    mercury: c_rgb(0x54, 0x54, 0x6C),
+    silver: c_rgb(0x9C, 0xAB, 0xCA), // boatYellow2-adjacent pale blue
+    watermark: c_rgb(0x2A, 0x2A, 0x37),
+    white: c_rgb(0xFF, 0xF5, 0xD6),
+    fire: &[
+        c_rgb(0x2D, 0x4F, 0x67), // waves at rest
+        c_rgb(0x95, 0x7F, 0xB8), // wave violet
+        c_rgb(0xD2, 0x7E, 0x99), // sakura
+        c_rgb(0xFF, 0x9E, 0x3B), // ronin yellow
+        c_rgb(0xE6, 0xC3, 0x84), // carp — the hot end
+    ],
+    syntax: "kanagawa-wave",
+};
+
+/// Alkahest — Alka Officina's neon alchemy: same GitHub-dark ground, electric
+/// accents (`themes/alka-officina`). Deliberately distinct from VITRIOL: the
+/// brand colour is swirl yellow, not gold.
+pub static ALKAHEST: Theme = Theme {
+    name: "alkahest",
+    bg: c_rgb(0x0D, 0x11, 0x17),
+    panel: c_rgb(0x16, 0x1B, 0x22),
+    user_bg: c_rgb(0x13, 0x1A, 0x22),
+    border_dim: c_rgb(0x21, 0x26, 0x2D),
+    green: c_rgb(0x39, 0xFF, 0x14),  // neon green
+    gold: c_rgb(0xDF, 0xFF, 0x00),   // swirl yellow (brand)
+    cyan: c_rgb(0x44, 0xAA, 0xFF),   // electric blue
+    orange: c_rgb(0xFF, 0xD7, 0x00), // bright yellow (kitty color11)
+    red: c_rgb(0xFF, 0x44, 0x44),
+    text: c_rgb(0xE0, 0xE0, 0xE0),
+    muted: c_rgb(0x8B, 0x94, 0x9E),
+    faint: c_rgb(0x6E, 0x76, 0x81),
+    violet: c_rgb(0xFF, 0x00, 0xFF), // magenta
+    cold_blue: c_rgb(0x2E, 0x5F, 0xA3),
+    light_yellow: c_rgb(0xFF, 0xF5, 0x66),
+    deep_red: c_rgb(0x8A, 0x15, 0x15),
+    dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
+    mercury: c_rgb(0x55, 0x60, 0x6E),
+    silver: c_rgb(0xC0, 0xC7, 0xCF),
+    watermark: c_rgb(0x1E, 0x2A, 0x1E),
+    white: c_rgb(0xFF, 0xFF, 0xFF),
+    fire: &[
+        c_rgb(0x2E, 0x5F, 0xA3),
+        c_rgb(0x44, 0xAA, 0xFF),
+        c_rgb(0xDF, 0xFF, 0x00),
+        c_rgb(0xFF, 0xD7, 0x00),
+        c_rgb(0xFF, 0x79, 0xC6),
+    ],
+    syntax: "alka-neon",
+};
+
+/// Every theme, in menu order.
+pub static ALL: [&Theme; 3] = [&VITRIOL, &AETHER, &ALKAHEST];
+
+static CURRENT: RwLock<&'static Theme> = RwLock::new(&VITRIOL);
+
+/// The theme in use.
+pub fn current() -> &'static Theme {
+    *CURRENT.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Look a theme up by name (case-insensitive), including the two aliases the
+/// asset directories use.
+pub fn by_name(name: &str) -> Option<&'static Theme> {
+    let n = name.trim().to_lowercase();
+    let n = match n.as_str() {
+        "kanagawa" | "aetherskiff" | "kanagawa-wave" => "aether",
+        "alka" | "alka-officina" | "alkahest" => "alkahest",
+        "vitriolum" | "default" => "vitriol",
+        other => other,
+    };
+    ALL.iter().copied().find(|t| t.name == n)
+}
+
+/// Parse a persisted theme name: trim, lowercase, ignore empties.
+pub fn parse_theme_name(text: &str) -> Option<String> {
+    let name = text.trim().to_ascii_lowercase();
+    (!name.is_empty()).then_some(name)
+}
+
+/// The palette's fire/tint gradient for the active theme.
+#[allow(dead_code)] // see `Theme::fire`
+pub fn fire() -> &'static [Color] {
+    current().fire
+}
+
+/// Switch the active theme. Unknown names are refused (no silent fallback).
+pub fn set(name: &str) -> Option<&'static Theme> {
+    let theme = by_name(name)?;
+    *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = theme;
+    Some(theme)
+}
+
+// ── Accessors ────────────────────────────────────────────────────────────
+//
+// The uppercase names are intentional: they are the pre-2026-11-18 constants,
+// and keeping them 1:1 made the migration a mechanical `CONST` → `CONST()`.
+// No new code should need to add one; new colours belong in `Theme`.
+
+#[allow(non_snake_case)]
+pub fn BG() -> Color {
+    current().bg
+}
+#[allow(non_snake_case)]
+pub fn PANEL() -> Color {
+    current().panel
+}
+#[allow(non_snake_case)]
+pub fn USER_BG() -> Color {
+    current().user_bg
+}
+#[allow(non_snake_case)]
+pub fn BORDER_DIM() -> Color {
+    current().border_dim
+}
+#[allow(non_snake_case)]
+pub fn GREEN() -> Color {
+    current().green
+}
+#[allow(non_snake_case)]
+pub fn GOLD() -> Color {
+    current().gold
+}
+#[allow(non_snake_case)]
+pub fn CYAN() -> Color {
+    current().cyan
+}
+#[allow(non_snake_case)]
+pub fn ORANGE() -> Color {
+    current().orange
+}
+#[allow(non_snake_case)]
+pub fn RED() -> Color {
+    current().red
+}
+#[allow(non_snake_case)]
+pub fn TEXT() -> Color {
+    current().text
+}
+#[allow(non_snake_case)]
+pub fn MUTED() -> Color {
+    current().muted
+}
+#[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; asserted by theme_suite
+pub fn FAINT() -> Color {
+    current().faint
+}
+#[allow(non_snake_case)]
+pub fn VIOLET() -> Color {
+    current().violet
+}
+#[allow(non_snake_case)]
+pub fn COLD_BLUE() -> Color {
+    current().cold_blue
+}
+#[allow(non_snake_case)]
+pub fn LIGHT_YELLOW() -> Color {
+    current().light_yellow
+}
+#[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; asserted by theme_suite
+pub fn DEEP_RED() -> Color {
+    current().deep_red
+}
+#[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; asserted by theme_suite
+pub fn DARK_TEAL() -> Color {
+    current().dark_teal
+}
+#[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; asserted by theme_suite
+pub fn MERCURY() -> Color {
+    current().mercury
+}
+#[allow(non_snake_case)]
+pub fn SILVER() -> Color {
+    current().silver
+}
+#[allow(non_snake_case)]
+pub fn WATERMARK() -> Color {
+    current().watermark
+}
+#[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; asserted by theme_suite
+pub fn WHITE() -> Color {
+    current().white
+}
 
 // ── Alchemical glyphs (verified: Unicode UCD nameslist, U+1F700 block) ──
 // Font coverage is spotty beyond the four elements; fallbacks are one-line
@@ -70,7 +324,7 @@ pub const GLYPH_SULFUR: &str = "🜍";
 /// (owner request 2026-09-02; no dedicated Philosopher's Stone codepoint
 /// exists in Unicode 16 — verified by name scan). Fallback: 🜀 Quintessence.
 pub const GLYPH_AI: &str = "🜎";
-/// The human correspondent: MERCURY ☿ (U+263F) — wide font coverage.
+/// The human correspondent: MERCURY() ☿ (U+263F) — wide font coverage.
 pub const GLYPH_USER: &str = "☿";
 /// Tool running: CRUCIBLE (U+1F765) — matter being worked. Fallback: ⚙
 pub const GLYPH_CRUCIBLE: &str = "🝥";
@@ -82,43 +336,49 @@ pub const GLYPH_HERM: &str = "🜄"; // water, the sealed flask of memory
 
 /// Neutral style for body text.
 pub fn text() -> Style {
-    Style::new().fg(TEXT).bg(BG)
+    Style::new().fg(TEXT()).bg(BG())
 }
 
 /// Style for muted / secondary text.
 pub fn muted() -> Style {
-    Style::new().fg(MUTED).bg(BG)
+    Style::new().fg(MUTED()).bg(BG())
 }
 
 /// Style for a panel title: green on the background.
 pub fn title() -> Style {
-    Style::new().fg(GREEN).bg(BG).add_modifier(Modifier::BOLD)
+    Style::new()
+        .fg(GREEN())
+        .bg(BG())
+        .add_modifier(Modifier::BOLD)
 }
 
 /// Style for the top-level banner: gold, bold.
 pub fn banner() -> Style {
-    Style::new().fg(GOLD).bg(BG).add_modifier(Modifier::BOLD)
+    Style::new()
+        .fg(GOLD())
+        .bg(BG())
+        .add_modifier(Modifier::BOLD)
 }
 
 /// Muted gold for non-port (logical-layer) accents.
 #[allow(dead_code)] // kept: the notice strip replaced its only caller (2026-11-16)
 pub fn gold_muted() -> Style {
-    Style::new().fg(GOLD).bg(BG)
+    Style::new().fg(GOLD()).bg(BG())
 }
 
 /// Style for a live/streaming value (solvent cyan).
 pub fn live() -> Style {
-    Style::new().fg(CYAN).bg(BG)
+    Style::new().fg(CYAN()).bg(BG())
 }
 
 /// Informational emphasis.
 pub fn info() -> Style {
-    Style::new().fg(LIGHT_YELLOW).bg(BG)
+    Style::new().fg(LIGHT_YELLOW()).bg(BG())
 }
 
 /// Substrate/critical emphasis.
 pub fn crit() -> Style {
-    Style::new().fg(RED).bg(BG)
+    Style::new().fg(RED()).bg(BG())
 }
 
 // ── Braille ramps ────────────────────────────────────────────────────────
@@ -143,21 +403,22 @@ pub enum BrailleRamp {
 
 #[cfg(test)]
 impl BrailleRamp {
-    /// Gradient stops, low (t=0) to high (t=1).
-    pub fn stops(self) -> &'static [Color] {
+    /// Gradient stops, low (t=0) to high (t=1), in the ACTIVE theme.
+    ///
+    /// Owned: the stops are palette lookups now, so a `&'static` slice of them
+    /// cannot exist (2026-11-18). Two-to-five colours per gauge.
+    pub fn stops(self) -> Vec<Color> {
         match self {
-            BrailleRamp::Capacity => &[
-                Color::Rgb(0xFF, 0xFF, 0xFF),
-                LIGHT_YELLOW,
-                ORANGE,
-                RED,
-                DEEP_RED,
-            ],
-            BrailleRamp::Activity => &[DARK_TEAL, GREEN, CYAN],
-            BrailleRamp::Heat => &[COLD_BLUE, CYAN, GOLD, ORANGE, RED],
-            BrailleRamp::Pulse => &[MERCURY, CYAN],
-            BrailleRamp::Power => &[GREEN, GOLD, RED],
-            BrailleRamp::Velocity => &[RED, GOLD, GREEN],
+            BrailleRamp::Capacity => {
+                vec![current().white, LIGHT_YELLOW(), ORANGE(), RED(), DEEP_RED()]
+            }
+            BrailleRamp::Activity => vec![DARK_TEAL(), GREEN(), CYAN()],
+            // The heat gauge and the flames share the theme's own gradient, so a
+            // palette swap moves both together (identical values for `vitriol`).
+            BrailleRamp::Heat => fire().to_vec(),
+            BrailleRamp::Pulse => vec![MERCURY(), CYAN()],
+            BrailleRamp::Power => vec![GREEN(), GOLD(), RED()],
+            BrailleRamp::Velocity => vec![RED(), GOLD(), GREEN()],
         }
     }
 
@@ -171,14 +432,15 @@ impl BrailleRamp {
 
     /// Ramp color at fraction `t` in `[0, 1]`.
     pub fn color(self, t: f64) -> Color {
-        ramp_color(self.stops(), t)
+        let stops = self.stops();
+        ramp_color(&stops, t)
     }
 }
 
 /// Piecewise lerp across `stops` by fraction `t` in `[0, 1]`.
 pub fn ramp_color(stops: &[Color], t: f64) -> Color {
     if stops.is_empty() {
-        return MUTED;
+        return MUTED();
     }
     if stops.len() == 1 {
         return stops[0];
@@ -202,7 +464,7 @@ pub fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     )
 }
 
-/// Split a Color into RGB channels; non-RGB colors fall back to MUTED's values.
+/// Split a Color into RGB channels; non-RGB colors fall back to MUTED()'s values.
 fn rgb(c: Color) -> (u8, u8, u8) {
     match c {
         Color::Rgb(r, g, b) => (r, g, b),
@@ -215,7 +477,10 @@ fn rgb(c: Color) -> (u8, u8, u8) {
 #[cfg(test)]
 pub fn gauge_value_style(ramp: BrailleRamp, ratio: f64) -> Style {
     if ratio > 0.8 && !ramp.signals_danger() {
-        Style::new().fg(ORANGE).bg(BG).add_modifier(Modifier::BOLD)
+        Style::new()
+            .fg(ORANGE())
+            .bg(BG())
+            .add_modifier(Modifier::BOLD)
     } else {
         live()
     }
@@ -241,45 +506,48 @@ mod tests {
 
     #[test]
     fn ramp_color_endpoints() {
-        assert_eq!(BrailleRamp::Pulse.color(0.0), MERCURY);
-        assert_eq!(BrailleRamp::Pulse.color(1.0), CYAN);
-        assert_eq!(BrailleRamp::Heat.color(0.0), COLD_BLUE);
-        assert_eq!(BrailleRamp::Heat.color(1.0), RED);
-        assert_eq!(BrailleRamp::Capacity.color(1.0), DEEP_RED);
-        assert_eq!(BrailleRamp::Power.color(0.0), GREEN);
-        assert_eq!(BrailleRamp::Power.color(1.0), RED);
+        assert_eq!(BrailleRamp::Pulse.color(0.0), MERCURY());
+        assert_eq!(BrailleRamp::Pulse.color(1.0), CYAN());
+        assert_eq!(BrailleRamp::Heat.color(0.0), COLD_BLUE());
+        assert_eq!(BrailleRamp::Heat.color(1.0), RED());
+        assert_eq!(BrailleRamp::Capacity.color(1.0), DEEP_RED());
+        assert_eq!(BrailleRamp::Power.color(0.0), GREEN());
+        assert_eq!(BrailleRamp::Power.color(1.0), RED());
     }
 
     #[test]
     fn velocity_ramp_low_red_high_green() {
-        assert_eq!(BrailleRamp::Velocity.color(0.0), RED);
-        assert_eq!(BrailleRamp::Velocity.color(1.0), GREEN);
+        assert_eq!(BrailleRamp::Velocity.color(0.0), RED());
+        assert_eq!(BrailleRamp::Velocity.color(1.0), GREEN());
         assert!(!BrailleRamp::Velocity.signals_danger());
     }
 
     #[test]
     fn ramp_color_clamps_out_of_range_t() {
-        assert_eq!(BrailleRamp::Pulse.color(-1.0), MERCURY);
-        assert_eq!(BrailleRamp::Pulse.color(2.0), CYAN);
+        assert_eq!(BrailleRamp::Pulse.color(-1.0), MERCURY());
+        assert_eq!(BrailleRamp::Pulse.color(2.0), CYAN());
     }
 
     #[test]
     fn ramp_color_midpoint_multi_stop() {
         let mid = BrailleRamp::Power.color(0.5);
-        assert_eq!(mid, GOLD);
+        assert_eq!(mid, GOLD());
     }
 
     #[test]
     fn lerp_color_endpoints_and_mid() {
-        assert_eq!(lerp_color(GREEN, CYAN, 0.0), GREEN);
-        assert_eq!(lerp_color(GREEN, CYAN, 1.0), CYAN);
-        assert_eq!(lerp_color(GREEN, CYAN, 0.5), Color::Rgb(0x20, 0xDC, 0xA8));
+        assert_eq!(lerp_color(GREEN(), CYAN(), 0.0), GREEN());
+        assert_eq!(lerp_color(GREEN(), CYAN(), 1.0), CYAN());
+        assert_eq!(
+            lerp_color(GREEN(), CYAN(), 0.5),
+            Color::Rgb(0x20, 0xDC, 0xA8)
+        );
     }
 
     #[test]
     fn lerp_color_clamps_t() {
-        assert_eq!(lerp_color(GREEN, CYAN, -0.5), GREEN);
-        assert_eq!(lerp_color(GREEN, CYAN, 1.5), CYAN);
+        assert_eq!(lerp_color(GREEN(), CYAN(), -0.5), GREEN());
+        assert_eq!(lerp_color(GREEN(), CYAN(), 1.5), CYAN());
     }
 
     #[test]
@@ -294,14 +562,210 @@ mod tests {
     #[test]
     fn warn_style_only_when_not_signalled() {
         let pulse_over = gauge_value_style(BrailleRamp::Pulse, 0.9);
-        assert_eq!(pulse_over.fg, Some(ORANGE));
+        assert_eq!(pulse_over.fg, Some(ORANGE()));
         assert!(pulse_over.add_modifier.contains(Modifier::BOLD));
         let pulse_under = gauge_value_style(BrailleRamp::Pulse, 0.5);
-        assert_eq!(pulse_under.fg, Some(CYAN));
+        assert_eq!(pulse_under.fg, Some(CYAN()));
 
         let power_over = gauge_value_style(BrailleRamp::Power, 0.9);
-        assert_eq!(power_over.fg, Some(CYAN));
+        assert_eq!(power_over.fg, Some(CYAN()));
         let capacity_over = gauge_value_style(BrailleRamp::Capacity, 0.9);
-        assert_eq!(capacity_over.fg, Some(CYAN));
+        assert_eq!(capacity_over.fg, Some(CYAN()));
+    }
+}
+
+#[cfg(test)]
+mod theme_suite {
+    use super::*;
+
+    /// Every theme must define every role. A field left at `Reset` would render
+    /// as the terminal's default colour — the exact "half-themed" failure this
+    /// suite exists to catch.
+    #[test]
+    fn every_theme_defines_every_role() {
+        for t in ALL {
+            assert!(!t.name.is_empty());
+            let colours = [
+                t.bg,
+                t.panel,
+                t.user_bg,
+                t.border_dim,
+                t.green,
+                t.gold,
+                t.cyan,
+                t.orange,
+                t.red,
+                t.text,
+                t.muted,
+                t.faint,
+                t.violet,
+                t.cold_blue,
+                t.light_yellow,
+                t.deep_red,
+                t.dark_teal,
+                t.mercury,
+                t.silver,
+                t.watermark,
+                t.white,
+            ];
+            for (i, c) in colours.iter().enumerate() {
+                assert_ne!(*c, Color::Reset, "{}: role {i} is unset", t.name);
+                // Index 0 IS the background; every OTHER role must differ from it.
+                if i > 0 {
+                    assert_ne!(*c, t.bg, "{}: role {i} equals the background", t.name);
+                }
+            }
+            assert!(!t.fire.is_empty(), "{}: no fire ramp", t.name);
+            assert!(!t.syntax.is_empty(), "{}: no syntect theme", t.name);
+        }
+    }
+
+    fn lum(c: Color) -> f64 {
+        let (r, g, b) = match c {
+            Color::Rgb(r, g, b) => (r as f64 / 255.0, g as f64 / 255.0, b as f64 / 255.0),
+            _ => (0.0, 0.0, 0.0),
+        };
+        let f = |v: f64| {
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f64 {
+        let (la, lb) = (lum(a), lum(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// A theme that cannot be read is not a theme. Text 7:1, secondary 3.5:1.
+    #[test]
+    fn every_theme_is_readable() {
+        for t in ALL {
+            let body = contrast(t.text, t.bg);
+            let secondary = contrast(t.muted, t.bg);
+            assert!(body >= 7.0, "{}: body contrast {body:.1} < 7", t.name);
+            assert!(
+                secondary >= 3.5,
+                "{}: secondary contrast {secondary:.1} < 3.5",
+                t.name
+            );
+            // Panels must stay distinguishable from the ground, or borders vanish.
+            assert_ne!(t.panel, t.bg, "{}: panel equals bg", t.name);
+        }
+    }
+
+    #[test]
+    fn names_and_aliases_resolve() {
+        assert_eq!(by_name("vitriol").map(|t| t.name), Some("vitriol"));
+        assert_eq!(by_name("AETHER").map(|t| t.name), Some("aether"));
+        assert_eq!(by_name("kanagawa").map(|t| t.name), Some("aether"));
+        assert_eq!(by_name("aetherskiff").map(|t| t.name), Some("aether"));
+        assert_eq!(by_name("alkahest").map(|t| t.name), Some("alkahest"));
+        assert_eq!(by_name("alka-officina").map(|t| t.name), Some("alkahest"));
+        assert!(by_name("definitely-not-a-theme").is_none());
+        assert!(by_name("").is_none());
+    }
+
+    #[test]
+    fn persisted_names_parse_leniently() {
+        assert_eq!(parse_theme_name("  Aether \n"), Some("aether".into()));
+        assert_eq!(parse_theme_name("\n\t "), None);
+    }
+
+    /// Every fire ramp must be a gradient that gets WARMER toward the hot end.
+    ///
+    /// Luminance is the wrong measure: a heat ramp peaks in the middle (gold,
+    /// carp) and darkens into red by design. What must hold is that the hot end
+    /// is warmer in hue than the embers — `R − B` rising — and that no two stops
+    /// are the same colour.
+    #[test]
+    fn fire_ramps_warm_toward_the_hot_end() {
+        fn warmth(c: Color) -> i32 {
+            let (r, _, b) = rgb(c);
+            r as i32 - b as i32
+        }
+        for t in ALL {
+            assert!(t.fire.len() >= 2, "{}: ramp too short", t.name);
+            let first = t.fire[0];
+            let last = *t.fire.last().unwrap();
+            assert_ne!(first, last, "{}: ramp has no range", t.name);
+            assert!(
+                warmth(last) >= warmth(first),
+                "{}: the hot end is cooler than the embers ({:?} → {:?})",
+                t.name,
+                first,
+                last
+            );
+            for pair in t.fire.windows(2) {
+                assert_ne!(pair[0], pair[1], "{}: ramp repeats a colour", t.name);
+            }
+        }
+    }
+
+    /// The whole point: the three themes are actually different.
+    #[test]
+    fn themes_are_distinct() {
+        assert_ne!(VITRIOL.bg, AETHER.bg);
+        assert_ne!(VITRIOL.gold, AETHER.gold); // gold vs carp
+        assert_ne!(VITRIOL.gold, ALKAHEST.gold); // gold vs swirl
+        assert_ne!(VITRIOL.green, ALKAHEST.green); // calm vs neon
+        assert_ne!(AETHER.text, ALKAHEST.text);
+    }
+
+    /// No call site may still read a colour as a `const`: the failure mode is a
+    /// silently unthemed widget that no rendering test would notice.
+    #[test]
+    fn no_uppercase_theme_access_without_parens() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders: Vec<String> = Vec::new();
+        for entry in walk(&root) {
+            let text = std::fs::read_to_string(&entry).unwrap_or_default();
+            for (line_no, line) in text.lines().enumerate() {
+                let mut rest = line;
+                while let Some(pos) = rest.find("theme::") {
+                    rest = &rest[pos + "theme::".len()..];
+                    let ident: String = rest
+                        .chars()
+                        .take_while(|c| c.is_ascii_uppercase() || *c == '_' || c.is_ascii_digit())
+                        .collect();
+                    if ident.is_empty() {
+                        continue;
+                    }
+                    // Strings (glyphs) and the theme list are not colours.
+                    if ident.starts_with("GLYPH_") || ident == "ALL" {
+                        continue;
+                    }
+                    let after = &rest[ident.len()..];
+                    if !after.starts_with('(') {
+                        offenders.push(format!(
+                            "{}:{}: theme::{ident}",
+                            entry.display(),
+                            line_no + 1
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(offenders.is_empty(), "unthemed const reads: {offenders:#?}");
+    }
+
+    fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk(&path));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+        out
     }
 }

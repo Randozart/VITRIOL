@@ -1749,6 +1749,45 @@ impl AppState {
         self.notice_row.force(0);
     }
 
+    /// Persisted TUI theme name: `~/.vitriol/officina/tui-theme`.
+    pub fn theme_path() -> Option<std::path::PathBuf> {
+        let home = std::env::var_os("HOME")?;
+        Some(
+            std::path::PathBuf::from(home)
+                .join(".vitriol")
+                .join("officina")
+                .join("tui-theme"),
+        )
+    }
+
+    /// Apply a theme and remember it. Returns the applied theme's name.
+    ///
+    /// Precedence at startup is env → file → default, so a throwaway run can
+    /// preview a theme without touching the operator's choice (2026-11-18).
+    pub fn set_theme(&mut self, name: &str, persist: bool) -> Option<&'static str> {
+        let theme = crate::theme::set(name)?;
+        if persist {
+            if let Some(path) = Self::theme_path() {
+                if let Some(dir) = path.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                if let Err(e) = std::fs::write(&path, format!("{}\n", theme.name)) {
+                    self.notice = Some((
+                        format!("theme applied but not saved: {e}"),
+                        "warning".to_string(),
+                    ));
+                }
+            }
+        }
+        Some(theme.name)
+    }
+
+    /// Read the persisted theme name (no side effects).
+    pub fn saved_theme() -> Option<String> {
+        let text = std::fs::read_to_string(Self::theme_path()?).ok()?;
+        crate::theme::parse_theme_name(&text)
+    }
+
     /// Height of the notice strip for this frame (0 or 1), settled so the
     /// composer never jitters when a notice appears or expires.
     pub fn notice_row_height(&mut self) -> u16 {
@@ -4160,7 +4199,7 @@ impl AppState {
                             lines.push(Line::from(vec![
                                 Span::styled(
                                     format!("{} ", theme::GLYPH_USER),
-                                    Style::default().fg(theme::GREEN),
+                                    Style::default().fg(theme::GREEN()),
                                 ),
                                 Span::raw(seg),
                             ]));
@@ -4188,7 +4227,7 @@ impl AppState {
                             first = false;
                             spans.push(Span::styled(
                                 format!("{} ", theme::GLYPH_AI),
-                                Style::default().fg(theme::GOLD),
+                                Style::default().fg(theme::GOLD()),
                             ));
                         } else {
                             spans.push(Span::raw("  ".to_string()));
@@ -4215,9 +4254,9 @@ impl AppState {
                             String::new()
                         };
                         let count_style = if growing {
-                            Style::default().fg(theme::GOLD)
+                            Style::default().fg(theme::GOLD())
                         } else {
-                            Style::default().fg(theme::MUTED)
+                            Style::default().fg(theme::MUTED())
                         };
                         // The activity line already says "thinking…" while this
                         // block is the live tail, so the block itself drops the
@@ -4262,13 +4301,13 @@ impl AppState {
                             let mut spans: Vec<Span> = Vec::with_capacity(ml.spans.len() + 1);
                             spans.push(Span::styled(
                                 if first { "  ·    " } else { "        " },
-                                Style::default().fg(theme::MUTED),
+                                Style::default().fg(theme::MUTED()),
                             ));
                             for sp in ml.spans {
                                 spans.push(Span::styled(
                                     sp.content,
                                     sp.style
-                                        .fg(theme::MUTED)
+                                        .fg(theme::MUTED())
                                         .add_modifier(ratatui::style::Modifier::ITALIC),
                                 ));
                             }
@@ -4306,7 +4345,7 @@ impl AppState {
                         } else if *error {
                             ("✗", theme::crit())
                         } else {
-                            ("✓", Style::default().fg(theme::GREEN).bg(theme::BG))
+                            ("✓", Style::default().fg(theme::GREEN()).bg(theme::BG()))
                         };
                         if let Some((title, cmd)) = bash_title_and_cmd(name, args.as_deref()) {
                             // The model's purpose is the primary scan target;
@@ -4325,20 +4364,20 @@ impl AppState {
                                 Span::styled(display, st),
                                 Span::styled(
                                     " ▸ ",
-                                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                                    Style::default().fg(theme::MUTED()).bg(theme::BG()),
                                 ),
                                 Span::styled(
                                     title_s,
                                     Style::default()
-                                        .fg(theme::GOLD)
-                                        .bg(theme::BG)
+                                        .fg(theme::GOLD())
+                                        .bg(theme::BG())
                                         .add_modifier(ratatui::style::Modifier::BOLD),
                                 ),
                             ];
                             if !cmd_s.is_empty() {
                                 spans.push(Span::styled(
                                     " · ",
-                                    Style::default().fg(theme::MUTED).bg(theme::BG),
+                                    Style::default().fg(theme::MUTED()).bg(theme::BG()),
                                 ));
                                 spans.push(Span::styled(cmd_s, st));
                             }
@@ -4431,8 +4470,8 @@ impl AppState {
                 ChatEntry::Diag(text) => {
                     // Neutral voice (2026-11-14): diagnostics are info, not
                     // errors — red is reserved for ChatEntry::Error.
-                    let st = Style::new().fg(theme::SILVER).bg(theme::BG);
-                    let glyph = Style::new().fg(theme::MUTED).bg(theme::BG);
+                    let st = Style::new().fg(theme::SILVER()).bg(theme::BG());
+                    let glyph = Style::new().fg(theme::MUTED()).bg(theme::BG());
                     for (i, seg) in wrap_text(text, width.saturating_sub(8))
                         .into_iter()
                         .enumerate()
@@ -4451,7 +4490,7 @@ impl AppState {
                     }
                 }
                 ChatEntry::Warn(text) => {
-                    let st = Style::new().fg(theme::ORANGE).bg(theme::BG);
+                    let st = Style::new().fg(theme::ORANGE()).bg(theme::BG());
                     for (i, seg) in wrap_text(text, width.saturating_sub(8))
                         .into_iter()
                         .enumerate()
@@ -4470,7 +4509,7 @@ impl AppState {
                     }
                 }
                 ChatEntry::Error(text) => {
-                    let st = Style::new().fg(theme::RED).bg(theme::BG);
+                    let st = Style::new().fg(theme::RED()).bg(theme::BG());
                     for (i, seg) in wrap_text(text, width.saturating_sub(8))
                         .into_iter()
                         .enumerate()
@@ -4489,7 +4528,7 @@ impl AppState {
                     }
                 }
                 ChatEntry::Notice(text) => {
-                    let st = Style::new().fg(theme::VIOLET).bg(theme::BG);
+                    let st = Style::new().fg(theme::VIOLET()).bg(theme::BG());
                     for (i, seg) in wrap_text(text, width.saturating_sub(8))
                         .into_iter()
                         .enumerate()
@@ -4512,31 +4551,31 @@ impl AppState {
                     // Structured card when the facts file is fresh; raw text
                     // fallback so a message is never lost (I3).
                     let edge_color = watchdog_edge_color(wd.as_ref().map(|d| d.verdict.as_str()));
-                    let edge = Style::new().fg(edge_color).bg(theme::BG);
-                    let body = Style::new().fg(theme::TEXT).bg(theme::BG);
-                    let muted = Style::new().fg(theme::MUTED).bg(theme::BG);
+                    let edge = Style::new().fg(edge_color).bg(theme::BG());
+                    let body = Style::new().fg(theme::TEXT()).bg(theme::BG());
+                    let muted = Style::new().fg(theme::MUTED()).bg(theme::BG());
                     let span_w = width.saturating_sub(4);
                     let (chip, chip_style) = match wd.as_ref().map(|d| d.verdict.as_str()) {
                         Some("ALIVE") => (
                             " ALIVE ",
                             Style::new()
-                                .fg(theme::GREEN)
-                                .bg(theme::BG)
+                                .fg(theme::GREEN())
+                                .bg(theme::BG())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Some("HUNG") => (
                             " HUNG ",
                             Style::new()
-                                .fg(theme::ORANGE)
-                                .bg(theme::BG)
+                                .fg(theme::ORANGE())
+                                .bg(theme::BG())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Some("UNKNOWN") => (" UNKNOWN ", muted),
                         Some("JUDGING") => (
                             " JUDGING ",
                             Style::new()
-                                .fg(theme::GOLD)
-                                .bg(theme::BG)
+                                .fg(theme::GOLD())
+                                .bg(theme::BG())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         _ => ("", muted),
@@ -4562,7 +4601,7 @@ impl AppState {
                             label,
                             Style::new()
                                 .fg(edge_color)
-                                .bg(theme::BG)
+                                .bg(theme::BG())
                                 .add_modifier(Modifier::BOLD),
                         ),
                         // Full width, like the bottom border: capping this at 60
@@ -5102,9 +5141,9 @@ fn scratchpad_args_lines(
     width: usize,
     surf: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
-    let muted = Style::default().fg(theme::MUTED).bg(surf);
-    let text = Style::default().fg(theme::TEXT).bg(surf);
+    let border = Style::default().fg(theme::BORDER_DIM()).bg(surf);
+    let muted = Style::default().fg(theme::MUTED()).bg(surf);
+    let text = Style::default().fg(theme::TEXT()).bg(surf);
     let mut out = vec![Line::from(vec![
         Span::styled("│ ", border),
         Span::styled("notebook", muted),
@@ -5119,7 +5158,7 @@ fn scratchpad_args_lines(
             Span::styled("│ ", border),
             Span::styled(
                 format!("{section} ({})", items.len()),
-                Style::default().fg(theme::GOLD).bg(surf),
+                Style::default().fg(theme::GOLD()).bg(surf),
             ),
         ]));
         let budget = if full { items.len() } else { 4 };
@@ -5149,7 +5188,7 @@ fn scratchpad_args_lines(
             Span::styled("│ ", border),
             Span::styled(
                 "reset all sections",
-                Style::default().fg(theme::ORANGE).bg(surf),
+                Style::default().fg(theme::ORANGE()).bg(surf),
             ),
         ]));
     }
@@ -5168,9 +5207,9 @@ fn task_args_lines(
     width: usize,
     surf: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
-    let muted = Style::default().fg(theme::MUTED).bg(surf);
-    let text = Style::default().fg(theme::TEXT).bg(surf);
+    let border = Style::default().fg(theme::BORDER_DIM()).bg(surf);
+    let muted = Style::default().fg(theme::MUTED()).bg(surf);
+    let text = Style::default().fg(theme::TEXT()).bg(surf);
     let mut out = vec![Line::from(vec![
         Span::styled("│ ", border),
         Span::styled("checklist", muted),
@@ -5195,10 +5234,10 @@ fn task_args_lines(
             .and_then(|v| v.as_str())
             .unwrap_or("pending");
         let (glyph, color) = match status {
-            "in_progress" => ("▶", theme::GOLD),
-            "completed" => ("✓", theme::GREEN),
-            "cancelled" => ("✗", theme::MUTED),
-            _ => ("·", theme::MUTED),
+            "in_progress" => ("▶", theme::GOLD()),
+            "completed" => ("✓", theme::GREEN()),
+            "cancelled" => ("✗", theme::MUTED()),
+            _ => ("·", theme::MUTED()),
         };
         let desc = task
             .get("description")
@@ -5242,9 +5281,9 @@ fn shell_args_lines(
     width: usize,
     surf: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
-    let muted = Style::default().fg(theme::MUTED).bg(surf);
-    let text = Style::default().fg(theme::TEXT).bg(surf);
+    let border = Style::default().fg(theme::BORDER_DIM()).bg(surf);
+    let muted = Style::default().fg(theme::MUTED()).bg(surf);
+    let text = Style::default().fg(theme::TEXT()).bg(surf);
     let mut out = vec![Line::from(vec![
         Span::styled("│ ", border),
         Span::styled("command", muted),
@@ -5325,13 +5364,13 @@ fn looks_like_diff(lines: &[String]) -> bool {
 fn diff_line_style(line: &str, default: Style) -> Style {
     let t = line.trim_start();
     if t.starts_with("@@") {
-        Style::default().fg(theme::GOLD).bg(theme::BG)
+        Style::default().fg(theme::GOLD()).bg(theme::BG())
     } else if t.starts_with("+++") || t.starts_with("---") {
-        Style::default().fg(theme::MUTED).bg(theme::BG)
+        Style::default().fg(theme::MUTED()).bg(theme::BG())
     } else if t.starts_with('+') {
-        Style::default().fg(theme::GREEN).bg(theme::BG)
+        Style::default().fg(theme::GREEN()).bg(theme::BG())
     } else if t.starts_with('-') {
-        Style::default().fg(theme::RED).bg(theme::BG)
+        Style::default().fg(theme::RED()).bg(theme::BG())
     } else {
         default
     }
@@ -5348,7 +5387,7 @@ fn generic_args_lines(
     muted_st: Style,
     text_st: Style,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme::MUTED).bg(surf);
+    let border = Style::default().fg(theme::MUTED()).bg(surf);
     let mut lines = Vec::new();
     let Some(obj) = args.as_object() else {
         let one = serde_json::to_string(args).unwrap_or_default();
@@ -5416,30 +5455,32 @@ fn generic_args_lines(
 fn status_line_style(line: &str, default: Style) -> Style {
     let t = line.trim_start();
     let fg = if t.starts_with('✓') {
-        theme::GREEN
+        theme::GREEN()
     } else if t.starts_with('✗') || t.starts_with('×') {
-        theme::RED
+        theme::RED()
     } else if t.starts_with('⚠') {
-        theme::ORANGE
+        theme::ORANGE()
     } else {
         return default;
     };
-    Style::default().fg(fg).bg(default.bg.unwrap_or(theme::BG))
+    Style::default()
+        .fg(fg)
+        .bg(default.bg.unwrap_or(theme::BG()))
 }
 
 /// Diff line style on an explicit surface (tool blocks use PANEL).
 fn diff_line_on(line: &str, surf: ratatui::style::Color) -> Style {
     let t = line.trim_start();
     if t.starts_with("@@") {
-        Style::default().fg(theme::GOLD).bg(surf)
+        Style::default().fg(theme::GOLD()).bg(surf)
     } else if t.starts_with("+++") || t.starts_with("---") {
-        Style::default().fg(theme::MUTED).bg(surf)
+        Style::default().fg(theme::MUTED()).bg(surf)
     } else if t.starts_with('+') {
-        Style::default().fg(theme::GREEN).bg(surf)
+        Style::default().fg(theme::GREEN()).bg(surf)
     } else if t.starts_with('-') {
-        Style::default().fg(theme::RED).bg(surf)
+        Style::default().fg(theme::RED()).bg(surf)
     } else {
-        Style::default().fg(theme::TEXT).bg(surf)
+        Style::default().fg(theme::TEXT()).bg(surf)
     }
 }
 
@@ -5537,8 +5578,8 @@ fn code_view_lines(
     width: usize,
     surf: ratatui::style::Color,
 ) -> Vec<Line<'static>> {
-    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
-    let muted = Style::default().fg(theme::MUTED).bg(surf);
+    let border = Style::default().fg(theme::BORDER_DIM()).bg(surf);
+    let muted = Style::default().fg(theme::MUTED()).bg(surf);
     let mut out: Vec<Line<'static>> = Vec::new();
     let path = args
         .get("path")
@@ -5705,10 +5746,10 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
     // not interrupt it — "it stands apart from the background"). Every
     // span carries bg(PANEL) and every line pads to `width`, so flame
     // cells cannot show through gaps and the tint pass skips the surface.
-    let surf = theme::PANEL;
-    let border = Style::default().fg(theme::BORDER_DIM).bg(surf);
-    let text_st = Style::default().fg(theme::TEXT).bg(surf);
-    let muted_st = Style::default().fg(theme::MUTED).bg(surf);
+    let surf = theme::PANEL();
+    let border = Style::default().fg(theme::BORDER_DIM()).bg(surf);
+    let text_st = Style::default().fg(theme::TEXT()).bg(surf);
+    let muted_st = Style::default().fg(theme::MUTED()).bg(surf);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(16 + output.len());
 
     // Header: ╭─ ⌬ name [▸ summary]
@@ -5717,12 +5758,12 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
             Span::styled("╭─ ", border),
             Span::styled(
                 format!("{} ", theme::GLYPH_CRUCIBLE),
-                Style::default().fg(theme::GOLD).bg(surf),
+                Style::default().fg(theme::GOLD()).bg(surf),
             ),
             Span::styled(
                 tool_display_name(name),
                 Style::default()
-                    .fg(theme::SILVER)
+                    .fg(theme::SILVER())
                     .bg(surf)
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
@@ -5737,7 +5778,7 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
                 spans.push(Span::styled(
                     title_s,
                     Style::default()
-                        .fg(theme::GOLD)
+                        .fg(theme::GOLD())
                         .bg(surf)
                         .add_modifier(ratatui::style::Modifier::BOLD),
                 ));
@@ -5836,12 +5877,12 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
     } else if running {
         let mut spans = vec![
             Span::styled("│ ", border),
-            Span::styled("running…", Style::default().fg(theme::CYAN).bg(surf)),
+            Span::styled("running…", Style::default().fg(theme::CYAN()).bg(surf)),
         ];
         if let Some(secs) = elapsed {
             spans.push(Span::styled(
                 format!(" {}", fmt_elapsed(secs)),
-                Style::default().fg(theme::MUTED).bg(surf),
+                Style::default().fg(theme::MUTED()).bg(surf),
             ));
         }
         // Liveness evidence (2026-11-12): real CPU from pi's subprocess
@@ -5850,9 +5891,9 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
         // when it has been flat.
         if let Some((text, alive)) = liveness {
             let st = if alive {
-                Style::default().fg(theme::GREEN).bg(surf)
+                Style::default().fg(theme::GREEN()).bg(surf)
             } else {
-                Style::default().fg(theme::ORANGE).bg(surf)
+                Style::default().fg(theme::ORANGE()).bg(surf)
             };
             spans.push(Span::styled(format!(" · {text}"), st));
         }
@@ -5879,7 +5920,7 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
             if any {
                 spans.push(Span::styled(" · ", muted_st));
             }
-            let ok = Style::default().fg(theme::GREEN).bg(surf);
+            let ok = Style::default().fg(theme::GREEN()).bg(surf);
             spans.push(Span::styled(
                 format!("{} {}", if f.changed { "✓" } else { "·" }, f.tool),
                 if f.changed { ok } else { muted_st },
@@ -5891,11 +5932,11 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
                 spans.push(Span::styled(" · ", muted_st));
             }
             let (label, color) = if sy.available == Some(false) {
-                ("? syntax unavailable", theme::MUTED)
+                ("? syntax unavailable", theme::MUTED())
             } else if sy.ok {
-                ("✓ syntax", theme::GREEN)
+                ("✓ syntax", theme::GREEN())
             } else {
-                ("✗ syntax", theme::RED)
+                ("✗ syntax", theme::RED())
             };
             spans.push(Span::styled(
                 label.to_string(),
@@ -5914,9 +5955,9 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
                     format!("⚠ praetor {}", pr.count)
                 },
                 if pr.count == 0 {
-                    Style::default().fg(theme::GREEN).bg(surf)
+                    Style::default().fg(theme::GREEN()).bg(surf)
                 } else {
-                    Style::default().fg(theme::ORANGE).bg(surf)
+                    Style::default().fg(theme::ORANGE()).bg(surf)
                 },
             ));
             any = true;
@@ -5932,12 +5973,12 @@ fn render_tool_block(view: ToolBlock<'_>) -> Vec<Line<'static>> {
             (
                 theme::GLYPH_CRUCIBLE,
                 " running",
-                Style::default().fg(theme::CYAN).bg(surf),
+                Style::default().fg(theme::CYAN()).bg(surf),
             )
         } else if error {
-            ("✗", " failed", Style::default().fg(theme::RED).bg(surf))
+            ("✗", " failed", Style::default().fg(theme::RED()).bg(surf))
         } else {
-            ("✓", "", Style::default().fg(theme::GREEN).bg(surf))
+            ("✓", "", Style::default().fg(theme::GREEN()).bg(surf))
         };
         let mut status = format!("{}{}", icon, label);
         if running {
@@ -5963,7 +6004,7 @@ fn pad_panel(mut line: Line<'static>, width: usize) -> Line<'static> {
     if w < width {
         line.spans.push(Span::styled(
             " ".repeat(width - w),
-            Style::default().bg(theme::PANEL),
+            Style::default().bg(theme::PANEL()),
         ));
     }
     line
@@ -6396,23 +6437,23 @@ mod tests {
         let lines = s.chat_lines(100);
         let colors = flat_colors(&lines);
         assert!(
-            colors.contains(&theme::CYAN),
+            colors.contains(&theme::CYAN()),
             "running uses cyan: {colors:?}"
         );
-        assert!(!colors.contains(&theme::RED), "running is never red");
+        assert!(!colors.contains(&theme::RED()), "running is never red");
         assert!(
-            !colors.contains(&theme::ORANGE),
+            !colors.contains(&theme::ORANGE()),
             "running is not amber either"
         );
         // Completed → green; failed → red.
         s.tool_end(Some("t1"), "bash", "done", false);
         let done: Vec<Line> = s.chat_lines(100);
-        assert!(flat_colors(&done).contains(&theme::GREEN));
+        assert!(flat_colors(&done).contains(&theme::GREEN()));
         let mut f = AppState::default();
         f.tool_start(Some("t2"), "bash", &serde_json::json!({"command": "false"}));
         f.tool_end(Some("t2"), "bash", "exit 1", true);
         let failed: Vec<Line> = f.chat_lines(100);
-        assert!(flat_colors(&failed).contains(&theme::RED));
+        assert!(flat_colors(&failed).contains(&theme::RED()));
     }
 
     #[test]
@@ -6421,30 +6462,33 @@ mod tests {
         s.entries
             .push(ChatEntry::Diag("janitor: nothing stale".into()));
         let diag = s.chat_lines(90);
-        assert!(!flat_colors(&diag).contains(&theme::RED), "Diag never red");
         assert!(
-            !flat_colors(&diag).contains(&theme::ORANGE),
+            !flat_colors(&diag).contains(&theme::RED()),
+            "Diag never red"
+        );
+        assert!(
+            !flat_colors(&diag).contains(&theme::ORANGE()),
             "Diag not amber"
         );
         s.entries.clear();
         s.entries.push(ChatEntry::Warn("watchdog abort".into()));
         let warn = s.chat_lines(90);
-        assert!(flat_colors(&warn).contains(&theme::ORANGE));
-        assert!(!flat_colors(&warn).contains(&theme::RED));
+        assert!(flat_colors(&warn).contains(&theme::ORANGE()));
+        assert!(!flat_colors(&warn).contains(&theme::RED()));
         s.entries.clear();
         s.entries.push(ChatEntry::Error("checkpoint failed".into()));
         let err = s.chat_lines(90);
-        assert!(flat_colors(&err).contains(&theme::RED));
+        assert!(flat_colors(&err).contains(&theme::RED()));
         s.entries.clear();
     }
 
     #[test]
     fn watchdog_edge_follows_the_verdict() {
-        assert_eq!(watchdog_edge_color(Some("ALIVE")), theme::GREEN);
-        assert_eq!(watchdog_edge_color(Some("JUDGING")), theme::GOLD);
-        assert_eq!(watchdog_edge_color(Some("HUNG")), theme::ORANGE);
-        assert_eq!(watchdog_edge_color(Some("?")), theme::MUTED);
-        assert_eq!(watchdog_edge_color(None), theme::MUTED);
+        assert_eq!(watchdog_edge_color(Some("ALIVE")), theme::GREEN());
+        assert_eq!(watchdog_edge_color(Some("JUDGING")), theme::GOLD());
+        assert_eq!(watchdog_edge_color(Some("HUNG")), theme::ORANGE());
+        assert_eq!(watchdog_edge_color(Some("?")), theme::MUTED());
+        assert_eq!(watchdog_edge_color(None), theme::MUTED());
         // ALIVE must never wear the warning/failure hue (I3).
         let mut s = AppState::default();
         s.entries.push(ChatEntry::Watchdog {
@@ -6469,9 +6513,12 @@ mod tests {
         }
         let lines = s.chat_lines(90);
         let colors = flat_colors(&lines);
-        assert!(colors.contains(&theme::GREEN));
-        assert!(!colors.contains(&theme::ORANGE), "ALIVE card is not amber");
-        assert!(!colors.contains(&theme::RED), "ALIVE card is not red");
+        assert!(colors.contains(&theme::GREEN()));
+        assert!(
+            !colors.contains(&theme::ORANGE()),
+            "ALIVE card is not amber"
+        );
+        assert!(!colors.contains(&theme::RED()), "ALIVE card is not red");
     }
 
     #[test]
@@ -6666,11 +6713,11 @@ mod tests {
         let ok = lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .any(|sp| sp.style.fg == Some(theme::GREEN) && sp.content.contains("syntax"));
+            .any(|sp| sp.style.fg == Some(theme::GREEN()) && sp.content.contains("syntax"));
         let bad = lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .any(|sp| sp.style.fg == Some(theme::RED) && sp.content.contains("gates"));
+            .any(|sp| sp.style.fg == Some(theme::RED()) && sp.content.contains("gates"));
         assert!(ok, "green status line: {}", flat_text(&lines));
         assert!(bad, "red status line: {}", flat_text(&lines));
     }
@@ -6815,11 +6862,11 @@ mod tests {
         let majority: Vec<String> = vec!["+a".into(), "-b".into(), "+c".into(), "ctx".into()];
         assert!(looks_like_diff(&majority));
 
-        let base = Style::default().fg(theme::TEXT);
-        assert_eq!(diff_line_style("+add", base).fg, Some(theme::GREEN));
-        assert_eq!(diff_line_style("-del", base).fg, Some(theme::RED));
-        assert_eq!(diff_line_style("@@ hunk", base).fg, Some(theme::GOLD));
-        assert_eq!(diff_line_style("+++ b/x", base).fg, Some(theme::MUTED));
+        let base = Style::default().fg(theme::TEXT());
+        assert_eq!(diff_line_style("+add", base).fg, Some(theme::GREEN()));
+        assert_eq!(diff_line_style("-del", base).fg, Some(theme::RED()));
+        assert_eq!(diff_line_style("@@ hunk", base).fg, Some(theme::GOLD()));
+        assert_eq!(diff_line_style("+++ b/x", base).fg, Some(theme::MUTED()));
         assert_eq!(diff_line_style("context", base), base);
     }
 
@@ -7114,8 +7161,8 @@ mod tests {
 
     #[test]
     fn generic_args_render_key_value_not_json() {
-        let base = Style::default().fg(theme::TEXT);
-        let muted = Style::default().fg(theme::MUTED);
+        let base = Style::default().fg(theme::TEXT());
+        let muted = Style::default().fg(theme::MUTED());
         let args = serde_json::json!({
             "path": "src/main.rs",
             "limit": 40,
@@ -7124,7 +7171,7 @@ mod tests {
             "empty": null,
             "blank": ""
         });
-        let lines = generic_args_lines(&args, false, 80, theme::PANEL, muted, base);
+        let lines = generic_args_lines(&args, false, 80, theme::PANEL(), muted, base);
         let text = lines
             .iter()
             .map(|l| l.to_string())
@@ -7146,7 +7193,7 @@ mod tests {
             "a": 1, "b": 2, "c": 3, "d": 4, "e": 5, "f": 6, "g": 7, "h": 8,
             "items": ["x", "y", "z", "w", "v", "u", "t", "s"]
         });
-        let full = generic_args_lines(&many, true, 120, theme::PANEL, muted, base)
+        let full = generic_args_lines(&many, true, 120, theme::PANEL(), muted, base)
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
@@ -7156,7 +7203,7 @@ mod tests {
         }
         assert!(full.contains("items"), "full lists arrays: {full}");
         assert!(full.contains('s'), "arrays uncapped in full: {full}");
-        let preview = generic_args_lines(&many, false, 120, theme::PANEL, muted, base)
+        let preview = generic_args_lines(&many, false, 120, theme::PANEL(), muted, base)
             .iter()
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
@@ -8132,7 +8179,7 @@ mod tests {
             line.spans
                 .iter()
                 .any(|sp| sp.content.contains("Run tests")
-                    && sp.style.fg == Some(crate::theme::GOLD)),
+                    && sp.style.fg == Some(crate::theme::GOLD())),
             "title gold: {:?}",
             line.spans
         );
@@ -8140,7 +8187,7 @@ mod tests {
             line.spans
                 .iter()
                 .any(|sp| sp.content.contains("cargo test")
-                    && sp.style.fg != Some(crate::theme::GOLD)),
+                    && sp.style.fg != Some(crate::theme::GOLD())),
             "command not gold: {:?}",
             line.spans
         );
@@ -8262,7 +8309,7 @@ mod panel_tests {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(w, 40, "panel line fills its width: {:?}", l.to_string());
             for s in &l.spans {
-                assert_eq!(s.style.bg, Some(theme::PANEL), "span bg: {:?}", s.content);
+                assert_eq!(s.style.bg, Some(theme::PANEL()), "span bg: {:?}", s.content);
             }
         }
     }
@@ -8290,7 +8337,7 @@ mod panel_tests {
         for l in &lines {
             let w: usize = l.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(w, 40);
-            assert!(l.spans.iter().all(|s| s.style.bg == Some(theme::PANEL)));
+            assert!(l.spans.iter().all(|s| s.style.bg == Some(theme::PANEL())));
         }
     }
 
@@ -8681,10 +8728,10 @@ fn answer_mtime() -> Option<std::time::SystemTime> {
 /// observation must never wear the warning/failure colour.
 pub fn watchdog_edge_color(verdict: Option<&str>) -> ratatui::style::Color {
     match verdict {
-        Some("ALIVE") => theme::GREEN,
-        Some("HUNG") => theme::ORANGE,
-        Some("JUDGING") => theme::GOLD,
-        _ => theme::MUTED,
+        Some("ALIVE") => theme::GREEN(),
+        Some("HUNG") => theme::ORANGE(),
+        Some("JUDGING") => theme::GOLD(),
+        _ => theme::MUTED(),
     }
 }
 

@@ -19,12 +19,12 @@ use crate::theme;
 
 /// The inline-code surface color (cyan on panel).
 fn code_style() -> Style {
-    Style::new().fg(theme::CYAN).bg(theme::PANEL)
+    Style::new().fg(theme::CYAN()).bg(theme::PANEL())
 }
 
 /// The code-block body color (foreground text on panel).
 fn code_block_style() -> Style {
-    Style::new().fg(theme::TEXT).bg(theme::PANEL)
+    Style::new().fg(theme::TEXT()).bg(theme::PANEL())
 }
 
 /// Lazily-loaded syntect syntaxes/themes (one process-wide copy).
@@ -33,21 +33,49 @@ fn syntaxes() -> &'static SyntaxSet {
     SS.get_or_init(SyntaxSet::load_defaults_newlines)
 }
 
+/// Syntect theme for fenced code, chosen by the ACTIVE TUI theme.
+///
+/// `base16-ocean.dark` covers VITRIOL (as before). The other two ship as
+/// embedded tmThemes generated from the same palettes the TUI uses, so a code
+/// block cannot keep the old colours inside a new theme (2026-11-18).
 fn highlight_theme() -> &'static Theme {
-    static THEME: OnceLock<Theme> = OnceLock::new();
-    THEME.get_or_init(|| {
+    static KANAGAWA: OnceLock<Theme> = OnceLock::new();
+    static ALKA: OnceLock<Theme> = OnceLock::new();
+    static DEFAULT: OnceLock<Theme> = OnceLock::new();
+
+    /// The built-in theme VITRIOL has always used.
+    fn defaults() -> Theme {
         let mut set = ThemeSet::load_defaults();
         set.themes
             .remove("base16-ocean.dark")
             .or_else(|| set.themes.values().next().cloned())
             .expect("syntect ships at least one theme")
-    })
+    }
+
+    match crate::theme::current().syntax {
+        "kanagawa-wave" => KANAGAWA.get_or_init(|| {
+            load_embedded(include_str!("../../assets/syntect/kanagawa-wave.tmTheme"))
+                .unwrap_or_else(defaults)
+        }),
+        "alka-neon" => ALKA.get_or_init(|| {
+            load_embedded(include_str!("../../assets/syntect/alka-neon.tmTheme"))
+                .unwrap_or_else(defaults)
+        }),
+        _ => DEFAULT.get_or_init(defaults),
+    }
+}
+
+/// Parse one embedded `.tmTheme`. A broken asset must degrade to the default
+/// palette, never panic at render time.
+fn load_embedded(text: &str) -> Option<Theme> {
+    let mut cursor = std::io::Cursor::new(text.as_bytes());
+    ThemeSet::load_from_reader(&mut cursor).ok()
 }
 
 /// Map a syntect style onto the Vitriol panel surface.
 fn syn_style(src: syntect::highlighting::Style) -> Style {
     let fg = Color::Rgb(src.foreground.r, src.foreground.g, src.foreground.b);
-    let mut style = Style::new().fg(fg).bg(theme::PANEL);
+    let mut style = Style::new().fg(fg).bg(theme::PANEL());
     if src.font_style.contains(FontStyle::BOLD) {
         style = style.add_modifier(Modifier::BOLD);
     }
@@ -504,7 +532,7 @@ impl Renderer {
             }
         }
 
-        let head_style = Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD);
+        let head_style = Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD);
         let body_style = theme::text();
         let sep_style = theme::muted();
 
@@ -513,7 +541,7 @@ impl Renderer {
             // Zebra striping (owner request 2026-11-13): alternate body rows
             // get the panel tint so cells read as alternating bands.
             let row_bg = if ri >= header && (ri - header) % 2 == 1 {
-                Some(theme::PANEL)
+                Some(theme::PANEL())
             } else {
                 None
             };
@@ -599,7 +627,7 @@ impl Renderer {
 
         let body_start = header.min(rows.len());
         let body: Vec<&Vec<String>> = rows.iter().skip(body_start).collect();
-        let head_style = Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD);
+        let head_style = Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD);
         let body_style = theme::text();
         let muted = theme::muted();
 
@@ -921,16 +949,16 @@ mod tests {
                 .and_then(|sp| sp.style.bg)
         };
         // header row plain, then body rows alternate: plain / panel / plain
-        assert_eq!(sep_bg(body[0]), Some(theme::BG), "header on chat bg");
-        assert_eq!(sep_bg(body[1]), Some(theme::BG), "first body row plain");
+        assert_eq!(sep_bg(body[0]), Some(theme::BG()), "header on chat bg");
+        assert_eq!(sep_bg(body[1]), Some(theme::BG()), "first body row plain");
         assert_eq!(
             sep_bg(body[2]),
-            Some(theme::PANEL),
+            Some(theme::PANEL()),
             "second body row striped"
         );
         assert_eq!(
             sep_bg(body[3]),
-            Some(theme::BG),
+            Some(theme::BG()),
             "third body row plain again"
         );
     }

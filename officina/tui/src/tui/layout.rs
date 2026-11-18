@@ -59,11 +59,11 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 /// the sun metal for BUILD (owner request 2026-09-02). Custom modes → None.
 fn mode_chip(label: &str) -> Option<(&'static str, ratatui::style::Color)> {
     match label.to_ascii_uppercase().as_str() {
-        "PLAN" => Some(("☽", theme::SILVER)),
-        "BUILD" => Some(("☉", theme::GOLD)),
-        "INQUIRE" => Some(("?", theme::GREEN)),
-        "STEER" => Some(("↝", theme::ORANGE)),
-        "GRIND" => Some(("∞", theme::VIOLET)),
+        "PLAN" => Some(("☽", theme::SILVER())),
+        "BUILD" => Some(("☉", theme::GOLD())),
+        "INQUIRE" => Some(("?", theme::GREEN())),
+        "STEER" => Some(("↝", theme::ORANGE())),
+        "GRIND" => Some(("∞", theme::VIOLET())),
         _ => None,
     }
 }
@@ -83,7 +83,7 @@ fn mode_spans(
         ),
         Span::styled(
             " · tab to switch agent",
-            Style::new().fg(theme::MUTED).bg(bg),
+            Style::new().fg(theme::MUTED()).bg(bg),
         ),
     ]
 }
@@ -96,7 +96,7 @@ fn composer_title(state: &AppState) -> Option<Vec<Span<'static>>> {
     if !state.pending_images.is_empty() {
         pending_chip = Some(vec![Span::styled(
             format!(" ⎙{}", state.pending_images.len()),
-            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
         )]);
     }
     let Some(label) = state.agent_mode_label.as_deref() else {
@@ -107,14 +107,14 @@ fn composer_title(state: &AppState) -> Option<Vec<Span<'static>>> {
         return pending_chip;
     }
     let mut spans = match mode_chip(label) {
-        Some((symbol, color)) => mode_spans(symbol, label, color, theme::PANEL),
+        Some((symbol, color)) => mode_spans(symbol, label, color, theme::PANEL()),
         // Custom mode: the widget's own badge glyph, gold chip.
         None => {
             let glyph = state
                 .agent_mode_glyph
                 .clone()
                 .unwrap_or_else(|| theme::GLYPH_VITRIOL.to_string());
-            mode_spans(&glyph, label, theme::GOLD, theme::PANEL)
+            mode_spans(&glyph, label, theme::GOLD(), theme::PANEL())
         }
     };
     if let Some(mut chip) = pending_chip {
@@ -215,7 +215,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &AppState) {
                     theme::GLYPH_FIRE,
                     state.stalled_secs()
                 ),
-                Style::new().fg(theme::MUTED),
+                Style::new().fg(theme::MUTED()),
             ));
         }
     }
@@ -551,7 +551,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 if live {
                     theme::info()
                 } else {
-                    Style::new().fg(theme::MUTED)
+                    Style::new().fg(theme::MUTED())
                 },
                 "",
             ),
@@ -569,7 +569,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 if live {
                     theme::info()
                 } else {
-                    Style::new().fg(theme::MUTED)
+                    Style::new().fg(theme::MUTED())
                 },
                 "",
             ),
@@ -577,7 +577,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{lead}{glyph} {f} "),
-                Style::default().fg(theme::GOLD).bg(theme::BG),
+                Style::default().fg(theme::GOLD()).bg(theme::BG()),
             ),
             Span::styled(label, style),
         ]));
@@ -642,7 +642,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             frame.render_widget(
                 ratatui::widgets::Paragraph::new(Line::from(Span::styled(
                     format!("  ⏳ held — {held} · inserted when the agent reaches it"),
-                    Style::new().fg(theme::GOLD).bg(theme::BG),
+                    Style::new().fg(theme::GOLD()).bg(theme::BG()),
                 ))),
                 hint,
             );
@@ -656,7 +656,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                             .last_chat_total
                             .saturating_sub(state.last_start + visible as usize)
                     ),
-                    Style::new().fg(theme::MUTED).bg(theme::BG),
+                    Style::new().fg(theme::MUTED()).bg(theme::BG()),
                 ))),
                 hint,
             );
@@ -779,7 +779,10 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let lit = crate::fire::line_cells(w, flame_rows.max(1), phase_ms, state.fire_level);
         let flame = crate::fire::ignition_color(phase_ms, state.fire_level, state.fire_style);
         let line = Line::from(ignition_spans(w, &lit, flame));
-        frame.render_widget(Paragraph::new(line).style(Style::new().bg(theme::BG)), gap);
+        frame.render_widget(
+            Paragraph::new(line).style(Style::new().bg(theme::BG())),
+            gap,
+        );
     }
 
     // Band surface first: with the height debounced, a row can be reserved
@@ -787,7 +790,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // tone, never as raw terminal background.
     if band_area.height > 0 {
         frame.render_widget(
-            Paragraph::new(" ").style(Style::new().bg(theme::PANEL)),
+            Paragraph::new(" ").style(Style::new().bg(theme::PANEL())),
             band_area,
         );
     }
@@ -798,7 +801,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         // three below-editor lines sit on the panel tone, and the flames
         // start at this band's top edge instead of under it.
         frame.render_widget(
-            Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+            Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
             indicator_area,
         );
     }
@@ -814,18 +817,18 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             .max(2);
         let mut spans = vec![
             Span::styled(format!("{:^w$}", "", w = 1), Style::default()),
-            Span::styled(label, Style::new().fg(theme::MUTED)),
+            Span::styled(label, Style::new().fg(theme::MUTED())),
             Span::styled(" ", Style::default()),
         ];
         // Dim horizontal rule filling the rest of the row (sidebar divider
         // convention: BORDER_DIM on PANEL).
         spans.push(Span::styled(
             "─".repeat(rule_len),
-            Style::new().fg(theme::BORDER_DIM),
+            Style::new().fg(theme::BORDER_DIM()),
         ));
         let line = Line::from(spans);
         frame.render_widget(
-            Paragraph::new(line).style(Style::new().bg(theme::PANEL)),
+            Paragraph::new(line).style(Style::new().bg(theme::PANEL())),
             ctx_area,
         );
     }
@@ -842,7 +845,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // console reads as two different darks. set_style patches bg only: the
     // fresh-screen stone keeps its glyphs and DIM.
     frame.render_widget(
-        Paragraph::new(view).style(Style::new().bg(theme::BG)),
+        Paragraph::new(view).style(Style::new().bg(theme::BG())),
         chat_area,
     );
 
@@ -876,7 +879,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             }
             for x in chat_area.x..x_end {
                 if let Some(cell) = buffer.cell_mut(ratatui::layout::Position { x, y }) {
-                    cell.set_bg(theme::USER_BG);
+                    cell.set_bg(theme::USER_BG());
                 }
             }
         }
@@ -916,7 +919,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         // PANEL-surfaced cells (tool blocks) are opaque
                         // plates standing IN the fire, not of it — the
                         // flames never discolor them.
-                        if cell.symbol() != " " && cell.bg != theme::PANEL {
+                        if cell.symbol() != " " && cell.bg != theme::PANEL() {
                             cell.set_fg(*color);
                         }
                     }
@@ -939,7 +942,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             for y in y0..=y1 {
                 for x in chat_area.x..x_end {
                     if let Some(cell) = buffer.cell_mut(ratatui::layout::Position { x, y }) {
-                        cell.set_bg(theme::COLD_BLUE);
+                        cell.set_bg(theme::COLD_BLUE());
                     }
                 }
             }
@@ -979,8 +982,8 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     y: chat_area.y + row as u16,
                 }) {
                     cell.set_symbol(&ch.to_string());
-                    cell.set_fg(theme::SILVER);
-                    cell.set_bg(theme::BG);
+                    cell.set_fg(theme::SILVER());
+                    cell.set_bg(theme::BG());
                 }
             }
         }
@@ -1025,24 +1028,24 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // anatomy). Title carries the active agent mode (owner request
     // 2026-09-02); titleless until the widget reports in.
     let border_style = if state.is_streaming {
-        Style::new().fg(theme::COLD_BLUE)
+        Style::new().fg(theme::COLD_BLUE())
     } else if !cands.is_empty() {
-        Style::new().fg(theme::GOLD)
+        Style::new().fg(theme::GOLD())
     } else {
-        Style::new().fg(theme::BORDER_DIM)
+        Style::new().fg(theme::BORDER_DIM())
     };
     let mut input_block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     if let Some(title) = composer_title(state) {
         input_block = input_block.title(Line::from(title));
     }
     let inner = input_block.inner(input_area);
     frame.render_widget(input_block, input_area);
 
-    let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
+    let prompt = Span::styled("> ", Style::default().fg(theme::GREEN()).bg(theme::PANEL()));
     let line = if let Some(ghost) = state
         .prompt_ghost
         .as_ref()
@@ -1061,15 +1064,15 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Span::styled(
                 first.to_string(),
                 Style::default()
-                    .fg(theme::GOLD)
-                    .bg(theme::PANEL)
+                    .fg(theme::GOLD())
+                    .bg(theme::PANEL())
                     .add_modifier(Modifier::REVERSED | Modifier::DIM),
             ),
             Span::styled(
                 rest,
                 Style::default()
-                    .fg(theme::GOLD)
-                    .bg(theme::PANEL)
+                    .fg(theme::GOLD())
+                    .bg(theme::PANEL())
                     .add_modifier(Modifier::DIM),
             ),
         ])
@@ -1086,15 +1089,15 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Span::styled(
                 first.to_string(),
                 Style::default()
-                    .fg(theme::WATERMARK)
-                    .bg(theme::PANEL)
+                    .fg(theme::WATERMARK())
+                    .bg(theme::PANEL())
                     .add_modifier(Modifier::REVERSED | Modifier::DIM),
             ),
             Span::styled(
                 rest,
                 Style::default()
-                    .fg(theme::WATERMARK)
-                    .bg(theme::PANEL)
+                    .fg(theme::WATERMARK())
+                    .bg(theme::PANEL())
                     .add_modifier(Modifier::DIM),
             ),
         ])
@@ -1107,7 +1110,7 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(Text::from(vec![line]))
             .wrap(Wrap { trim: false })
-            .style(Style::default().bg(theme::PANEL)),
+            .style(Style::default().bg(theme::PANEL())),
         inner,
     );
 
@@ -1144,8 +1147,8 @@ fn ignition_spans(
 
 /// One coloured run of the divider row.
 fn ignition_span(text: String, lit: bool, flame: ratatui::style::Color) -> Span<'static> {
-    let fg = if lit { flame } else { theme::BORDER_DIM };
-    Span::styled(text, Style::new().fg(fg).bg(theme::BG))
+    let fg = if lit { flame } else { theme::BORDER_DIM() };
+    Span::styled(text, Style::new().fg(fg).bg(theme::BG()))
 }
 
 /// Question panel (2026-11-13) — the ask extension stages question.json and
@@ -1172,15 +1175,15 @@ fn render_question_panel(frame: &mut Frame, state: &AppState, area: Rect, input_
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GREEN).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GREEN()).bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} question ", theme::GLYPH_AI),
             Style::new()
-                .fg(theme::GREEN)
-                .bg(theme::PANEL)
+                .fg(theme::GREEN())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
     if inner.height < 1 || inner.width < 20 {
@@ -1191,16 +1194,16 @@ fn render_question_panel(frame: &mut Frame, state: &AppState, area: Rect, input_
     for seg in crate::tui::state::wrap_text(&q.question, qw) {
         qlines.push(Line::from(Span::styled(
             format!(" {seg}"),
-            Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
         )));
     }
     for (i, opt) in q.options.iter().enumerate() {
         let sel = i == state.question_sel;
         let marker = if sel { "▸" } else { " " };
         let st = if sel {
-            Style::new().fg(theme::BG).bg(theme::GREEN)
+            Style::new().fg(theme::BG()).bg(theme::GREEN())
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         qlines.push(Line::from(Span::styled(
             format!(" {marker}{} {opt}", i + 1),
@@ -1209,7 +1212,7 @@ fn render_question_panel(frame: &mut Frame, state: &AppState, area: Rect, input_
     }
     qlines.truncate(inner.height as usize);
     frame.render_widget(
-        Paragraph::new(qlines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(qlines).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -1228,15 +1231,15 @@ fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect)
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             " permissions ",
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ move · enter set · esc ",
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -1250,16 +1253,16 @@ fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect)
         let current = *mode == state.perm_mode;
         let base = if selected {
             Style::new()
-                .fg(theme::BG)
-                .bg(theme::GOLD)
+                .fg(theme::BG())
+                .bg(theme::GOLD())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         let muted = if selected {
             base
         } else {
-            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL())
         };
         let marker = if selected { "▸ " } else { "  " };
         let check = if current { "● " } else { "  " };
@@ -1277,7 +1280,7 @@ fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect)
         lines.push(Line::from(spans));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         Rect {
             height: inner.height.saturating_sub(2),
             ..inner
@@ -1287,8 +1290,8 @@ fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect)
         Paragraph::new(Line::from(Span::styled(
             trunc("sensitive roots/secrets always prompt, even in YOLO", width),
             Style::new()
-                .fg(theme::MUTED)
-                .bg(theme::PANEL)
+                .fg(theme::MUTED())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::ITALIC),
         ))),
         Rect {
@@ -1335,11 +1338,11 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} ", trunc(&dialog.title, w.saturating_sub(6) as usize)),
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -1367,20 +1370,20 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             hint_text,
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         ))),
         hint,
     );
 
-    let base = Style::new().fg(theme::TEXT).bg(theme::PANEL);
-    let muted = Style::new().fg(theme::MUTED).bg(theme::PANEL);
+    let base = Style::new().fg(theme::TEXT()).bg(theme::PANEL());
+    let muted = Style::new().fg(theme::MUTED()).bg(theme::PANEL());
     let accent = Style::new()
-        .fg(theme::GOLD)
-        .bg(theme::PANEL)
+        .fg(theme::GOLD())
+        .bg(theme::PANEL())
         .add_modifier(Modifier::BOLD);
     let selected = Style::new()
-        .fg(theme::BG)
-        .bg(theme::GOLD)
+        .fg(theme::BG())
+        .bg(theme::GOLD())
         .add_modifier(Modifier::BOLD);
 
     let mut lines: Vec<Line> = Vec::new();
@@ -1467,7 +1470,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 spans.push(Span::styled(" ".repeat(width - used), base));
             }
             frame.render_widget(
-                Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::PANEL)),
+                Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::PANEL())),
                 Rect {
                     y: body.y + body.height.saturating_sub(1),
                     height: 1,
@@ -1509,7 +1512,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .style(Style::new().bg(theme::PANEL))
+            .style(Style::new().bg(theme::PANEL()))
             .wrap(Wrap { trim: false }),
         body,
     );
@@ -1563,8 +1566,8 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::BORDER_DIM))
-        .style(Style::new().bg(theme::PANEL));
+        .border_style(Style::new().fg(theme::BORDER_DIM()))
+        .style(Style::new().bg(theme::PANEL()));
     if off > 0 || more_below {
         let marker = format!(
             " {} ",
@@ -1575,7 +1578,7 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
             }
         );
         block = block.title_bottom(
-            Line::from(Span::styled(marker, Style::new().fg(theme::MUTED)))
+            Line::from(Span::styled(marker, Style::new().fg(theme::MUTED())))
                 .alignment(Alignment::Right),
         );
     }
@@ -1606,8 +1609,8 @@ fn render_command_popup(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL));
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()));
 
     let total = cands.len();
     let visible = (area.height as usize).saturating_sub(2);
@@ -1616,7 +1619,7 @@ fn render_command_popup(
     } else {
         " commands · → completes ".to_string()
     };
-    let block = block.title(Span::styled(title, Style::new().fg(theme::MUTED)));
+    let block = block.title(Span::styled(title, Style::new().fg(theme::MUTED())));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1647,10 +1650,10 @@ fn render_command_popup(
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             detail,
-            Style::new().fg(theme::CYAN).bg(theme::PANEL),
+            Style::new().fg(theme::CYAN()).bg(theme::PANEL()),
         )))
         .wrap(Wrap { trim: false })
-        .style(Style::new().bg(theme::PANEL)),
+        .style(Style::new().bg(theme::PANEL())),
         detail_rect,
     );
 
@@ -1665,16 +1668,16 @@ fn render_command_popup(
         let (name_style, desc_style, marker) = if selected {
             (
                 Style::new()
-                    .fg(theme::GOLD)
-                    .bg(theme::PANEL)
+                    .fg(theme::GOLD())
+                    .bg(theme::PANEL())
                     .add_modifier(Modifier::BOLD),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
                 "▸ ",
             )
         } else {
             (
-                Style::new().fg(theme::GOLD).bg(theme::PANEL),
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 "  ",
             )
         };
@@ -1687,7 +1690,7 @@ fn render_command_popup(
         ]));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         rows_rect,
     );
 }
@@ -1696,11 +1699,11 @@ fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::RED))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::RED()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} stderr diagnostics · F9 close ", theme::GLYPH_SULFUR),
-            Style::new().fg(theme::RED),
+            Style::new().fg(theme::RED()),
         ));
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -1724,13 +1727,13 @@ fn render_diag_overlay(frame: &mut Frame, state: &AppState, area: Rect) {
 /// truncation — the old fixed-40 cut a /nimbus table down to noise.
 fn render_notice(frame: &mut Frame, area: Rect, state: &AppState) {
     let Some((head, kind)) = state.notice_head() else {
-        frame.render_widget(Paragraph::new("").style(Style::new().bg(theme::BG)), area);
+        frame.render_widget(Paragraph::new("").style(Style::new().bg(theme::BG())), area);
         return;
     };
     let color = match kind.as_str() {
-        "error" => theme::RED,
-        "warning" => theme::ORANGE,
-        _ => theme::GOLD,
+        "error" => theme::RED(),
+        "warning" => theme::ORANGE(),
+        _ => theme::GOLD(),
     };
     let prefix = "  · ";
     let avail = (area.width as usize).saturating_sub(crate::tui::width::cols(prefix) + 1);
@@ -1743,10 +1746,10 @@ fn render_notice(frame: &mut Frame, area: Rect, state: &AppState) {
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(prefix, Style::new().fg(theme::BORDER_DIM).bg(theme::BG)),
-            Span::styled(text, Style::new().fg(color).bg(theme::BG)),
+            Span::styled(prefix, Style::new().fg(theme::BORDER_DIM()).bg(theme::BG())),
+            Span::styled(text, Style::new().fg(color).bg(theme::BG())),
         ]))
-        .style(Style::new().bg(theme::BG)),
+        .style(Style::new().bg(theme::BG())),
         area,
     );
 }
@@ -1754,17 +1757,17 @@ fn render_notice(frame: &mut Frame, area: Rect, state: &AppState) {
 fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     let mut spans = vec![
         Span::styled("enter send", theme::muted()),
-        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM())),
         Span::styled("→ complete", theme::muted()),
-        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM())),
         Span::styled("esc dissolve", theme::muted()),
-        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM())),
         Span::styled("drag select · ^c copy", theme::muted()),
-        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM())),
         Span::styled("^esc quit", theme::muted()),
-        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM())),
         Span::styled("f9 stderr", theme::muted()),
-        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM)),
+        Span::styled(" · ", Style::new().fg(theme::BORDER_DIM())),
         Span::styled("^v tools", theme::muted()),
     ];
 
@@ -1778,7 +1781,7 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &AppState) {
     if state.widgets.is_empty() {
         spans.push(Span::styled(
             "  ·  no telemetry",
-            Style::new().fg(theme::MUTED).bg(theme::BG),
+            Style::new().fg(theme::MUTED()).bg(theme::BG()),
         ));
     }
 
@@ -1799,11 +1802,11 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             " resume session ",
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             if state.resume_filter.is_empty() {
@@ -1811,7 +1814,7 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             } else {
                 format!(" /{} _ · ↑↓ · enter · esc clears ", state.resume_filter)
             },
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -1829,7 +1832,7 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             } else {
                 format!("  no sessions match '{}'", state.resume_filter)
             },
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         )));
     }
     let window: Vec<_> = filtered
@@ -1858,18 +1861,18 @@ fn render_resume_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     (inner.width as usize).saturating_sub(1),
                 ),
                 Style::new()
-                    .fg(theme::BG)
-                    .bg(theme::GOLD)
+                    .fg(theme::BG())
+                    .bg(theme::GOLD())
                     .add_modifier(Modifier::BOLD),
             )));
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("{:>5} ", when), Style::new().fg(theme::CYAN)),
+                Span::styled(format!("{:>5} ", when), Style::new().fg(theme::CYAN())),
                 Span::styled(
                     format!("{:>3} ", e.msg_count),
-                    Style::new().fg(theme::MUTED),
+                    Style::new().fg(theme::MUTED()),
                 ),
-                Span::styled(format!(" {}", e.title), Style::new().fg(theme::TEXT)),
+                Span::styled(format!(" {}", e.title), Style::new().fg(theme::TEXT())),
             ]));
         }
     }
@@ -1908,8 +1911,8 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(
                 " {} select model · {} of {} ",
@@ -1917,11 +1920,11 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 flat.len(),
                 state.models.len()
             ),
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " type to filter · ↑↓ move · enter switch · esc ",
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -1933,24 +1936,24 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let search = Rect { height: 1, ..inner };
     let filter_spans = if state.models_filter.is_empty() {
         vec![
-            Span::styled("⌕ ", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+            Span::styled("⌕ ", Style::new().fg(theme::GOLD()).bg(theme::PANEL())),
             Span::styled(
                 "type to filter…",
                 Style::new()
-                    .fg(theme::MUTED)
-                    .bg(theme::PANEL)
+                    .fg(theme::MUTED())
+                    .bg(theme::PANEL())
                     .add_modifier(Modifier::ITALIC),
             ),
-            Span::styled("▏", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+            Span::styled("▏", Style::new().fg(theme::GOLD()).bg(theme::PANEL())),
         ]
     } else {
         vec![
-            Span::styled("⌕ ", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+            Span::styled("⌕ ", Style::new().fg(theme::GOLD()).bg(theme::PANEL())),
             Span::styled(
                 state.models_filter.clone(),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
-            Span::styled("▏", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+            Span::styled("▏", Style::new().fg(theme::GOLD()).bg(theme::PANEL())),
         ]
     };
     frame.render_widget(Paragraph::new(Line::from(filter_spans)), search);
@@ -1991,13 +1994,13 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 Span::styled(
                     format!(" {header} "),
                     Style::new()
-                        .fg(theme::GOLD)
-                        .bg(theme::PANEL)
+                        .fg(theme::GOLD())
+                        .bg(theme::PANEL())
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     "─".repeat(rule),
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 ),
             ]));
             continue;
@@ -2023,26 +2026,26 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
         let base = if selected {
             Style::new()
-                .fg(theme::BG)
-                .bg(theme::GOLD)
+                .fg(theme::BG())
+                .bg(theme::GOLD())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         let muted = if selected {
             base
         } else {
-            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL())
         };
         let accent = if selected {
             base
         } else {
-            Style::new().fg(theme::GOLD).bg(theme::PANEL)
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL())
         };
         let live = if selected {
             base
         } else {
-            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+            Style::new().fg(theme::GREEN()).bg(theme::PANEL())
         };
 
         let sel_marker = format!("{} ", if selected { "▸" } else { " " });
@@ -2085,13 +2088,13 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         lines.push(Line::from(Span::styled(
             "  no matching models",
             Style::new()
-                .fg(theme::MUTED)
-                .bg(theme::PANEL)
+                .fg(theme::MUTED())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::ITALIC),
         )));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         list,
     );
 }
@@ -2112,19 +2115,19 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(
                 " {} session tree · {} entries ",
                 theme::GLYPH_QUINTESSENCE,
                 state.tree_lines.len()
             ),
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ scroll · /fork <n> · esc ",
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -2141,22 +2144,22 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     for (i, (label, _id)) in state.tree_lines.iter().enumerate().skip(skip).take(visible) {
         let style = if i == sel {
             Style::new()
-                .fg(theme::BG)
-                .bg(theme::GOLD)
+                .fg(theme::BG())
+                .bg(theme::GOLD())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         lines.push(Line::from(Span::styled(trunc(label, width), style)));
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "empty session tree",
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         )));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -2181,23 +2184,23 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         format!(" STALLED · {}s ", state.stalled_secs())
     };
     let chip_style = if active {
-        Style::new().fg(theme::GREEN).bg(theme::PANEL)
+        Style::new().fg(theme::GREEN()).bg(theme::PANEL())
     } else {
-        Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+        Style::new().fg(theme::ORANGE()).bg(theme::PANEL())
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} fx ", theme::GLYPH_SULFUR),
             Style::new()
-                .fg(theme::GOLD)
-                .bg(theme::PANEL)
+                .fg(theme::GOLD())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(chip, chip_style))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     if inner.height < 8 || inner.width < 40 {
@@ -2229,14 +2232,14 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             value = value
         );
         let style = if sel {
-            Style::new().fg(theme::BG).bg(theme::GOLD)
+            Style::new().fg(theme::BG()).bg(theme::GOLD())
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         lines.push(Line::from(Span::styled(text, style)));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         chunks[0],
     );
 
@@ -2271,7 +2274,7 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 msg,
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ))),
             Rect {
                 height: 1,
@@ -2283,8 +2286,8 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     if state.glimmer != crate::watermark::GlimmerMode::Off {
         let t = (phase as f64 / 500.0).sin() * 0.5 + 0.5;
         let pulse = Style::new()
-            .fg(theme::GOLD)
-            .bg(theme::PANEL)
+            .fg(theme::GOLD())
+            .bg(theme::PANEL())
             .add_modifier(if t > 0.6 {
                 Modifier::BOLD
             } else {
@@ -2292,7 +2295,7 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             });
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(" ⌁ ", Style::new().fg(theme::MUTED).bg(theme::PANEL)),
+                Span::styled(" ⌁ ", Style::new().fg(theme::MUTED()).bg(theme::PANEL())),
                 Span::styled(format!("{} ⣀⣤⣶⣿⣶⣤⣀", state.glimmer.label()), pulse),
             ])),
             Rect {
@@ -2307,14 +2310,14 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Paragraph::new(vec![
             Line::from(Span::styled(
                 " ↑↓ row · space/←→ cycle · esc close",
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             )),
             Line::from(Span::styled(
                 " fire follows the liveliness contract: no evidence → no flames",
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             )),
         ])
-        .style(Style::new().bg(theme::PANEL)),
+        .style(Style::new().bg(theme::PANEL())),
         chunks[2],
     );
 }
@@ -2334,19 +2337,19 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} inquire · answer ", theme::GLYPH_HERM),
             Style::new()
-                .fg(theme::GOLD)
-                .bg(theme::PANEL)
+                .fg(theme::GOLD())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ scroll · r reload · esc close ",
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         ))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     if inner.height < 2 || inner.width < 20 {
@@ -2357,11 +2360,11 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Paragraph::new(vec![
                 Line::from(Span::styled(
                     "  no inquiry answer yet — switch to INQUIRE (TAB) and ask a question",
-                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                    Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
                 )),
                 Line::from(Span::styled(
                     "  the answer lands here without interrupting the build flow",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 )),
             ]),
             inner,
@@ -2371,10 +2374,10 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
-        Span::styled("  Q  ", Style::new().fg(theme::GOLD).bg(theme::PANEL)),
+        Span::styled("  Q  ", Style::new().fg(theme::GOLD()).bg(theme::PANEL())),
         Span::styled(
             trunc(&doc.question, inner.width.saturating_sub(6) as usize),
-            Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
         ),
     ]));
     lines.push(Line::from(""));
@@ -2382,8 +2385,8 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     for para_line in doc.answer.lines() {
         for seg in crate::tui::state::wrap_text(para_line, body_w) {
             lines.push(Line::from(vec![
-                Span::styled("  ", Style::new().bg(theme::PANEL)),
-                Span::styled(seg, Style::new().fg(theme::TEXT).bg(theme::PANEL)),
+                Span::styled("  ", Style::new().bg(theme::PANEL())),
+                Span::styled(seg, Style::new().fg(theme::TEXT()).bg(theme::PANEL())),
             ]));
         }
     }
@@ -2391,7 +2394,7 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let start = (state.answers_scroll as usize).min(lines.len().saturating_sub(1));
     let window: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
     frame.render_widget(
-        Paragraph::new(window).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(window).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -2416,15 +2419,15 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
         .title(Span::styled(
             format!(" 🜍 caduceus decisions · {day} (newest first) "),
             Style::new()
-                .fg(theme::GOLD)
-                .bg(theme::PANEL)
+                .fg(theme::GOLD())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     if inner.width < 60 || inner.height < 4 {
@@ -2435,7 +2438,7 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  no route ledger for today",
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ))),
             inner,
         );
@@ -2445,7 +2448,7 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  no decisions recorded today",
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ))),
             inner,
         );
@@ -2457,7 +2460,7 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             "  {:<9}{:<7}{:<6}{:<40}{:<10}{:<7}{:>7} {:>9}  {:<12}",
             "time", "tier", "state", "model", "reason", "local", "latency", "tokens", "probe"
         ),
-        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
     )));
     let visible = (inner.height as usize).saturating_sub(2);
     let total = report.entries.len();
@@ -2470,42 +2473,42 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let latest = i == 0;
         let marker = if latest { "▸" } else { " " };
         let state_style = if e.outcome == "ok" {
-            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+            Style::new().fg(theme::GREEN()).bg(theme::PANEL())
         } else {
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+            Style::new().fg(theme::ORANGE()).bg(theme::PANEL())
         };
         let tier_style = if e.tier == "local" {
-            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+            Style::new().fg(theme::GREEN()).bg(theme::PANEL())
         } else {
-            Style::new().fg(theme::GOLD).bg(theme::PANEL)
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL())
         };
         let model = format!("{}/{}", e.provider, e.model);
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{} {:<9}", marker, crate::tui::routes::short_time(&e.ts)),
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ),
             Span::styled(format!("{:<7}", e.tier), tier_style),
             Span::styled(format!("{:<6}", e.outcome), state_style),
             Span::styled(
                 format!("{:<40}", trunc(&model, 40)),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
             Span::styled(
                 format!("{:<10}", trunc(&e.reason, 10)),
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ),
             Span::styled(
                 format!("{:<7}", trunc(&e.local_state, 7)),
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ),
             Span::styled(
                 format!("{:>6.1}s", e.latency_ms as f64 / 1000.0),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
             Span::styled(
                 format!("  {:>4}→{:<4}", e.tokens_in, e.tokens_out),
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ),
             Span::styled(
                 format!(
@@ -2515,16 +2518,16 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         12
                     )
                 ),
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ),
         ]));
     }
     lines.push(Line::from(Span::styled(
         format!("  {} decisions · ↑↓ scroll · esc closes", total),
-        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
     )));
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -2547,15 +2550,15 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} cost · route ledger {day} ", theme::GLYPH_HERM),
             Style::new()
-                .fg(theme::GOLD)
-                .bg(theme::PANEL)
+                .fg(theme::GOLD())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     if inner.width < 50 || inner.height < 4 {
@@ -2565,7 +2568,7 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 "  no ledger data",
-                Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             ))),
             inner,
         );
@@ -2585,17 +2588,20 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         };
         let style = |frac: f32| {
             if frac >= 1.0 {
-                Style::new().fg(theme::RED).bg(theme::PANEL)
+                Style::new().fg(theme::RED()).bg(theme::PANEL())
             } else if frac >= 0.8 {
-                Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+                Style::new().fg(theme::ORANGE()).bg(theme::PANEL())
             } else {
-                Style::new().fg(theme::GREEN).bg(theme::PANEL)
+                Style::new().fg(theme::GREEN()).bg(theme::PANEL())
             }
         };
         let df = report.daily_fraction();
         let mf = report.monthly_fraction();
         lines.push(Line::from(vec![
-            Span::styled("  day    ", Style::new().fg(theme::MUTED).bg(theme::PANEL)),
+            Span::styled(
+                "  day    ",
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
+            ),
             Span::styled(bar(df), style(df)),
             Span::styled(
                 format!(
@@ -2608,11 +2614,14 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         "EXHAUSTED"
                     }
                 ),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
         ]));
         lines.push(Line::from(vec![
-            Span::styled("  month  ", Style::new().fg(theme::MUTED).bg(theme::PANEL)),
+            Span::styled(
+                "  month  ",
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
+            ),
             Span::styled(bar(mf), style(mf)),
             Span::styled(
                 format!(
@@ -2620,7 +2629,7 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     crate::tui::caduceus::fmt_count(report.budget_monthly_tokens),
                     crate::tui::caduceus::fmt_count(report.budget_monthly_cap)
                 ),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
         ]));
     }
@@ -2629,20 +2638,20 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             "  {:<44} {:>8} {:>6} {:>10} {:>10}",
             "provider/model", "reqs", "fails", "tok in", "tok out"
         ),
-        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
     )));
     let budget_h: usize = if report.budget_present { 3 } else { 1 };
     let visible = (inner.height - (budget_h as u16 + 1)) as usize;
     for row in report.rows.iter().take(visible) {
         let fail_style = if row.failures > 0 {
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+            Style::new().fg(theme::ORANGE()).bg(theme::PANEL())
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:<44} {:>8}", trunc(&row.key, 44), row.requests),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
             Span::styled(format!(" {:>6}", row.failures), fail_style),
             Span::styled(
@@ -2651,14 +2660,14 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     crate::tui::caduceus::fmt_count(row.tokens_in),
                     crate::tui::caduceus::fmt_count(row.tokens_out)
                 ),
-                Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
             ),
         ]));
     }
     if report.rows.len() > visible {
         lines.push(Line::from(Span::styled(
             format!("  … {} more models", report.rows.len() - visible),
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         )));
     }
     lines.push(Line::from(vec![
@@ -2668,7 +2677,7 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 crate::tui::caduceus::fmt_count(report.total_in),
                 crate::tui::caduceus::fmt_count(report.total_out)
             ),
-            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
         ),
         Span::styled(
             if report.total_cost > 0.0 {
@@ -2676,12 +2685,12 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             } else {
                 String::new()
             },
-            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
         ),
     ]));
     lines.truncate(inner.height as usize);
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -2701,11 +2710,11 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             " sessions · all projects ",
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             if state.xsessions_filter.is_empty() {
@@ -2713,7 +2722,7 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             } else {
                 format!(" /{} _ · ↑↓ · enter · esc clears ", state.xsessions_filter)
             },
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -2729,7 +2738,7 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             } else {
                 format!("  nothing matches '{}'", state.xsessions_filter)
             },
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         )));
     }
     let cwd_str = state.cwd.to_string_lossy().to_string();
@@ -2757,17 +2766,17 @@ fn render_xsessions_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             age
         );
         let style = if selected {
-            Style::new().fg(theme::BG).bg(theme::GOLD)
+            Style::new().fg(theme::BG()).bg(theme::GOLD())
         } else if a.project == cwd_str {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         } else {
-            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL())
         };
         lines.push(Line::from(Span::styled(text, style)));
     }
     let body: Vec<Line> = lines.into_iter().take(visible).collect();
     frame.render_widget(
-        Paragraph::new(body).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(body).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -2804,7 +2813,7 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(Clear, modal);
     let (title_st, title) = match state.review.as_ref() {
         Some(f) => (
-            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
             format!(
                 " {} review findings · {} · {} high / {} med / {} low ",
                 theme::GLYPH_HERM,
@@ -2815,16 +2824,16 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             ),
         ),
         None => (
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
             " review findings ".to_string(),
         ),
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
         .title(Span::styled(title, title_st.add_modifier(Modifier::BOLD)))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     if inner.height < 2 || inner.width < 40 {
@@ -2843,11 +2852,11 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Paragraph::new(vec![
                 Line::from(Span::styled(
                     "  no review findings yet — run /review (uncommitted | commit | base | custom)",
-                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                    Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
                 )),
                 Line::from(Span::styled(
                     "  findings land in .officina/review.json after the review turn",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 )),
             ]),
             chunks[1],
@@ -2867,7 +2876,7 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 "  {}",
                 trunc(&summary, inner.width.saturating_sub(4) as usize)
             ),
-            Style::new().fg(theme::TEXT).bg(theme::PANEL),
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
         ))),
         chunks[0],
     );
@@ -2880,10 +2889,10 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
     let mut lines: Vec<Line> = Vec::new();
     let sev_style = |sev: &str| match sev {
-        "high" => Style::new().fg(theme::RED).bg(theme::PANEL),
-        "medium" => Style::new().fg(theme::ORANGE).bg(theme::PANEL),
-        "low" => Style::new().fg(theme::GOLD).bg(theme::PANEL),
-        _ => Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        "high" => Style::new().fg(theme::RED()).bg(theme::PANEL()),
+        "medium" => Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
+        "low" => Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
+        _ => Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
     };
     for (idx, finding) in rows.iter().enumerate() {
         let selected = idx == state.review_sel;
@@ -2898,9 +2907,9 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             trunc(&finding.title, inner.width.saturating_sub(48) as usize)
         );
         let style = if selected {
-            Style::new().fg(theme::BG).bg(theme::GOLD)
+            Style::new().fg(theme::BG()).bg(theme::GOLD())
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         lines.push(Line::from(vec![
             Span::styled(text, style),
@@ -2909,7 +2918,7 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
     let body: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
     frame.render_widget(
-        Paragraph::new(body).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(body).style(Style::new().bg(theme::PANEL())),
         chunks[1],
     );
 
@@ -2924,22 +2933,22 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         d.title,
                         trunc(&d.locator(), inner.width.saturating_sub(6) as usize)
                     ),
-                    Style::new().fg(theme::GOLD).bg(theme::PANEL),
+                    Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
                 )),
                 Line::from(Span::styled(
                     format!(
                         "  {}",
                         trunc(&d.detail, inner.width.saturating_sub(4) as usize)
                     ),
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                    Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
                 )),
                 Line::from(Span::styled(
                     "  esc close · ↑↓ navigate",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 )),
             ];
             frame.render_widget(
-                Paragraph::new(detail_lines).style(Style::new().bg(theme::PANEL)),
+                Paragraph::new(detail_lines).style(Style::new().bg(theme::PANEL())),
                 chunks[2],
             );
         }
@@ -2947,7 +2956,7 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             " ↑↓ select · esc close",
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         ))),
         chunks[3],
     );
@@ -2970,15 +2979,15 @@ fn render_status_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} status ", theme::GLYPH_HERM),
             Style::new()
-                .fg(theme::GOLD)
-                .bg(theme::PANEL)
+                .fg(theme::GOLD())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::BOLD),
         ))
-        .style(Style::new().bg(theme::PANEL));
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
     let lines: Vec<Line> = state
@@ -2989,14 +2998,17 @@ fn render_status_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             Line::from(vec![
                 Span::styled(
                     format!("  {label:<12}"),
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 ),
-                Span::styled(value.clone(), Style::new().fg(theme::TEXT).bg(theme::PANEL)),
+                Span::styled(
+                    value.clone(),
+                    Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
+                ),
             ])
         })
         .collect();
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         inner,
     );
 }
@@ -3014,8 +3026,8 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD).bg(theme::PANEL))
-        .style(Style::new().bg(theme::PANEL));
+        .border_style(Style::new().fg(theme::GOLD()).bg(theme::PANEL()))
+        .style(Style::new().bg(theme::PANEL()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height < 6 || inner.width < 40 {
@@ -3044,18 +3056,18 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut spans: Vec<Span> = vec![Span::styled(
         format!(" {} caduceus  ", theme::GLYPH_HERM),
         Style::new()
-            .fg(theme::GOLD)
-            .bg(theme::PANEL)
+            .fg(theme::GOLD())
+            .bg(theme::PANEL())
             .add_modifier(Modifier::BOLD),
     )];
     for (i, tab) in Tab::ALL.iter().enumerate() {
         let style = if *tab == page.tab {
             Style::new()
-                .fg(theme::BG)
-                .bg(theme::GOLD)
+                .fg(theme::BG())
+                .bg(theme::GOLD())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL())
         };
         spans.push(Span::styled(format!(" {} {} ", i + 1, tab.label()), style));
         spans.push(Span::raw(" "));
@@ -3073,10 +3085,10 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
     spans.push(Span::styled(
         format!("  {stamp}"),
-        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
     ));
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(Line::from(spans)).style(Style::new().bg(theme::PANEL())),
         chunks[0],
     );
 
@@ -3097,7 +3109,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             format!("  {header}"),
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         ))),
         chunks[1],
     );
@@ -3163,7 +3175,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 let style = if selected {
                     caduceus_row_style(true)
                 } else if page.prefs.is_hidden(&c.id) {
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL)
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL())
                 } else {
                     caduceus_row_style(false)
                 };
@@ -3242,42 +3254,42 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 for row in rows {
                     lines.push(Line::from(Span::styled(
                         format!("  {row}"),
-                        Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                        Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
                     )));
                 }
             }
             None => {
                 lines.push(Line::from(Span::styled(
                     "  no ~/.vitriol/officina/caduceus-state.json yet — the caduceus extension writes it at session start + every 60s",
-                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                    Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
                 )));
                 lines.push(Line::from(Span::styled(
                     "  run `vitriol caduceus setup` if the gateway is not installed",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 )));
             }
         },
         Tab::Vitriol => match page.engine.as_ref() {
             Some(e) => {
                 let state_st = match e.state.as_str() {
-                    "active" => Style::new().fg(theme::GREEN).bg(theme::PANEL),
-                    "inactive" => Style::new().fg(theme::MUTED).bg(theme::PANEL),
-                    _ => Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                    "active" => Style::new().fg(theme::GREEN()).bg(theme::PANEL()),
+                    "inactive" => Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
+                    _ => Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
                 };
                 lines.push(Line::from(vec![
                     Span::styled(
                         "  unit       ",
-                        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                     ),
                     Span::styled(
                         "vitriol-server.service",
-                        Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                        Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
                     ),
                 ]));
                 lines.push(Line::from(vec![
                     Span::styled(
                         "  state      ",
-                        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                     ),
                     Span::styled(
                         format!(
@@ -3302,28 +3314,28 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                         "  last log   {}",
                         trunc(&e.last_log, inner.width.saturating_sub(14) as usize)
                     ),
-                    Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                    Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
                 )));
                 lines.push(Line::from(Span::styled(
                         "  controls   S start · X stop · R restart (press twice to confirm) · r re-sample",
-                        Style::new().fg(theme::GOLD).bg(theme::PANEL),
+                        Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
                     )));
                 lines.push(Line::from(Span::styled(
                         "  config     your live daily driver (unit as-is; `vitriol config load <profile>` outside the TUI)",
-                        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                     )));
                 lines.push(Line::from(Span::styled(
                     "  ── config view (read-only · j/k scroll · docs/engine-settings.md) ──",
-                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                 )));
                 match page.config.as_ref() {
                     Some(rows) => {
                         let start = page.config_scroll.min(rows.len());
                         for r in rows.iter().skip(start) {
                             let val_st = if r.risk {
-                                Style::new().fg(theme::ORANGE).bg(theme::PANEL)
+                                Style::new().fg(theme::ORANGE()).bg(theme::PANEL())
                             } else {
-                                Style::new().fg(theme::TEXT).bg(theme::PANEL)
+                                Style::new().fg(theme::TEXT()).bg(theme::PANEL())
                             };
                             lines.push(Line::from(vec![
                                 Span::styled(
@@ -3336,21 +3348,21 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                                 ),
                                 Span::styled(
                                     trunc(r.explain, inner.width.saturating_sub(44) as usize),
-                                    Style::new().fg(theme::MUTED).bg(theme::PANEL),
+                                    Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
                                 ),
                             ]));
                         }
                     }
                     None => lines.push(Line::from(Span::styled(
                         "  config not readable (~/.vitriol/config)",
-                        Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                        Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
                     ))),
                 }
             }
             None => {
                 lines.push(Line::from(Span::styled(
                     "  engine facts not sampled yet — press r",
-                    Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+                    Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
                 )));
             }
         },
@@ -3388,7 +3400,7 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
     };
     let body_lines: Vec<Line> = lines.into_iter().skip(start).take(visible).collect();
     frame.render_widget(
-        Paragraph::new(body_lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(body_lines).style(Style::new().bg(theme::PANEL())),
         chunks[2],
     );
 
@@ -3477,12 +3489,12 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 .map(|r| {
                     Line::from(Span::styled(
                         format!("  {r}"),
-                        Style::new().fg(theme::TEXT).bg(theme::PANEL),
+                        Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
                     ))
                 })
                 .collect();
             frame.render_widget(
-                Paragraph::new(detail_lines).style(Style::new().bg(theme::PANEL)),
+                Paragraph::new(detail_lines).style(Style::new().bg(theme::PANEL())),
                 chunks[3],
             );
         }
@@ -3491,12 +3503,12 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // ── footer ──
     let mut footer = vec![Line::from(Span::styled(
         "  tab switch · space toggle · +/- rank/cap · h hide · H show hidden · a add key · A wizard · o oauth/site · / filter · r reload · esc close",
-        Style::new().fg(theme::MUTED).bg(theme::PANEL),
+        Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
     ))];
     if page.filtering {
         footer.push(Line::from(Span::styled(
             format!("  /{}_", page.filter),
-            Style::new().fg(theme::GOLD).bg(theme::PANEL),
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
         )));
     } else if let Some(arm) = page.engine_arm.as_ref() {
         footer.push(Line::from(Span::styled(
@@ -3505,36 +3517,36 @@ fn render_caduceus_page(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 arm.chars().next().unwrap_or('?'),
                 arm
             ),
-            Style::new().fg(theme::ORANGE).bg(theme::PANEL),
+            Style::new().fg(theme::ORANGE()).bg(theme::PANEL()),
         )));
     } else if let Some(note) = page.note.as_ref() {
         let style = if note.contains("ignored") || note.contains("failed") {
-            theme::ORANGE
+            theme::ORANGE()
         } else {
-            theme::GREEN
+            theme::GREEN()
         };
         footer.push(Line::from(Span::styled(
             format!("  {note} · {}", page.policy_summary()),
-            Style::new().fg(style).bg(theme::PANEL),
+            Style::new().fg(style).bg(theme::PANEL()),
         )));
     } else {
         footer.push(Line::from(Span::styled(
             format!("  {}", page.policy_summary()),
-            Style::new().fg(theme::MUTED).bg(theme::PANEL),
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
         )));
     }
     footer.truncate(chunks[4].height as usize);
     frame.render_widget(
-        Paragraph::new(footer).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(footer).style(Style::new().bg(theme::PANEL())),
         chunks[4],
     );
 }
 
 fn caduceus_row_style(selected: bool) -> Style {
     if selected {
-        Style::new().fg(theme::BG).bg(theme::GOLD)
+        Style::new().fg(theme::BG()).bg(theme::GOLD())
     } else {
-        Style::new().fg(theme::TEXT).bg(theme::PANEL)
+        Style::new().fg(theme::TEXT()).bg(theme::PANEL())
     }
 }
 
@@ -3554,8 +3566,8 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(
                 " {} kv cache · {} entries · {} ",
@@ -3563,11 +3575,11 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 state.cache_entries.len(),
                 c::budget_line(state.cache_total)
             ),
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " d delete · p prune 7d · W wipe all · r rescan · esc ",
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -3580,8 +3592,8 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         Paragraph::new(Line::from(Span::styled(
             trunc(&state.cache_dir, inner.width as usize),
             Style::new()
-                .fg(theme::MUTED)
-                .bg(theme::PANEL)
+                .fg(theme::MUTED())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::ITALIC),
         ))),
         dir,
@@ -3606,23 +3618,23 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         let protected = c::is_protected(&e.name);
         let base = if selected {
             Style::new()
-                .fg(theme::BG)
-                .bg(theme::GOLD)
+                .fg(theme::BG())
+                .bg(theme::GOLD())
                 .add_modifier(Modifier::BOLD)
         } else if protected {
-            Style::new().fg(theme::GREEN).bg(theme::PANEL)
+            Style::new().fg(theme::GREEN()).bg(theme::PANEL())
         } else {
-            Style::new().fg(theme::TEXT).bg(theme::PANEL)
+            Style::new().fg(theme::TEXT()).bg(theme::PANEL())
         };
         let muted = if selected {
             base
         } else {
-            Style::new().fg(theme::MUTED).bg(theme::PANEL)
+            Style::new().fg(theme::MUTED()).bg(theme::PANEL())
         };
         let accent = if selected {
             base
         } else {
-            Style::new().fg(theme::GOLD).bg(theme::PANEL)
+            Style::new().fg(theme::GOLD()).bg(theme::PANEL())
         };
 
         let marker = format!("{} ", if selected { "▸" } else { " " });
@@ -3657,13 +3669,13 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         lines.push(Line::from(Span::styled(
             "  cache is empty",
             Style::new()
-                .fg(theme::MUTED)
-                .bg(theme::PANEL)
+                .fg(theme::MUTED())
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::ITALIC),
         )));
     }
     frame.render_widget(
-        Paragraph::new(lines).style(Style::new().bg(theme::PANEL)),
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
         list,
     );
 }
@@ -3685,15 +3697,15 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} tool verbosity ", theme::GLYPH_CRUCIBLE),
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ select · enter mode · tab strict · ⌫ clear · esc ",
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -3709,7 +3721,7 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
             (
                 "global".to_string(),
                 state.tool_default.label().to_string(),
-                Style::new().fg(theme::GOLD),
+                Style::new().fg(theme::GOLD()),
             )
         } else {
             let name = crate::tui::state::KNOWN_TOOLS[row - 1];
@@ -3722,12 +3734,12 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     };
                     (
                         format!("{} ({})", mode.label(), word),
-                        Style::new().fg(theme::CYAN),
+                        Style::new().fg(theme::CYAN()),
                     )
                 }
                 None => (
                     format!("→ {}", state.tool_default.label()),
-                    Style::new().fg(theme::MUTED),
+                    Style::new().fg(theme::MUTED()),
                 ),
             };
             (crate::tui::state::tool_display_name(name), status, st)
@@ -3739,13 +3751,13 @@ fn render_tools_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                     (inner.width as usize).saturating_sub(1),
                 ),
                 Style::new()
-                    .fg(theme::BG)
-                    .bg(theme::GOLD)
+                    .fg(theme::BG())
+                    .bg(theme::GOLD())
                     .add_modifier(Modifier::BOLD),
             )));
         } else {
             lines.push(Line::from(vec![
-                Span::styled(format!("  {:<8} ", label), Style::new().fg(theme::TEXT)),
+                Span::styled(format!("  {:<8} ", label), Style::new().fg(theme::TEXT())),
                 Span::styled(status, status_st),
             ]));
         }
@@ -3829,15 +3841,15 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::GOLD))
-        .style(Style::new().bg(theme::PANEL))
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(
             format!(" {} help ", theme::GLYPH_ALEMBIC),
-            Style::new().fg(theme::GOLD).add_modifier(Modifier::BOLD),
+            Style::new().fg(theme::GOLD()).add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
             " ↑↓ scroll · esc close ",
-            Style::new().fg(theme::MUTED),
+            Style::new().fg(theme::MUTED()),
         ));
     let inner = block.inner(modal);
     frame.render_widget(block, modal);
@@ -3857,8 +3869,8 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 lines.push(Line::from(Span::styled(
                     row.left.clone(),
                     Style::new()
-                        .fg(theme::GOLD)
-                        .bg(theme::PANEL)
+                        .fg(theme::GOLD())
+                        .bg(theme::PANEL())
                         .add_modifier(Modifier::BOLD),
                 )));
             }
@@ -3866,9 +3878,9 @@ fn render_help_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{:<width$} ", row.left, width = label_w),
-                        Style::new().fg(theme::CYAN),
+                        Style::new().fg(theme::CYAN()),
                     ),
-                    Span::styled(row.right.clone(), Style::new().fg(theme::TEXT)),
+                    Span::styled(row.right.clone(), Style::new().fg(theme::TEXT())),
                 ]));
             }
         }
@@ -3957,7 +3969,7 @@ fn composer_box_height(input: &str, area_width: u16) -> u16 {
 /// cursor cell (reversed), then the remainder. Pure, so the wrap behaviour
 /// is testable without a Frame.
 fn composer_line(input: &str, cursor: usize) -> Line<'static> {
-    let prompt = Span::styled("> ", Style::default().fg(theme::GREEN).bg(theme::PANEL));
+    let prompt = Span::styled("> ", Style::default().fg(theme::GREEN()).bg(theme::PANEL()));
     let (before, at, after) = split_at_char(input, cursor);
     Line::from(vec![
         prompt,
@@ -3965,7 +3977,7 @@ fn composer_line(input: &str, cursor: usize) -> Line<'static> {
         Span::styled(
             at,
             Style::default()
-                .bg(theme::PANEL)
+                .bg(theme::PANEL())
                 .add_modifier(Modifier::REVERSED),
         ),
         Span::raw(after),
@@ -4392,8 +4404,8 @@ mod grind_chip_tests {
 
     #[test]
     fn grind_mode_gets_its_own_alchemical_chip() {
-        assert_eq!(mode_chip("GRIND"), Some(("∞", theme::VIOLET)));
-        assert_eq!(mode_chip("grind"), Some(("∞", theme::VIOLET)));
+        assert_eq!(mode_chip("GRIND"), Some(("∞", theme::VIOLET())));
+        assert_eq!(mode_chip("grind"), Some(("∞", theme::VIOLET())));
         let mut s = AppState::default();
         s.agent_mode_label = Some("GRIND".into());
         s.agent_mode_glyph = Some("∞".into());
@@ -4549,7 +4561,7 @@ mod settings_chat_render_tests {
     fn band_rows(bgs: &[Vec<ratatui::style::Color>]) -> Vec<usize> {
         bgs.iter()
             .enumerate()
-            .filter(|(_, row)| row.iter().any(|c| *c == theme::USER_BG))
+            .filter(|(_, row)| row.iter().any(|c| *c == theme::USER_BG()))
             .map(|(y, _)| y)
             .collect()
     }
@@ -4566,10 +4578,10 @@ mod settings_chat_render_tests {
         assert_eq!(rows.len(), 1, "exactly the user row is banded: {rows:?}");
         // The band spans the chat width minus the gauge column.
         let y = rows[0];
-        assert_eq!(bgs[y][0], theme::USER_BG);
+        assert_eq!(bgs[y][0], theme::USER_BG());
         // The gauge column is the LAST column of the chat area (chat_width is
         // width - 1), not the one before it.
-        assert_ne!(bgs[y][59], theme::USER_BG, "gauge column stays clean");
+        assert_ne!(bgs[y][59], theme::USER_BG(), "gauge column stays clean");
     }
 
     #[test]
@@ -5267,7 +5279,7 @@ mod settings_chat_render_tests {
         // marker, and never exceeds the budget.
         let long = Line::from(vec![
             Span::raw("see "),
-            Span::styled("x".repeat(200), Style::new().fg(theme::GOLD)),
+            Span::styled("x".repeat(200), Style::new().fg(theme::GOLD())),
         ]);
         let cut = elide_line(long, 40);
         let out: String = cut.spans.iter().map(|s| s.content.to_string()).collect();
@@ -5277,7 +5289,7 @@ mod settings_chat_render_tests {
             "elision overran: {out:?}"
         );
         assert!(
-            cut.spans.iter().any(|s| s.style.fg == Some(theme::GOLD)),
+            cut.spans.iter().any(|s| s.style.fg == Some(theme::GOLD())),
             "elision dropped the styling"
         );
         // A line that fits is returned untouched (no marker).

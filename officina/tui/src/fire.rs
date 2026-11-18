@@ -74,38 +74,58 @@ impl FireStyle {
                 // and height spread hues spatially: the base leads, the
                 // tips lag — color waves travel up the flame.
                 let pos = (phase_ms as f64 / (PULSE_PERIOD_S * 1000.0) + t * 0.35).fract();
-                cycle_color(&PULSE_STOPS, pos)
+                cycle_color(&pulse_stops(), pos)
             }
-            style => theme::ramp_color(style.stops(), t),
+            style => {
+                let stops = style.stops();
+                theme::ramp_color(&stops, t)
+            }
         }
     }
 
-    fn stops(self) -> &'static [ratatui::style::Color] {
+    /// Gradient stops for this style, in the ACTIVE theme.
+    ///
+    /// Owned rather than `&'static`: the stops are palette lookups now, and a
+    /// borrowed slice of a temporary cannot escape (2026-11-18). Three-to-seven
+    /// colours per call — the allocation is noise next to the frame it paints.
+    fn stops(self) -> Vec<ratatui::style::Color> {
         match self {
             // Deep emerald → Vitriolum green → solvent mint.
-            FireStyle::Emerald => &[
+            FireStyle::Emerald => vec![
                 ratatui::style::Color::Rgb(0x0B, 0x3D, 0x2B),
-                theme::GREEN,
+                theme::GREEN(),
                 ratatui::style::Color::Rgb(0x7D, 0xFF, 0xB0),
             ],
             // Silver → gold → antidote → substrate (nigredo→rubedo arc).
-            FireStyle::Alchemy => &[theme::SILVER, theme::GOLD, theme::ORANGE, theme::RED],
-            FireStyle::Pulse => &PULSE_STOPS,
+            FireStyle::Alchemy => {
+                vec![
+                    theme::SILVER(),
+                    theme::GOLD(),
+                    theme::ORANGE(),
+                    theme::RED(),
+                ]
+            }
+            FireStyle::Pulse => pulse_stops().to_vec(),
         }
     }
 }
 
 /// Pulse palette — the full alchemical set, ordered for a smooth loop
 /// (red wraps back to silver through the shared brightness band).
-const PULSE_STOPS: [ratatui::style::Color; 7] = [
-    theme::SILVER,
-    theme::GREEN,
-    theme::GOLD,
-    theme::CYAN,
-    theme::VIOLET,
-    theme::ORANGE,
-    theme::RED,
-];
+///
+/// A function, not a `const`: the stops come from the ACTIVE theme, and a const
+/// cannot call the palette accessors (2026-11-18).
+fn pulse_stops() -> [ratatui::style::Color; 7] {
+    [
+        theme::SILVER(),
+        theme::GREEN(),
+        theme::GOLD(),
+        theme::CYAN(),
+        theme::VIOLET(),
+        theme::ORANGE(),
+        theme::RED(),
+    ]
+}
 
 /// Seconds for one full palette loop in Pulse mode.
 const PULSE_PERIOD_S: f64 = 9.0;
@@ -122,7 +142,7 @@ impl Default for FireStyle {
 fn cycle_color(stops: &[ratatui::style::Color], t: f64) -> ratatui::style::Color {
     let n = stops.len();
     if n == 0 {
-        return theme::MUTED;
+        return theme::MUTED();
     }
     if n == 1 {
         return stops[0];
@@ -403,7 +423,7 @@ pub fn render(
                         let c = style.color(heat, phase_ms);
                         spans.push(Span::styled(
                             "⠁".to_string(),
-                            Style::new().fg(c).bg(theme::BG),
+                            Style::new().fg(c).bg(theme::BG()),
                         ));
                         continue;
                     }
@@ -444,7 +464,7 @@ pub fn render(
             let c = style.color(heat, phase_ms);
             spans.push(Span::styled(
                 ch.to_string(),
-                Style::new().fg(c).bg(theme::BG),
+                Style::new().fg(c).bg(theme::BG()),
             ));
         }
         lines.push(Line::from(spans));

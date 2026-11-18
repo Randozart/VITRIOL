@@ -1,0 +1,136 @@
+{
+  "name": "Kanagawa Wave (Aether)",
+  "author": "Officina",
+  "colorSpaceName": "sRGB",
+  "settings": [
+    {
+      "settings": {
+        "background": "#1F1F28",
+        "foreground": "#DCD7BA",
+        "caret": "#C8C093",
+        "selection": "#2D4F6780",
+        "lineHighlight": "#00000000",
+        "gutter": "#1F1F28",
+        "gutterForeground": "#727169"
+      }
+    },
+    {
+      "settings": {
+        "foreground": "#727169",
+        "fontStyle": "italic"
+      },
+      "scope": "comment"
+    },
+    {
+      "settings": {
+        "foreground": "#98BB6C"
+      },
+      "scope": "string"
+    },
+    {
+      "settings": {
+        "foreground": "#D27E99"
+      },
+      "scope": "constant.numeric"
+    },
+    {
+      "settings": {
+        "foreground": "#FFA066"
+      },
+      "scope": "constant.language"
+    },
+    {
+      "settings": {
+        "foreground": "#957FB8"
+      },
+      "scope": "keyword"
+    },
+    {
+      "settings": {
+        "foreground": "#7AA89F"
+      },
+      "scope": "storage.type"
+    },
+    {
+      "settings": {
+        "foreground": "#9CABCA"
+      },
+      "scope": "keyword.operator"
+    },
+    {
+      "settings": {
+        "foreground": "#7E9CD8"
+      },
+      "scope": "entity.name.function"
+    },
+    {
+      "settings": {
+        "foreground": "#7AA89F"
+      },
+      "scope": "entity.name.type"
+    },
+    {
+      "settings": {
+        "foreground": "#DCD7BA"
+      },
+      "scope": "variable"
+    },
+    {
+      "settings": {
+        "foreground": "#DCD7BA"
+      },
+      "scope": "variable.parameter"
+    },
+    {
+      "settings": {
+        "foreground": "#7E9CD8"
+      },
+      "scope": "support.function"
+    },
+    {
+      "settings": {
+        "foreground": "#7AA89F"
+      },
+      "scope": "support.type"
+    },
+    {
+      "settings": {
+        "foreground": "#7E9CD8"
+      },
+      "scope": "entity.name.tag"
+    },
+    {
+      "settings": {
+        "foreground": "#FF9E3B"
+      },
+      "scope": "meta.preprocessor"
+    },
+    {
+      "settings": {
+        "foreground": "#E82424"
+      },
+      "scope": "invalid"
+    },
+    {
+      "settings": {
+        "foreground": "#E6C384",
+        "fontStyle": "bold"
+      },
+      "scope": "markup.heading"
+    },
+    {
+      "settings": {
+        "foreground": "#DCD7BA",
+        "fontStyle": "bold"
+      },
+      "scope": "markup.bold"
+    },
+    {
+      "settings": {
+        "foreground": "#DCD7BA",
+        "fontStyle": "italic"
+      },
+      "scope": "markup.italic"
+    }
+  ]
+}

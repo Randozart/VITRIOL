@@ -213,7 +213,7 @@ pub fn render(frame: &mut Frame, menu: &SettingMenu, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} · ↑↓ Enter · Esc ", menu.title))
-        .style(Style::new().bg(theme::PANEL).fg(theme::GOLD));
+        .style(Style::new().bg(theme::PANEL()).fg(theme::GOLD()));
     let inner = block.inner(panel);
     let visible = inner.height as usize;
     let start = (menu.selected + 1).saturating_sub(visible);
@@ -235,7 +235,7 @@ pub fn render(frame: &mut Frame, menu: &SettingMenu, area: Rect) {
     frame.render_widget(block, panel);
     frame.render_widget(
         Paragraph::new(rows.collect::<Vec<_>>())
-            .style(Style::new().bg(theme::PANEL).fg(theme::TEXT)),
+            .style(Style::new().bg(theme::PANEL()).fg(theme::TEXT())),
         inner,
     );
 }

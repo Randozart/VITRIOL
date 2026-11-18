@@ -59,6 +59,20 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     let mut terminal = Terminal::new(backend)?;
 
     let mut state = AppState::default();
+    // Theme: env → saved file → compiled default (2026-11-18).
+    if let Some(name) = std::env::var("OFFICINA_TUI_THEME")
+        .ok()
+        .filter(|n| !n.trim().is_empty())
+    {
+        if state.set_theme(name.trim(), false).is_none() {
+            state.notice = Some((
+                format!("theme: unknown '{name}' in OFFICINA_TUI_THEME"),
+                "warning".to_string(),
+            ));
+        }
+    } else if let Some(name) = AppState::saved_theme() {
+        let _ = state.set_theme(&name, false);
+    }
     state.perm_mode = crate::envfile::read_permissions_mode();
     state.tool_watchdog_secs = env_secs("OFFICINA_TOOL_WATCHDOG_SECS", state.tool_watchdog_secs);
     state.cwd = cwd;
@@ -2014,6 +2028,32 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if msg == "/janitor" || msg.starts_with("/janitor ") {
                 let dry = msg.starts_with("/janitor dry") || msg.starts_with("/janitor --dry");
                 state.janitor_command(dry);
+                return;
+            }
+            // /theme — colour scheme for the whole TUI (2026-11-18).
+            if msg == "/theme" || msg.starts_with("/theme ") {
+                let arg = msg.strip_prefix("/theme").unwrap_or("").trim();
+                if arg.is_empty() {
+                    let current = crate::theme::current().name;
+                    let names: Vec<&str> = crate::theme::ALL.iter().map(|t| t.name).collect();
+                    state.notice = Some((
+                        format!("theme: {current} · available: {}", names.join(", ")),
+                        "info".to_string(),
+                    ));
+                    return;
+                }
+                match state.set_theme(arg, true) {
+                    Some(name) => {
+                        state.notice = Some((format!("theme: {name}"), "info".to_string()))
+                    }
+                    None => {
+                        let names: Vec<&str> = crate::theme::ALL.iter().map(|t| t.name).collect();
+                        state.notice = Some((
+                            format!("theme: unknown '{arg}' — try {}", names.join(", ")),
+                            "warning".to_string(),
+                        ))
+                    }
+                }
                 return;
             }
             if msg == "/cache" || msg.starts_with("/cache ") {

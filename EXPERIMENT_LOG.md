@@ -1,3 +1,17 @@
+<!-- 2026-11-18 14:15 — Actual same20B primer/recovery qualification, playback pending. -->
+
+## 2026-11-18 14:15 — Private CPU20B prefix loss/recovery
+
+Actual generic CLI:177tokens primed, next question reuses177. Explicit foreign
+prefix displacement leaves176recoverable; re-prime restores177, no claim of forced
+RAM-capacity eviction. Real private-generator restart primes0cached/177evaluated,
+next answer177cached. Seven complete recovery chats, one fresh restart chat,
+resend/long history/cancel/reuse and no synthetic canary leak PASS. Native slot erase
+501 requires --slot-save-path; negative retained, no disk cache enabled as fallback.
+Public avatar stays active with unchanged workers/pins and original20B PID1304035.
+CPUQuota400/Nice10/bounded RAM; shared-pressure observed, no latency/AV gain claim.
+Full browser playback awaits guarded-window permission. No home-PC profile change.
+
 <!-- 2026-11-18 14:06 — Optional startup primer, model-free stage qualified. -->
 
 ## 2026-11-18 14:06 — Explicit bounded client-prefix primer

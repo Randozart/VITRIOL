@@ -3,8 +3,8 @@
 ## Anchored summary — 2026-11-18 14:06
 
 Optional client-prefix primer implemented with nine model-free invariant tests;
-no production profile/launcher change. Private same20B eviction/playback validation
-pending. Owned-cache atime compile fix carried from63cc63f as7d19ceb; original
+no production profile/launcher change. Actual same20B displacement/reprime/resend/history/cancel and private-generator
+restart checks pass; full avatar/browser validation remains approval-pending. Owned-cache atime compile fix carried from63cc63f as7d19ceb; original
 checkout dirty vendor license and live engine must remain untouched. See
 .opencode/plans/client-prefix-primer-2026-11-18.md and docs/client-prefix-primer.md.
 

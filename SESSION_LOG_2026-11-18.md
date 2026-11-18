@@ -16,3 +16,8 @@ Original checkout dirty vendor license preserved. No killall, production restart
 power-policy change or home-PC daily-driver configuration change. Avatar's private
 adapter, launchers and pending Intel/WBSO report are in its own repository. Human
 S&O time is not inferred from machine/agent execution.
+
+## 2026-11-18 14:15 — Cache/restart stage complete
+
+Actual native prefix/recovery checks pass; see plan and experiment log. Public
+avatar stayed active. Only full speech/video comparison remains permission-gated.

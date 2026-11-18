@@ -18,6 +18,7 @@
 //   OFFICINA_NO_PREDICTIONS=1   disable the composer prediction row
 //   OFFICINA_NO_ACTIVE_FILES=1  disable hot-file tracking
 //   OFFICINA_NO_OVERFLOW=1      disable adaptive routing entirely
+//   OFFICINA_STRUCTURED_OUTPUT=1  enable marker-driven json_schema on structured lanes
 //   OFFICINA_ROUTE_MODE=off     advisory/enforced cloud routing off
 
 /** Read a knob as a string (empty string when unset). */
@@ -112,6 +113,7 @@ export const KNOBS: readonly string[] = [
   "OFFICINA_NO_CAPACITY_WAIT",
   "OFFICINA_NO_CHURN",
   "OFFICINA_NO_CLAIMS",
+  "OFFICINA_STRUCTURED_OUTPUT",
   "OFFICINA_NO_CLEAR_SUMMARY",
   "OFFICINA_NO_CODE_TOOL",
   "OFFICINA_NO_COMPACT_ON_FINISH",

@@ -175,7 +175,10 @@ mod tests {
             stream: false,
         };
         let all = crate::shapes::all(1);
-        let shape = all.iter().find(|s| s.id == "structured").expect("structured shape");
+        let shape = all
+            .iter()
+            .find(|s| s.id == "structured")
+            .expect("structured shape");
         let plain = client.body(shape, "baseline", false);
         assert!(plain.get("response_format").is_none());
         let grammar = client.body(shape, "grammar", false);
@@ -197,7 +200,10 @@ mod tests {
             stream: false,
         };
         let all = crate::shapes::all(1);
-        let prose = all.iter().find(|s| s.id == "code-edit").expect("prose shape");
+        let prose = all
+            .iter()
+            .find(|s| s.id == "code-edit")
+            .expect("prose shape");
         let body = client.body(prose, "grammar", false);
         assert!(body.get("response_format").is_none());
     }

@@ -320,7 +320,8 @@ fn summarize(samples: &[Sample]) {
         };
         for arm in keys
             .iter()
-            .filter_map(|(s, a)| (s == shape).then(|| a.clone()))
+            .filter(|(s, _)| s == shape)
+            .map(|(_, a)| a.clone())
         {
             if arm == "baseline" {
                 continue;

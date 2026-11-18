@@ -126,7 +126,15 @@ mod tests {
         let shapes = all(4);
         assert_eq!(shapes.len(), 4);
         let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
-        assert_eq!(ids, ["structured", "structured-nested", "code-edit", "deep-recall"]);
+        assert_eq!(
+            ids,
+            [
+                "structured",
+                "structured-nested",
+                "code-edit",
+                "deep-recall"
+            ]
+        );
         for s in &shapes {
             assert!(!s.user.trim().is_empty(), "{} has no prompt", s.id);
             assert!(!s.system.trim().is_empty(), "{} has no system prompt", s.id);

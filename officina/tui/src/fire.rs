@@ -268,6 +268,71 @@ fn taper_scale(rn: f64, taper: f64) -> f64 {
     1.0 - taper.clamp(0.0, 1.0) * (BASE_INSET + (1.0 - BASE_INSET) * r.sqrt())
 }
 
+/// Glyph-density multiplier by distance from the tongue's boundary.
+///
+/// `t` is 0 at the tongue's midline and 1 at the cut. Inside the body the flame
+/// keeps its full weight; over the outer ~20 % the weight falls so the edge ends
+/// in single dots instead of a full bar followed by nothing — that cliff is what
+/// read as a STAIRCASE (owner: "the edges are blocky rather than tapered",
+/// 2026-11-17; still visible 2026-11-18 because only the geometry had been fixed).
+///
+/// Quadratic shoulder on purpose: a linear ramp puts most of its change at the
+/// cut, which merely moves the stair one cell inward.
+fn edge_falloff(t: f64) -> f64 {
+    const KNEE: f64 = 0.78;
+    let t = t.clamp(0.0, 1.0);
+    if t <= KNEE {
+        return 1.0;
+    }
+    let x = (t - KNEE) / (1.0 - KNEE);
+    1.0 - 0.85 * x * x
+}
+
+/// Where the outermost sliver starts: above this the glyph is thinned enough
+/// that dithering it breaks the stair instead of making it sparkle.
+const EDGE_DITHER_FROM: f64 = 0.88;
+
+/// Does the outermost sliver draw on THIS flicker step?
+///
+/// Extracted so the anti-stair behaviour is testable without a frame: the point
+/// is that the boundary column alternates between frames, so successive rows
+/// stop stepping in phase.
+fn edge_dither_culls(x: u32, edge_t: f64, step: u32) -> bool {
+    if edge_t <= EDGE_DITHER_FROM {
+        return false;
+    }
+    let p = (edge_t - EDGE_DITHER_FROM) / (1.0 - EDGE_DITHER_FROM);
+    hash01(x, 913, step) < p
+}
+
+/// Position of a glyph in the density ramp (test helper).
+#[cfg(test)]
+pub fn density_index(c: char) -> Option<usize> {
+    DENSITY.iter().position(|d| *d == c)
+}
+
+/// The glyph this cell draws, given its density and its distance from the
+/// tongue's boundary.
+///
+/// Extracted from the render loop so the fade can be asserted without the
+/// per-cell hash noise: at equal density, a cell nearer the edge must draw a
+/// LIGHTER glyph. That is the property that removes the stair-step, and it is
+/// invisible in a whole-frame assertion because the hash dominates there.
+pub fn glyph_at(dens: f64, edge_t: f64) -> char {
+    let d = (dens * edge_falloff(edge_t)).clamp(0.0, 1.0);
+    let idx = (d * (DENSITY.len() - 1) as f64).round() as usize;
+    DENSITY[idx.min(DENSITY.len() - 1)]
+}
+
+/// Test probe: the dither decision (see `edge_dither_culls`).
+#[cfg(test)]
+pub fn edge_dither_culls_probe(x: u32, edge_t: f64, step: u32) -> bool {
+    edge_dither_culls(x, edge_t, step)
+}
+/// Test probe: where the dither band starts.
+#[cfg(test)]
+pub const EDGE_DITHER_FROM_PROBE: f64 = EDGE_DITHER_FROM;
+
 /// Is this column inside the tapered tongue at this height?
 ///
 /// The window SHRINKS around the tongue's midline, which is how a flame narrows
@@ -461,8 +526,18 @@ pub fn render(
                 // draw lets it thicken upward.
                 dens *= 0.3 + 0.5 * level.clamp(0.0, 1.0);
             }
-            let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
-            let ch = DENSITY[idx.min(DENSITY.len() - 1)];
+            // Edge softening (2026-11-18): thin the glyph toward the tongue's
+            // boundary, then let the outer sliver come and go per flicker step.
+            // Only the GLYPH field dithers; the text-tint mask takes the smooth
+            // falloff alone, because text must never flicker.
+            let half = 0.5 * taper_scale(rn, taper);
+            let edge_t = ((edge - TONGUE_CENTER).abs() / half.max(1e-6)).clamp(0.0, 1.0);
+            dens *= edge_falloff(edge_t);
+            if edge_dither_culls(x as u32, edge_t, step) {
+                spans.push(Span::raw(" "));
+                continue;
+            }
+            let ch = glyph_at(dens, edge_t);
             let c = style.color(heat, phase_ms);
             spans.push(Span::styled(
                 ch.to_string(),
@@ -510,7 +585,12 @@ pub fn tint_rows(
                 continue;
             }
             let frac = (frac_from_base / light.max(1e-3)).clamp(0.0, 1.0);
-            let heat = (base_heat * (1.0 - frac * 0.75)).clamp(0.0, 1.0);
+            // The mask follows the glyph's SHAPE but not its flicker: the smooth
+            // edge falloff is applied, the dither is not. Text tinted by a
+            // dithering mask would shimmer (owner report 2026-11-16).
+            let half = 0.5 * taper_scale(rn, taper);
+            let edge_t = ((edge - TONGUE_CENTER).abs() / half.max(1e-6)).clamp(0.0, 1.0);
+            let heat = (base_heat * (1.0 - frac * 0.75) * edge_falloff(edge_t)).clamp(0.0, 1.0);
             *cell = Some(style.color(heat, phase_ms));
         }
         out.push(row);
@@ -798,5 +878,59 @@ mod stability_tests {
             assert_ne!(*g, '⣿', "never the full block");
             assert!((*g as u32) - 0x2800 <= 0xF7, "{g:?} exceeds the ceiling");
         }
+    }
+}
+
+#[cfg(test)]
+mod edge_softening_tests {
+    use super::*;
+
+    /// The text-tint mask takes the smooth fade and NEVER the dither: the same
+    /// state must produce a byte-identical mask on every flicker step, or the
+    /// transcript would shimmer (owner report 2026-11-16).
+    #[test]
+    fn tint_mask_does_not_flicker() {
+        let a = tint_rows(6, 100, 0, 1.0, FireStyle::Alchemy, DEFAULT_TAPER);
+        let b = tint_rows(6, 100, 137, 1.0, FireStyle::Alchemy, DEFAULT_TAPER);
+        let c = tint_rows(6, 100, 4_000, 1.0, FireStyle::Alchemy, DEFAULT_TAPER);
+        assert_eq!(
+            format!("{a:?}"),
+            format!("{b:?}"),
+            "tint changed between frames"
+        );
+        assert_eq!(
+            format!("{b:?}"),
+            format!("{c:?}"),
+            "tint changed between frames"
+        );
+    }
+
+    /// The fade must soften the edge without erasing it: even at the cut the cell
+    /// still draws something.
+    #[test]
+    fn the_cut_still_draws() {
+        let cut = glyph_at(1.0, 1.0);
+        assert_ne!(cut, '⠀', "the boundary draws blank braille");
+        assert!(
+            density_index(cut).is_some_and(|i| i >= 1 && i <= 3),
+            "{cut:?}"
+        );
+    }
+
+    /// At embers the fire must stay visible: the fade multiplies an already small
+    /// density, so this guards against the bar disappearing entirely.
+    #[test]
+    fn embers_survive_the_fade() {
+        let row: Vec<char> = (0..80)
+            .map(|x| {
+                let edge = (x as f64 / 79.0 - 0.5).abs() * 2.0; // 0 centre → 1 edge
+                glyph_at(0.35, edge)
+            })
+            .collect();
+        let lit = row
+            .iter()
+            .filter(|c| density_index(**c).is_some_and(|i| i >= 1))
+            .count();
+        assert!(lit > 20, "the ember row went dark: {lit}/80 columns lit");
     }
 }

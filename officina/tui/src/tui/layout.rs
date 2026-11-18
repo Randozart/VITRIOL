@@ -5337,6 +5337,62 @@ mod settings_chat_render_tests {
     /// wrapping while the widget renders word-wrapped, so prose prompts lost
     /// their last line exactly while being written. The box must now be at least
     /// as tall as the renderer says the text is.
+    /// The owner's stair-step (2026-11-18): at equal density, a cell nearer the
+    /// tongue's boundary must draw a LIGHTER glyph. Asserted through `glyph_at`
+    /// rather than a whole frame, because the per-cell hash dominates a frame and
+    /// made the first version of this test pass with the fade disabled.
+    #[test]
+    fn fire_edge_glyphs_fade_instead_of_stepping() {
+        use crate::fire::{density_index, glyph_at};
+        let index = |c: char| density_index(c).expect("density glyph");
+        let body = glyph_at(0.8, 0.5);
+        let edge = glyph_at(0.8, 0.99);
+        assert!(
+            index(edge) < index(body),
+            "the edge draws as heavily as the body: edge={:?}({}) body={:?}({})",
+            edge,
+            index(edge),
+            body,
+            index(body)
+        );
+        // Monotone: walking outward from the midline never gets heavier.
+        let mut prev = 0usize;
+        for step in 0..=20 {
+            let t = 0.5 + 0.5 * (step as f64 / 20.0);
+            let i = index(glyph_at(0.8, t));
+            assert!(i <= prev.max(i), "non-monotone at t={t}: {i} after {prev}");
+            prev = i;
+        }
+        assert!(
+            index(glyph_at(0.8, 1.0)) <= 2,
+            "the cut still draws a heavy glyph"
+        );
+    }
+
+    /// The dither is what breaks the stair: the outermost sliver must draw on
+    /// some flicker steps and not others, so consecutive rows stop stepping in
+    /// phase. Negative control in the same test: inside the dither band nothing
+    /// is culled.
+    #[test]
+    fn fire_edge_dithers_between_frames() {
+        use crate::fire::{edge_dither_culls_probe, EDGE_DITHER_FROM_PROBE};
+        let frame = |step: u32| edge_dither_culls_probe(41, 0.99, step);
+        let culled: Vec<bool> = (0..12).map(frame).collect();
+        assert!(
+            culled.iter().any(|c| *c) && culled.iter().any(|c| !*c),
+            "the edge never alternates across frames: {culled:?}"
+        );
+        // Negative control: inside the body nothing is ever culled, so the test
+        // above is reading the dither and not the shape.
+        for step in 0..12 {
+            assert!(!edge_dither_culls_probe(
+                41,
+                EDGE_DITHER_FROM_PROBE - 0.05,
+                step
+            ));
+        }
+    }
+
     /// WRAP-1 (2026-11-17): the transcript does not wrap, so an overlong line
     /// must be elided with a visible marker instead of vanishing at the edge.
     /// SCROLL-1 lives in the same invariant: elision keeps 1 line = 1 row, which

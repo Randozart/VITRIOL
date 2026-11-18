@@ -751,7 +751,13 @@ mod theme_suite {
                 continue;
             }
             let text = std::fs::read_to_string(&entry).unwrap_or_default();
-            for (i, line) in text.lines().enumerate() {
+            // Test modules may use literals on purpose (they assert exact
+            // colours); the gate is about production renderers.
+            let production = match text.find("#[cfg(test)]") {
+                Some(cut) => &text[..cut],
+                None => text.as_str(),
+            };
+            for (i, line) in production.lines().enumerate() {
                 let code = line.split("//").next().unwrap_or("");
                 // Only LITERAL colours are the problem. `Color::Rgb(r, g, b)`
                 // built from variables is legitimate: the ANSI 256-colour cube

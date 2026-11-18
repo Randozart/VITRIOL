@@ -13,6 +13,10 @@ use ratatui::style::{Color, Modifier, Style};
 use std::sync::RwLock;
 
 /// One complete colour scheme.
+/// Fields the dashboard does not draw yet are kept: the struct mirrors
+/// `officina/theme/palette.json` role for role, so a missing field would mean a
+/// palette that cannot be compared across surfaces.
+#[allow(dead_code)]
 pub struct Theme {
     pub name: &'static str,
     pub bg: Color,
@@ -249,6 +253,7 @@ pub fn PANEL() -> Color {
     current().panel
 }
 #[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; pinned by the palette.json test
 pub fn USER_BG() -> Color {
     current().user_bg
 }
@@ -285,14 +290,17 @@ pub fn MUTED() -> Color {
     current().muted
 }
 #[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; pinned by the palette.json test
 pub fn FAINT() -> Color {
     current().faint
 }
 #[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; pinned by the palette.json test
 pub fn VIOLET() -> Color {
     current().violet
 }
 #[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; pinned by the palette.json test
 pub fn COLD_BLUE() -> Color {
     current().cold_blue
 }
@@ -313,10 +321,12 @@ pub fn MERCURY() -> Color {
     current().mercury
 }
 #[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; pinned by the palette.json test
 pub fn SILVER() -> Color {
     current().silver
 }
 #[allow(non_snake_case)]
+#[allow(dead_code)] // palette role kept complete; pinned by the palette.json test
 pub fn WATERMARK() -> Color {
     current().watermark
 }

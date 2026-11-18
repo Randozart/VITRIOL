@@ -537,16 +537,34 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
                 theme::info(),
                 "  ",
             ),
-            crate::tui::state::TurnActivity::Thinking => (
+            crate::tui::state::TurnActivity::Reasoning => (
                 theme::GLYPH_AI,
                 if live {
                     if secs > 0 {
-                        format!("thinking… {secs}s")
+                        format!("reasoning… {secs}s")
                     } else {
-                        "thinking…".to_string()
+                        "reasoning…".to_string()
                     }
                 } else {
-                    format!("thinking… · stalled {}s", state.stalled_secs())
+                    format!("reasoning… · stalled {}s", state.stalled_secs())
+                },
+                if live {
+                    theme::info()
+                } else {
+                    Style::new().fg(theme::MUTED())
+                },
+                "",
+            ),
+            crate::tui::state::TurnActivity::Building => (
+                theme::GLYPH_ALEMBIC,
+                if live {
+                    if secs > 0 {
+                        format!("building… {secs}s")
+                    } else {
+                        "building…".to_string()
+                    }
+                } else {
+                    format!("building… · stalled {}s", state.stalled_secs())
                 },
                 if live {
                     theme::info()
@@ -4473,7 +4491,9 @@ mod settings_chat_render_tests {
             let text = screen(state, 100, 24);
             text.lines()
                 .filter(|l| {
-                    l.contains("compacting…") || l.contains("thinking…") || l.contains("working…")
+                    ["compacting…", "reasoning…", "building…", "working…"]
+                        .iter()
+                        .any(|w| l.contains(w))
                 })
                 .map(|l| l.to_string())
                 .collect()
@@ -4493,7 +4513,7 @@ mod settings_chat_render_tests {
             "the line claimed two activities: {rows:?}"
         );
 
-        // Thinking wins over working: the live thinking tail is what the model
+        // Reasoning wins over working: the live reasoning tail is what the model
         // is doing, "working" would be a second way of saying it.
         let mut state = AppState::default();
         state.is_streaming = true;
@@ -4504,9 +4524,33 @@ mod settings_chat_render_tests {
         });
         let rows = activity_rows(&mut state);
         assert_eq!(rows.len(), 1, "{rows:?}");
-        assert!(rows[0].contains("thinking…"), "{rows:?}");
+        assert!(rows[0].contains("reasoning…"), "{rows:?}");
 
-        // Streaming with no thinking tail: working.
+        // A running tool is "building" (2026-11-18).
+        let mut state = AppState::default();
+        state.is_streaming = true;
+        state.entries.push(ChatEntry::Tool {
+            tool_call_id: Some("t1".into()),
+            name: "bash".into(),
+            summary: "cargo build".into(),
+            args: None,
+            click_mode: None,
+            diff: None,
+            pre_content: None,
+            checks: None,
+            output: vec!["Compiling…".into()],
+            output_truncated: false,
+            running: true,
+            error: false,
+            started_at: Some(std::time::Instant::now()),
+            timeout_s: None,
+            render_cache: None,
+        });
+        let rows = activity_rows(&mut state);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].contains("building…"), "{rows:?}");
+
+        // Streaming with no reasoning tail and no tool: working.
         let mut state = AppState::default();
         state.is_streaming = true;
         state.entries.push(ChatEntry::Notice("hi".into()));

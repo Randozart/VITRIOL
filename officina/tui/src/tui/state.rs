@@ -70,7 +70,11 @@ impl Settled {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TurnActivity {
     Compacting,
-    Thinking,
+    /// The model is producing reasoning ("thinking") tokens right now.
+    Reasoning,
+    /// A tool call is executing — a build, a test run, a long command.
+    Building,
+    /// Streaming, but neither reasoning nor a tool.
     Working,
 }
 
@@ -3859,12 +3863,25 @@ impl AppState {
             return Some(TurnActivity::Compacting);
         }
         if self.thinking_is_live() {
-            return Some(TurnActivity::Thinking);
+            return Some(TurnActivity::Reasoning);
+        }
+        if self.tool_is_running() {
+            return Some(TurnActivity::Building);
         }
         if self.is_streaming {
             return Some(TurnActivity::Working);
         }
         None
+    }
+
+    /// Is a tool call mid-flight? That is the "building" state: a build, a test
+    /// run or any long command the operator is waiting on (2026-11-18).
+    pub fn tool_is_running(&self) -> bool {
+        self.entries
+            .iter()
+            .rev()
+            .take(4)
+            .any(|e| matches!(e, ChatEntry::Tool { running: true, .. }))
     }
 
     /// Seconds to display for the current activity. Compaction carries its own

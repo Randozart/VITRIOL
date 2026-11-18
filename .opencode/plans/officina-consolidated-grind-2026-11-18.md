@@ -128,6 +128,13 @@ budget; new behaviour lands in a module.
 idempotence, ctx-row stability). Tests only; no behaviour change.
 
 ### S8 — Delete the dead surface
+
+> **PARTIAL 2026-11-18:** the guard is in place (no `.rs` under `tui/src` may reference
+> `runtime/patched`, `officina.mjs` or `register-hooks`; comments excluded, because `envfile.rs`
+> cites the legacy loader for parity). **Deletion is deferred on one dependency:**
+> `scripts/selfcheck.sh` runs a live one-shot round trip through `node officina.mjs`, so removing the
+> legacy frontend means first rewriting that check against `pi -p`. Until then the Rust TUI cannot
+> grow a dependency on it, and the deletion stays a pure subtraction.
 Remove the deprecated JS frontend (`officina/officina.mjs`, `runtime/patched/*`, build-patch canaries).
 Its "patch only in the generated file" incidents go with it.
 

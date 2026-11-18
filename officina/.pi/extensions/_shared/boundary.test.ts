@@ -93,6 +93,37 @@ describe("extension boundary", () => {
     expect(FROZEN.filter((pair) => !found.has(pair))).toEqual([]);
   });
 
+  it("keeps the Rust TUI free of the legacy JS frontend", () => {
+    // officina.mjs + runtime/patched/* are DEPRECATED (AGENTS.md 2026-11-10) but
+    // still on disk because scripts/selfcheck.sh drives a one-shot round trip
+    // through them. Deleting them is a separate task (rewrite that check against
+    // `pi -p`); until then this gate makes sure the Rust TUI never grows a
+    // dependency on them, so the deletion stays a pure subtraction.
+    const tuiSrc = resolve(extensionsDir, "..", "..", "tui", "src");
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith(".rs")) continue;
+        // Comments may reference the legacy entry point (parity notes); a
+        // DEPENDENCY is code, so only non-comment lines count.
+        const code = readFileSync(full, "utf8")
+          .split("\n")
+          .filter((line) => !/^\s*(\/\/|\/\/!)|^\s*#/.test(line))
+          .join("\n");
+        if (/runtime\/patched|officina\.mjs|register-hooks/.test(code)) {
+          offenders.push(entry.name);
+        }
+      }
+    };
+    walk(tuiSrc);
+    expect(offenders).toEqual([]);
+  });
+
   it("keeps support code from importing features (inversion)", () => {
     expect(discover().filter((p) => p.startsWith("_shared -> "))).toEqual([
       "_shared -> vitriol-decode",

@@ -1,0 +1,179 @@
+{
+  "deep_sections": 40,
+  "engine": "http://127.0.0.1:8279",
+  "fingerprint": "props model=/home/randozart/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf n_ctx=262144",
+  "max_tokens": 256,
+  "model": "unknown",
+  "repeats": 3,
+  "samples": [
+    {
+      "arm": "baseline",
+      "content_chars": 112,
+      "shape": "structured",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 31,
+        "predicted_s": 1.114379,
+        "prompt_n": 4,
+        "prompt_s": 0.206073
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "baseline",
+      "content_chars": 112,
+      "shape": "structured",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 31,
+        "predicted_s": 1.093437,
+        "prompt_n": 4,
+        "prompt_s": 0.148649
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "baseline",
+      "content_chars": 112,
+      "shape": "structured",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 31,
+        "predicted_s": 1.103058,
+        "prompt_n": 4,
+        "prompt_s": 0.14821700000000002
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "grammar",
+      "content_chars": 127,
+      "shape": "structured",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 34,
+        "predicted_s": 1.393282,
+        "prompt_n": 4,
+        "prompt_s": 0.147601
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "grammar",
+      "content_chars": 127,
+      "shape": "structured",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 34,
+        "predicted_s": 1.401909,
+        "prompt_n": 4,
+        "prompt_s": 0.15179499999999999
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "grammar",
+      "content_chars": 127,
+      "shape": "structured",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 34,
+        "predicted_s": 1.397017,
+        "prompt_n": 4,
+        "prompt_s": 0.148146
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "baseline",
+      "content_chars": 533,
+      "shape": "structured-nested",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 154,
+        "predicted_s": 4.646202000000001,
+        "prompt_n": 4,
+        "prompt_s": 0.16463
+      },
+      "ttft_s": null,
+      "valid": false
+    },
+    {
+      "arm": "baseline",
+      "content_chars": 533,
+      "shape": "structured-nested",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 154,
+        "predicted_s": 4.630393,
+        "prompt_n": 4,
+        "prompt_s": 0.149504
+      },
+      "ttft_s": null,
+      "valid": false
+    },
+    {
+      "arm": "baseline",
+      "content_chars": 533,
+      "shape": "structured-nested",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 154,
+        "predicted_s": 4.6569009999999995,
+        "prompt_n": 4,
+        "prompt_s": 0.15660300000000002
+      },
+      "ttft_s": null,
+      "valid": false
+    },
+    {
+      "arm": "grammar",
+      "content_chars": 310,
+      "shape": "structured-nested",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 113,
+        "predicted_s": 3.637134,
+        "prompt_n": 4,
+        "prompt_s": 0.16301300000000002
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "grammar",
+      "content_chars": 310,
+      "shape": "structured-nested",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 113,
+        "predicted_s": 3.644076,
+        "prompt_n": 4,
+        "prompt_s": 0.15588999999999997
+      },
+      "ttft_s": null,
+      "valid": true
+    },
+    {
+      "arm": "grammar",
+      "content_chars": 310,
+      "shape": "structured-nested",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 113,
+        "predicted_s": 3.660645,
+        "prompt_n": 4,
+        "prompt_s": 0.148268
+      },
+      "ttft_s": null,
+      "valid": true
+    }
+  ],
+  "ts": 1795038864.262801
+}

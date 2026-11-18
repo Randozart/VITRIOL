@@ -52,6 +52,9 @@ fn main() -> io::Result<()> {
 
     let mut terminal = init();
     crossterm::execute!(io::stdout(), event::EnableMouseCapture)?;
+    // Palette: VITRIOL_TUI_THEME → ~/.vitriol/tui-theme → default (2026-11-18).
+    let _ = theme::init_from_environment();
+
     let mut app = App::new(cfg, 120);
 
     loop {
@@ -115,6 +118,13 @@ fn main() -> io::Result<()> {
                     KeyCode::Left if app.tab == app::Tab::Rebis => app.rebis_cfg_adjust(-1),
                     KeyCode::Right if app.tab == app::Tab::Rebis => app.rebis_cfg_adjust(1),
                     KeyCode::BackTab => app.prev_tab(),
+                    // Shift+T cycles the palette for the whole dashboard and
+                    // remembers it (2026-11-18). Plain `t` stays profile-select.
+                    // The screen repaints in the new palette, which is its own
+                    // feedback; the Guide tab names the active theme.
+                    KeyCode::Char('T') => {
+                        let _ = theme::cycle();
+                    }
                     // Shift+arrows cycle tabs so plain arrows stay free for
                     // in-screen navigation.
                     KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => app.next_tab(),

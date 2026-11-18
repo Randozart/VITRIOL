@@ -77,7 +77,7 @@ pub static VITRIOL: Theme = Theme {
     red: c_rgb(0xF8, 0x51, 0x49),
     text: c_rgb(0xE0, 0xE0, 0xE0),
     muted: c_rgb(0x8B, 0x94, 0x9E),
-    faint: c_rgb(0x6E, 0x76, 0x81),
+    faint: c_rgb(0x5F, 0x66, 0x72),
     violet: c_rgb(0xB2, 0x94, 0xBB),
     cold_blue: c_rgb(0x2E, 0x5F, 0xA3),
     light_yellow: c_rgb(0xFF, 0xE0, 0x66),
@@ -150,7 +150,7 @@ pub static ALKAHEST: Theme = Theme {
     red: c_rgb(0xFF, 0x44, 0x44),
     text: c_rgb(0xE0, 0xE0, 0xE0),
     muted: c_rgb(0x8B, 0x94, 0x9E),
-    faint: c_rgb(0x6E, 0x76, 0x81),
+    faint: c_rgb(0x5F, 0x66, 0x72),
     violet: c_rgb(0xFF, 0x00, 0xFF), // magenta
     cold_blue: c_rgb(0x2E, 0x5F, 0xA3),
     light_yellow: c_rgb(0xFF, 0xF5, 0x66),
@@ -723,6 +723,7 @@ mod theme_suite {
         assert_eq!(VITRIOL.red, Rgb(0xF8, 0x51, 0x49));
         assert_eq!(VITRIOL.text, Rgb(0xE0, 0xE0, 0xE0));
         assert_eq!(VITRIOL.muted, Rgb(0x8B, 0x94, 0x9E));
+        assert_eq!(VITRIOL.faint, Rgb(0x5F, 0x66, 0x72));
         assert_eq!(VITRIOL.violet, Rgb(0xB2, 0x94, 0xBB));
         assert_eq!(VITRIOL.cold_blue, Rgb(0x2E, 0x5F, 0xA3));
         assert_eq!(VITRIOL.light_yellow, Rgb(0xFF, 0xE0, 0x66));
@@ -786,6 +787,97 @@ mod theme_suite {
             offenders.is_empty(),
             "colour literals outside theme.rs (take them from the palette): {offenders:#?}"
         );
+    }
+
+    /// The palettes must equal `officina/theme/palette.json`, the single source
+    /// of truth shared with the dashboard, the JS palette and the desktop theme
+    /// generator. A colour edited in one place only is now a test failure.
+    #[test]
+    fn themes_match_the_palette_file() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("theme")
+            .join("palette.json");
+        let text = std::fs::read_to_string(&path).expect("palette.json");
+        let doc: serde_json::Value = serde_json::from_str(&text).expect("palette.json parses");
+        let palettes = doc["palettes"].as_object().expect("palettes");
+
+        for theme in ALL {
+            let want = palettes
+                .get(theme.name)
+                .unwrap_or_else(|| panic!("palette.json has no '{}'", theme.name));
+            let roles: [(&str, Color); 21] = [
+                ("bg", theme.bg),
+                ("panel", theme.panel),
+                ("user_bg", theme.user_bg),
+                ("border_dim", theme.border_dim),
+                ("green", theme.green),
+                ("gold", theme.gold),
+                ("cyan", theme.cyan),
+                ("orange", theme.orange),
+                ("red", theme.red),
+                ("text", theme.text),
+                ("muted", theme.muted),
+                ("faint", theme.faint),
+                ("violet", theme.violet),
+                ("cold_blue", theme.cold_blue),
+                ("light_yellow", theme.light_yellow),
+                ("deep_red", theme.deep_red),
+                ("dark_teal", theme.dark_teal),
+                ("mercury", theme.mercury),
+                ("silver", theme.silver),
+                ("watermark", theme.watermark),
+                ("white", theme.white),
+            ];
+            for (role, value) in roles {
+                let hex = want[role]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{}: role {role} missing", theme.name));
+                assert_eq!(
+                    format!("#{:02x}{:02x}{:02x}", red(value), green(value), blue(value)),
+                    hex.to_lowercase(),
+                    "{}: {role} differs from palette.json",
+                    theme.name
+                );
+            }
+            let fire: Vec<String> = theme
+                .fire
+                .iter()
+                .map(|c| format!("#{:02x}{:02x}{:02x}", red(*c), green(*c), blue(*c)))
+                .collect();
+            let want_fire: Vec<String> = want["fire"]
+                .as_array()
+                .expect("fire array")
+                .iter()
+                .map(|v| v.as_str().unwrap_or_default().to_lowercase())
+                .collect();
+            assert_eq!(fire, want_fire, "{}: fire ramp differs", theme.name);
+            assert_eq!(
+                theme.syntax,
+                want["syntax"].as_str().unwrap_or_default(),
+                "{}: syntect theme differs",
+                theme.name
+            );
+        }
+    }
+
+    fn red(c: Color) -> u8 {
+        match c {
+            Color::Rgb(r, _, _) => r,
+            _ => 0,
+        }
+    }
+    fn green(c: Color) -> u8 {
+        match c {
+            Color::Rgb(_, g, _) => g,
+            _ => 0,
+        }
+    }
+    fn blue(c: Color) -> u8 {
+        match c {
+            Color::Rgb(_, _, b) => b,
+            _ => 0,
+        }
     }
 
     /// The whole point: the three themes are actually different.

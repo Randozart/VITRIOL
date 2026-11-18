@@ -14,12 +14,12 @@ use crate::theme;
 
 /// The inline-code surface color (cyan on panel).
 fn code_style() -> Style {
-    Style::new().fg(theme::CYAN).bg(theme::PANEL)
+    Style::new().fg(theme::CYAN()).bg(theme::PANEL())
 }
 
 /// The code-block body color (foreground text on panel).
 fn code_block_style() -> Style {
-    Style::new().fg(theme::TEXT).bg(theme::PANEL)
+    Style::new().fg(theme::TEXT()).bg(theme::PANEL())
 }
 
 /// The heading style: H1 = gold banner, deeper levels = green title.

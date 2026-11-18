@@ -18,10 +18,14 @@ const palette = JSON.parse(
 );
 
 const dirs = [];
-function generate(name) {
+function generate(name, extra = []) {
   const out = mkdtempSync(join(tmpdir(), `theme-${name}-`));
   dirs.push(out);
-  execFileSync(process.execPath, [script, "--palette", name, "--out", out], { stdio: "pipe" });
+  execFileSync(
+    process.execPath,
+    [script, "--palette", name, "--out", out, ...extra],
+    { stdio: "pipe" },
+  );
   return out;
 }
 
@@ -30,6 +34,40 @@ afterAll(() => {
 });
 
 describe("gen-desktop-theme", () => {
+  it("ships an opaque ground by default", () => {
+    // 2026-11-18: the palette assumes a solid background. A terminal at 0.5
+    // alpha let the wallpaper through the muted greys (owner report), so the
+    // default output pins opacity, and --translucent restores the frosted look.
+    const opaque = generate("aether");
+    const kitty = readFileSync(
+      join(opaque, "terminal/kitty/aether.conf"),
+      "utf-8",
+    );
+    expect(kitty).toContain("background_opacity 1.0");
+    expect(kitty).toContain("background_blur 0");
+    const alacritty = readFileSync(
+      join(opaque, "terminal/alacritty/aether.toml"),
+      "utf-8",
+    );
+    expect(alacritty).toContain("opacity = 1.0");
+
+    const frosted = generate("aether", ["--translucent"]);
+    const kittyFrosted = readFileSync(
+      join(frosted, "terminal/kitty/aether.conf"),
+      "utf-8",
+    );
+    expect(kittyFrosted).not.toContain("background_opacity");
+    const alacrittyFrosted = readFileSync(
+      join(frosted, "terminal/alacritty/aether.toml"),
+      "utf-8",
+    );
+    expect(alacrittyFrosted).not.toContain("opacity");
+    // Negative control: colour fidelity is untouched by the flag.
+    expect(kittyFrosted).toContain(
+      `background ${String(palette.palettes.aether.bg).toUpperCase()}`,
+    );
+  });
+
   it("emits every surface for a palette", () => {
     const out = generate("vitriol");
     const files = [
@@ -55,7 +93,9 @@ describe("gen-desktop-theme", () => {
       "terminal",
       "vscode",
     ]);
-    expect(readFileSync(join(out, "apply.sh"), "utf-8")).toContain("plasma-apply-colorscheme");
+    expect(readFileSync(join(out, "apply.sh"), "utf-8")).toContain(
+      "plasma-apply-colorscheme",
+    );
   });
 
   it("carries the palette's own values into every surface", () => {
@@ -67,17 +107,29 @@ describe("gen-desktop-theme", () => {
       return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)).join(",");
     };
 
-    const kitty = readFileSync(join(out, "terminal/kitty/vitriol.conf"), "utf-8");
+    const kitty = readFileSync(
+      join(out, "terminal/kitty/vitriol.conf"),
+      "utf-8",
+    );
     expect(kitty).toContain(`background ${hex("bg")}`);
     expect(kitty).toContain(`foreground ${hex("text")}`);
     expect(kitty.match(/^color\d+ /gm)?.length).toBe(16);
 
-    const plasma = readFileSync(join(out, "plasma/VITRIOLDark.colors"), "utf-8");
+    const plasma = readFileSync(
+      join(out, "plasma/VITRIOLDark.colors"),
+      "utf-8",
+    );
     expect(plasma).toContain(`ForegroundActive=${triple("gold")}`);
     expect(plasma).toContain(`ForegroundNegative=${triple("red")}`);
 
     const vscode = JSON.parse(
-      readFileSync(join(out, "vscode/officina-vitriol/themes/officina-vitriol-color-theme.json"), "utf-8"),
+      readFileSync(
+        join(
+          out,
+          "vscode/officina-vitriol/themes/officina-vitriol-color-theme.json",
+        ),
+        "utf-8",
+      ),
     );
     expect(vscode.colors["editor.background"]).toBe(hex("bg"));
     expect(vscode.colors["editor.foreground"]).toBe(hex("text"));
@@ -88,7 +140,10 @@ describe("gen-desktop-theme", () => {
   it("uses the same generator for every palette", () => {
     for (const name of ["vitriol", "aether", "alkahest"]) {
       const out = generate(name);
-      const kitty = readFileSync(join(out, `terminal/kitty/${name}.conf`), "utf-8");
+      const kitty = readFileSync(
+        join(out, `terminal/kitty/${name}.conf`),
+        "utf-8",
+      );
       expect(kitty).toContain(String(palette.palettes[name].bg).toUpperCase());
     }
   });

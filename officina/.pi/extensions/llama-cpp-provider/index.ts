@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { streamLocalWithProgress } from "./progress.ts";
 import { registerCacheOwners } from "./owner.ts";
+import { markProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
 import {
   aliasRetryDelay,
   fillModelDefaults,
@@ -59,7 +60,8 @@ export default async function (pi: ExtensionAPI) {
   const probeDisabled = process.env.LITTLE_CODER_NO_CTX_PROBE === "1";
   const probeOpts = () => ({
     url: process.env.LITTLE_CODER_LLAMACPP_PROPS_URL || undefined,
-    timeoutMs: Number(process.env.LITTLE_CODER_CTX_PROBE_TIMEOUT_MS) || undefined,
+    timeoutMs:
+      Number(process.env.LITTLE_CODER_CTX_PROBE_TIMEOUT_MS) || undefined,
   });
 
   // Captured so the model_select hook below can re-register llamacpp with a new
@@ -67,7 +69,14 @@ export default async function (pi: ExtensionAPI) {
   // model the engine is actually serving (from /v1/models), used by the
   // session_start handler to auto-sync pi's header to the engine's truth.
   let llamacpp:
-    | { baseUrl: string; apiKey: string; api: string; models: ProviderModelEntry[]; registeredCtx?: number; engineAlias?: string }
+    | {
+        baseUrl: string;
+        apiKey: string;
+        api: string;
+        models: ProviderModelEntry[];
+        registeredCtx?: number;
+        engineAlias?: string;
+      }
     | undefined;
 
   for (const [name, entry] of Object.entries(result.providers)) {
@@ -103,11 +112,18 @@ export default async function (pi: ExtensionAPI) {
             // Carry the probed window onto the alias entry: the auto-synced
             // selection must not fall back to the 32k default when the engine
             // actually serves 262k (owner-visible context budget).
-            models = [...models, fillModelDefaults({
-              id: engineAlias,
-              name: engineAlias,
-              contextWindow: models[0]?.contextWindow,
-            }, name, models.length)];
+            models = [
+              ...models,
+              fillModelDefaults(
+                {
+                  id: engineAlias,
+                  name: engineAlias,
+                  contextWindow: models[0]?.contextWindow,
+                },
+                name,
+                models.length,
+              ),
+            ];
           }
         }
       } catch {
@@ -162,7 +178,9 @@ export default async function (pi: ExtensionAPI) {
       // is derived from it, so it has to move too (2026-11-17: a stale 4096 cap
       // truncated every local compaction summary).
       lc.models = lc.models.map((m) =>
-        m.id === lc.engineAlias ? { ...m, maxTokens: engineMaxTokens(change.to) } : m,
+        m.id === lc.engineAlias
+          ? { ...m, maxTokens: engineMaxTokens(change.to) }
+          : m,
       );
       pi.registerProvider("llamacpp", {
         streamSimple: streamLocalWithProgress,
@@ -172,8 +190,12 @@ export default async function (pi: ExtensionAPI) {
         models: lc.models,
       });
 
-      const from = change.from !== undefined ? formatContextWindow(change.from) : "?";
-      ctx?.ui?.notify?.(`context window updated ${from} → ${formatContextWindow(change.to)}`, "info");
+      const from =
+        change.from !== undefined ? formatContextWindow(change.from) : "?";
+      ctx?.ui?.notify?.(
+        `context window updated ${from} → ${formatContextWindow(change.to)}`,
+        "info",
+      );
     });
   }
 
@@ -208,19 +230,28 @@ export default async function (pi: ExtensionAPI) {
       if (!alias) {
         // Engine was down at provider registration — try to discover now.
         try {
-          const resp = await fetch(modelsUrlFor(lc.baseUrl), { signal: AbortSignal.timeout(3000) });
+          const resp = await fetch(modelsUrlFor(lc.baseUrl), {
+            signal: AbortSignal.timeout(3000),
+          });
           if (resp.ok) {
             const data = await resp.json();
             alias = data.models?.[0]?.model ?? data.data?.[0]?.id ?? "";
             if (alias && !lc.models.some((m) => m.id === alias)) {
-              lc.models = [...lc.models, fillModelDefaults({
-                id: alias,
-                name: alias,
-                contextWindow: lc.registeredCtx,
-                // Same budget as the other alias-registration path (2026-11-17):
-                // without it a compaction summary hits the 4096 default cap.
-                maxTokens: engineMaxTokens(lc.registeredCtx),
-              }, "llamacpp", lc.models.length)];
+              lc.models = [
+                ...lc.models,
+                fillModelDefaults(
+                  {
+                    id: alias,
+                    name: alias,
+                    contextWindow: lc.registeredCtx,
+                    // Same budget as the other alias-registration path (2026-11-17):
+                    // without it a compaction summary hits the 4096 default cap.
+                    maxTokens: engineMaxTokens(lc.registeredCtx),
+                  },
+                  "llamacpp",
+                  lc.models.length,
+                ),
+              ];
               pi.registerProvider("llamacpp", {
                 streamSimple: streamLocalWithProgress,
                 baseUrl: lc.baseUrl,
@@ -237,12 +268,16 @@ export default async function (pi: ExtensionAPI) {
         if (!alias) return false;
       }
       const ctx = lastCtx;
-      const currentProvider = ctx?.model?.provider ?? ctx?.getModel?.()?.provider;
+      const currentProvider =
+        ctx?.model?.provider ?? ctx?.getModel?.()?.provider;
       if (!shouldArmEngineSync(currentProvider)) return true;
       const current = ctx?.model?.id;
       if (current === alias) return true; // aligned
       const model = ctx?.modelRegistry?.find?.("llamacpp", alias);
       if (!model) return false; // registry not ready yet — keep retrying
+      // Announce the intent: adaptive-router must not read this glue as the
+      // operator pinning the session to local (2026-11-18).
+      markProgrammaticSwitch();
       const ok = await pi.setModel(model as never);
       if (ok) ctx?.ui?.notify?.(`model synced: ${alias}`, "info");
       return !!ok;
@@ -261,7 +296,10 @@ export default async function (pi: ExtensionAPI) {
       // Caduceus gateway, virtual defaults, native subscriptions) must survive
       // session_start.
       // Only an empty selection or llamacpp may be forced to the engine alias.
-      if (!shouldArmEngineSync(ctx.model?.provider ?? ctx.getModel?.()?.provider)) return;
+      if (
+        !shouldArmEngineSync(ctx.model?.provider ?? ctx.getModel?.()?.provider)
+      )
+        return;
       if (syncTimer) return; // already retrying
       // Officina divergence (2026-09-27): print/json mode has no modelRegistry
       // in ctx, so every retry failed and the bounded loop (12×5s) held the
@@ -355,7 +393,10 @@ export default async function (pi: ExtensionAPI) {
         if (Date.now() >= aliasDeadline) return; // ambient re-arm on next turn
         if (await discoverAliasOnce()) return;
         aliasAttempt += 1;
-        aliasTimer = setTimeout(() => void step(), aliasRetryDelay(aliasAttempt));
+        aliasTimer = setTimeout(
+          () => void step(),
+          aliasRetryDelay(aliasAttempt),
+        );
       };
       void step();
     };

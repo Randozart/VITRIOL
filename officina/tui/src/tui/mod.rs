@@ -743,6 +743,14 @@ async fn run_loop(
                             let _ = bridge
                                 .request(RpcCommand::GetSessionStats { id: None })
                                 .await;
+                            // Re-read the model: extensions switch it at turn
+                            // boundaries (adaptive-router demotion/promotion,
+                            // coupling swaps) and pi emits `model_select` only
+                            // on the extension bus — RPC clients never see it,
+                            // so the header goes stale until something else
+                            // refreshes state. get_state is the only RPC that
+                            // carries `model`, so ask once per turn.
+                            let _ = bridge.request(RpcCommand::GetState { id: None }).await;
                         }
                         // Deliver a prompt that was typed while a tool was
                         // still running. It was echoed already, so send it
@@ -4532,6 +4540,11 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
             }
         }
         "model_select" => {
+            // RPC-inert today: pi emits `model_select` on the extension bus
+            // (agent-session._emitModelSelect) and never on the AgentSession
+            // event stream this loop consumes. Kept as the correct handler if
+            // that ever changes; the live path is the per-turn get_state
+            // refresh after agent_end.
             if let Ok(m) = serde_json::from_value::<crate::rpc::protocol::Model>(
                 fields
                     .get("model")
@@ -4814,6 +4827,74 @@ mod tests {
             dialog_value("x", "Allow".into()),
             serde_json::json!({"type":"extension_ui_response","id":"x","value":"Allow"})
         );
+    }
+
+    /// A get_state response must republish the model, because that is the only
+    /// signal an extension-driven switch ever produces (pi emits `model_select`
+    /// on the extension bus, never to RPC clients). 2026-11-18: the header kept
+    /// showing a cloud model while the router had already moved the session to
+    /// the local engine.
+    #[test]
+    fn a_get_state_response_republishes_the_model_header() {
+        let cloud = serde_json::json!({
+            "provider": "caduceus",
+            "id": "opencode-go/glm-5.2",
+            "name": "GLM 5.2"
+        });
+        let local = serde_json::json!({
+            "provider": "llamacpp",
+            "id": "Lapis Occultus",
+            "name": "Lapis Occultus"
+        });
+
+        fn round(state: &mut AppState, model: &serde_json::Value) -> Option<String> {
+            let resp = crate::rpc::protocol::RpcResponse {
+                id: None,
+                msg_type: "response".to_string(),
+                command: Some("get_state".to_string()),
+                success: Some(true),
+                data: Some(serde_json::json!({
+                    "model": model,
+                    "isStreaming": false,
+                    "sessionId": "s1"
+                })),
+                error: None,
+            };
+            handle_response(state, &resp);
+            state.model.clone().map(|m| AppState::model_label(&m))
+        }
+
+        let mut state = AppState::default();
+        assert_eq!(
+            round(&mut state, &cloud).as_deref(),
+            Some("GLM 5.2 · caduceus")
+        );
+        // The router demotes the session; the next turn's refresh says so.
+        // The local alias has no display name (name == id), so the label keeps
+        // the provider-first fallback — the point here is that it CHANGED.
+        assert_eq!(
+            round(&mut state, &local).as_deref(),
+            Some("llamacpp · Lapis Occultus")
+        );
+    }
+
+    /// The refresh is wiring inside the wire loop (no seam worth inventing for
+    /// one request), so pin the wiring itself: the turn-end branch must ask for
+    /// state. Without it the header cannot learn about any extension switch.
+    #[test]
+    fn the_turn_end_branch_asks_for_state() {
+        let src = include_str!("mod.rs");
+        let at = src
+            .find("event.event_type == \"agent_end\"")
+            .expect("agent_end branch is missing from the wire loop");
+        let window = &src[at..(at + 1_400).min(src.len())];
+        assert!(
+            window.contains("RpcCommand::GetState"),
+            "agent_end must refresh state — the header otherwise goes stale:\n{window}"
+        );
+        // Negative control: the same window must be the one that also
+        // refreshes the ctx row, i.e. we are looking at the real block.
+        assert!(window.contains("GetSessionStats"));
     }
 
     /// Paste (2026-11-17): the terminal used to deliver a paste keystroke by

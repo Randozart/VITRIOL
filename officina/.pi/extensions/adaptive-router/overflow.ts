@@ -6,7 +6,12 @@
 // hysteresis: minimum dwell, max switches, and a bounded cloud-token budget
 // before returning to local.
 
-import { decidePeerYield, type PeerDecision, type PeerView, type SelfView } from "./peer-policy.ts";
+import {
+  decidePeerYield,
+  type PeerDecision,
+  type PeerView,
+  type SelfView,
+} from "./peer-policy.ts";
 
 export type Tier = "local" | "cloud";
 export type Privacy = "safe" | "sensitive" | "confidential";
@@ -37,7 +42,9 @@ export interface OverflowConfig {
   freeOnly?: boolean;
 }
 
-export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OverflowConfig {
+export function configFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): OverflowConfig {
   const num = (key: string, dflt: number): number => {
     const n = Number(env[key]);
     return Number.isFinite(n) && n >= 0 ? n : dflt;
@@ -46,7 +53,10 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): OverflowCon
     queueWaitMs: num("OFFICINA_OVERFLOW_QUEUE_MS", 1500),
     gpuLoadCutoff: num("OFFICINA_OVERFLOW_GPU_LOAD", 0.85),
     minDwell: Math.max(1, Math.floor(num("OFFICINA_OVERFLOW_MIN_DWELL", 3))),
-    maxSwitches: Math.max(0, Math.floor(num("OFFICINA_OVERFLOW_MAX_SWITCHES", 2))),
+    maxSwitches: Math.max(
+      0,
+      Math.floor(num("OFFICINA_OVERFLOW_MAX_SWITCHES", 2)),
+    ),
     returnIdleMs: num("OFFICINA_OVERFLOW_RETURN_IDLE_MS", 60_000),
     returnTokenBudget: num("OFFICINA_OVERFLOW_RETURN_TOKENS", 16_000),
     cloudTokenBudget: num("OFFICINA_OVERFLOW_CLOUD_BUDGET", 2_000_000),
@@ -124,7 +134,11 @@ export function localBusy(load: LoadSample, cfg: OverflowConfig): boolean {
  * not supply peer context (single-session / pre-P3 behaviour).
  */
 function peerDecision(input: DecideInput): PeerDecision | null {
-  if (input.self === undefined || input.peers === undefined || input.freeSlots === undefined) {
+  if (
+    input.self === undefined ||
+    input.peers === undefined ||
+    input.freeSlots === undefined
+  ) {
     return null;
   }
   const self: SelfView = input.self;
@@ -227,9 +241,12 @@ export function decideTier(
   }
 
   // Cloud tier.
-  if (!input.cloudFits) return { tier: "local", reason: "cloud context too small" };
-  if (!input.budgetLeft) return { tier: "local", reason: "cloud token budget exhausted" };
-  if (!canSwitch) return { tier: "cloud", reason: "switch cap reached — stay cloud" };
+  if (!input.cloudFits)
+    return { tier: "local", reason: "cloud context too small" };
+  if (!input.budgetLeft)
+    return { tier: "local", reason: "cloud token budget exhausted" };
+  if (!canSwitch)
+    return { tier: "cloud", reason: "switch cap reached — stay cloud" };
   if (state.turnsOnTier < cfg.minDwell) {
     return { tier: "cloud", reason: `min dwell ${cfg.minDwell} — stay cloud` };
   }
@@ -246,7 +263,9 @@ export function decideTier(
 
 /** Parse `provider/model/id` into its registry pair. Provider is the first
  *  segment; the remainder is the exact model id (ids may contain slashes). */
-export function parseModelSpec(spec: string): { provider: string; id: string } | null {
+export function parseModelSpec(
+  spec: string,
+): { provider: string; id: string } | null {
   const trimmed = spec.trim();
   const slash = trimmed.indexOf("/");
   if (slash <= 0 || slash >= trimmed.length - 1) return null;
@@ -297,9 +316,29 @@ export function shouldAdoptSelectedLane(input: {
   activeCloud?: { provider: string; id: string } | undefined;
   model?: { provider: string; id: string } | undefined;
   candidates: readonly { provider: string; id: string }[];
+  /**
+   * "This model is the local engine." Required (2026-11-18) so the caller owns
+   * the definition of local — the router has one (`isLocalModel`), and the
+   * helper must not guess with a hardcoded provider list.
+   */
+  localLike: (model: { provider: string; id: string }) => boolean;
 }): boolean {
   if (input.tier === "cloud" || input.activeCloud) return false;
   const model = input.model;
   if (!model) return false;
-  return input.candidates.some((c) => c.provider === model.provider && c.id === model.id);
+  if (
+    input.candidates.some(
+      (c) => c.provider === model.provider && c.id === model.id,
+    )
+  ) {
+    return true;
+  }
+  // 2026-11-18: a resumed lane we do not ship as a candidate is STILL the
+  // operator's choice. Candidate membership only ever described our own pool;
+  // gating adoption on it left every non-pool cloud model unpinned, so the
+  // first contention event demoted the session to local while the header still
+  // showed the cloud model. Only the local engine and the virtual lanes
+  // (officina/lapis, officina/nimbus — which route per request) are excluded.
+  if (model.provider === "officina") return false;
+  return !input.localLike(model);
 }

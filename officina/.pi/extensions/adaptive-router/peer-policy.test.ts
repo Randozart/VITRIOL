@@ -54,14 +54,20 @@ describe("seniorityRank", () => {
     const me = self({ ts: T0 + 500, tuiPid: 100 });
     const older = peer({ ts: T0, tuiPid: 200 });
     expect(seniorityRank(me, [older])).toBe(1);
-    expect(seniorityRank(asSelf(older), [peer({ ts: T0 + 500, tuiPid: 100 })])).toBe(0);
+    expect(
+      seniorityRank(asSelf(older), [peer({ ts: T0 + 500, tuiPid: 100 })]),
+    ).toBe(0);
   });
 
   it("breaks an age tie by larger context (more expensive to evict)", () => {
     const me = self({ ts: T0, ctxTokens: 5_000, tuiPid: 100 });
     const fat = peer({ ts: T0, ctxTokens: 120_000, tuiPid: 200 });
     expect(seniorityRank(me, [fat])).toBe(1);
-    expect(seniorityRank(asSelf(fat), [peer({ ts: T0, ctxTokens: 5_000, tuiPid: 100 })])).toBe(0);
+    expect(
+      seniorityRank(asSelf(fat), [
+        peer({ ts: T0, ctxTokens: 5_000, tuiPid: 100 }),
+      ]),
+    ).toBe(0);
   });
 
   it("breaks a full tie deterministically by tuiPid", () => {
@@ -100,7 +106,12 @@ describe("decidePeerYield", () => {
   });
 
   it("does not yield with no peers, even when no slot is free (I1 parity)", () => {
-    const d = decidePeerYield({ self: self(), peers: [], freeSlots: 0, privacy: "safe" });
+    const d = decidePeerYield({
+      self: self(),
+      peers: [],
+      freeSlots: 0,
+      privacy: "safe",
+    });
     expect(d.demote).toBe(false);
   });
 
@@ -202,6 +213,8 @@ describe("decidePeerYield", () => {
 describe("shouldAdoptSelectedLane", () => {
   const cloud = { provider: "caduceus", id: "agnes/agnes-3.0-flash" };
   const other = { provider: "caduceus", id: "opencode-go/deepseek-v4.1-flash" };
+  // The router owns the definition of "local"; the helper takes it as input.
+  const localLike = (m: { provider: string }) => m.provider === "llamacpp";
 
   it("adopts a resumed cloud selection after a reset", () => {
     expect(
@@ -210,6 +223,22 @@ describe("shouldAdoptSelectedLane", () => {
         activeCloud: undefined,
         model: cloud,
         candidates: [cloud, other],
+        localLike,
+      }),
+    ).toBe(true);
+  });
+
+  it("adopts a cloud lane that is not one of our candidates", () => {
+    // 2026-11-18: candidate membership described OUR pool, not the operator's
+    // preferences. A resumed native-subscription lane used to be dropped here,
+    // leaving the session unpinned so the next contention event demoted it.
+    expect(
+      shouldAdoptSelectedLane({
+        tier: "local",
+        activeCloud: undefined,
+        model: { provider: "anthropic", id: "claude-opus-5" },
+        candidates: [cloud, other],
+        localLike,
       }),
     ).toBe(true);
   });
@@ -221,6 +250,7 @@ describe("shouldAdoptSelectedLane", () => {
         activeCloud: undefined,
         model: { provider: "llamacpp", id: "Lapis Occultus" },
         candidates: [cloud],
+        localLike,
       }),
     ).toBe(false);
     expect(
@@ -229,19 +259,38 @@ describe("shouldAdoptSelectedLane", () => {
         activeCloud: undefined,
         model: { provider: "officina", id: "lapis" },
         candidates: [cloud],
+        localLike,
       }),
     ).toBe(false);
     expect(
-      shouldAdoptSelectedLane({ tier: "local", activeCloud: undefined, model: undefined, candidates: [cloud] }),
+      shouldAdoptSelectedLane({
+        tier: "local",
+        activeCloud: undefined,
+        model: undefined,
+        candidates: [cloud],
+        localLike,
+      }),
     ).toBe(false);
   });
 
   it("does not disturb an armed or already-latched router", () => {
     expect(
-      shouldAdoptSelectedLane({ tier: "cloud", activeCloud: cloud, model: other, candidates: [cloud, other] }),
+      shouldAdoptSelectedLane({
+        tier: "cloud",
+        activeCloud: cloud,
+        model: other,
+        candidates: [cloud, other],
+        localLike,
+      }),
     ).toBe(false);
     expect(
-      shouldAdoptSelectedLane({ tier: "local", activeCloud: cloud, model: cloud, candidates: [cloud] }),
+      shouldAdoptSelectedLane({
+        tier: "local",
+        activeCloud: cloud,
+        model: cloud,
+        candidates: [cloud],
+        localLike,
+      }),
     ).toBe(false);
   });
 });

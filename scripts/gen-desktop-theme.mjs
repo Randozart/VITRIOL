@@ -33,6 +33,10 @@ const argOf = (flag, fallback) => {
   return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
 };
 const DRY = argv.includes("--dry-run");
+// Generated themes ship an OPAQUE ground by default (2026-11-18): the palette
+// assumes a solid background, and a terminal at 0.5 alpha lets the wallpaper
+// through the muted greys. `--translucent` restores the frosted look.
+const OPAQUE = !argv.includes("--translucent");
 const PALETTE = argOf("--palette", "vitriol").toLowerCase();
 const THEME_NAMES = {
   vitriol: { title: "VITRIOL", id: "vitriol", dir: "vitriol" },
@@ -254,6 +258,14 @@ function kitty() {
   const order = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"];
   order.forEach((name, i) => lines.push(`color${i} ${up(a[name])}`));
   order.forEach((name, i) => lines.push(`color${i + 8} ${up(a["bright" + name[0].toUpperCase() + name.slice(1)])}`));
+  if (OPAQUE) {
+    lines.push(
+      "# Opaque ground: the palette assumes a solid background.",
+      "background_opacity 1.0",
+      "dynamic_background_opacity no",
+      "background_blur 0",
+    );
+  }
   return lines.join("\n") + "\n";
 }
 
@@ -291,6 +303,7 @@ blue = "${up(a.brightBlue)}"
 magenta = "${up(a.brightMagenta)}"
 cyan = "${up(a.brightCyan)}"
 white = "${up(a.brightWhite)}"
+${OPAQUE ? '\n[window]\nopacity = 1.0' : ""}
 `;
 }
 

@@ -66,6 +66,23 @@ Beyond the flat roles, each `Theme` carries:
 4. Fire ramps get warmer toward the hot end and never repeat a colour.
 5. The three themes are actually distinct (ground, accent and success differ).
 
+## Desktop surfaces: opaque by default
+
+The desktop generator (`scripts/gen-desktop-theme.mjs`) emits an **opaque**
+ground for terminals: `background_opacity 1.0`, `dynamic_background_opacity no`,
+`background_blur 0` for kitty and `opacity = 1.0` for alacritty. A palette is a
+set of measured contrasts against a solid ground; at 0.5 alpha the wallpaper
+shows through the muted greys and they stop reading as intended (owner report,
+2026-11-18).
+
+`--translucent` restores the frosted output for setups that want it. Colour
+values are identical either way — the flag only adds or omits the alpha keys —
+and a test pins that negative control.
+
+For the hand-built Kanagawa Aetherskiff theme the same choice lives in
+`terminal/kitty/kanagawa-opaque.conf` and `terminal/alacritty/alacritty-opaque.toml`
+(siblings of the frosted originals; include one or the other).
+
 ## Adding a theme
 
 1. Add a `pub static NAME: Theme = Theme { … };` with every field set.

@@ -47,18 +47,28 @@ vi.mock("../_shared/lane-health.ts", () => ({
 }));
 
 import register from "./index.ts";
+import { markProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
 
 function harness(contextWindows: Record<string, number> = {}) {
   const handlers = new Map<string, (e: any, c: any) => Promise<any> | any>();
-  const commands = new Map<string, (args: string, c: any) => Promise<void> | void>();
+  const commands = new Map<
+    string,
+    (args: string, c: any) => Promise<void> | void
+  >();
   const pi = {
     on: (ev: string, h: never) => handlers.set(ev, h),
     setModel,
-    registerCommand: (name: string, cmd: { handler: (args: string, c: any) => any }) =>
-      commands.set(name, cmd.handler),
+    registerCommand: (
+      name: string,
+      cmd: { handler: (args: string, c: any) => any },
+    ) => commands.set(name, cmd.handler),
   };
   register(pi as never);
-  const local = { provider: "llamacpp", id: "Lapis Occultus", contextWindow: 262144 };
+  const local = {
+    provider: "llamacpp",
+    id: "Lapis Occultus",
+    contextWindow: 262144,
+  };
   const cloud = (p: string, id: string) => ({
     provider: p,
     id,
@@ -70,15 +80,31 @@ function harness(contextWindows: Record<string, number> = {}) {
       find: (p: string, id: string) =>
         p === "llamacpp" ? local : id ? cloud(p, id) : undefined,
     },
-    getContextUsage: () => ({ tokens: 50_000, contextWindow: 262144, percent: 19 }),
-    ui: { notify: () => undefined, setStatus: () => undefined, setWidget: () => undefined },
+    getContextUsage: () => ({
+      tokens: 50_000,
+      contextWindow: 262144,
+      percent: 19,
+    }),
+    ui: {
+      notify: () => undefined,
+      setStatus: () => undefined,
+      setWidget: () => undefined,
+    },
     cwd: "/proj",
     mode: "rpc",
     hasUI: true,
     isIdle: () => true,
   };
   const start = (prompt = "do the work") =>
-    handlers.get("before_agent_start")!({ messageType: "user", prompt, systemPrompt: "", systemPromptOptions: {} }, ctx);
+    handlers.get("before_agent_start")!(
+      {
+        messageType: "user",
+        prompt,
+        systemPrompt: "",
+        systemPromptOptions: {},
+      },
+      ctx,
+    );
   const trigger = (ev: string, e: unknown) => handlers.get(ev)?.(e, ctx);
   const command = (name: string, args = "") => commands.get(name)?.(args, ctx);
   return { start, ctx, trigger, command };
@@ -90,10 +116,13 @@ describe("adaptive-router wiring", () => {
     busy.current = true;
     engineUp.current = true;
     process.env.OFFICINA_OVERFLOW = "1";
-    process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/opencode-go/deepseek-v4.1-flash";
+    process.env.OFFICINA_OVERFLOW_CLOUD =
+      "caduceus/opencode-go/deepseek-v4.1-flash";
     // Never honour the operator's routing prefs in tests (panel I1).
-    process.env.OFFICINA_CADUCEUS_PREFS_FILE = "/tmp/officina-caduceus-prefs-none.json";
-    process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-adaptive-health-test.json";
+    process.env.OFFICINA_CADUCEUS_PREFS_FILE =
+      "/tmp/officina-caduceus-prefs-none.json";
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE =
+      "/tmp/officina-adaptive-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -140,7 +169,10 @@ describe("adaptive-router wiring", () => {
     process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/small,caduceus/big";
     const h = harness({ "caduceus/small": 1000, "caduceus/big": 1_000_000 });
     await h.start();
-    expect(setModel.mock.calls[0][0]).toMatchObject({ provider: "caduceus", id: "big" });
+    expect(setModel.mock.calls[0][0]).toMatchObject({
+      provider: "caduceus",
+      id: "big",
+    });
   });
 
   it("rotates to the next candidate after a 429", async () => {
@@ -155,7 +187,11 @@ describe("adaptive-router wiring", () => {
 
   it("does not fight the resilient virtual default", async () => {
     const h = harness();
-    (h.ctx as any).model = { provider: "officina", id: "lapis", api: "pi-virtual" };
+    (h.ctx as any).model = {
+      provider: "officina",
+      id: "lapis",
+      api: "pi-virtual",
+    };
     await h.start();
     expect(setModel).not.toHaveBeenCalled();
   });
@@ -176,8 +212,10 @@ describe("manual latch", () => {
     busy.current = true;
     engineUp.current = true;
     process.env.OFFICINA_OVERFLOW = "1";
-    process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/opencode-go/deepseek-v4.1-flash";
-    process.env.OFFICINA_PROVIDER_HEALTH_FILE = "/tmp/officina-adaptive-health-test.json";
+    process.env.OFFICINA_OVERFLOW_CLOUD =
+      "caduceus/opencode-go/deepseek-v4.1-flash";
+    process.env.OFFICINA_PROVIDER_HEALTH_FILE =
+      "/tmp/officina-adaptive-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -197,7 +235,9 @@ describe("manual latch", () => {
     const h = harness();
     await h.start(); // normal spill: cloud applied once
     expect(setModel).toHaveBeenCalledTimes(1);
-    h.trigger("model_select", { model: { provider: "other", id: "hand-picked" } });
+    h.trigger("model_select", {
+      model: { provider: "other", id: "hand-picked" },
+    });
     await h.start(); // engine still busy — but routing must NOT override
     expect(setModel).toHaveBeenCalledTimes(1); // unchanged
   });
@@ -211,7 +251,10 @@ describe("manual latch", () => {
     // Two candidates, so a re-pick is observable: the router prefers whichever
     // fits first, and the operator selects the OTHER one.
     process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/small,caduceus/big";
-    const h = harness({ "caduceus/small": 1_000_000, "caduceus/big": 1_000_000 });
+    const h = harness({
+      "caduceus/small": 1_000_000,
+      "caduceus/big": 1_000_000,
+    });
     await h.start(); // spill: applies the router's own pick
     expect(setModel).toHaveBeenCalledTimes(1);
     const first = setModel.mock.calls[0][0] as { provider: string; id: string };
@@ -227,7 +270,9 @@ describe("manual latch", () => {
 
   it("/overflow on re-arms after an explicit pick", async () => {
     const h = harness();
-    h.trigger("model_select", { model: { provider: "caduceus", id: "opencode-go/deepseek-v4.1-flash" } });
+    h.trigger("model_select", {
+      model: { provider: "caduceus", id: "opencode-go/deepseek-v4.1-flash" },
+    });
     await h.start();
     expect(setModel).not.toHaveBeenCalled();
     await h.command("route-overflow", "on");
@@ -240,7 +285,9 @@ describe("manual latch", () => {
     busy.current = false; // pick a manual model while LOCAL and idle
     await h.start();
     expect(setModel).not.toHaveBeenCalled();
-    h.trigger("model_select", { model: { provider: "other", id: "hand-picked" } });
+    h.trigger("model_select", {
+      model: { provider: "other", id: "hand-picked" },
+    });
     busy.current = true;
     await h.start(); // contention — but manual pauses the spill
     expect(setModel).not.toHaveBeenCalled();
@@ -249,6 +296,47 @@ describe("manual latch", () => {
     expect(setModel).toHaveBeenCalledTimes(1);
     expect(setModel.mock.calls[0][0]).toMatchObject({ provider: "caduceus" });
   });
+  // 2026-11-18: "the header shows a cloud model, but it tries to route to
+  // local". Three holes in the latch let a session be demoted under the
+  // operator: restore early-returned, a local pick returned before latching,
+  // and adoption was candidate-gated. These pin the fixed contract: any model
+  // the router did not apply itself is the operator's choice.
+  it("an explicit LOCAL pick pins local (no silent promotion)", async () => {
+    const h = harness();
+    busy.current = false;
+    await h.start(); // idle local: nothing to do
+    expect(setModel).not.toHaveBeenCalled();
+    h.trigger("model_select", { model: h.ctx.model, source: "set" });
+    busy.current = true;
+    await h.start(); // contention — but the operator pinned local
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
+  it("the engine's startup sync does not count as an operator pin", async () => {
+    // llama-cpp-provider selects the local alias on session_start. That is glue,
+    // not a preference: auto-routing must stay armed (I3 parity).
+    const h = harness();
+    busy.current = false;
+    await h.start();
+    markProgrammaticSwitch();
+    h.trigger("model_select", { model: h.ctx.model, source: "set" });
+    busy.current = true;
+    await h.start();
+    expect(setModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("adopts a RESUMED cloud lane as the pin, even a non-candidate one", async () => {
+    process.env.OFFICINA_OVERFLOW_CLOUD = "caduceus/small";
+    const h = harness({ "caduceus/small": 1_000_000 });
+    busy.current = false;
+    await h.start();
+    const resumed = { provider: "anthropic", id: "claude-opus-5" };
+    h.trigger("model_select", { model: resumed, source: "restore" });
+    busy.current = true;
+    await h.start();
+    expect(setModel).not.toHaveBeenCalled();
+  });
+
   // L2 (2026-11-16): the quota hint lives in the error TEXT, because pi's
   // after_provider_response event carries {status, headers} only — Caduceus
   // sends `retry_after` / `reset_at` in the JSON body.
@@ -312,7 +400,8 @@ beforeEach(() => {
   process.env.OFFICINA_ROUTING_REGISTRY_DIR = testRegistry;
 });
 afterEach(() => {
-  if (originalRegistry === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  if (originalRegistry === undefined)
+    delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
   else process.env.OFFICINA_ROUTING_REGISTRY_DIR = originalRegistry;
   rmSync(testRegistry, { recursive: true, force: true });
 });

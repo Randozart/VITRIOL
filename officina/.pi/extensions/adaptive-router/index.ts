@@ -1,4 +1,7 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +20,10 @@ import {
   readPrefs,
 } from "../_shared/caduceus-prefs.ts";
 import { canSpendCloud } from "../_shared/budget.ts";
-import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import {
+  readLivePeers,
+  writeRegistryEntry,
+} from "../_shared/routing-registry.ts";
 import { routingPresence } from "../_shared/routing-presence.ts";
 import { getLaneHealth } from "../_shared/lane-health.ts";
 import type { PeerView, SelfView } from "./peer-policy.ts";
@@ -28,6 +34,7 @@ import {
   recordSuccess,
 } from "../_shared/provider-health.ts";
 import { parseCooldownFromError } from "../_shared/gateway-health.ts";
+import { wasProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
 import {
   configFromEnv,
   decideTier,
@@ -89,10 +96,10 @@ export default function (pi: ExtensionAPI) {
     // (2026-11-11): the opencode-go subscription lane plus the two big
     // AgentRouter lanes (both tool-capable, ~1M ctx, zero-priced).
     "caduceus/opencode-go/deepseek-v4.1-flash," +
-    "caduceus/opencode-go/qwen3.8-flash," +
-    "caduceus/opencode-go/glm-5.2," +
-    "caduceus/agentrouter/gpt-5.6-sol," +
-    "caduceus/agentrouter/claude-opus-5"
+      "caduceus/opencode-go/qwen3.8-flash," +
+      "caduceus/opencode-go/glm-5.2," +
+      "caduceus/agentrouter/gpt-5.6-sol," +
+      "caduceus/agentrouter/claude-opus-5"
   )
     .split(",")
     .map((s) => parseModelSpec(s))
@@ -112,7 +119,12 @@ export default function (pi: ExtensionAPI) {
         allowPaidOwners: allowPaidOwners(prefs),
       });
       return applyPrefs(
-        found.map((c) => ({ provider: "caduceus", id: c.id, owner: c.owner, free: c.free })),
+        found.map((c) => ({
+          provider: "caduceus",
+          id: c.id,
+          owner: c.owner,
+          free: c.free,
+        })),
         prefs,
       ).map((c) => ({ provider: c.provider, id: c.id }));
     } catch {
@@ -184,12 +196,15 @@ export default function (pi: ExtensionAPI) {
    * explicit /model pick sets). A local or virtual model changes nothing.
    */
   const adoptSelectedLane = (model: Model | undefined): boolean => {
+    if (model?.api === "pi-virtual" || model?.provider === "officina")
+      return false;
     if (
       !shouldAdoptSelectedLane({
         tier,
         activeCloud,
         model,
         candidates: cloudCandidates,
+        localLike: (m) => isLocalModel(m as Model),
       })
     ) {
       return false;
@@ -211,37 +226,59 @@ export default function (pi: ExtensionAPI) {
     // Gateway lane health (2026-11-11): hard-down owners excluded,
     // backoff owners demoted behind healthy ones (fail-open on unknowns).
     const laneHealth = await getLaneHealth();
-    const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
+    const ownerOf = (spec: { id: string }): string =>
+      (spec.id.split("/")[0] ?? "").toLowerCase();
     if (!localModel) {
       if (localSpec) {
-        localModel = ctx.modelRegistry.find(localSpec.provider, localSpec.id) ?? undefined;
+        localModel =
+          ctx.modelRegistry.find(localSpec.provider, localSpec.id) ?? undefined;
       } else if (ctx.model && LOCAL_LIKE.test(ctx.model.provider)) {
         localModel = ctx.model;
       }
       if (!localModel) {
-        localModel = ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
+        localModel =
+          ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
       }
     }
     if (cloudCandidates.length === 0) {
       const seen = new Set<string>();
       const prefs = readPrefs();
-      const allSpecs = [...discoverFreeModels(), ...(freeOnly ? [] : explicitSpecs), ...fallbackSpecs];
+      const allSpecs = [
+        ...discoverFreeModels(),
+        ...(freeOnly ? [] : explicitSpecs),
+        ...fallbackSpecs,
+      ];
       // Policy applies to fallbacks too (routing off / deny / rank / pin).
       const policySpecs = applyPrefs(
         allSpecs.map((s) => ({ ...s, owner: ownerOf(s), free: false })),
         prefs,
       );
       const specs = [
-        ...policySpecs.filter((s0) => !laneHealth.hardDown.has(s0.owner) && !laneHealth.backoff.has(s0.owner)),
+        ...policySpecs.filter(
+          (s0) =>
+            !laneHealth.hardDown.has(s0.owner) &&
+            !laneHealth.backoff.has(s0.owner),
+        ),
         ...policySpecs.filter((s0) => laneHealth.backoff.has(s0.owner)),
       ];
       const envCaps = {
-        perOwner: Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8)),
-        max: Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48)),
+        perOwner: Math.max(
+          1,
+          Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8),
+        ),
+        max: Math.max(
+          1,
+          Math.min(
+            256,
+            Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48,
+          ),
+        ),
       };
       const selected = capCandidates(specs, prefs, envCaps);
       cloudCandidates = selected
-        .map((spec) => ctx.modelRegistry.find(spec.provider, spec.id) ?? undefined)
+        .map(
+          (spec) => ctx.modelRegistry.find(spec.provider, spec.id) ?? undefined,
+        )
         .filter((m): m is Model => !!m)
         .filter((m) => {
           const key = `${m.provider}/${m.id}`;
@@ -284,10 +321,12 @@ export default function (pi: ExtensionAPI) {
     if (manual) return "route manual — overflow paused";
     const q = queueMs > 0 ? ` · q ${(queueMs / 1000).toFixed(1)}s` : "";
     const sw = switches > 0 ? ` · sw ${switches}` : "";
-    const lane = tier === "cloud" && activeCloud
-      ? ` · ${activeCloud.id.split("/").pop()}`
-      : "";
-    const tk = tier === "cloud" ? ` · ${Math.round(cloudTokens / 1000)}k tok` : "";
+    const lane =
+      tier === "cloud" && activeCloud
+        ? ` · ${activeCloud.id.split("/").pop()}`
+        : "";
+    const tk =
+      tier === "cloud" ? ` · ${Math.round(cloudTokens / 1000)}k tok` : "";
     const fo = failoverActive ? " · failover" : "";
     return `route ${tier}${lane}${q}${sw}${tk}${fo}`;
   };
@@ -319,8 +358,7 @@ export default function (pi: ExtensionAPI) {
       return undefined;
     }
 
-    const prompt =
-      event.messageType === "user" ? event.prompt : "";
+    const prompt = event.messageType === "user" ? event.prompt : "";
     const cls = prompt.trim()
       ? classifyTurn({
           promptText: prompt,
@@ -376,7 +414,12 @@ export default function (pi: ExtensionAPI) {
     adoptSelectedLane((ctx as { model?: Model }).model);
     let decision = decideTier(
       {
-        state: { tier, switches, turnsOnTier, cloudTokens: cloudTokensSinceLocal },
+        state: {
+          tier,
+          switches,
+          turnsOnTier,
+          cloudTokens: cloudTokensSinceLocal,
+        },
         load,
         privacy,
         cloudFits,
@@ -409,8 +452,11 @@ export default function (pi: ExtensionAPI) {
     // Publish this session's decision so peers can rank against it. Peer
     // visibility is best-effort: a failed write must never break a turn.
     try {
-      const sessionId = ((ctx as { sessionManager?: { getSessionFile?: () => string } })
-        .sessionManager?.getSessionFile?.() ?? `tui-${tuiPid}`)
+      const sessionId = (
+        (
+          ctx as { sessionManager?: { getSessionFile?: () => string } }
+        ).sessionManager?.getSessionFile?.() ?? `tui-${tuiPid}`
+      )
         .split("/")
         .pop() as string;
       writeRegistryEntry(
@@ -437,7 +483,10 @@ export default function (pi: ExtensionAPI) {
     }
     // Cloud tier may need to rotate to a different candidate after a 429 or
     // when the context outgrows a 65k free model.
-    const pinned = manual && decision.tier === "cloud" && activeCloud ? activeCloud : undefined;
+    const pinned =
+      manual && decision.tier === "cloud" && activeCloud
+        ? activeCloud
+        : undefined;
     let targetCloud = resolveTargetCloud({
       tier: decision.tier,
       manual,
@@ -447,7 +496,11 @@ export default function (pi: ExtensionAPI) {
     if (tier === "cloud" && decision.tier === "cloud" && !targetCloud) {
       targetCloud = undefined; // no viable candidate; fall through to local
     }
-    if (decision.tier === "cloud" && targetCloud && !sameModel(activeCloud, targetCloud)) {
+    if (
+      decision.tier === "cloud" &&
+      targetCloud &&
+      !sameModel(activeCloud, targetCloud)
+    ) {
       applying = true;
       const ok = await pi.setModel(targetCloud);
       applying = false;
@@ -456,7 +509,8 @@ export default function (pi: ExtensionAPI) {
         activeCloud = targetCloud;
         // Emergency failover AND peer-arbitration demotions must not consume
         // the cache-affinity switch cap (availability / slot sharing wins).
-        const emergency = failoverActive || localDown || decision.peerDemoted === true;
+        const emergency =
+          failoverActive || localDown || decision.peerDemoted === true;
         if (!emergency) switches += 1;
         if (localDown) failoverActive = true;
         turnsOnTier = 1;
@@ -525,26 +579,47 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("model_select", (event) => {
-    if (applying || event.source === "restore") return;
-    if (event.model?.api === "pi-virtual" || event.model?.provider === "officina") return;
+    // Our own switches (promotion/demotion/failover) are not the operator.
+    if (applying) return;
+    // Virtual lanes (officina/lapis, officina/nimbus) route per request and
+    // own their own model; a pick of one is not a pin of a physical lane.
+    if (
+      event.model?.api === "pi-virtual" ||
+      event.model?.provider === "officina"
+    )
+      return;
     // llama-cpp-provider's startup sync selects the local alias. That is not
-    // a user override.
+    // an operator override — it must not pin the session to local.
+    const startupSync = wasProgrammaticSwitch();
+    // pi restoring the session's model is not a pick either (see below).
+    const restored = event.source === "restore";
     if (isLocalModel(event.model)) {
       tier = "local";
       failoverActive = false;
+      // 2026-11-18: an EXPLICIT local pick is the operator's choice too.
+      // Returning here used to leave overflow armed, so the next turn promoted
+      // the session to cloud under them ("it randomly switches", local half).
+      // Startup sync and restore stay unmanaged so auto-routing still works for
+      // sessions that never expressed a preference.
+      if (!startupSync && !restored) manual = true;
       return;
     }
+    // Any non-local, non-virtual model the router did not apply is the
+    // operator's choice, therefore pinned — whether or not it is one of our
+    // known candidates. The old candidate gate and the `source === "restore"`
+    // early return both left a resumed session unpinned, so the first
+    // contention event demoted it to local while the header still showed the
+    // cloud model (owner, 2026-11-18).
+    manual = true;
+    // Claim the LANE only once the pool is loaded and the pick is in it. Before
+    // that we cannot tell a live lane from a speculative one, and claiming it
+    // makes the apply path think it is already there (`sameModel(activeCloud,
+    // targetCloud)`) so a switch that is actually needed gets skipped. The next
+    // turn adopts the truth from ctx.model via adoptSelectedLane().
     if (cloudCandidates.some((m) => sameModel(event.model, m))) {
-      // The operator picked a lane we also know as a candidate. Record it, but
-      // STILL latch: returning here used to leave overflow armed, so the next
-      // turn re-picked a different lane (owner: "/model accepted DeepSeek, then
-      // it routed to something like Qwen", 2026-11-16).
       tier = "cloud";
       activeCloud = event.model;
     }
-    // An explicit pick by the operator pins the session: overflow pauses until
-    // `/overflow on` (or a virtual model is chosen).
-    manual = true;
   });
 
   // Provider failures cool the cloud lane down instead of hammering it.
@@ -552,7 +627,11 @@ export default function (pi: ExtensionAPI) {
     if (tier !== "cloud" || !activeCloud) return;
     if (event.status && event.status >= 400) {
       recordFailure(activeCloud.provider, activeCloud.id, event.status, {
-        retryAfterMs: recordRetryAfter(activeCloud.provider, activeCloud.id, event.headers ?? {}),
+        retryAfterMs: recordRetryAfter(
+          activeCloud.provider,
+          activeCloud.id,
+          event.headers ?? {},
+        ),
       });
     }
     if (event.status === 404 || event.status === 410) {
@@ -569,7 +648,10 @@ export default function (pi: ExtensionAPI) {
         headers["x-ratelimit-reset"];
       let ms = 30 * 60_000;
       if (hint && /^\d+$/.test(hint.trim())) {
-        ms = Math.min(24 * 3600_000, Math.max(60_000, Number(hint.trim()) * 1000));
+        ms = Math.min(
+          24 * 3600_000,
+          Math.max(60_000, Number(hint.trim()) * 1000),
+        );
       } else if (hint) {
         const at = Date.parse(hint);
         if (Number.isFinite(at)) {
@@ -585,7 +667,12 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", (event, ctx) => {
-    const m = event.message as { role?: string; provider?: string; model?: string; stopReason?: string };
+    const m = event.message as {
+      role?: string;
+      provider?: string;
+      model?: string;
+      stopReason?: string;
+    };
     if (m.role === "assistant" && m.provider && m.model) {
       if (m.stopReason === "error") {
         // The quota hint lives in the error TEXT, not in a header: pi's
@@ -595,8 +682,15 @@ export default function (pi: ExtensionAPI) {
         // (2026-11-16).
         const text = (m as { errorMessage?: string }).errorMessage;
         const hint = parseCooldownFromError(text);
-        if (hint) recordFailure(m.provider, m.model, 429, { retryAfterMs: hint, errorClass: "quota" });
-        else recordFailure(m.provider, m.model, undefined, { errorClass: "completion_error" });
+        if (hint)
+          recordFailure(m.provider, m.model, 429, {
+            retryAfterMs: hint,
+            errorClass: "quota",
+          });
+        else
+          recordFailure(m.provider, m.model, undefined, {
+            errorClass: "completion_error",
+          });
         // Cool the pinned lane for the stated duration even when tier
         // bookkeeping says "local": the message names the lane that actually
         // failed, and re-picking it minutes later is what caused the repeated
@@ -625,12 +719,14 @@ export default function (pi: ExtensionAPI) {
     const u = msg.usage;
     const n =
       u.totalTokens ??
-      (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
+      (u.input ?? 0) +
+        (u.output ?? 0) +
+        (u.cacheRead ?? 0) +
+        (u.cacheWrite ?? 0);
     cloudTokens += n;
     cloudTokensSinceLocal += n;
     renderStatus(ctx, getEngineSnapshot().queueWaitMs);
   });
-
 
   pi.registerCommand("route-overflow", {
     description: "Overflow routing: show status, or /route-overflow on|off",
@@ -655,7 +751,10 @@ export default function (pi: ExtensionAPI) {
             }
           }
         }
-        await ctx.ui.notify?.(`overflow routing ${enabled ? "on" : "off"}`, "info");
+        await ctx.ui.notify?.(
+          `overflow routing ${enabled ? "on" : "off"}`,
+          "info",
+        );
         return;
       }
       const snap = getEngineSnapshot();

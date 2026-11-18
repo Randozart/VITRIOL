@@ -93,6 +93,55 @@ function transport(commentPings = false) {
   return { requests, fetch, close: () => client.destroy() };
 }
 
+
+  // 2026-11-18 (E1): the provider is where a marker becomes a real grammar. This
+  // is the whole point of the marker being in the PROMPT — the lane writes what it
+  // wants and the transport attaches it, so no lane needs plumbing.
+  it("attaches response_format when the prompt asks for a schema", async () => {
+    vi.stubEnv("OFFICINA_STRUCTURED_OUTPUT", "1");
+    const wire = transport();
+    const structured = normalizeContext({
+      messages: [
+        { role: "system", content: "Answer ONLY with JSON. [[officina-json findings]]", timestamp: 1 },
+        { role: "user", content: "audit", timestamp: 2 },
+      ],
+    });
+    try {
+      await streamLocalWithProgress(model, structured, { apiKey: "test", fetch: wire.fetch, maxRetries: 0 }).result();
+      const body = wire.requests[0] as { response_format?: { type?: string; json_schema?: { name?: string } } };
+      expect(body.response_format?.type).toBe("json_schema");
+      expect(body.response_format?.json_schema?.name).toBe("findings");
+    } finally { await wire.close(); }
+  }, 10_000);
+
+  it("sends no grammar without the marker or without the opt-in (negative controls)", async () => {
+    // A prose lane must stay byte-identical, and the feature is off by default.
+    const wire = transport();
+    try {
+      await streamLocalWithProgress(model, context, { apiKey: "test", fetch: wire.fetch, maxRetries: 0 }).result();
+      expect((wire.requests[0] as { response_format?: unknown }).response_format).toBeUndefined();
+    } finally { await wire.close(); }
+
+    vi.stubEnv("OFFICINA_STRUCTURED_OUTPUT", "1");
+    const wire2 = transport();
+    const structured = normalizeContext({
+      messages: [{ role: "system", content: "[[officina-json findings]]", timestamp: 1 }],
+    });
+    try {
+      await streamLocalWithProgress(model, structured, { apiKey: "test", fetch: wire2.fetch, maxRetries: 0 }).result();
+      // Enabled AND marked: this one DOES carry it, proving the first assertion
+      // was about the absent marker, not about the flag being ignored.
+      expect((wire2.requests[0] as { response_format?: unknown }).response_format).toBeTruthy();
+    } finally { await wire2.close(); }
+
+    vi.unstubAllEnvs();
+    const wire3 = transport();
+    try {
+      await streamLocalWithProgress(model, structured, { apiKey: "test", fetch: wire3.fetch, maxRetries: 0 }).result();
+      expect((wire3.requests[0] as { response_format?: unknown }).response_format).toBeUndefined();
+    } finally { await wire3.close(); }
+  }, 20_000);
+
 describe("local prefill progress", () => {
   it("keeps the original request alive past transport idleness without generated progress text", async () => {
     const wire = transport();

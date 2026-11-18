@@ -17,11 +17,19 @@ const themeRs = readFileSync(join(tuiRoot, "tui", "src", "theme.rs"), "utf-8");
 const watermarkRs = readFileSync(join(tuiRoot, "tui", "src", "watermark.rs"), "utf-8");
 const officinaJson = readFileSync(join(tuiRoot, "theme", "officina.json"), "utf-8");
 
-// theme.rs encodes colors as Color::Rgb(0xRR, 0xGG, 0xBB) triplets.
+// theme.rs encodes colours as `Color::Rgb(0xRR, 0xGG, 0xBB)` triplets — or, since
+// 2026-11-18, through the const-friendly `c_rgb(...)` helper the theme STATICS use.
+// The parity intent is unchanged: every palette colour must appear in theme.rs.
 function themeRsHexes(): Set<string> {
+  // Only the VITRIOL theme block: since 2026-11-18 theme.rs carries three
+  // palettes, and a colour that only exists in Aether must NOT satisfy the
+  // parity check for the original scheme.
+  const start = themeRs.indexOf("pub static VITRIOL: Theme");
+  const end = themeRs.indexOf("pub static AETHER: Theme");
+  const block = start >= 0 && end > start ? themeRs.slice(start, end) : themeRs;
   const set = new Set<string>();
-  const rx = /Color::Rgb\(0x([0-9A-Fa-f]{2}),\s*0x([0-9A-Fa-f]{2}),\s*0x([0-9A-Fa-f]{2})\)/g;
-  for (const m of themeRs.matchAll(rx)) {
+  const rx = /(?:Color::Rgb|c_rgb)\(0x([0-9A-Fa-f]{2}),\s*0x([0-9A-Fa-f]{2}),\s*0x([0-9A-Fa-f]{2})\)/g;
+  for (const m of block.matchAll(rx)) {
     set.add(`#${m[1]}${m[2]}${m[3]}`.toLowerCase());
   }
   return set;

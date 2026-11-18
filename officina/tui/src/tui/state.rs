@@ -944,6 +944,9 @@ pub struct AppState {
     pub cache_sel: usize,
     pub cache_dir: String,
     pub cache_total: u64,
+    /// Capacity readout: sessions × state size vs the RAM prompt cache
+    /// (2026-11-18). Makes the multi-session eviction cliff visible.
+    pub cache_capacity: String,
 
     // /caduceus page (2026-11-12): facts from the extension's state file,
     // policy from the TUI-owned prefs file. The TUI never does HTTP and
@@ -1274,6 +1277,7 @@ impl Default for AppState {
             cache_sel: 0,
             cache_dir: String::new(),
             cache_total: 0,
+            cache_capacity: String::new(),
             caduceus: None,
             caduceus_suspend: None,
             status_open: false,
@@ -1960,6 +1964,11 @@ impl AppState {
         self.cache_dir = dir.to_string_lossy().to_string();
         self.cache_entries = crate::tui::cache::scan(&dir);
         self.cache_total = crate::tui::cache::total_size(&self.cache_entries);
+        self.cache_capacity = crate::tui::cache::capacity_line(
+            crate::tui::cache::ram_mib(),
+            crate::tui::cache::state_bytes(&dir),
+            crate::tui::cache::live_sessions(),
+        );
         if self.cache_sel >= self.cache_entries.len() {
             self.cache_sel = self.cache_entries.len().saturating_sub(1);
         }

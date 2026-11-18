@@ -81,6 +81,26 @@ fn slot_save_path_from_config(text: &str) -> Option<String> {
 /// (GiB), else the engine's historical derived cap (12 x cache_ram MiB). 0 means
 /// no cap. The engine evicts the least-recently-addressed entry above this, so
 /// the UI must show the same number the engine acts on (2026-11-17).
+/// The engine's RAM prompt-cache budget (`[server] cache_ram`, MiB). Separate
+/// from the disk cap: one holds live session states, the other holds snapshots.
+pub fn ram_mib() -> u64 {
+    let Some(home) = std::env::var_os("HOME") else {
+        return 0;
+    };
+    let Ok(text) = fs::read_to_string(PathBuf::from(home).join(".vitriol").join("config")) else {
+        return 0;
+    };
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(v) = line.strip_prefix("cache_ram") {
+            if let Some(v) = v.split('=').nth(1) {
+                return v.trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    0
+}
+
 pub fn cap_bytes() -> u64 {
     if let Ok(gb) = std::env::var("VITRIOL_KV_CACHE_MAX_GB") {
         if let Ok(value) = gb.trim().parse::<f64>() {
@@ -125,6 +145,69 @@ pub fn budget_line(used: u64) -> String {
     }
     let status = if used > cap { " · OVER CAP" } else { "" };
     format!("{} / {}{}", fmt_bytes(used), fmt_bytes(cap), status)
+}
+
+/// Live sessions sharing this engine (2026-11-18).
+///
+/// Each `officina` process publishes one shard under
+/// `~/.vitriol/officina/routing-registry.d/<pid>.json` while it routes, so the
+/// shard count is the number of sessions competing for KV states. Used only for
+/// the capacity readout — never for a decision.
+pub fn live_sessions() -> usize {
+    let Some(home) = std::env::var_os("HOME") else {
+        return 0;
+    };
+    let dir = PathBuf::from(home)
+        .join(".vitriol")
+        .join("officina")
+        .join("routing-registry.d");
+    let Ok(rd) = fs::read_dir(dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .count()
+}
+
+/// Size of one KV state, estimated from the newest slot snapshot on disk.
+///
+/// The engine's RAM prompt cache holds one state per session; without a live
+/// per-state byte count, the newest snapshot is the honest proxy (each is a
+/// serialized slot state for this model).
+pub fn state_bytes(dir: &Path) -> Option<u64> {
+    scan(dir)
+        .into_iter()
+        .max_by_key(|e| e.modified)
+        .map(|e| e.size)
+        .filter(|n| *n > 0)
+}
+
+/// Capacity readout: how many session states the RAM prompt cache holds.
+///
+/// `fits = ram_bytes / state_bytes`; `sessions` is how many compete right now.
+/// When the two meet, the next session evicts the oldest state and pays a full
+/// re-prefill — the failure mode this line exists to make visible (2026-11-18:
+/// 4 sessions x 1.7 GB against an 8 GB cache).
+pub fn capacity_line(ram_mib: u64, state: Option<u64>, sessions: usize) -> String {
+    let sessions_txt = format!(
+        "{sessions} session{} live",
+        if sessions == 1 { "" } else { "s" }
+    );
+    let Some(state) = state.filter(|n| *n > 0) else {
+        return format!("{sessions_txt} · state size unknown");
+    };
+    if ram_mib == 0 {
+        return format!("{sessions_txt} · {} / state", fmt_bytes(state));
+    }
+    let ram = ram_mib.saturating_mul(1024 * 1024);
+    let fits = (ram / state).max(1);
+    let tight = sessions as u64 >= fits;
+    format!(
+        "{sessions_txt} · ~{fits} state{} fit · {} each{}",
+        if fits == 1 { "" } else { "s" },
+        fmt_bytes(state),
+        if tight { " · TIGHT" } else { "" }
+    )
 }
 
 pub fn scan(dir: &Path) -> Vec<CacheEntry> {
@@ -303,5 +386,27 @@ mod tests {
         assert!(!old.exists());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Multi-session capacity (2026-11-18): four sessions x 1.7 GB against an
+    /// 8 GB RAM cache is the cliff this readout exists to expose. The arithmetic
+    /// must be honest in both directions — a comfortable margin must NOT read
+    /// as tight, or the warning gets ignored.
+    #[test]
+    fn capacity_line_reports_the_eviction_cliff_honestly() {
+        const GB: u64 = 1024 * 1024; // MiB
+        let state = 1740 * GB; // ~1.7 GB per session state
+                               // 4 sessions against an 8 GB cache: no room for a 5th.
+        let tight = capacity_line(8 * 1024, Some(state), 4);
+        assert!(tight.contains("4 sessions live"), "{tight}");
+        assert!(tight.contains("TIGHT"), "{tight}");
+        // 2 sessions against 16 GB: comfortable, and it must say so.
+        let roomy = capacity_line(16 * 1024, Some(state), 2);
+        assert!(roomy.contains("2 sessions live"), "{roomy}");
+        assert!(!roomy.contains("TIGHT"), "{roomy}");
+        // Unknown state size never invents a number.
+        assert!(capacity_line(16 * 1024, None, 2).contains("state size unknown"));
+        // No configured budget: report the state size only.
+        assert!(capacity_line(0, Some(state), 1).contains("1 session live"));
     }
 }

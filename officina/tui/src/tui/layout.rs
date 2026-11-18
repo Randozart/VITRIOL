@@ -3626,10 +3626,24 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     );
 
     let list = Rect {
-        y: inner.y + 2,
-        height: inner.height.saturating_sub(3),
+        y: inner.y + 3,
+        height: inner.height.saturating_sub(4),
         ..inner
     };
+    // Capacity row (2026-11-18): how many session states the RAM prompt cache
+    // holds vs how many sessions compete for them. Multi-session operation
+    // evicts silently without this line, and a miss costs a full re-prefill.
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            trunc(&state.cache_capacity, inner.width as usize),
+            Style::new().fg(theme::WATERMARK()).bg(theme::PANEL()),
+        ))),
+        Rect {
+            y: inner.y + 1,
+            height: 1,
+            ..inner
+        },
+    );
     let width = list.width as usize;
     let visible = list.height as usize;
     let sel = state.cache_sel;

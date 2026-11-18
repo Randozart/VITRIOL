@@ -81,6 +81,13 @@ pub fn command(state: &mut AppState, message: &str) -> Option<Option<RpcCommand>
         state.open_permissions_modal();
         return Some(None);
     }
+    // `/theme` has a DYNAMIC option list (one entry per Theme static), so it
+    // builds its own menu instead of going through open_setting's static table.
+    if message.trim() == "/theme" {
+        let names: Vec<&'static str> = crate::theme::ALL.iter().map(|t| t.name).collect();
+        open(state, "/theme", &names, crate::theme::current().name);
+        return Some(None);
+    }
     if open_setting(state, message.trim()) {
         return Some(None);
     }
@@ -89,6 +96,17 @@ pub fn command(state: &mut AppState, message: &str) -> Option<Option<RpcCommand>
 
 fn apply(state: &mut AppState, name: &str, args: &str) -> Option<Option<RpcCommand>> {
     let label = match name {
+        "/theme" => match state.set_theme(args, true) {
+            Some(applied) => format!("theme: {applied}"),
+            None => {
+                let names: Vec<&str> = crate::theme::ALL.iter().map(|t| t.name).collect();
+                state.notice = Some((
+                    format!("theme: unknown '{args}' — try {}", names.join(", ")),
+                    "warning".into(),
+                ));
+                return Some(None);
+            }
+        },
         "/fire" => {
             let label = state.set_fire(args);
             super::persist_fire(state);

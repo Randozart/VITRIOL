@@ -1766,6 +1766,13 @@ impl AppState {
     /// preview a theme without touching the operator's choice (2026-11-18).
     pub fn set_theme(&mut self, name: &str, persist: bool) -> Option<&'static str> {
         let theme = crate::theme::set(name)?;
+        // Retroactive repaint (owner, 2026-11-18): rendered lines cache their
+        // STYLES, and the per-entry cache is keyed by entry revision + width —
+        // neither knows the palette. Without this the transcript kept the old
+        // colours until an entry changed, which reads as "the theme only applies
+        // to new output".
+        self.md_cache.clear();
+        self.entry_lines_cache.clear();
         if persist {
             if let Some(path) = Self::theme_path() {
                 if let Some(dir) = path.parent() {
@@ -9083,6 +9090,49 @@ fn read_all_rs(dir: &std::path::Path) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod theme_repaint_tests {
+    use super::*;
+
+    /// Switching a theme must repaint EXISTING output, not just new output
+    /// (owner, 2026-11-18: "it is being updated, just not retroactively").
+    ///
+    /// The rendered lines cache their styles, and the per-entry cache is keyed by
+    /// entry revision + width — neither knows the palette — so the switch has to
+    /// drop them.
+    #[test]
+    fn switching_the_theme_drops_the_render_caches() {
+        let mut state = AppState::default();
+        state
+            .entries
+            .push(ChatEntry::Assistant("some **markdown** text".into()));
+        let _ = state.chat_lines(80);
+        assert!(
+            !state.md_cache.is_empty() || !state.entry_lines_cache.is_empty(),
+            "test setup: rendering should have filled a cache"
+        );
+
+        let applied = state.set_theme("aether", false).expect("aether exists");
+        assert_eq!(applied, "aether");
+        assert!(
+            state.entry_lines_cache.is_empty(),
+            "per-entry cache survived a theme switch"
+        );
+        // Restore the default so concurrent render tests keep the palette they
+        // were written against.
+        let _ = state.set_theme("vitriol", false);
+    }
+
+    /// A theme that does not exist is refused, and the active theme is unchanged.
+    #[test]
+    fn unknown_theme_is_refused_without_side_effects() {
+        let before = crate::theme::current().name;
+        let mut state = AppState::default();
+        assert!(state.set_theme("no-such-theme", false).is_none());
+        assert_eq!(crate::theme::current().name, before);
+    }
 }
 
 #[cfg(test)]

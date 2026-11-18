@@ -28,3 +28,18 @@ Validate stdlib tests and cache-store existing15/native ownership checks. Test
 actual current20B privately; no global/default profile changes. Record findings in
 this plan/EXPERIMENT_LOG/anchored summary and Avatar Intel/WBSO report, commit each
 completed stage, push VITRIOL feature branch to origin. No employee hours inferred.
+
+## 2026-11-18 14:06 — Implemented, runtime window pending
+
+Commit294e29c adds the opt-in generic tool; original launcher/profile paths are
+untouched. `python3 -m unittest libvitriol.test_prompt_prime -q`:9tests,OK.
+Ruff and mypy pass. Rust cache-store15 and native ownership checks pass again;
+C++ fixed source is byte-identical to the already tested isolated build. Module
+and CLI pushed to origin/codex/avatar-startup-integration-20261118. Private Avatar
+adapter has6newmodel-free tests and264runtime tests, backend743+5skip/Rust94PASS.
+No actual new model or playback result yet. User's keep-live instruction requires
+explicit approval for a duplicated full pipeline: approximately18GiBavailable
+versus public10GiB plus private avatar/generator copies. A concrete guarded
+8m30restore/10minmaximum launcher and recovery tests are prepared; approval
+requested and pending. No public service was paused or reconfigured in this task.
+No remote Intel message, employeehours or performance improvement claimed.

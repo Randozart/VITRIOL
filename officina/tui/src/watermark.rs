@@ -117,7 +117,12 @@ fn band_i(d: f64, c: f64, band: f64) -> f64 {
 
 /// Mix WATERMARK toward a peak tint by fraction `t` in [0, 1].
 fn glint_color(peak: (u8, u8, u8), t: f64) -> ratatui::style::Color {
-    let (base_r, base_g, base_b) = (0x2A, 0x3A, 0x52); // theme::WATERMARK()
+    // The stone takes its tint from the ACTIVE theme, not a literal.
+    let base = crate::theme::WATERMARK();
+    let (base_r, base_g, base_b) = match base {
+        ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0x2A, 0x3A, 0x52),
+    };
     ratatui::style::Color::Rgb(
         lerp8(base_r, peak.0, t),
         lerp8(base_g, peak.1, t),

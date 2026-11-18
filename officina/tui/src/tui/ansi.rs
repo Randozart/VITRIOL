@@ -159,30 +159,69 @@ fn apply_sgr(params: &str, base: Style) -> Style {
     style
 }
 
+/// ANSI 0-7 in the ACTIVE theme.
+///
+/// Extension widgets and tool output arrive as ANSI text; resolving the codes to
+/// the terminal's own named colours left that text on the default palette while
+/// everything around it followed the theme (2026-11-18). The hue is preserved
+/// (red stays red), the exact colour belongs to the theme.
 fn basic_color(n: u8) -> Color {
     match n {
-        0 => Color::Black,
-        1 => Color::Red,
-        2 => Color::Green,
-        3 => Color::Yellow,
-        4 => Color::Blue,
-        5 => Color::Magenta,
-        6 => Color::Cyan,
-        7 => Color::Gray,
+        0 => crate::theme::BG(), // black → the ground
+        1 => crate::theme::RED(),
+        2 => crate::theme::GREEN(),
+        3 => crate::theme::GOLD(),
+        4 => crate::theme::COLD_BLUE(),
+        5 => crate::theme::VIOLET(),
+        6 => crate::theme::CYAN(),
+        7 => crate::theme::MUTED(), // "white"/gray → secondary text
         _ => Color::Reset,
     }
 }
 
+/// ANSI 8-15 in the ACTIVE theme: the same hues at the bright end of the palette.
 fn bright_color(n: u8) -> Color {
     match n {
-        0 => Color::DarkGray,
-        1 => Color::LightRed,
-        2 => Color::LightGreen,
-        3 => Color::LightYellow,
-        4 => Color::LightBlue,
-        5 => Color::LightMagenta,
-        6 => Color::LightCyan,
-        7 => Color::White,
+        0 => crate::theme::FAINT(),
+        1 => crate::theme::RED(),
+        2 => crate::theme::GREEN(),
+        3 => crate::theme::LIGHT_YELLOW(),
+        4 => crate::theme::SILVER(), // bright blue reads as pale metal here
+        5 => crate::theme::VIOLET(),
+        6 => crate::theme::CYAN(),
+        7 => crate::theme::TEXT(),
         _ => Color::Reset,
+    }
+}
+
+#[cfg(test)]
+mod palette_follows_theme {
+    use super::*;
+
+    /// ANSI text must resolve through the ACTIVE palette, not the terminal's
+    /// named colours — otherwise extension and tool output ignore the theme.
+    #[test]
+    fn ansi_codes_resolve_to_theme_roles() {
+        assert_eq!(basic_color(0), crate::theme::BG());
+        assert_eq!(basic_color(1), crate::theme::RED());
+        assert_eq!(basic_color(2), crate::theme::GREEN());
+        assert_eq!(basic_color(3), crate::theme::GOLD());
+        assert_eq!(basic_color(4), crate::theme::COLD_BLUE());
+        assert_eq!(basic_color(5), crate::theme::VIOLET());
+        assert_eq!(basic_color(6), crate::theme::CYAN());
+        assert_eq!(basic_color(7), crate::theme::MUTED());
+        assert_eq!(bright_color(7), crate::theme::TEXT());
+        assert_eq!(bright_color(3), crate::theme::LIGHT_YELLOW());
+    }
+
+    /// A themed 16-colour map means plain ANSI text is tinted by the palette:
+    /// the same escape sequence renders differently under another theme.
+    #[test]
+    fn ansi_text_is_palette_not_terminal_defaults() {
+        let red = basic_color(1);
+        assert_ne!(red, ratatui::style::Color::Red, "still the terminal colour");
+        let line = parse_line("\u{1b}[31mRED\u{1b}[0m");
+        let fg = line.spans.first().and_then(|s| s.style.fg);
+        assert_eq!(fg, Some(crate::theme::RED()));
     }
 }

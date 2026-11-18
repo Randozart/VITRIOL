@@ -735,6 +735,59 @@ mod theme_suite {
         assert_eq!(VITRIOL.syntax, "base16-ocean.dark");
     }
 
+    /// No colour literals outside this module's palette table.
+    ///
+    /// Every renderer must take its colours from the active theme; a literal
+    /// `Color::Rgb(..)` anywhere else is a spot that cannot follow a theme
+    /// switch (2026-11-18: ANSI text, the watermark tint and the Emerald fire arc
+    /// all bypassed the palette). Source scan, like the const-read gate, because
+    /// the failure mode is invisible in a screenshot of the default theme.
+    #[test]
+    fn no_colour_literals_outside_the_palette() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders: Vec<String> = Vec::new();
+        for entry in walk(&root) {
+            if entry.file_name().is_some_and(|n| n == "theme.rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&entry).unwrap_or_default();
+            // Test modules may use literals on purpose (they assert exact
+            // colours); the gate is about production renderers.
+            let production = match text.find("#[cfg(test)]") {
+                Some(cut) => &text[..cut],
+                None => text.as_str(),
+            };
+            for (i, line) in production.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or("");
+                // Only LITERAL colours are the problem. `Color::Rgb(r, g, b)`
+                // built from variables is legitimate: the ANSI 256-colour cube
+                // carries exact RGB from the extension, and the watermark/syntect
+                // build theirs by mixing palette entries.
+                let banned = [
+                    "Color::Rgb(0x",
+                    "Color::Rgb(0X",
+                    "Color::Rgb(0,",
+                    "Color::Rgb(1,",
+                    "Color::Rgb(2,",
+                    "Color::Rgb(3,",
+                    "Color::Rgb(4,",
+                    "Color::Rgb(5,",
+                    "Color::Rgb(6,",
+                    "Color::Rgb(7,",
+                    "Color::Rgb(8,",
+                    "Color::Rgb(9,",
+                ];
+                if banned.iter().any(|b| code.contains(b)) {
+                    offenders.push(format!("{}:{}", entry.display(), i + 1));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "colour literals outside theme.rs (take them from the palette): {offenders:#?}"
+        );
+    }
+
     /// The whole point: the three themes are actually different.
     #[test]
     fn themes_are_distinct() {

@@ -91,10 +91,12 @@ impl FireStyle {
     fn stops(self) -> Vec<ratatui::style::Color> {
         match self {
             // Deep emerald → Vitriolum green → solvent mint.
+            // Deep tint → the theme's green → a mint mixed toward its light
+            // role. Derived instead of literal so the arc follows the palette.
             FireStyle::Emerald => vec![
-                ratatui::style::Color::Rgb(0x0B, 0x3D, 0x2B),
+                theme::lerp_color(theme::BG(), theme::GREEN(), 0.45),
                 theme::GREEN(),
-                ratatui::style::Color::Rgb(0x7D, 0xFF, 0xB0),
+                theme::lerp_color(theme::GREEN(), theme::WHITE(), 0.45),
             ],
             // Silver → gold → antidote → substrate (nigredo→rubedo arc).
             FireStyle::Alchemy => {

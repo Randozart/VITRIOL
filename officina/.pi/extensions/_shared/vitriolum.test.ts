@@ -81,3 +81,53 @@ describe("Vitriolum palette parity", () => {
     expect(watermarkRs.toLowerCase()).toContain("theme::watermark");
   });
 });
+
+// 2026-11-18: the palettes have ONE source of truth — officina/theme/palette.json.
+// The JS palette (widgets/sidebar) must equal its `vitriol` section exactly, so a
+// colour cannot be edited in one place and left stale in the other.
+describe("palette.json is the single source of truth", () => {
+  const jsonPath = join(tuiRoot, "theme", "palette.json");
+  const palette = JSON.parse(readFileSync(jsonPath, "utf-8")) as {
+    palettes: Record<string, Record<string, unknown>>;
+  };
+
+  const roleFor: Record<string, string> = {
+    bg: "bg",
+    panel: "panel",
+    borderDim: "border_dim",
+    substrate: "red",
+    safety: "green",
+    solvent: "cyan",
+    sovereignty: "gold",
+    antidote: "orange",
+    coldBlue: "cold_blue",
+    violet: "violet",
+    text: "text",
+    gray: "muted",
+    dimGray: "faint",
+    darkGray: "border_dim",
+    mercury: "mercury",
+    lightYellow: "light_yellow",
+    deepRed: "deep_red",
+    darkTeal: "dark_teal",
+    watermark: "watermark",
+  };
+
+  it("every Vitriolum colour equals the vitriol palette", () => {
+    const vitriol = palette.palettes.vitriol!;
+    for (const [name, hex] of Object.entries(VITRIOLUM)) {
+      const role = roleFor[name];
+      expect(role, `${name} has no palette role`).toBeTruthy();
+      expect(String(vitriol[role]).toLowerCase(), `${name} → ${role}`).toBe(hex.toLowerCase());
+    }
+  });
+
+  it("every palette has the full role set", () => {
+    for (const [name, pal] of Object.entries(palette.palettes)) {
+      for (const role of ["bg", "panel", "green", "gold", "red", "text", "muted", "faint"]) {
+        expect(pal[role], `${name}.${role}`).toMatch(/^#[0-9a-f]{6}$/);
+      }
+      expect(Array.isArray(pal.fire), `${name}.fire`).toBe(true);
+    }
+  });
+});

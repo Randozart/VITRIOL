@@ -104,6 +104,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             theme::muted(),
         ));
     }
+    // The active palette, and the key that cycles it (2026-11-18).
+    let theme_name = theme::current().name;
+    spans.push(Span::styled(
+        format!("  [T] theme: {theme_name}"),
+        theme::gold_muted(),
+    ));
     spans.push(Span::styled("  ·  vitriol-tui v0.1.0", theme::muted()));
     // Slot occupancy from /slots, when the endpoint answers.
     let slots = &app.snapshot.gen.slots;
@@ -124,7 +130,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             // hermetis/embed ports in the old hint belonged to the retired
             // Tria-Prima stack.
             "  ·  stack unreachable — nothing on :8279",
-            Style::default().fg(theme::ORANGE),
+            Style::default().fg(theme::ORANGE()),
         ));
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -177,7 +183,7 @@ fn panel(title: &str, up: bool) -> Block<'_> {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(theme::panel_border(up))
-        .style(Style::new().bg(theme::PANEL))
+        .style(Style::new().bg(theme::PANEL()))
         .title(Span::styled(title, theme::title()))
         .title_bottom(Span::styled(" vitriol-tui ", theme::muted()))
 }
@@ -187,9 +193,9 @@ fn panel_neutral(title: &str) -> Block<'_> {
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(theme::BORDER_DIM))
-        .style(Style::new().bg(theme::PANEL))
-        .title(Span::styled(title, Style::default().fg(theme::GOLD)))
+        .border_style(Style::new().fg(theme::BORDER_DIM()))
+        .style(Style::new().bg(theme::PANEL()))
+        .title(Span::styled(title, Style::default().fg(theme::GOLD())))
 }
 
 /// GEN card: status, model, ctx/parallel, live decode t/s.
@@ -511,7 +517,7 @@ fn render_braille_bar(frame: &mut Frame, area: Rect, ratio: f64, ramp: theme::Br
         .iter()
         .map(|c| {
             let style = if c.lit {
-                Style::new().fg(ramp.color(c.t)).bg(theme::BG)
+                Style::new().fg(ramp.color(c.t)).bg(theme::BG())
             } else {
                 theme::muted()
             };
@@ -1275,9 +1281,9 @@ fn render_hermetis_search(frame: &mut Frame, area: Rect, app: &App) {
 /// A status line: colored dot + word + service description.
 fn status_line(up: bool, what: &str) -> Line<'static> {
     let (dot, word, color) = if up {
-        ("●", "running", theme::GREEN)
+        ("●", "running", theme::GREEN())
     } else {
-        ("○", "down", theme::RED)
+        ("○", "down", theme::RED())
     };
     Line::from(vec![
         Span::styled(
@@ -1341,7 +1347,7 @@ fn render_subsystem_rows(frame: &mut Frame, area: Rect, app: &mut App, rows: &[s
         let selected = i == app.subsystem_selection;
         let dot = match row.status {
             subsystems::Status::Up => Span::styled("●", theme::live()),
-            subsystems::Status::Down => Span::styled("●", Style::default().fg(theme::RED)),
+            subsystems::Status::Down => Span::styled("●", Style::default().fg(theme::RED())),
             subsystems::Status::Unknown => Span::styled("◌", theme::muted()),
         };
         let group = if row.group == subsystems::GROUP_SERVICES {
@@ -1776,21 +1782,21 @@ fn render_officina_repl(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let ctx = app.officina_ctx();
     let header = app.officina.prompt_header(&ctx);
-    let mut p1 = vec![Span::styled("┌──(", theme::CYAN)];
+    let mut p1 = vec![Span::styled("┌──(", theme::CYAN())];
     let logo = if app.officina.config.bold_logo {
         theme::title().add_modifier(Modifier::BOLD)
     } else {
         theme::title()
     };
     p1.push(Span::styled("☿ ALKA", logo));
-    p1.push(Span::styled(")-[", theme::CYAN));
+    p1.push(Span::styled(")-[", theme::CYAN()));
     p1.push(Span::styled(header, theme::muted()));
-    p1.push(Span::styled("]", theme::CYAN));
+    p1.push(Span::styled("]", theme::CYAN()));
     let prompt_line = Line::from(p1);
 
     let input = format!("{}█", app.officina.input);
     let p2 = Line::from(vec![
-        Span::styled("└───> ", theme::CYAN),
+        Span::styled("└───> ", theme::CYAN()),
         Span::styled(input, theme::text()),
     ]);
     let prompt = Paragraph::new(vec![prompt_line, p2]);

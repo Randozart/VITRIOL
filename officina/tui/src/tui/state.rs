@@ -4719,6 +4719,8 @@ impl AppState {
         ("compact", "compact the context", "/compact [hints] — summarize older history now; after it settles, auto-continue picks the work back up"),
         ("diag", "diagnostic settings", "/diag [on|off] — picker; F9 toggles stderr overlay"),
         ("help", "glossary + keys + commands", "/help or F1 — the reference modal"),
+        ("tree", "session entry tree", "/tree — the session's entry tree with indices; /fork <n> branches from entry n (re-run /tree to refresh)"),
+        ("fork", "branch from an entry", "/fork [<n>] — fork the session at entry n from /tree; bare lists the available fork points"),
         ("clone", "duplicate the session", "/clone — duplicate the active branch into a fresh session"),
         ("export", "export session to HTML", "/export [path] — write a self-contained HTML transcript"),
         ("rename", "rename the session", "/rename <name> — set the session display name"),
@@ -4733,6 +4735,7 @@ impl AppState {
         ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
         ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare opens choices"),
         ("stats", "refresh stats", "/stats — refresh session statistics"),
+        ("theme", "colour theme", "/theme [vitriol|aether|alkahest] — bare lists them; the choice is remembered in ~/.vitriol/officina/tui-theme (OFFICINA_TUI_THEME previews one)"),
         ("thinking", "thinking level", "/thinking [off..max] — bare opens choices"),
         ("tools", "tool verbosity", "/tools [<tool> <mode>[!+|-] | <tool> clear | default <mode>] — modes: line/block/full; bare opens the picker; ctrl+t too"),
     ];
@@ -9064,8 +9067,80 @@ mod watchdog_ownership_tests {
     }
 }
 
+/// Concatenated source of every `.rs` file under `dir` (test helper).
+#[cfg(test)]
+fn read_all_rs(dir: &std::path::Path) -> String {
+    let mut out = String::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.push_str(&read_all_rs(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod self_heal_tests {
+    /// Every advertised command must be handled by the dispatcher, and every
+    /// handled command should be advertised (2026-11-18: `/theme` shipped
+    /// handled but unlisted, so it was neither recommended nor in `/help`).
+    ///
+    /// Source scan on purpose: the dispatcher matches string literals, and the
+    /// failure mode is a silently undiscoverable command that no rendering test
+    /// would notice.
+    #[test]
+    fn local_commands_and_the_dispatcher_agree() {
+        // Scan the whole crate, not just mod.rs: several commands are dispatched by
+        // sibling modules (settings.rs owns /settings, /fire, /glimmer, …).
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let dispatcher = read_all_rs(&src);
+        let mut missing: Vec<&str> = Vec::new();
+        for (name, _, _) in AppState::LOCAL_COMMANDS {
+            if !dispatcher.contains(&format!("/{name}")) {
+                missing.push(name);
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "advertised but not dispatched: {missing:?}"
+        );
+        // And the reverse direction, restricted to real dispatch sites (an equality
+        // or prefix match on the message). A command name quoted anywhere else is
+        // test data, a path or an extension command, and must not be flagged.
+        let advertised: std::collections::HashSet<&str> = AppState::LOCAL_COMMANDS
+            .iter()
+            .map(|(n, _, _)| *n)
+            .collect();
+        let mut undiscoverable: Vec<String> = Vec::new();
+        for line in dispatcher.lines() {
+            for marker in ["msg == \"/", "msg.starts_with(\"/"] {
+                let Some(pos) = line.find(marker) else {
+                    continue;
+                };
+                let rest = &line[pos + marker.len()..];
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if !name.is_empty() && !advertised.contains(name.as_str()) {
+                    undiscoverable.push(name);
+                }
+            }
+        }
+        undiscoverable.sort();
+        undiscoverable.dedup();
+        assert!(
+            undiscoverable.is_empty(),
+            "dispatched but never advertised (add to LOCAL_COMMANDS): {undiscoverable:?}"
+        );
+    }
+
     use super::*;
 
     fn prompt(s: &mut AppState, text: &str) {

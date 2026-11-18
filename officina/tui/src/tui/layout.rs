@@ -797,7 +797,13 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         // claims shows the flame's own base glyph, everything else keeps the
         // underscore. `flame_rows` is the field height above this row, so the
         // two agree on where the bottom row sits.
-        let lit = crate::fire::line_cells(w, flame_rows.max(1), phase_ms, state.fire_level);
+        let lit = crate::fire::line_cells(
+            w,
+            flame_rows.max(1),
+            phase_ms,
+            state.fire_level,
+            state.fire_taper,
+        );
         let flame = crate::fire::ignition_color(phase_ms, state.fire_level, state.fire_style);
         let line = Line::from(ignition_spans(w, &lit, flame));
         frame.render_widget(

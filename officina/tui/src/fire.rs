@@ -365,7 +365,13 @@ fn rule_heat(level: f64) -> f64 {
 /// line and the body are one flame — except that the base density is scaled by
 /// `level_scale` so first embers read as dots on the line rather than a bar.
 /// `rows` must be the height of the flame field above the line.
-pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<Option<char>> {
+pub fn line_cells(
+    width: usize,
+    rows: usize,
+    phase_ms: u128,
+    level: f64,
+    taper: f64,
+) -> Vec<Option<char>> {
     let mut out = vec![None; width];
     if width == 0 || level < MIN_LEVEL {
         return out;
@@ -400,7 +406,14 @@ pub fn line_cells(width: usize, rows: usize, phase_ms: u128, level: f64) -> Vec<
                 continue;
             }
         }
-        let dens = base_dens * rule_heat(level);
+        // The rule thins toward its own ends (2026-11-18). It is claimed across
+        // the whole width and had no edge term, so it ended in a hard shelf while
+        // the rows above it faded inward. The falloff changes WHICH glyph a
+        // column draws, never WHETHER it draws: the base stays unbroken.
+        let half = 0.5 * taper_scale(0.0, taper);
+        let edge_t =
+            ((column_edge(x, width) - TONGUE_CENTER).abs() / half.max(1e-6)).clamp(0.0, 1.0);
+        let dens = base_dens * rule_heat(level) * edge_falloff(edge_t);
         let idx = (dens * (DENSITY.len() - 1) as f64).round() as usize;
         *slot = Some(DENSITY[idx.clamp(1, DENSITY.len() - 1)]);
     }
@@ -724,7 +737,7 @@ mod stability_tests {
     fn line_never_claims_the_middle_band() {
         let w = 120;
         for level in [0.1, 0.5, 1.0] {
-            let row = line_cells(w, 4, 500, level);
+            let row = line_cells(w, 4, 500, level, DEFAULT_TAPER);
             for (x, cell) in row.iter().enumerate() {
                 if cell.is_some() {
                     assert!(
@@ -739,7 +752,7 @@ mod stability_tests {
     #[test]
     fn line_claims_more_as_the_fire_grows() {
         let claimed = |level: f64| {
-            line_cells(200, 4, 500, level)
+            line_cells(200, 4, 500, level, DEFAULT_TAPER)
                 .iter()
                 .filter(|c| c.is_some())
                 .count()
@@ -756,14 +769,14 @@ mod stability_tests {
     #[test]
     fn line_is_untouched_without_fire() {
         for phase in [0u128, 700, 1234] {
-            let row = line_cells(80, 4, phase, 0.0);
+            let row = line_cells(80, 4, phase, 0.0, DEFAULT_TAPER);
             assert_eq!(row.len(), 80);
             assert!(row.iter().all(Option::is_none), "no fire => plain rule");
         }
-        assert!(line_cells(80, 4, 0, MIN_LEVEL * 0.5)
+        assert!(line_cells(80, 4, 0, MIN_LEVEL * 0.5, DEFAULT_TAPER)
             .iter()
             .all(Option::is_none));
-        assert!(line_cells(0, 4, 0, 1.0).is_empty());
+        assert!(line_cells(0, 4, 0, 1.0, DEFAULT_TAPER).is_empty());
     }
 
     /// Owner decision 2026-11-16: at first embers the rule is only
@@ -771,7 +784,7 @@ mod stability_tests {
     #[test]
     fn first_embers_only_dot_the_line() {
         let w = 160;
-        let row = line_cells(w, 4, 500, 0.06);
+        let row = line_cells(w, 4, 500, 0.06, DEFAULT_TAPER);
         let claimed: Vec<usize> = row
             .iter()
             .enumerate()
@@ -803,7 +816,7 @@ mod stability_tests {
     fn base_is_unbroken_at_working_load() {
         let w = 160;
         for level in [0.25, 0.3, 0.6, 1.0] {
-            let row = line_cells(w, 4, 500, level);
+            let row = line_cells(w, 4, 500, level, DEFAULT_TAPER);
             for x in 0..w {
                 let light = column_light(column_edge(x, w), level);
                 if light <= 0.0 {
@@ -827,7 +840,7 @@ mod stability_tests {
     #[test]
     fn base_still_smoulders_below_the_ember_level() {
         let w = 200;
-        let row = line_cells(w, 4, 500, 0.1);
+        let row = line_cells(w, 4, 500, 0.1, DEFAULT_TAPER);
         let lit_zone: Vec<usize> = (0..w)
             .filter(|x| column_light(column_edge(*x, w), 0.1) > 0.0)
             .collect();
@@ -848,7 +861,7 @@ mod stability_tests {
     #[test]
     fn a_burning_flame_consumes_its_line() {
         let w = 160;
-        let row = line_cells(w, 4, 500, 1.0);
+        let row = line_cells(w, 4, 500, 1.0, DEFAULT_TAPER);
         for x in 0..w {
             let light = column_light(column_edge(x, w), 1.0);
             if light > 0.67 {
@@ -863,14 +876,22 @@ mod stability_tests {
     /// The rule follows the fire's own clock (120 ms), not a calm 1 s slot.
     #[test]
     fn line_follows_the_flame_clock() {
-        let base = line_cells(120, 4, 0, 0.8);
-        assert_eq!(line_cells(120, 4, 60, 0.8), base, "same flicker slot");
-        assert_eq!(line_cells(120, 4, 119, 0.8), base, "same flicker slot");
+        let base = line_cells(120, 4, 0, 0.8, DEFAULT_TAPER);
+        assert_eq!(
+            line_cells(120, 4, 60, 0.8, DEFAULT_TAPER),
+            base,
+            "same flicker slot"
+        );
+        assert_eq!(
+            line_cells(120, 4, 119, 0.8, DEFAULT_TAPER),
+            base,
+            "same flicker slot"
+        );
     }
 
     #[test]
     fn line_glyphs_come_from_the_flame_ramp() {
-        let row = line_cells(120, 4, 0, 1.0);
+        let row = line_cells(120, 4, 0, 1.0, DEFAULT_TAPER);
         for g in row.iter().flatten() {
             assert!(DENSITY.contains(g), "{g:?} is not a ramp glyph");
             // The shipped ceiling is ⣷ (0xF7); the full block ⣿ stays banned
@@ -932,5 +953,96 @@ mod edge_softening_tests {
             .filter(|c| density_index(**c).is_some_and(|i| i >= 1))
             .count();
         assert!(lit > 20, "the ember row went dark: {lit}/80 columns lit");
+    }
+}
+
+#[cfg(test)]
+mod rule_fade_tests {
+    use super::*;
+
+    fn index(c: char) -> usize {
+        density_index(c).expect("density glyph")
+    }
+
+    /// The rule used to be a uniformly heavy band that stopped only because the
+    /// frame did (owner: "not quite yet on the rule row"). Its ends must thin.
+    ///
+    /// Compared as min-vs-max of the claimed columns: the densest column sits at
+    /// TONGUE_CENTER in *edge* space, which maps to ~26 %/~74 % of the width, so
+    /// locating it by a width fraction would be wrong.
+    #[test]
+    fn the_rule_fades_toward_its_ends() {
+        let w = 120usize;
+        let row = line_cells(w, 4, 0, 1.0, DEFAULT_TAPER);
+        let claimed: Vec<usize> = row.iter().filter_map(|c| c.map(index)).collect();
+        assert!(!claimed.is_empty(), "the rule draws nothing at full load");
+        let dense = *claimed.iter().max().unwrap();
+        let thin = *claimed.iter().min().unwrap();
+        // min<max alone is satisfied by the per-cell hash noise, so pin the SHAPE:
+        // the outermost claimed column must be a single-dot glyph, and the body
+        // must still be heavy. With the fade removed the outermost column draws
+        // whatever the hash gives (5-7) and this fails.
+        let outermost = {
+            let mut best = 0usize;
+            for (x, c) in row.iter().enumerate() {
+                if let Some(c) = c {
+                    best = x;
+                    let _ = c;
+                }
+            }
+            index(row[best].expect("outermost claimed column"))
+        };
+        assert!(
+            outermost <= 2,
+            "the outermost rule column is still heavy: index {outermost}"
+        );
+        assert!(
+            dense >= 5,
+            "the rule's body is too thin to be a base: {dense}"
+        );
+        assert!(
+            thin < dense,
+            "the rule still ends flat: thin={thin} dense={dense}"
+        );
+        assert!(thin >= 1, "the outermost rule column draws blank braille");
+    }
+
+    /// I1: the fade changes WHICH glyph, never WHETHER one is drawn — the base is
+    /// unbroken at working load (owner invariant, 2026-11-16).
+    #[test]
+    fn the_rule_stays_unbroken_at_working_load() {
+        let w = 100usize;
+        let row = line_cells(w, 4, 0, 0.6, DEFAULT_TAPER);
+        let drawn = row.iter().filter(|c| c.is_some()).count();
+        assert!(drawn > w * 3 / 4, "the rule has gaps: {drawn}/{w} columns");
+    }
+
+    /// I4: a line that blinks is a GAP. The glyphs on the rule flicker by design
+    /// (the same per-cell hash the body uses), but whether a column is claimed
+    /// must not change between frames.
+    #[test]
+    fn the_rule_does_not_blink() {
+        let presence = |phase: u128| -> Vec<bool> {
+            line_cells(80, 4, phase, 0.8, DEFAULT_TAPER)
+                .iter()
+                .map(|c| c.is_some())
+                .collect()
+        };
+        assert_eq!(presence(0), presence(137), "the rule blinked");
+        assert_eq!(presence(0), presence(5_000), "the rule blinked");
+    }
+
+    /// I2: in the body the rule is still the hottest row — the fade is 1.0 there,
+    /// so `rule_heat` must stay above the base-row factor.
+    #[test]
+    fn the_rule_is_still_hotter_than_the_row_above() {
+        for level in [0.3, 0.6, 1.0] {
+            let base_row = 0.3 + 0.5 * level;
+            assert!(
+                rule_heat(level) > base_row,
+                "level {level}: rule_heat {} <= base row {base_row}",
+                rule_heat(level)
+            );
+        }
     }
 }

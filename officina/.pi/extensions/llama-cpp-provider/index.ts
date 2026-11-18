@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { streamLocalWithProgress } from "./progress.ts";
 import { registerCacheOwners } from "./owner.ts";
-import { markProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
+import { applyModel } from "../_shared/routing/apply.ts";
 import {
   aliasRetryDelay,
   fillModelDefaults,
@@ -275,10 +275,12 @@ export default async function (pi: ExtensionAPI) {
       if (current === alias) return true; // aligned
       const model = ctx?.modelRegistry?.find?.("llamacpp", alias);
       if (!model) return false; // registry not ready yet — keep retrying
-      // Announce the intent: adaptive-router must not read this glue as the
-      // operator pinning the session to local (2026-11-18).
-      markProgrammaticSwitch();
-      const ok = await pi.setModel(model as never);
+      // applyModel announces the intent, so adaptive-router does not read this
+      // glue as the operator pinning the session to local (2026-11-18).
+      const ok = await applyModel(pi, model, {
+        owner: "llama-cpp-provider",
+        reason: "startup sync to the engine alias",
+      });
       if (ok) ctx?.ui?.notify?.(`model synced: ${alias}`, "info");
       return !!ok;
     };

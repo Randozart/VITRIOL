@@ -3,6 +3,7 @@
 // block below.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { LAPIS, loadCouplings, providerTagOf, type CouplingDef } from "../_shared/couplings.ts";
+import { applyModel } from "../_shared/routing/apply.ts";
 
 // coupling (2026-08-31, owner request): the default coupling is
 // Lapis Occultus – VITRIOL — "we use whatever settings VITRIOL is running
@@ -74,7 +75,10 @@ export default function (pi: ExtensionAPI) {
           await ctx.ui.notify?.("no llamacpp model registered — is the VITRIOL provider loaded?", "error");
           return;
         }
-        const ok = await pi.setModel(anyLlamacpp as never);
+        const ok = await applyModel(pi, anyLlamacpp, {
+          owner: "coupling",
+          reason: "couple to the local stone",
+        });
         await ctx.ui.notify?.(ok ? `coupled: ${LAPIS.name}` : "switch refused", ok ? "info" : "warning");
         return;
       }
@@ -89,7 +93,10 @@ export default function (pi: ExtensionAPI) {
         await ctx.ui.notify?.(`coupling '${wanted}' registered no usable model`, "error");
         return;
       }
-      const ok = await pi.setModel(model as never);
+      const ok = await applyModel(pi, model, {
+        owner: "coupling",
+        reason: `couple to ${def.name}`,
+      });
       await ctx.ui.notify?.(ok ? `coupled: ${def.name}` : "switch refused", ok ? "info" : "warning");
     },
   });

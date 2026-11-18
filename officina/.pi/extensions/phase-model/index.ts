@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { resolveOverridePath } from "../llama-cpp-provider/config.ts";
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
 import { setBandRow, setBandUi } from "../_shared/band.ts";
+import { applyModel } from "../_shared/routing/apply.ts";
 import {
   formatModelRef,
   matchesPrefix,
@@ -166,7 +167,10 @@ export async function enterPhase(pi: ExtensionAPI, ctx: any, phase: Phase): Prom
   try {
     const model = ctx?.modelRegistry?.find?.(ref.provider, ref.id);
     if (!model) return `${phase} model ${decision.to} is not available — staying on the current model`;
-    const ok = await pi.setModel(model);
+    const ok = await applyModel(pi, model, {
+      owner: "phase-model",
+      reason: "phase handover",
+    });
     if (!ok) return `no API key for ${decision.to} — staying on the current model`;
     setIndicator(ctx);
     return `${phase} model: ${decision.to}`;

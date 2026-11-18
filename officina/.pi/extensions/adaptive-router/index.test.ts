@@ -47,7 +47,10 @@ vi.mock("../_shared/lane-health.ts", () => ({
 }));
 
 import register from "./index.ts";
-import { markProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
+import {
+  clearProgrammaticSwitch,
+  markProgrammaticSwitch,
+} from "../_shared/model-switch-intent.ts";
 
 function harness(contextWindows: Record<string, number> = {}) {
   const handlers = new Map<string, (e: any, c: any) => Promise<any> | any>();
@@ -113,6 +116,10 @@ function harness(contextWindows: Record<string, number> = {}) {
 describe("adaptive-router wiring", () => {
   beforeEach(() => {
     setModel.mockClear();
+    // The intent marker is globalThis state shared by every extension instance;
+    // a test that switches models would otherwise leak into the next test's
+    // latch decision (tests run in milliseconds, inside the marker window).
+    clearProgrammaticSwitch();
     busy.current = true;
     engineUp.current = true;
     process.env.OFFICINA_OVERFLOW = "1";
@@ -209,6 +216,10 @@ describe("adaptive-router wiring", () => {
 describe("manual latch", () => {
   beforeEach(() => {
     setModel.mockClear();
+    // The intent marker is globalThis state shared by every extension instance;
+    // a test that switches models would otherwise leak into the next test's
+    // latch decision (tests run in milliseconds, inside the marker window).
+    clearProgrammaticSwitch();
     busy.current = true;
     engineUp.current = true;
     process.env.OFFICINA_OVERFLOW = "1";

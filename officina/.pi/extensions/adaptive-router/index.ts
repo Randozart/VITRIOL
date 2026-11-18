@@ -36,6 +36,7 @@ import {
 } from "../_shared/provider-health.ts";
 import { parseCooldownFromError } from "../_shared/gateway-health.ts";
 import { wasProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
+import { applyModel } from "../_shared/routing/apply.ts";
 import {
   configFromEnv,
   decideTier,
@@ -505,7 +506,10 @@ export default function (pi: ExtensionAPI) {
       !sameModel(activeCloud, targetCloud)
     ) {
       applying = true;
-      const ok = await pi.setModel(targetCloud);
+      const ok = await applyModel(pi, targetCloud, {
+        owner: "adaptive-router",
+        reason: decision.reason || "overflow spill",
+      });
       applying = false;
       if (ok) {
         tier = "cloud";
@@ -531,7 +535,10 @@ export default function (pi: ExtensionAPI) {
       decision.tier = "local";
     } else if (decision.tier !== tier && decision.tier === "local") {
       applying = true;
-      const ok = await pi.setModel(localModel);
+      const ok = await applyModel(pi, localModel, {
+        owner: "adaptive-router",
+        reason: "return to local (tier decision)",
+      });
       applying = false;
       if (ok) {
         tier = "local";
@@ -742,7 +749,10 @@ export default function (pi: ExtensionAPI) {
           await resolveModels(ctx as unknown as ExtensionContext);
           if (tier === "cloud" && localModel) {
             applying = true;
-            const ok = await pi.setModel(localModel);
+            const ok = await applyModel(pi, localModel, {
+        owner: "adaptive-router",
+        reason: "return to local (tier decision)",
+      });
             applying = false;
             if (ok) {
               const wasFailover = failoverActive;

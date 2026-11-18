@@ -9,6 +9,25 @@
 
 ---
 
+## STATUS 2026-11-18 21:25 — S1…S8 executed
+
+| stage | commit | result |
+|---|---|---|
+| S1 hygiene | `f26d352` | session-keyed compaction stamps; every shared path classified (gate); phantom registry aggregate deleted |
+| S2 band | `02c9173` | `_shared/band.ts` tier registry, ONE writer, 7 producers migrated, suggestion-yields-to-state — **the "next row under route" bug is gone** |
+| S3 capacity | `086f6cf` | `cache_ram` 16 GB; `/cache` capacity row (sessions, states that fit, TIGHT); live `probe-peer-demotion.mjs` |
+| S4 routing | `a72b4f8` | `_shared/routing/apply.ts` is the ONLY `pi.setModel` caller (intent + `lc-route/switch`); source gate |
+| S5 claims | `abc2487` | cross-session claim shards + advisory band row + `/claims`; fixed the `active-files` jiti bug |
+| S6 guards | `4ccad5b` | extension boundary frozen (32 pairs, may only shrink); all 162 knobs declared in `_shared/config.ts` |
+| S7 ratchet | `0ff7cf4` | source-file size budgets fail in both directions (over = monolith grew, under = stale budget) |
+| S8 legacy | `34b853e` | Rust TUI cannot reference the deprecated JS frontend; deletion deferred on a selfcheck rewrite |
+
+Gates: **1542 vitest**, **378 cargo**, tsc, fmt, Praetor, CI green. Installed TUI md5 `13f5c017`.
+
+**Operator step remaining:** restart the engine to pick up `cache_ram = 16384`
+(`systemctl restart vitriol-server`) — deferred because it drops the KV state of every
+running session.
+
 ## 0. Goal
 
 Turn Officina's **implicit coordination channels** into **contracted ones**, and make the system

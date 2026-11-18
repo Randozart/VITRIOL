@@ -149,3 +149,34 @@ files, `plasma-apply-colorscheme`, kitty reload).
 
 Nothing in B depends on A, but A is cheaper and its palette work (step 2) is B's foundation — so the
 order above is the shortest path to both.
+
+## 5. Shipped (2026-11-18, commit `5534f63`)
+
+| piece | where |
+|---|---|
+| **one palette source** — 23 roles × 3 palettes | `officina/theme/palette.json` |
+| parity gates | Rust (`themes_match_the_palette_file`), cross-crate dashboard test, vitest (`palette.json is the single source of truth`) |
+| dashboard `Theme` + 3 palettes + 280-site rename | `vitriol-tui/src/theme.rs` |
+| `ORANGE #FF5F1F → #FFA000` + warning-vs-critical distance test | `vitriol-tui/src/theme.rs` |
+| dashboard switching: `VITRIOL_TUI_THEME`, `Shift+T`, `~/.vitriol/tui-theme`, footer name | `vitriol-tui/src/{main,ui}.rs` |
+| desktop generator (VSCode, Plasma 6, kitty, alacritty, zellij, termux, README, apply.sh) | `scripts/gen-desktop-theme.mjs` (+ 4 tests) |
+| activity ladder: compacting → **reasoning** → **building** → working | `officina/tui/src/tui/{state,layout}.rs` |
+
+The owner's desktop and VSCode stay on **Kanagawa Aetherskiff**: the generator only writes under
+`--out`, `apply.sh` is an explicit act, and nothing in the change touches live desktop config.
+Generated package: `~/Desktop/Projects/themes/vitriol/` (9 files, JSON validated).
+
+Gates at the end: Officina **364 cargo + 1471 vitest**, dashboard **153 cargo**, `fmt` clean on both,
+zero new warnings, both binaries rebuilt (`~/.local/bin/officina` = `8573562f`, `vitriol-tui` release
+at 5.7 MB). CI green — note the remote also received a concurrent `codex/avatar-startup-integration`
+merge (`87f905c`) from another session; it applied cleanly and all suites above ran *after* it.
+
+### Follow-ups worth knowing
+
+1. `themes/` is not a git repo, so the generated package is unversioned by design — `palette.json` is
+   the source. Consider `git init` there if you want history of the wallpaper era.
+2. The generator can also rebuild `aether`/`alkahest` packages (`--palette`), but your existing
+   `themes/kanagawa-aetherskiff` and `themes/alka-officina` were hand-built and are richer (GTK,
+   Kvantum, wallpapers). Regenerating would overwrite them, so don't unless you mean to.
+3. The dashboard's `USER_BG`/`FAINT`/`VIOLET`/`COLD_BLUE`/`SILVER`/`WATERMARK` roles are defined and
+   pinned but not yet drawn anywhere — kept so the struct mirrors `palette.json` role for role.

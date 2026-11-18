@@ -2521,7 +2521,8 @@ std::vector<server_prompt_cache_disk_file> server_prompt_cache::disk_files() con
         const std::string path = owned->directory + "/" + id;
         struct stat metadata;
         if (stat(path.c_str(), &metadata) != 0) { continue; }
-        files.push_back({metadata.st_mtime, static_cast<size_t>(metadata.st_size), "owned-kv-v1/" + id, true, std::move(*lease)});
+        // 2026-11-18: preserve access time in the owned-cache LRU entry too.
+        files.push_back({metadata.st_mtime, metadata.st_atime, static_cast<size_t>(metadata.st_size), "owned-kv-v1/" + id, true, std::move(*lease)});
     }
 #endif
     return files;

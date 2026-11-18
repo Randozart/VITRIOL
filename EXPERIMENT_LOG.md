@@ -1,3 +1,16 @@
+<!-- 2026-11-18: private avatar cache build repair; no live deployment. -->
+
+## 2026-11-18: owned cache LRU aggregate build repair
+
+At base9b3354f the GCC16 CPU build with VITRIOL_CACHE_STORE=ON fails
+in server_prompt_cache::disk_files: new atime member was absent from the
+owned-state aggregate. Include st_atime, as in the legacy scan. Isolated
+/tmp/avatar-vitriol-prefill-20261118; original dirty vendor license preserved.
+Server and vitriol-owned-cache-test rebuild PASS; publication, restart, leases,
+bounded GC and legacy parity PASS. Rust cache-store tests PASS. No live LLM
+restart or cache policy promotion. Performance evidence belongs to Avatar
+assets/ditto-live/prefill-cache-20261118; no speedup claimed by this fix.
+
 # VITRIOL Experiment Log
 
 **Purpose:** Track every architecture approach, its performance, and the outcome. All timestamps are in CET/CEST.

@@ -77,6 +77,14 @@ re-prefill at ~209 tok/s (~18 min at 225k).
 the peer arm is disabled (negative control). I3 the arithmetic is pinned against a synthetic cap.
 
 ### S4 — One routing authority (highest leverage: kills a whole bug class)
+
+> **DELIVERED 2026-11-18 as S4a (commit `a72b4f8`):** the ACTUATION is single-owner
+> (`_shared/routing/apply.ts` is the only `pi.setModel` caller, announcing intent and
+> recording `lc-route/switch` with owner+reason, refusals included; a source gate fails the
+> build if a second caller appears). **Decision unification is deliberately deferred:** the two
+> decision engines have genuinely different inputs (a virtual-model route hook vs a tier engine
+> over engine load/peers/cost) and merging them is a large, risky change for no bug class that
+> the common actuator does not already kill. Revisit only if a third decision engine appears.
 Nine places can change the model, each with its own latch — every "it randomly switched" report was two
 of them disagreeing (three of them were fixed by hand on 2026-11-18).
 1. `_shared/routing/decision.ts` — **pure** `(facts) => {target, reason, owner}`; no I/O.

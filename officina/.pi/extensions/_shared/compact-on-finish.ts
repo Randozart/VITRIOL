@@ -15,8 +15,9 @@
 //   - once per finished run: the request is stamped, so a re-entered settled
 //     handler cannot fire again for the same run.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "./events.ts";
 
 export interface CompactOnFinishPolicy {
@@ -51,10 +52,40 @@ export function resolveCompactPolicy(
   };
 }
 
-/** Path of the request stamp (survives restarts, so a crash mid-compaction does
- *  not turn the next loop end into a second request). */
-export function stampPath(home = homedir()): string {
-  return join(home, ".vitriol", "officina", "compact-on-finish.json");
+/**
+ * Path of the request stamp (survives restarts, so a crash mid-compaction does
+ * not turn the next loop end into a second request).
+ *
+ * Session-keyed (2026-11-18): the stamp used to be ONE global file, so with
+ * several sessions in one project the first session's stamp silenced every
+ * other session's compaction for the whole cooldown. Each session now owns its
+ * stamp; the legacy single file is still read when no session id is known
+ * (older callers, tests) so an in-flight run keeps working.
+ */
+export function stampPath(home = homedir(), sessionId?: string): string {
+  const base = join(home, ".vitriol", "officina");
+  if (!sessionId) return join(base, "compact-on-finish.json");
+  return join(base, "compact-on-finish", `${safeStampKey(sessionId)}.json`);
+}
+
+/**
+ * Filename-safe key for a session id. Session file basenames can exceed the
+ * filesystem's 255-byte limit (they carry `.patched-<n>` chains), so hash them.
+ */
+export function safeStampKey(sessionId: string): string {
+  return createHash("sha1").update(sessionId).digest("hex").slice(0, 16);
+}
+
+/**
+ * This session's stamp identity: the session file basename when pi exposes one,
+ * else the process — the same fallback the routing registry uses.
+ */
+export function sessionStampId(ctx: {
+  sessionManager?: { getSessionFile?: () => string | undefined };
+}): string {
+  const file = ctx.sessionManager?.getSessionFile?.();
+  const base = file ? file.split("/").filter(Boolean).pop() : undefined;
+  return base && base.trim() ? base : `tui-${process.pid}`;
 }
 
 /** Pure decision: may we request a compaction right now? */
@@ -82,17 +113,26 @@ export function shouldCompactOnFinish(input: {
 }
 
 /** Read the last request stamp, or null. */
-export function lastCompactRequest(home = homedir()): number | null {
-  try {
-    const doc = JSON.parse(readFileSync(stampPath(home), "utf8")) as {
-      at?: unknown;
-    };
-    return typeof doc.at === "number" && Number.isFinite(doc.at)
-      ? doc.at
-      : null;
-  } catch {
-    return null;
-  }
+export function lastCompactRequest(
+  home = homedir(),
+  sessionId?: string,
+): number | null {
+  const read = (id?: string): number | null => {
+    try {
+      const doc = JSON.parse(readFileSync(stampPath(home, id), "utf8")) as {
+        at?: unknown;
+      };
+      return typeof doc.at === "number" && Number.isFinite(doc.at)
+        ? doc.at
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const own = read(sessionId);
+  // Sessions start fresh: only fall back to the legacy global stamp when this
+  // session has never stamped, so an upgrade mid-run does not double-request.
+  return own ?? (sessionId ? read(undefined) : null);
 }
 
 /** Record a request stamp. Best effort: a failed write must not break the turn. */
@@ -100,13 +140,11 @@ export function stampCompactRequest(
   now: number,
   reason: string,
   home = homedir(),
+  sessionId?: string,
 ): void {
   try {
-    const path = stampPath(home);
-    mkdirSync(join(home, ".vitriol", "officina"), {
-      recursive: true,
-      mode: 0o700,
-    });
+    const path = stampPath(home, sessionId);
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     writeFileSync(path, `${JSON.stringify({ at: now, reason }, null, 2)}\n`, {
       mode: 0o600,
     });
@@ -131,17 +169,24 @@ export function compactOnFinish(
     getContextUsage?: () =>
       { tokens: number | null; contextWindow: number } | undefined;
     ui?: { notify?: (message: string, level?: string) => void };
+    sessionManager?: { getSessionFile?: () => string | undefined };
   },
   reason: string,
-  options: { home?: string; now?: number; policy?: CompactOnFinishPolicy } = {},
+  options: {
+    home?: string;
+    now?: number;
+    policy?: CompactOnFinishPolicy;
+    sessionId?: string;
+  } = {},
 ): { requested: boolean; reason: string } {
   const now = options.now ?? Date.now();
   const policy = options.policy ?? resolveCompactPolicy();
+  const sessionId = options.sessionId ?? sessionStampId(ctx);
   const usage = ctx.getContextUsage?.();
   const decision = shouldCompactOnFinish({
     policy,
     fillTokens: usage?.tokens ?? null,
-    lastRequestAt: lastCompactRequest(options.home),
+    lastRequestAt: lastCompactRequest(options.home, sessionId),
     now,
   });
 
@@ -154,7 +199,7 @@ export function compactOnFinish(
   if (!decision.ok) return { requested: false, reason: decision.reason };
 
   try {
-    stampCompactRequest(now, reason, options.home);
+    stampCompactRequest(now, reason, options.home, sessionId);
     ctx.compact?.({
       onError: (error) => {
         emitHarnessEvent(

@@ -10,7 +10,7 @@
 // jiti-isolation contract test, not here.
 
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,10 +32,23 @@ import {
 describe("immutable peer identity", () => {
   it("round-trips start time separately from freshness and retains legacy entries", () => {
     const c = createCore(100_000);
-    upsertEntry(c, { ts: 99_000, sessionStartedAt: 1, tuiPid: 1, sessionId: "older",
-      tier: "local", model: "llamacpp/Lapis Occultus", ctxTokens: 100 });
-    upsertEntry(c, { ts: 98_000, tuiPid: 2, sessionId: "legacy",
-      tier: "local", model: "llamacpp/Lapis Occultus", ctxTokens: 100 });
+    upsertEntry(c, {
+      ts: 99_000,
+      sessionStartedAt: 1,
+      tuiPid: 1,
+      sessionId: "older",
+      tier: "local",
+      model: "llamacpp/Lapis Occultus",
+      ctxTokens: 100,
+    });
+    upsertEntry(c, {
+      ts: 98_000,
+      tuiPid: 2,
+      sessionId: "legacy",
+      tier: "local",
+      model: "llamacpp/Lapis Occultus",
+      ctxTokens: 100,
+    });
     const loaded = createCore(100_000);
     deserialize(loaded, serialize(c));
     const peers = readPeers(loaded, 100_000, 999);
@@ -102,7 +115,17 @@ describe("upsertEntry", () => {
     }
     for (const e of JSON.parse(blob).entries) {
       for (const k of Object.keys(e)) {
-        expect(["ts", "sessionStartedAt", "tuiPid", "sessionId", "tier", "model", "ctxTokens", "slotId", "role"]).toContain(k);
+        expect([
+          "ts",
+          "sessionStartedAt",
+          "tuiPid",
+          "sessionId",
+          "tier",
+          "model",
+          "ctxTokens",
+          "slotId",
+          "role",
+        ]).toContain(k);
       }
     }
   });
@@ -135,7 +158,7 @@ describe("readPeers", () => {
 describe("pruneExpired", () => {
   it("removes dead entries, keeps live ones", () => {
     const c = core();
-    upsertEntry(c, entry({ tuiPid: 1, ts: NOW - (DEFAULT_TTL_MS * 2) }));
+    upsertEntry(c, entry({ tuiPid: 1, ts: NOW - DEFAULT_TTL_MS * 2 }));
     upsertEntry(c, entry({ tuiPid: 2, sessionId: "b", ts: NOW - 1000 }));
     const removed = pruneExpired(c, NOW);
     expect(removed).toBe(1);
@@ -154,7 +177,10 @@ describe("serialize / deserialize round-trip", () => {
   it("preserves entries exactly", () => {
     const c = core();
     upsertEntry(c, entry({ tuiPid: 1, sessionId: "a", slotId: 0 }));
-    upsertEntry(c, entry({ tuiPid: 2, sessionId: "b", tier: "cloud", ctxTokens: 0 }));
+    upsertEntry(
+      c,
+      entry({ tuiPid: 2, sessionId: "b", tier: "cloud", ctxTokens: 0 }),
+    );
     const c2 = createCore(NOW);
     deserialize(c2, serialize(c));
     expect(readPeers(c2, NOW, 99).sort((a, b) => a.tuiPid - b.tuiPid)).toEqual(
@@ -172,7 +198,14 @@ describe("serialize / deserialize round-trip", () => {
     const c = createCore(NOW);
     const payload = {
       entries: [
-        { ts: NOW, tuiPid: 1, sessionId: "a", tier: "local", model: "m", ctxTokens: 1 },
+        {
+          ts: NOW,
+          tuiPid: 1,
+          sessionId: "a",
+          tier: "local",
+          model: "m",
+          ctxTokens: 1,
+        },
         { ts: NOW, tuiPid: 2 }, // missing sessionId/tier/model/ctxTokens
       ],
     };
@@ -218,9 +251,21 @@ describe("shard mode", () => {
     withShardDir(() => {
       // Simulate two TUI processes interleaving writes, as the old
       // read-modify-write raced them.
-      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "a", ts: NOW2 }), undefined, NOW2);
-      writeRegistryEntry(entry({ tuiPid: 202, sessionId: "b", ts: NOW2 + 1 }), undefined, NOW2 + 1);
-      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "a", ts: NOW2 + 2 }), undefined, NOW2 + 2);
+      writeRegistryEntry(
+        entry({ tuiPid: 101, sessionId: "a", ts: NOW2 }),
+        undefined,
+        NOW2,
+      );
+      writeRegistryEntry(
+        entry({ tuiPid: 202, sessionId: "b", ts: NOW2 + 1 }),
+        undefined,
+        NOW2 + 1,
+      );
+      writeRegistryEntry(
+        entry({ tuiPid: 101, sessionId: "a", ts: NOW2 + 2 }),
+        undefined,
+        NOW2 + 2,
+      );
       const peers = readLivePeers(999, { now: NOW2 + 3 });
       expect(peers.map((p) => p.tuiPid).sort()).toEqual([101, 202]);
     });
@@ -228,8 +273,16 @@ describe("shard mode", () => {
 
   it("a pid's rewrite replaces its own shard (session switch)", () => {
     withShardDir(() => {
-      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "old" }), undefined, NOW2);
-      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "new", ts: NOW2 + 5 }), undefined, NOW2 + 5);
+      writeRegistryEntry(
+        entry({ tuiPid: 101, sessionId: "old" }),
+        undefined,
+        NOW2,
+      );
+      writeRegistryEntry(
+        entry({ tuiPid: 101, sessionId: "new", ts: NOW2 + 5 }),
+        undefined,
+        NOW2 + 5,
+      );
       const peers = readLivePeers(999, { now: NOW2 + 6 });
       expect(peers).toHaveLength(1);
       expect(peers[0].sessionId).toBe("new");
@@ -238,8 +291,20 @@ describe("shard mode", () => {
 
   it("expired shards are ignored on read (TTL)", () => {
     withShardDir(() => {
-      writeRegistryEntry(entry({ tuiPid: 101, sessionId: "dead", ts: NOW2 - (DEFAULT_TTL_MS + 1) }), undefined, NOW2);
-      writeRegistryEntry(entry({ tuiPid: 202, sessionId: "live", ts: NOW2 }), undefined, NOW2);
+      writeRegistryEntry(
+        entry({
+          tuiPid: 101,
+          sessionId: "dead",
+          ts: NOW2 - (DEFAULT_TTL_MS + 1),
+        }),
+        undefined,
+        NOW2,
+      );
+      writeRegistryEntry(
+        entry({ tuiPid: 202, sessionId: "live", ts: NOW2 }),
+        undefined,
+        NOW2,
+      );
       const peers = readLivePeers(999, { now: NOW2 + 1 });
       expect(peers.map((p) => p.tuiPid)).toEqual([202]);
     });
@@ -248,7 +313,12 @@ describe("shard mode", () => {
   it("role round-trips through shards (I6 subagent visibility)", () => {
     withShardDir(() => {
       writeRegistryEntry(
-        entry({ tuiPid: 303, sessionId: "subagent-303", role: "subagent", ts: NOW2 }),
+        entry({
+          tuiPid: 303,
+          sessionId: "subagent-303",
+          role: "subagent",
+          ts: NOW2,
+        }),
         undefined,
         NOW2,
       );
@@ -260,7 +330,11 @@ describe("shard mode", () => {
 
   it("removeRegistryShard drops the publisher (subagent cleanup)", () => {
     withShardDir(() => {
-      writeRegistryEntry(entry({ tuiPid: 404, sessionId: "subagent-404", ts: NOW2 }), undefined, NOW2);
+      writeRegistryEntry(
+        entry({ tuiPid: 404, sessionId: "subagent-404", ts: NOW2 }),
+        undefined,
+        NOW2,
+      );
       expect(readLivePeers(999, { now: NOW2 + 1 })).toHaveLength(1);
       removeRegistryShard(404);
       expect(readLivePeers(999, { now: NOW2 + 1 })).toHaveLength(0);
@@ -271,10 +345,88 @@ describe("shard mode", () => {
 
   it("self is excluded by tuiPid in shard mode too", () => {
     withShardDir(() => {
-      writeRegistryEntry(entry({ tuiPid: 555, sessionId: "mine", ts: NOW2 }), undefined, NOW2);
-      writeRegistryEntry(entry({ tuiPid: 666, sessionId: "peer", ts: NOW2 }), undefined, NOW2);
-      expect(readLivePeers(555, { now: NOW2 + 1 }).map((p) => p.tuiPid)).toEqual([666]);
+      writeRegistryEntry(
+        entry({ tuiPid: 555, sessionId: "mine", ts: NOW2 }),
+        undefined,
+        NOW2,
+      );
+      writeRegistryEntry(
+        entry({ tuiPid: 666, sessionId: "peer", ts: NOW2 }),
+        undefined,
+        NOW2,
+      );
+      expect(
+        readLivePeers(555, { now: NOW2 + 1 }).map((p) => p.tuiPid),
+      ).toEqual([666]);
     });
+  });
+});
+
+describe("shards are the only source of peers", () => {
+  // 2026-11-18: `~/.vitriol/officina/routing-registry.json` is the pre-shard
+  // single-file registry. It was still on disk holding two phantom peers from
+  // 2026-11-11 (tuiPid 3469621, ctxTokens 50000) while the live sessions used
+  // shards. Nothing reads it today — this test is what keeps that true, so a
+  // future "let's also merge the legacy file" edit cannot resurrect dead peers
+  // into peer arbitration (they would skew rank and demote a real session).
+  it("ignores a stale legacy aggregate when shards exist", () => {
+    const dir = mkdtempSync(join(tmpdir(), "registry-shards-"));
+    const legacy = join(dir, "routing-registry.json");
+    const shards = join(dir, "d");
+    const prevDir = process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+    const prevFile = process.env.OFFICINA_ROUTING_REGISTRY;
+    process.env.OFFICINA_ROUTING_REGISTRY_DIR = shards;
+    process.env.OFFICINA_ROUTING_REGISTRY = legacy;
+    try {
+      mkdirSync(shards, { recursive: true });
+      const now = Date.now();
+      const phantom = {
+        entries: [
+          {
+            ts: now,
+            tuiPid: 3469621,
+            sessionId: "tui-3469621",
+            tier: "local",
+            model: "m",
+            ctxTokens: 50000,
+          },
+          {
+            ts: now,
+            tuiPid: 3471889,
+            sessionId: "tui-3471889",
+            tier: "local",
+            model: "m",
+            ctxTokens: 50000,
+          },
+        ],
+      };
+      writeFileSync(legacy, JSON.stringify(phantom));
+      writeRegistryEntry(
+        {
+          ts: now,
+          tuiPid: 4242,
+          sessionId: "live",
+          tier: "cloud",
+          model: "caduceus/x",
+          ctxTokens: 10,
+        },
+        undefined,
+        now,
+      );
+      const peers = readLivePeers(9999, { now: now + 1 });
+      expect(peers.map((p) => p.tuiPid)).toEqual([4242]);
+      // Negative control: the phantom file really does hold peers, so an empty
+      // result cannot be an artefact of a broken fixture.
+      expect(JSON.parse(readFileSync(legacy, "utf8")).entries).toHaveLength(2);
+      expect(peers.some((p) => p.tuiPid === 3469621)).toBe(false);
+    } finally {
+      if (prevDir === undefined)
+        delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+      else process.env.OFFICINA_ROUTING_REGISTRY_DIR = prevDir;
+      if (prevFile === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY;
+      else process.env.OFFICINA_ROUTING_REGISTRY = prevFile;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -284,8 +436,36 @@ describe("gcExpiredShards", () => {
     try {
       const now = Date.now();
       const ttl = DEFAULT_TTL_MS;
-      writeFileSync(join(dir, "999.json"), JSON.stringify({ entries: [{ ts: now, tuiPid: 999, sessionId: "live", tier: "local", model: "m", ctxTokens: 1 }] }));
-      writeFileSync(join(dir, "111.json"), JSON.stringify({ entries: [{ ts: now - (ttl + 1), tuiPid: 111, sessionId: "dead", tier: "local", model: "m", ctxTokens: 1 }] }));
+      writeFileSync(
+        join(dir, "999.json"),
+        JSON.stringify({
+          entries: [
+            {
+              ts: now,
+              tuiPid: 999,
+              sessionId: "live",
+              tier: "local",
+              model: "m",
+              ctxTokens: 1,
+            },
+          ],
+        }),
+      );
+      writeFileSync(
+        join(dir, "111.json"),
+        JSON.stringify({
+          entries: [
+            {
+              ts: now - (ttl + 1),
+              tuiPid: 111,
+              sessionId: "dead",
+              tier: "local",
+              model: "m",
+              ctxTokens: 1,
+            },
+          ],
+        }),
+      );
       writeFileSync(join(dir, "777.json"), "{not json");
       gcExpiredShards(dir, now, ttl);
       expect(() => readFileSync(join(dir, "999.json"))).not.toThrow(); // live kept
@@ -297,6 +477,8 @@ describe("gcExpiredShards", () => {
   });
 
   it("is silent on a missing directory", () => {
-    expect(() => gcExpiredShards("/nonexistent/registry-gc", Date.now())).not.toThrow();
+    expect(() =>
+      gcExpiredShards("/nonexistent/registry-gc", Date.now()),
+    ).not.toThrow();
   });
 });

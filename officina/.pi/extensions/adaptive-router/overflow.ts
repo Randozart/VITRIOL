@@ -280,3 +280,26 @@ export function resolveTargetCloud<T extends LaneRef>(input: {
   if (input.manual && input.activeCloud) return input.activeCloud;
   return input.candidate;
 }
+
+/**
+ * Should the router adopt the currently selected model as a pinned cloud lane?
+ *
+ * `session_start` resets the router to `tier: "local", manual: false`, but pi
+ * restores the operator's model. Without adoption the first contention,
+ * failover or peer-demotion event switches a resumed cloud session to local —
+ * the "it randomly switches to local" report (2026-11-18).
+ *
+ * Yes when: the selected model is one of the known cloud candidates, the router
+ * is not already latched on a cloud lane, and it is not already tracking one.
+ */
+export function shouldAdoptSelectedLane(input: {
+  tier: "local" | "cloud";
+  activeCloud?: { provider: string; id: string } | undefined;
+  model?: { provider: string; id: string } | undefined;
+  candidates: readonly { provider: string; id: string }[];
+}): boolean {
+  if (input.tier === "cloud" || input.activeCloud) return false;
+  const model = input.model;
+  if (!model) return false;
+  return input.candidates.some((c) => c.provider === model.provider && c.id === model.id);
+}

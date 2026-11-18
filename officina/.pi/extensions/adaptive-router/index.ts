@@ -34,6 +34,7 @@ import {
   localBusy,
   parseModelSpec,
   resolveTargetCloud,
+  shouldAdoptSelectedLane,
   type OverflowConfig,
   type Privacy,
   type Tier,
@@ -169,6 +170,36 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", () => {
     reset();
   });
+
+  /**
+   * After `session_start` the router forgets the tier (reset() sets local) and
+   * the pin (manual=false). If the session resumed with a CLOUD lane selected —
+   * which is the operator's explicit choice, restored by pi — the router used to
+   * treat the session as "local, unmanaged", so the first contention/failover
+   * event switched the model back to local. That is the "it randomly switches to
+   * local" report (2026-11-18).
+   *
+   * This re-latches the truth from the model in use: a known cloud candidate
+   * means tier=cloud, activeCloud=that model, manual=true (the same latch an
+   * explicit /model pick sets). A local or virtual model changes nothing.
+   */
+  const adoptSelectedLane = (model: Model | undefined): boolean => {
+    if (
+      !shouldAdoptSelectedLane({
+        tier,
+        activeCloud,
+        model,
+        candidates: cloudCandidates,
+      })
+    ) {
+      return false;
+    }
+    tier = "cloud";
+    activeCloud = model;
+    manual = true;
+    turnsOnTier = 1;
+    return true;
+  };
 
   const sameModel = (a: Model | undefined, b: Model | undefined): boolean =>
     !!a && !!b && a.provider === b.provider && a.id === b.id;
@@ -341,6 +372,8 @@ export default function (pi: ExtensionAPI) {
         }
       : {};
 
+    // The selected lane is the operator's truth across a session reset.
+    adoptSelectedLane((ctx as { model?: Model }).model);
     let decision = decideTier(
       {
         state: { tier, switches, turnsOnTier, cloudTokens: cloudTokensSinceLocal },

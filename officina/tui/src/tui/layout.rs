@@ -1294,9 +1294,17 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     } else {
         0
     };
+    // A select that carries a message (the permission modal shows the command)
+    // needs rows for it, or the message is clipped to its first line
+    // (2026-11-17: the command never appeared, the box sized itself to options).
+    let message_rows = dialog
+        .message
+        .as_ref()
+        .map(|m| m.lines().count().min(8) as u16)
+        .unwrap_or(0);
     let wanted = match kind {
         DialogKind::Confirm => 7,
-        DialogKind::Select => (option_rows + 5).max(7),
+        DialogKind::Select => (option_rows + message_rows + 5).max(7),
         DialogKind::Input => 7,
         DialogKind::Editor => 12,
     };
@@ -1363,13 +1371,31 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     match kind {
         DialogKind::Select => {
-            let visible = body.height as usize;
+            // A select may carry context too (2026-11-17: the permission modal
+            // shows the command it is asking about). The message lines go INTO
+            // `lines` so the single shared render at the end of this function
+            // paints message then options in order — drawing them separately
+            // would let the options overdraw the message.
+            let mut list_rows = body.height as usize;
+            if let Some(message) = dialog.message.as_ref().filter(|m| !m.trim().is_empty()) {
+                let room = body.height.saturating_sub(4) as usize; // keep >=4 rows for options
+                let msg: Vec<Line> = message
+                    .lines()
+                    .take(room)
+                    .map(|l| Line::from(Span::styled(trunc(l, width), base)))
+                    .collect();
+                list_rows = body.height.saturating_sub(msg.len() as u16).max(1) as usize;
+                lines.extend(msg);
+            }
+            let visible = list_rows.max(1);
             let sel = dialog.selected;
             let skip = (sel + 1).saturating_sub(visible);
+            let mut drawn = 0usize;
             for (i, option) in dialog.options.iter().enumerate().skip(skip) {
-                if lines.len() >= visible {
+                if drawn >= visible {
                     break;
                 }
+                drawn += 1;
                 let is_sel = i == sel;
                 let marker = if is_sel { "▸ " } else { "  " };
                 let text = format!("{marker}{}", trunc(option, width.saturating_sub(3)));
@@ -4706,6 +4732,40 @@ mod settings_chat_render_tests {
                 "the hints row carried a notice: {hints:?}"
             );
         }
+    }
+
+    /// 2026-11-17: a select dialog may carry context (the permission modal shows
+    /// the command). The message must render ABOVE the options and must not be
+    /// overdrawn by them.
+    #[test]
+    fn select_dialog_shows_its_message_above_the_options() {
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hi".into()));
+        state.dialogs.push_back(crate::tui::state::Dialog {
+            id: "perm".into(),
+            kind: crate::tui::state::DialogKind::Select,
+            title: "permissions".into(),
+            message: Some("Allow bash?\n  $ make -j12 && ./target/release/officina".into()),
+            options: vec![
+                "Allow once".into(),
+                "Allow this command in this project".into(),
+                "Deny".into(),
+            ],
+            selected: 0,
+            input: String::new(),
+            cursor: 0,
+        });
+        let text = screen(&mut state, 100, 24);
+        let msg_row = text
+            .lines()
+            .position(|l| l.contains("make -j12"))
+            .unwrap_or_else(|| panic!("the command is shown:\n{text}"));
+        let opt_row = text
+            .lines()
+            .position(|l| l.contains("Allow this command"))
+            .expect("the options are shown");
+        assert!(msg_row < opt_row, "options drawn over the message:\n{text}");
+        assert!(text.contains("Allow once"), "{text}");
     }
 
     #[test]

@@ -14,6 +14,7 @@
 //     behaviour is byte-identical to today (I1)
 
 import { describe, expect, it } from "vitest";
+import { shouldAdoptSelectedLane } from "./overflow.ts";
 import {
   decidePeerYield,
   seniorityRank,
@@ -191,5 +192,56 @@ describe("decidePeerYield", () => {
     });
     expect(d.demote).toBe(true);
     expect(d.rank).toBe(2);
+  });
+});
+
+// 2026-11-18: "it randomly switches to local". session_start resets the router
+// to local/unmanaged while pi restores the operator's cloud model; the router
+// must adopt that model as the pinned lane, or the first contention event
+// demotes the session to local.
+describe("shouldAdoptSelectedLane", () => {
+  const cloud = { provider: "caduceus", id: "agnes/agnes-3.0-flash" };
+  const other = { provider: "caduceus", id: "opencode-go/deepseek-v4.1-flash" };
+
+  it("adopts a resumed cloud selection after a reset", () => {
+    expect(
+      shouldAdoptSelectedLane({
+        tier: "local",
+        activeCloud: undefined,
+        model: cloud,
+        candidates: [cloud, other],
+      }),
+    ).toBe(true);
+  });
+
+  it("leaves a local or virtual model alone", () => {
+    expect(
+      shouldAdoptSelectedLane({
+        tier: "local",
+        activeCloud: undefined,
+        model: { provider: "llamacpp", id: "Lapis Occultus" },
+        candidates: [cloud],
+      }),
+    ).toBe(false);
+    expect(
+      shouldAdoptSelectedLane({
+        tier: "local",
+        activeCloud: undefined,
+        model: { provider: "officina", id: "lapis" },
+        candidates: [cloud],
+      }),
+    ).toBe(false);
+    expect(
+      shouldAdoptSelectedLane({ tier: "local", activeCloud: undefined, model: undefined, candidates: [cloud] }),
+    ).toBe(false);
+  });
+
+  it("does not disturb an armed or already-latched router", () => {
+    expect(
+      shouldAdoptSelectedLane({ tier: "cloud", activeCloud: cloud, model: other, candidates: [cloud, other] }),
+    ).toBe(false);
+    expect(
+      shouldAdoptSelectedLane({ tier: "local", activeCloud: cloud, model: cloud, candidates: [cloud] }),
+    ).toBe(false);
   });
 });

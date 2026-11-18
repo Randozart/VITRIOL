@@ -11,6 +11,14 @@ import {
   type Verdict,
 } from "./policy.ts";
 import { findBwrap, shouldWrap, wrapBwrap } from "./sandbox.ts";
+import {
+  addProjectRule,
+  clearProjectRules,
+  leadingProgram,
+  loadProjectStore,
+  matchesProjectRule,
+  normalizeCommand,
+} from "./perms-project.ts";
 import { traceHooks } from "../_shared/hook-trace.ts";
 import {
   getJobsRoot,
@@ -70,6 +78,9 @@ export default function (pi: ExtensionAPI) {
   let warned = false;
   let sandboxWarned = false;
 
+  /** cwd of the tool call being decided (project scoping). */
+  let currentCwd = "";
+
   function load(): PermSnapshot | null {
     try {
       const m = statSync(snapshotPath()).mtimeMs;
@@ -87,6 +98,7 @@ export default function (pi: ExtensionAPI) {
     verdict: Verdict,
     detail: string,
     ctx: { mode?: string; hasUI?: boolean; ui?: any },
+    program = "",
   ): Promise<{ block: true; reason: string } | undefined> {
     const mode = currentMode();
     if (verdict.action === "allow") {
@@ -113,18 +125,102 @@ export default function (pi: ExtensionAPI) {
         reason: `permissions: ${verdict.reason} — denied in headless mode (fail-closed)`,
       };
     }
+    // Project-scoped allowlist (2026-11-17): consulted BEFORE asking, after
+    // protected roots and explicit denies have already decided. A stored rule
+    // can never override those (invariant I2 — protected roots win).
+    // I2 (protected roots win): the project allowlist covers COMMANDS only.
+    // A path ask happens because the path is protected (secrets, ~/.ssh,
+    // /etc/**) or because the policy wants a human — a standing rule must never
+    // silence that, so path tools always prompt.
+    const cwd = projectCwd();
+    const commandTool = tool === "bash" || tool === "powershell";
+    const rules = commandTool ? loadProjectStore(cwd).rules : [];
+    const stored = commandTool
+      ? matchesProjectRule(rules, tool, commandOf(detail, tool))
+      : null;
+    if (stored) {
+      emitHarnessEvent(
+        harnessEvent("lc-perms", "project-allow", {
+          detail: `${mode} ${stored.kind}:${stored.pattern} → ${detail}`,
+        }),
+      );
+      return undefined;
+    }
+
+    // pi's `select` RPC cannot carry a message (rpc-types: select has only
+    // title+options), so the command has to ride on the CONFIRM dialog — which
+    // is the safety-critical question anyway. Remembering is a follow-up
+    // question, offered only after an approval (2026-11-17).
     const yes = await ctx.ui?.confirm(
-      "permissions",
-      `Allow ${tool}?\n${verdict.reason}\n${detail}\n(mode: ${mode})`,
+      `permissions · ${tool}`,
+      buildAskMessage(tool, verdict.reason, detail, mode),
     );
     emitHarnessEvent(
       harnessEvent("lc-perms", yes ? "ask-approved" : "ask-declined", {
-        detail: `${mode} ${detail}`,
+        detail: `${mode} ${yes ? "yes" : "no"} ${detail}`,
       }),
     );
     if (!yes)
       return { block: true, reason: `permissions: user declined ${tool}` };
+
+    // Offer to remember, default = No (Enter never grants a standing rule).
+    const canRemember =
+      process.env.OFFICINA_PERMS_NO_REMEMBER !== "1" &&
+      typeof ctx.ui?.select === "function";
+    if (canRemember) {
+      const target = program ? `all ${program}` : "this command";
+      const pick = await ctx.ui?.select("Remember for this project?", [
+        "No, just this once",
+        `Allow ${target} from now on`,
+      ]);
+      if (typeof pick === "string" && pick.startsWith("Allow ")) {
+        const kind = program ? "program" : "command";
+        const pattern = program || normalizeCommand(commandOf(detail, tool));
+        const saved = addProjectRule(cwd, { tool, kind, pattern });
+        emitHarnessEvent(
+          harnessEvent("lc-perms", "project-rule", {
+            detail: `${saved ? "stored" : "STORE FAILED"} ${kind}:${pattern} (${cwd})`,
+          }),
+        );
+        if (!saved) {
+          ctx.ui.notify?.(
+            "permissions: could not store the project rule (see lc-perms/project-rule)",
+            "warning",
+          );
+        }
+      }
+    }
     return undefined;
+  }
+
+  /** The project the operator is working in (the tool call's cwd). */
+  function projectCwd(): string {
+    return (currentCwd || process.cwd()).replace(/\/+$/, "") || "/";
+  }
+
+  /** The command (or path) a rule would be filed against. */
+  function commandOf(detail: string, tool: string): string {
+    return tool === "bash" || tool === "powershell"
+      ? detail
+      : detail.replace(new RegExp(`^${tool}\\s+`), "");
+  }
+
+  /**
+   * The dialog body: the reason, then the FULL command (capped so a pathological
+   * paste cannot hang a frame), then the mode. The command used to be collapsed
+   * to one line and cut at 120 chars, which made heredocs and && chains
+   * unreadable at exactly the wrong moment (2026-11-17).
+   */
+  function buildAskMessage(
+    tool: string,
+    reason: string,
+    detail: string,
+    mode: string,
+  ): string {
+    const MAX = 2000;
+    const full = detail.length > MAX ? `${detail.slice(0, MAX)}\n… (${detail.length - MAX} more chars)` : detail;
+    const shown = tool === "bash" || tool === "powershell" ? `$ ${full.replace(/\n/g, "\n  ")}` : full;
+    return `${reason}\n\n${shown}\n\n(mode: ${mode})`;
   }
 
   pi.on("tool_call", async (event, ctx) => {
@@ -147,6 +243,7 @@ export default function (pi: ExtensionAPI) {
       );
     }
 
+    currentCwd = cwd;
     if (tool === "bash" || tool === "powershell") {
       const command = String(input.command ?? "");
       if (!command.trim()) return undefined;
@@ -154,8 +251,9 @@ export default function (pi: ExtensionAPI) {
       const enforced = await decideAndEnforce(
         tool,
         verdict,
-        shortCommand(command),
+        command, // FULL command: the dialog must show what is being approved
         ctx as any,
+        leadingProgram(command),
       );
       if (enforced) return enforced;
       // Codex-qol stage 10 (I6): only sandboxed mode wraps; bwrap missing

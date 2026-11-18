@@ -49,7 +49,11 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     execute!(
         stdout,
         EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        // Bracketed paste (2026-11-17): without it the terminal delivers a paste
+        // as individual keystrokes, so every newline arrived as Enter and a
+        // multi-line paste was submitted one line at a time.
+        crossterm::event::EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -106,6 +110,7 @@ pub async fn run(bridge: &mut RpcBridge, cwd: std::path::PathBuf) -> Result<()> 
     // Mouse capture OFF before the alternate screen exit (reverse order).
     execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen
     )?;
@@ -523,6 +528,7 @@ fn suspend_external(
     disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        crossterm::event::DisableBracketedPaste,
         crossterm::event::DisableMouseCapture,
         LeaveAlternateScreen,
         crossterm::cursor::Show
@@ -660,6 +666,12 @@ async fn run_loop(
                             terminal.draw(|frame| render(frame, state))?;
                             break;
                         }
+                    }
+                    Some(Event::Paste(text)) => {
+                        // Insert the whole paste at once. Newlines are kept as
+                        // text (Enter would submit); the composer renders them
+                        // as rows and submits only on a real Enter key.
+                        handle_paste(text, state, bridge).await;
                     }
                     Some(Event::Mouse(m)) => handle_mouse(m, state).await,
                     Some(_) => {} // resize / focus events — next draw picks them up
@@ -3704,6 +3716,56 @@ fn copy_to_clipboard(text: &str) -> &'static str {
     "nowhere"
 }
 
+/// Insert a bracketed paste as ONE chunk of text (2026-11-17).
+///
+/// Without bracketed paste the terminal delivers a paste keystroke by keystroke,
+/// so every `\n` in copied terminal output arrived as Enter and submitted the
+/// prompt — the operator's paste landed as a series of separate messages.
+///
+/// Rules: dialogs get the text into their input field; the composer keeps the
+/// newlines (Enter still submits, a paste does not); CRLF is normalised; a very
+/// large paste is capped so one clipboard cannot wedge a frame.
+async fn handle_paste(text: String, state: &mut AppState, bridge: &mut RpcBridge) {
+    let (text, truncated) = normalize_paste(&text);
+    if truncated {
+        state.notice = Some((
+            "paste truncated at 200000 chars".to_string(),
+            "warning".to_string(),
+        ));
+    }
+    apply_paste(state, &text);
+    let _ = bridge;
+}
+
+/// Normalise a paste: CRLF/CR to LF, and cap the size (one clipboard must not
+/// be able to wedge a frame). Returns (text, truncated).
+fn normalize_paste(text: &str) -> (String, bool) {
+    const MAX_PASTE: usize = 200_000;
+    let mut out = text.replace("\r\n", "\n").replace('\r', "\n");
+    let truncated = out.len() > MAX_PASTE;
+    if truncated {
+        out.truncate(MAX_PASTE);
+    }
+    (out, truncated)
+}
+
+/// Insert pasted text into whichever surface owns the keyboard: the open dialog
+/// first, else the composer. Newlines stay TEXT — a paste never submits.
+fn apply_paste(state: &mut AppState, text: &str) {
+    if let Some(dialog) = state.dialogs.back_mut() {
+        for ch in text.chars() {
+            dialog.insert_char(ch);
+        }
+        return;
+    }
+    // Mirror a typed character: the ghost yields, the cursor follows.
+    state.dismiss_ghost("dismissed-paste");
+    for ch in text.chars() {
+        insert_char_at(&mut state.input, state.cursor, ch);
+        state.cursor += 1;
+    }
+}
+
 fn insert_char_at(s: &mut String, idx: usize, c: char) {
     let byte = s.char_indices().nth(idx).map(|(b, _)| b).unwrap_or(s.len());
     s.insert(byte, c);
@@ -4712,6 +4774,45 @@ mod tests {
             dialog_value("x", "Allow".into()),
             serde_json::json!({"type":"extension_ui_response","id":"x","value":"Allow"})
         );
+    }
+
+    /// Paste (2026-11-17): the terminal used to deliver a paste keystroke by
+    /// keystroke, so every newline submitted the prompt and a block of terminal
+    /// output landed as many separate messages. With bracketed paste the text
+    /// arrives whole; newlines must stay TEXT.
+    #[test]
+    fn pasted_text_keeps_newlines_and_never_submits() {
+        let mut state = AppState::default();
+        let (text, truncated) = normalize_paste("line one\r\nline two\rline three");
+        assert!(!truncated);
+        assert_eq!(text, "line one\nline two\nline three");
+        apply_paste(&mut state, &text);
+        assert_eq!(state.input, "line one\nline two\nline three");
+        assert_eq!(state.cursor, text.chars().count());
+        // The composer still holds the draft (no submit happened).
+        assert!(state.input.contains("line two"));
+
+        // A paste into an open dialog goes to the dialog, not the composer.
+        let mut state = AppState::default();
+        state.dialogs.push_back(crate::tui::state::Dialog {
+            id: "d".into(),
+            kind: crate::tui::state::DialogKind::Input,
+            title: "t".into(),
+            message: None,
+            options: vec![],
+            selected: 0,
+            input: String::new(),
+            cursor: 0,
+        });
+        apply_paste(&mut state, "abc");
+        assert_eq!(state.dialogs.back().unwrap().input, "abc");
+        assert!(state.input.is_empty());
+
+        // Oversized pastes are capped, not dropped.
+        let big = "x".repeat(250_000);
+        let (capped, truncated) = normalize_paste(&big);
+        assert!(truncated);
+        assert_eq!(capped.len(), 200_000);
     }
 
     #[tokio::test]

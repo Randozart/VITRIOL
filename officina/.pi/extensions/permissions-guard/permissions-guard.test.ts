@@ -138,15 +138,81 @@ function harness(snapshotText: string | null, env: Record<string, string>, mode 
   const notices: string[] = [];
   const pi = { on: (ev: string, h: never) => { if (ev === "tool_call") handler = h; }, registerTool: () => undefined };
   register(pi as never);
+  let confirms = 0;
+  let selectAnswer = "No, just this once";
   const ctxFor = (mode: string, hasUI: boolean, confirmAnswer = false) => ({
     cwd: "/proj", mode, hasUI,
-    ui: { notify: (m: string) => notices.push(m), confirm: async () => confirmAnswer },
+    ui: {
+      notify: (m: string) => notices.push(m),
+      confirm: async () => {
+        confirms += 1;
+        return confirmAnswer;
+      },
+      // The remember step is a select; default "just this once".
+      select: async () => selectAnswer,
+    },
   });
   const call = async (tool: string, input: Record<string, unknown>, modeCtx = "print", hasUI = false, confirmAnswer = false) =>
     handler ? await handler({ toolName: tool, input }, ctxFor(modeCtx, hasUI, confirmAnswer)) : undefined;
   const restore = () => { rmSync(dir, { recursive: true, force: true }); for (const k of Object.keys(process.env)) if (!(k in prev)) delete process.env[k]; Object.assign(process.env, prev); };
-  return { call, notices, handlerWasRegistered: () => handler !== null, restore };
+  return {
+    call,
+    notices,
+    handlerWasRegistered: () => handler !== null,
+    restore,
+    setSelect: (a: string) => {
+      selectAnswer = a;
+    },
+    confirms: () => confirms,
+  };
 }
+
+describe("permissions-guard project allowlist (2026-11-17)", () => {
+  // I2: a standing rule must never silence a protected-root ask. Secrets always
+  // prompt, however many rules the operator stored.
+  it("never covers a protected path with a project rule", async () => {
+    const home = mkdtempSync("/tmp/tris-perms-home2-");
+    const h = harness(null, { HOME: home });
+    try {
+      h.setSelect("Allow this command from now on");
+      // A path ask for a protected root: it must still ask, even if a rule for
+      // that same string was stored earlier.
+      const first = await h.call("read", { path: `${home}/.vitriol/secrets` }, "tui", true, false);
+      expect(first).toMatchObject({ block: true });
+      expect(h.confirms()).toBe(1);
+    } finally {
+      h.restore();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // The end-to-end promise: approve once with "allow from now on", and the same
+  // call in the same project never asks again — while another project still
+  // asks (I4), and a different command still asks (I3).
+  it("remembers a command for this project only", async () => {
+    const home = mkdtempSync("/tmp/tris-perms-home-");
+    const h = harness(null, { HOME: home });
+    try {
+      h.setSelect("Allow all rm from now on");
+      const first = await h.call("bash", { command: "rm -rf build" }, "tui", true, true);
+      expect(first).toBeUndefined();
+      expect(h.confirms()).toBe(1);
+
+      // Same command again: the stored rule answers, no dialog.
+      const second = await h.call("bash", { command: "rm  -rf   build" }, "tui", true, true);
+      expect(second).toBeUndefined();
+      expect(h.confirms()).toBe(1);
+
+      // A different command still asks.
+      const other = await h.call("bash", { command: "git push --force" }, "tui", true, false);
+      expect(other).toMatchObject({ block: true });
+      expect(h.confirms()).toBe(2);
+    } finally {
+      h.restore();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("permissions-guard wiring", () => {
   const dir = mkdtempSync("/tmp/tris-perms-");

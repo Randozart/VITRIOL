@@ -33,6 +33,10 @@ export const SHARED_STATE: Record<string, SharedStateEntry> = {
     kind: "session-keyed",
     note: "one shard per TUI pid; readers glob-merge and TTL-prune",
   },
+  "claims": {
+    kind: "session-keyed",
+    note: "one claim shard per pid (2026-11-18); advisory cross-session warnings",
+  },
   "compact-on-finish": {
     kind: "session-keyed",
     note: "one stamp per session (2026-11-18); a global stamp silenced peers",

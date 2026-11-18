@@ -32,6 +32,8 @@ const SIDEBAR = join(EXT, "_shared", "sidebar.ts");
 const ENGINE = join(EXT, "_shared", "engine.ts");
 const CACHE_MODE = join(EXT, "_shared", "cache-mode.ts");
 const ROUTING_REGISTRY = join(EXT, "_shared", "routing-registry.ts");
+const BAND = join(EXT, "_shared", "band.ts");
+const ACTIVE_FILES = join(EXT, "_shared", "active-files.ts");
 const LANE_HEALTH = join(EXT, "_shared", "lane-health.ts");
 
 /** Two independent jiti instances — the exact loader shape pi uses. */
@@ -225,5 +227,43 @@ describe("jiti isolation: cross-extension contracts survive separate module inst
     function resetVia(lh: typeof import("./lane-health.ts")): void {
       lh.resetLaneHealthCache();
     }
+  });
+
+  // 2026-11-18: the band registry replaced one widget key per producer, so a
+  // producer in instance A must be visible to the assembler in instance B —
+  // otherwise each extension writes its own private strip again.
+  it("band: rows registered in one instance are assembled by another", async () => {
+    const { a, b } = jitiPair();
+    const bandA = (await a.import(BAND)) as typeof import("./band.ts");
+    const bandB = (await b.import(BAND)) as typeof import("./band.ts");
+    bandA.resetBand();
+    bandA.setBandRow("overflow-route", "state", "route manual");
+    expect(bandB.bandLines()).toEqual(["route manual"]);
+    bandB.setBandRow("composer-prediction", "suggestion", "next: gates");
+    // The tier rule holds across instances: a suggestion stays out while state
+    // is reporting.
+    expect(bandB.bandLines()).toEqual(["route manual"]);
+    expect(
+      (globalThis as { __officinaBand?: unknown }).__officinaBand,
+    ).toBeTruthy();
+    bandA.resetBand();
+  });
+
+  // 2026-11-18: active-files claimed to be "one per process, shared across all
+  // extensions" while being a module-level Map — under jiti isolation that is a
+  // different Map per extension, so the tool-result-clearer's protection quietly
+  // missed files registered by other extensions.
+  it("active-files: registrations cross the extension boundary", async () => {
+    const { a, b } = jitiPair();
+    const fa = (await a.import(ACTIVE_FILES)) as typeof import("./active-files.ts");
+    const fb = (await b.import(ACTIVE_FILES)) as typeof import("./active-files.ts");
+    fa._reset();
+    fa.tickTurn();
+    fa.register("src/tui/layout.rs");
+    expect(fb.isActive("src/tui/layout.rs")).toBe(true);
+    expect(
+      (globalThis as { __officinaActiveFiles?: unknown }).__officinaActiveFiles,
+    ).toBeTruthy();
+    fa._reset();
   });
 });

@@ -15,12 +15,40 @@
 
 import { readFileSync } from "node:fs";
 
-const activeByFile = new Map<string, number>(); // file → lastActiveTurn
-let currentTurn = 0;
-let enabled = true;
+// globalThis-backed (2026-11-18): the comment that used to sit here claimed "one
+// per process, shared across all extensions". That was FALSE — pi loads every
+// extension through its own jiti instance (moduleCache: false), so each got a
+// private Map and the tool-result-clearer's "do not clear a hot file" protection
+// silently missed files another extension had registered. Same rule as
+// `_shared/sidebar.ts` and the routing registry.
+interface ActiveFilesState {
+  byFile: Map<string, number>;
+  turn: number;
+}
+const shared: ActiveFilesState =
+  (globalThis as unknown as { __officinaActiveFiles?: ActiveFilesState })
+    .__officinaActiveFiles ??
+  ((globalThis as unknown as { __officinaActiveFiles?: ActiveFilesState })
+    .__officinaActiveFiles = { byFile: new Map<string, number>(), turn: 0 });
+
+/** Test hook: forget every registration and reset the logical clock. */
+export function resetActiveFiles(): void {
+  shared.byFile.clear();
+  shared.turn = 0;
+}
+
+const activeByFile = shared.byFile; // file → lastActiveTurn
+
 
 export function activeFilesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.OFFICINA_NO_ACTIVE_FILES !== "1";
+}
+
+/** Runtime enable flag (env kill switch AND the test/runtime toggle). */
+function enabledNow(): boolean {
+  if (!activeFilesEnabled()) return false;
+  return !(globalThis as unknown as { __officinaActiveFilesOff?: boolean })
+    .__officinaActiveFilesOff;
 }
 
 export function getActiveTTL(env: NodeJS.ProcessEnv = process.env): number {
@@ -32,23 +60,23 @@ export function getActiveTTL(env: NodeJS.ProcessEnv = process.env): number {
 
 /** Advance the logical clock. Called once per context pass. */
 export function tickTurn(): void {
-  currentTurn++;
+  shared.turn++;
 }
 
 /** Register a file as actively touched at the current turn. */
 export function register(file: string, turn?: number): void {
-  if (!file || !enabled) return;
-  activeByFile.set(file, turn ?? currentTurn);
+  if (!file || !enabledNow()) return;
+  activeByFile.set(file, turn ?? shared.turn);
 }
 
 /** True if the file was touched within the last `ttl` turns. */
 export function isActive(file: string, ttl?: number): boolean {
-  if (!file || !enabled) return false;
+  if (!file || !enabledNow()) return false;
   const limit = ttl ?? getActiveTTL();
   const last = activeByFile.get(file);
   if (last === undefined) return false;
   // Evict stale entries on access
-  if (currentTurn - last > limit) {
+  if (shared.turn - last > limit) {
     activeByFile.delete(file);
     return false;
   }
@@ -60,7 +88,7 @@ export function getActive(): Set<string> {
   const ttl = getActiveTTL();
   const out = new Set<string>();
   for (const [file, last] of activeByFile) {
-    if (currentTurn - last <= ttl) {
+    if (shared.turn - last <= ttl) {
       out.add(file);
     } else {
       activeByFile.delete(file);
@@ -75,7 +103,7 @@ export function getActive(): Set<string> {
  * extensions (.rs, .ts, .js, .py, .md, .json, .toml).
  */
 export function registerTaskFiles(taskFilePath: string): void {
-  if (!enabled) return;
+  if (!enabledNow()) return;
   try {
     const data = JSON.parse(readFileSync(taskFilePath, "utf8")) as {
       tasks?: Array<{ status?: string; description?: string }>;
@@ -97,10 +125,14 @@ export function registerTaskFiles(taskFilePath: string): void {
 /** Reset all state (for testing). */
 export function _reset(): void {
   activeByFile.clear();
-  currentTurn = 0;
+  shared.turn = 0;
 }
 
-/** Set enabled state (for testing / kill switch). */
+/**
+ * Enable/disable tracking. The flag is globalThis-backed too, so a kill switch
+ * set by one extension instance is seen by the others (jiti isolation).
+ */
 export function _setEnabled(v: boolean): void {
-  enabled = v;
+  (globalThis as unknown as { __officinaActiveFilesOff?: boolean }).__officinaActiveFilesOff =
+    !v;
 }

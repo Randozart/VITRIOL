@@ -1,5 +1,14 @@
 # VITRIOL AI Agent Guidelines
 
+## Memory research update — 2026-11-18 16:30
+
+Private late-prime placement passes matched speech/browser gates; first audio
+5.34→4.48s, majorfaults14441→1233 in one paired observation. GPU-host allocation
+must be separated from file cache/RSS; anonymous resident attempt unqualified,
+no physical-residency claim. Publicv9/currentvoice/20B restored within the approved
+window; no runtime/profile/home-PC changes. See .opencode/plans/ptl-memory-final-
+prime-2026-11-18.md; Avatar owns tested private code/evidence.0auto employeehours.
+
 ## Anchored summary — 2026-11-18 14:32
 
 Optional generic client-prefix primer qualified against the current PTL20B and

@@ -452,17 +452,16 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         .filter(|w| !band_echoes_draft(&w.lines, &state.input))
         .collect();
     // Route state is the most important strip (full harness can have more
-    // belowEditor widgets than rows). Then plan/research/phase, decode last.
+    // belowEditor widgets than rows). Among legacy keys the order below is
+    // historical; NEW producers must not appear here at all — they register a
+    // row in `_shared/band.ts`, which assembles ONE `officina-band` widget in
+    // tier order (2026-11-18). The `match` used to name five keys and drop the
+    // rest into `_ => 9`, which is how a composer *suggestion* rendered directly
+    // under the routing *state* row.
     indicator_blocks.sort_by_key(|w| match w.key.as_str() {
-        // Route + live decode/progress are the operator's primary scan
-        // targets; phase/plan/research indicators are secondary. Keeping
-        // decode in the first three rows guarantees tk/s and log progress are
-        // never pushed out by a transient indicator.
-        "overflow-route" => 0,
-        "vitriol-decode" => 1,
-        "plan-mode" => 2,
-        "deep-research-mode" => 3,
-        "phase-model" => 4,
+        "officina-band" => 0,
+        // Legacy producers (pre-registry sessions still running, and the decode
+        // fallback): keep them renderable but behind the registry's strip.
         _ => 9,
     });
     let indicators: Vec<String> = indicator_blocks

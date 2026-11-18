@@ -66,6 +66,7 @@ import {
   writeProfile,
   type RoutingProfile,
 } from "../_shared/profiles.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 
 // resilient-default — the always-selectable virtual model `officina/lapis`
 // ("Lapis Occultus"). It is keyless and therefore present in /model even when
@@ -500,7 +501,11 @@ export default function (pi: ExtensionAPI) {
         ? `route ${lane} · ${model.id.split("/").pop()} · ${profile}`
         : `route ${lane} · local · ${profile}`;
     ctx.ui.setStatus("overflow", text);
-    ctx.ui.setWidget("overflow-route", [text], { placement: "belowEditor" });
+    // State tier (2026-11-18): the band registry assembles the strip, so lapis
+    // and adaptive-router publish the SAME row instead of two widgets whose
+    // order the renderer had to guess.
+    setBandUi(ctx.ui as never);
+    setBandRow("overflow-route", "state", [text]);
   };
 
   const route = async (

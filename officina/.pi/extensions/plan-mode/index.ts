@@ -16,6 +16,7 @@ import {
 import { SubCoderTracker } from "../subagent/tracker.ts";
 import { PlanStatus } from "./status.ts";
 import { traceHooks } from "../_shared/hook-trace.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 
 // Approved plans are persisted project-locally so they survive the planning
 // session and can be picked up later by the user-initiated /implement command.
@@ -85,9 +86,10 @@ function indicatorLines(): string[] {
 // carries data rows only. `on === false` clears the widget.
 function setIndicator(ctx: any, on: boolean): void {
   if (!ctx?.hasUI) return;
-  ctx.ui.setWidget(INDICATOR_KEY, on ? indicatorLines() : undefined, {
-    placement: "belowEditor",
-  });
+  // State tier (2026-11-18): the band registry owns the strip layout, so a
+  // producer only declares its row.
+  setBandUi(ctx.ui);
+  setBandRow(INDICATOR_KEY, "state", on ? indicatorLines() : null);
 }
 
 // Whether the session should open already in plan mode (issue #84). Set by the

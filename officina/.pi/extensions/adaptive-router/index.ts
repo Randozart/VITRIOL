@@ -25,6 +25,7 @@ import {
   writeRegistryEntry,
 } from "../_shared/routing-registry.ts";
 import { routingPresence } from "../_shared/routing-presence.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 import { getLaneHealth } from "../_shared/lane-health.ts";
 import type { PeerView, SelfView } from "./peer-policy.ts";
 import {
@@ -333,9 +334,11 @@ export default function (pi: ExtensionAPI) {
 
   const renderStatus = (ctx: ExtensionContext, queueMs: number): void => {
     ctx.ui.setStatus("overflow", statusLine(queueMs));
-    ctx.ui.setWidget("overflow-route", [statusLine(queueMs)], {
-      placement: "belowEditor",
-    });
+    // State tier (2026-11-18): the route row is the operator's primary scan
+    // target, so it belongs to the band registry rather than to a widget key the
+    // renderer had to know about.
+    setBandUi(ctx.ui as never);
+    setBandRow("overflow-route", "state", [statusLine(queueMs)]);
   };
 
   pi.on("before_agent_start", async (event, ctx) => {

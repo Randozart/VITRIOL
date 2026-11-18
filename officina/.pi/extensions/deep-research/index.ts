@@ -9,6 +9,7 @@ import { currentModelId } from "../subagent/index.ts";
 import { PlanStatus } from "../plan-mode/status.ts";
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
 import { injectionResult } from "../_shared/inject.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 import { allocateBudget, clampAgents, MAX_AGENTS, MIN_AGENTS } from "./budget.ts";
 import { ResearchProgress } from "./progress-bar.ts";
 import { reportFilename, resolveMaxDefault } from "./helpers.ts";
@@ -101,7 +102,9 @@ function indicatorLines(): string[] {
 // clears the widget.
 function setIndicator(ctx: any, on: boolean): void {
   if (!ctx?.hasUI) return;
-  ctx.ui.setWidget(INDICATOR_KEY, on ? indicatorLines() : undefined, { placement: "belowEditor" });
+  // State tier (2026-11-18): declared to the band registry, not written direct.
+  setBandUi(ctx.ui);
+  setBandRow(INDICATOR_KEY, "state", on ? indicatorLines() : null);
 }
 
 // ---- user prompts -----------------------------------------------------------

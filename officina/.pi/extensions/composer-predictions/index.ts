@@ -34,13 +34,13 @@ import {
   shouldDistill,
 } from "./voice.ts";
 import { budgetStatus } from "../_shared/budget.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 import { traceHooks } from "../_shared/hook-trace.ts";
 import {
   extractCatalogModels,
   freeToolCandidates,
 } from "../caduceus/catalog.ts";
 
-const WIDGET_KEY = "composer-prediction";
 const OFFICINA_DIR = join(homedir(), ".vitriol", "officina");
 const CATALOG = join(OFFICINA_DIR, "caduceus-models.json");
 const PROFILE_PATH = join(OFFICINA_DIR, "voice-profile.json");
@@ -145,13 +145,11 @@ export default function (pi: ExtensionAPI) {
     const line = text ?? "";
     if (line === lastLine) return;
     lastLine = line;
-    try {
-      ui?.setWidget?.(WIDGET_KEY, line ? [line] : [], {
-        placement: "belowEditor",
-      });
-    } catch {
-      // decoration contract: never break the workshop
-    }
+    // Suggestion tier (2026-11-18): a prediction is not status, so it must never
+    // take a strip row from the route/decode/plan rows — that is how "▸ next:"
+    // ended up rendering directly under "route manual — overflow paused".
+    if (ui) setBandUi(ui as never);
+    setBandRow("composer-prediction", "suggestion", line ? [line] : null);
   };
 
   const countDirty = (): number => {

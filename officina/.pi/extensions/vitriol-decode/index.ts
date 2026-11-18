@@ -12,6 +12,7 @@ import {
   telemetryScope,
   type TelemetryScope,
 } from "../_shared/telemetry-scope.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 
 // vitriol-decode — live engine telemetry below the editor (2026-08-31).
 //
@@ -50,7 +51,7 @@ export default function (pi: ExtensionAPI) {
     // Only an engine-scoped session shows engine truth (2026-11-16): a cloud
     // session used to render the workshop's tok/s and flames.
     if (!engineRowsVisible(scope)) {
-      ui.setWidget("vitriol-decode", [], { placement: "belowEditor" });
+      setBandRow("vitriol-decode", "progress", null);
       return;
     } // no session context yet; engine updates render once bound
     const last = getEngineSnapshot();
@@ -127,7 +128,8 @@ export default function (pi: ExtensionAPI) {
         : "";
     const lines = [line1 + rpc];
     if (line2) lines.push(line2);
-    ui.setWidget("vitriol-decode", lines, { placement: "belowEditor" });
+    setBandUi(ui);
+    setBandRow("vitriol-decode", "progress", lines);
   };
 
   pi.on("session_start", (_event, ctx) => {

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveOverridePath } from "../llama-cpp-provider/config.ts";
 import { terminalColumns, truncateLineToWidth } from "../_shared/width.ts";
+import { setBandRow, setBandUi } from "../_shared/band.ts";
 import {
   formatModelRef,
   matchesPrefix,
@@ -187,7 +188,8 @@ function indicatorLines(): string[] | undefined {
 function setIndicator(ctx: any): void {
   if (!ctx?.hasUI) return;
   try {
-    ctx.ui.setWidget(INDICATOR_KEY, indicatorLines(), { placement: "belowEditor" });
+    setBandUi(ctx.ui);
+    setBandRow(INDICATOR_KEY, "state", indicatorLines());
   } catch {
     /* widget surface unavailable in some run modes */
   }

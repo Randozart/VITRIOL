@@ -63,6 +63,17 @@ impl Settled {
     }
 }
 
+/// The single activity a turn is performing (2026-11-18).
+///
+/// Rendered as ONE status line; unlike the old `is_streaming` / `is_compacting`
+/// pair these cannot stack, because only one variant exists at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnActivity {
+    Compacting,
+    Thinking,
+    Working,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ToolVerbosity {
     Line = 0,
@@ -3779,6 +3790,49 @@ impl AppState {
     }
 
     /// Seconds since the turn began (stamped when streaming starts).
+    /// Is the live thinking block the tail of a streaming turn?
+    ///
+    /// The renderer animates a collapsed thinking row only in that state
+    /// (`state.rs`, the `ChatEntry::Thinking` arm). The activity line uses the
+    /// same rule, so the two can never disagree about whether the model is
+    /// currently thinking.
+    pub fn thinking_is_live(&self) -> bool {
+        if !self.is_streaming || self.hide_thinking {
+            return false;
+        }
+        matches!(self.entries.last(), Some(ChatEntry::Thinking { .. }))
+    }
+
+    /// What the turn is doing right now (2026-11-18).
+    ///
+    /// One activity, not three flags: compaction runs *inside* a streaming turn,
+    /// so the old code pushed a "working…" line AND a "compacting context…" line
+    /// and they stacked. Precedence: compacting → thinking → working.
+    pub fn turn_activity(&self) -> Option<TurnActivity> {
+        if self.is_compacting {
+            return Some(TurnActivity::Compacting);
+        }
+        if self.thinking_is_live() {
+            return Some(TurnActivity::Thinking);
+        }
+        if self.is_streaming {
+            return Some(TurnActivity::Working);
+        }
+        None
+    }
+
+    /// Seconds to display for the current activity. Compaction carries its own
+    /// clock: measuring it on the turn clock would claim minutes it did not take.
+    pub fn activity_secs(&self) -> u64 {
+        match self.turn_activity() {
+            Some(TurnActivity::Compacting) => self
+                .compaction_started_at
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0),
+            _ => self.turn_elapsed_secs(),
+        }
+    }
+
     pub fn turn_elapsed_secs(&self) -> u64 {
         self.turn_started_at
             .map(|t| t.elapsed().as_secs())
@@ -4165,8 +4219,12 @@ impl AppState {
                         } else {
                             Style::default().fg(theme::MUTED)
                         };
+                        // The activity line already says "thinking…" while this
+                        // block is the live tail, so the block itself drops the
+                        // verb and shows only its size (2026-11-18: the word
+                        // appeared twice, once per row).
                         let label = if growing {
-                            "thinking…"
+                            "reasoning"
                         } else {
                             "thinking collapsed"
                         };

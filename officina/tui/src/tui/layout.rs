@@ -517,55 +517,70 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let mut lines = state.chat_lines(chat_width);
 
-    if state.is_streaming {
-        // Animated spinner + elapsed seconds (2026-11-13): works on ANY
-        // lane — the spinner runs on stream evidence, so cloud turns
-        // animate exactly like local ones. Stalled → muted, says so.
+    // ONE activity line (2026-11-18). Compaction runs inside a streaming turn,
+    // so the old pair of independent `if`s pushed "working…" AND
+    // "compacting context…" and they stacked. `turn_activity()` yields exactly
+    // one state and the label follows it.
+    if let Some(activity) = state.turn_activity() {
         let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
-        let (style, suffix) = if state.liveliness_active() {
-            let secs = state.turn_elapsed_secs();
-            (
-                theme::info(),
+        let secs = state.activity_secs();
+        let live = state.liveliness_active();
+        let (glyph, label, style, lead) = match activity {
+            crate::tui::state::TurnActivity::Compacting => (
+                theme::GLYPH_ALEMBIC,
                 if secs > 0 {
-                    format!(" {secs}s")
+                    format!("compacting… {secs}s")
                 } else {
-                    String::new()
+                    "compacting…".to_string()
                 },
-            )
-        } else {
-            (
-                Style::new().fg(theme::MUTED),
-                format!(" · stalled {}s", state.stalled_secs()),
-            )
+                theme::info(),
+                "  ",
+            ),
+            crate::tui::state::TurnActivity::Thinking => (
+                theme::GLYPH_AI,
+                if live {
+                    if secs > 0 {
+                        format!("thinking… {secs}s")
+                    } else {
+                        "thinking…".to_string()
+                    }
+                } else {
+                    format!("thinking… · stalled {}s", state.stalled_secs())
+                },
+                if live {
+                    theme::info()
+                } else {
+                    Style::new().fg(theme::MUTED)
+                },
+                "",
+            ),
+            crate::tui::state::TurnActivity::Working => (
+                theme::GLYPH_AI,
+                if live {
+                    if secs > 0 {
+                        format!("working… {secs}s")
+                    } else {
+                        "working…".to_string()
+                    }
+                } else {
+                    format!("working… · stalled {}s", state.stalled_secs())
+                },
+                if live {
+                    theme::info()
+                } else {
+                    Style::new().fg(theme::MUTED)
+                },
+                "",
+            ),
         };
         lines.push(Line::from(vec![
             Span::styled(
-                format!("{} {} ", theme::GLYPH_AI, frames[f]),
+                format!("{lead}{glyph} {f} "),
                 Style::default().fg(theme::GOLD).bg(theme::BG),
             ),
-            // Light yellow to match the header (owner request 2026-09-02 —
-            // the informational voice, like the engine TUI's prompt-eval).
-            Span::styled(format!("working…{suffix}"), style),
+            Span::styled(label, style),
         ]));
-    }
-    if state.is_compacting {
-        // Compaction is a status, not a warning — informational voice.
-        // Spinner + elapsed so it never reads as a freeze (2026-11-13).
-        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let f = (state.started.elapsed().as_millis() / 120) as usize % frames.len();
-        let secs = state
-            .compaction_started_at
-            .map(|t| t.elapsed().as_secs())
-            .unwrap_or(0);
-        lines.push(Line::from(Span::styled(
-            format!(
-                "  {} {} compacting context… {secs}s",
-                theme::GLYPH_ALEMBIC,
-                frames[f]
-            ),
-            theme::info(),
-        )));
     }
     // Trailing status lines have no entry — keep the map aligned (hitboxes).
     state.line_entries.resize(lines.len(), usize::MAX);
@@ -4434,6 +4449,62 @@ mod settings_chat_render_tests {
         }
     }
 
+    /// 2026-11-18 (owner): "compacting and thinking and working all sit beside
+    /// each other". Compaction runs INSIDE a streaming turn, so two independent
+    /// `if`s rendered two rows. Exactly one activity line now, by precedence.
+    #[test]
+    fn one_activity_line_by_precedence() {
+        fn activity_rows(state: &mut AppState) -> Vec<String> {
+            let text = screen(state, 100, 24);
+            text.lines()
+                .filter(|l| {
+                    l.contains("compacting…") || l.contains("thinking…") || l.contains("working…")
+                })
+                .map(|l| l.to_string())
+                .collect()
+        }
+
+        // Compacting wins over working (the old shape produced both lines).
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hi".into()));
+        state.is_streaming = true;
+        state.is_compacting = true;
+        state.compaction_started_at = Some(std::time::Instant::now());
+        let rows = activity_rows(&mut state);
+        assert_eq!(rows.len(), 1, "two activity lines stacked: {rows:?}");
+        assert!(rows[0].contains("compacting…"), "{rows:?}");
+        assert!(
+            !rows[0].contains("working…"),
+            "the line claimed two activities: {rows:?}"
+        );
+
+        // Thinking wins over working: the live thinking tail is what the model
+        // is doing, "working" would be a second way of saying it.
+        let mut state = AppState::default();
+        state.is_streaming = true;
+        state.note_wire_activity();
+        state.entries.push(ChatEntry::Thinking {
+            text: "considering".into(),
+            collapsed: true,
+        });
+        let rows = activity_rows(&mut state);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].contains("thinking…"), "{rows:?}");
+
+        // Streaming with no thinking tail: working.
+        let mut state = AppState::default();
+        state.is_streaming = true;
+        state.entries.push(ChatEntry::Notice("hi".into()));
+        let rows = activity_rows(&mut state);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].contains("working…"), "{rows:?}");
+
+        // Idle: no activity line at all.
+        let mut state = AppState::default();
+        state.entries.push(ChatEntry::Notice("hi".into()));
+        assert!(activity_rows(&mut state).is_empty());
+    }
+
     #[test]
     fn compaction_is_in_chat_once_and_respects_scrollback() {
         let mut state = AppState::default();
@@ -4443,7 +4514,11 @@ mod settings_chat_render_tests {
             .entries
             .push(ChatEntry::Notice("transcript message".into()));
         let text = screen(&mut state, 80, 24);
-        assert_eq!(text.matches("compacting context").count(), 1, "{text}");
+        assert_eq!(
+            text.matches("compacting…").count(),
+            1,
+            "the activity line appears exactly once:\n{text}"
+        );
         assert!(!text.contains("summarizing the session"));
         for i in 0..70 {
             state
@@ -4453,7 +4528,7 @@ mod settings_chat_render_tests {
         state.scroll = u16::MAX;
         let text = screen(&mut state, 80, 24);
         assert!(
-            !text.contains("compacting context"),
+            !text.contains("compacting…"),
             "compaction must scroll with chat: {text}"
         );
     }

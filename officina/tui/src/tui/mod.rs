@@ -14,6 +14,7 @@ pub mod review;
 pub mod routes;
 pub mod session_check;
 pub mod settings;
+mod size_ratchet;
 pub mod stall;
 pub mod state;
 pub mod width;

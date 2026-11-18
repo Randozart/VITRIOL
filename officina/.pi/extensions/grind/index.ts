@@ -20,6 +20,7 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { agentModeFactsPath } from "../_shared/agent-mode.ts";
+import { compactOnFinish } from "../_shared/compact-on-finish.ts";
 import {
   decide,
   freshState,
@@ -253,6 +254,13 @@ export default function (pi: ExtensionAPI) {
     if (decision.reason === "mode-changed" || decision.reason === "user-input") return;
     const kind = decision.reason === "done" ? "info" : "warning";
     notify(loopCtx, `grind: ${decision.note}`, kind as "info" | "warning");
+    // The loop is over and nothing is in flight: the one moment where a
+    // compaction is free of partial tool output and the context is fattest
+    // (2026-11-18). Guarded by fill, cooldown and a one-shot stamp.
+    const compact = compactOnFinish(loopCtx as never, `grind ${decision.reason}`);
+    if (compact.requested) {
+      notify(loopCtx, "grind: compacting the finished run", "info");
+    }
   });
 
   pi.on("session_start", (_event, ctx) => {

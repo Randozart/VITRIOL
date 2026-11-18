@@ -23,6 +23,7 @@ export type EventSource =
   | "lc-tasks"
   | "lc-perms"
   | "lc-lane"
+  | "lc-compact"
   | "lc-format"
   | "lc-churn"
   | "lc-fidelity"

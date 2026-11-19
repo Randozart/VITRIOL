@@ -26,10 +26,26 @@ pub struct Shape {
     pub expect: Option<&'static str>,
 }
 
+/// The fact the deep-recall guard asks for. It lives in **section 1** — as far
+/// back as the prompt goes — so an answer proves retrieval, not recency.
+pub const RECALL_FACT: &str = "cache_max_gb = 61";
+/// The recalled token; distinctive enough that a lucky number cannot match.
+pub const RECALL_EXPECT: &str = "61";
+
 /// Filler that makes a deep-context prompt without being nonsense.
+///
+/// Section 1 carries [`RECALL_FACT`]; every other section is filler. Eviction
+/// drops cells by score, and position 1 is exactly the kind of far-back cell a
+/// score-driven sweep is tempted to drop — which is why the guard sits there.
 fn deep_context(filler: &str, repeats: usize) -> String {
     (0..repeats)
-        .map(|i| format!("### section {i}\n{filler}\n"))
+        .map(|i| {
+            if i == 1 {
+                format!("### section {i}\n{filler} The budget is {RECALL_FACT}.\n")
+            } else {
+                format!("### section {i}\n{filler}\n")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -113,7 +129,9 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             system: "Answer from the document. If the fact is absent, say MISSING.",
             user: format!(
                 "{}\n### question\nWhat is the exact cache budget value (cache_max_gb) stated in \
-                 the second section, and what eviction policy does it describe?",
+                 the second section? Reply with the number only, then one short sentence about \
+                 the eviction policy, then list every section number in order (1, 2, 3, ...) so \
+                 the answer is long enough to cross a small window mid-generation.",
                 deep_context(
                     "The engine mirrors slot states to disk under a budget, prunes by last access, \
                      and exempts the newest snapshot and the in-flight file. Config keys ride the \
@@ -124,7 +142,7 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             schema: None,
             // The recall guard: the number appears in the filler, so an answer
             // that lost its memory cannot contain it.
-            expect: Some("cache_max_gb"),
+            expect: Some(RECALL_EXPECT),
         },
     ]
 }

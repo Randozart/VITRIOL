@@ -67,6 +67,12 @@ pub struct Sample {
     pub valid: Option<bool>,
     /// True when the answer contains the shape's recall guard (None = not asked).
     pub recall_ok: Option<bool>,
+    /// First 200 characters of a guarded answer.
+    ///
+    /// A `RECALL LOST` verdict with no evidence is unfalsifiable: the operator
+    /// cannot tell a model that never read the fact from a guard that looks for
+    /// the wrong string. Only recorded when the shape carries a guard.
+    pub answer_head: Option<String>,
 }
 
 /// Median of a list, ignoring NaN. Empty input yields NaN rather than panicking.

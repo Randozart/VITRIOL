@@ -187,6 +187,32 @@ outranks tokens absolutely.
 > **Not yet run against the real 27B: that needs a window with the daily driver stopped** (weights
 > occupy both GPUs), which is exactly why the matrix is printed first.
 
+**RESULT 2026-11-19 — the experiment is a negative result, and a useful one: the knob is INERT in the live
+configuration.** Evidence (`experiments/density-e6-eviction-2026-11-19.json`):
+
+| observation | value |
+|---|---|
+| `kv_ejected_total` across arms `score_every ∈ {8,16,32}` | **0** |
+| decode throughput, all arms | 18.2–19.5 tok/s (no separation) |
+| recall guard (with `--reasoning off`) | recalled in every accepted run |
+| over-window request | `400 request (8459 tokens) exceeds the available context size (8192 tokens)` |
+| request that reached the edge | `stop processing: n_tokens = 8191, truncated = 1` |
+
+`evict_sparse()` is called only when `find_slot()` fails (`llama-kv-cache.cpp:874`), i.e. when the window is
+full, but the server's admission control (`server-context.cpp:3658`) refuses any request whose prompt +
+`n_predict` exceeds the slot window. A single request therefore **cannot** fill the cache, so eviction never
+runs at `--parallel 1`. Eviction becomes reachable only with `--parallel > 1` over a shared `--kv-unified`
+allocation, or with an eager floor (`VITRIOL_KV_FLOOR > 0`, off in the live config).
+
+That reframes the question: `score_every` is not a depth knob, it is a **multi-session** knob — it belongs
+with the S3 capacity work (4 live sessions), not with single-lane depth tuning. Sweeping it on one lane
+measures nothing, which is presumably why nobody ever did.
+
+The first sweep also produced a false `RECALL LOST` on every run. Cause: the engine ran without
+`--reasoning off`, so the reasoning stream ate the output budget and `content` came back empty. The guard
+did its job — and the fix was to record `answer_head` (first 200 chars), because a recall verdict with no
+evidence is unfalsifiable.
+
 **Hypothesis:** `score_every = 16` and the default `n_sinks` were chosen conservatively, not measured.
 **Method:** sweep `score_every ∈ {8, 16, 32}` × `n_sinks ∈ {4, 32, 128}` at 70k/150k filled, measuring
 `llamacpp:kv_ejected_total`, decode t/s, and a recall probe (does the model still answer a question
@@ -392,6 +418,32 @@ outranks tokens absolutely.
 > fact reports `RECALL LOST` rather than a pretty number. Verified end-to-end against a stub engine.
 > **Not yet run against the real 27B: that needs a window with the daily driver stopped** (weights
 > occupy both GPUs), which is exactly why the matrix is printed first.
+
+**RESULT 2026-11-19 — the experiment is a negative result, and a useful one: the knob is INERT in the live
+configuration.** Evidence (`experiments/density-e6-eviction-2026-11-19.json`):
+
+| observation | value |
+|---|---|
+| `kv_ejected_total` across arms `score_every ∈ {8,16,32}` | **0** |
+| decode throughput, all arms | 18.2–19.5 tok/s (no separation) |
+| recall guard (with `--reasoning off`) | recalled in every accepted run |
+| over-window request | `400 request (8459 tokens) exceeds the available context size (8192 tokens)` |
+| request that reached the edge | `stop processing: n_tokens = 8191, truncated = 1` |
+
+`evict_sparse()` is called only when `find_slot()` fails (`llama-kv-cache.cpp:874`), i.e. when the window is
+full, but the server's admission control (`server-context.cpp:3658`) refuses any request whose prompt +
+`n_predict` exceeds the slot window. A single request therefore **cannot** fill the cache, so eviction never
+runs at `--parallel 1`. Eviction becomes reachable only with `--parallel > 1` over a shared `--kv-unified`
+allocation, or with an eager floor (`VITRIOL_KV_FLOOR > 0`, off in the live config).
+
+That reframes the question: `score_every` is not a depth knob, it is a **multi-session** knob — it belongs
+with the S3 capacity work (4 live sessions), not with single-lane depth tuning. Sweeping it on one lane
+measures nothing, which is presumably why nobody ever did.
+
+The first sweep also produced a false `RECALL LOST` on every run. Cause: the engine ran without
+`--reasoning off`, so the reasoning stream ate the output budget and `content` came back empty. The guard
+did its job — and the fix was to record `answer_head` (first 200 chars), because a recall verdict with no
+evidence is unfalsifiable.
 
 **Hypothesis:** `score_every = 16` and the default `n_sinks` were chosen conservatively, not measured.
 **Method:** sweep `score_every ∈ {8, 16, 32}` × `n_sinks ∈ {4, 32, 128}` at 70k/150k filled, measuring

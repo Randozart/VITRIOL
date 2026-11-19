@@ -1,0 +1,29 @@
+{
+  "experiment": "E6 eviction tuning (score_every)",
+  "measured_at": "2026-11-19T08:15",
+  "verdict": "INERT at parallel=1: eviction is unreachable, so score_every cannot trade recall for speed",
+  "evidence": {
+    "admission_control": "tools/server/server-context.cpp:3658 rejects any request whose prompt+n_predict exceeds the slot window",
+    "observed_errors": [
+      "request (33844 tokens) exceeds the available context size (16384 tokens)",
+      "request (8459 tokens) exceeds the available context size (8192 tokens)"
+    ],
+    "window_edge_log": "slot release: id 0 | task 466 | stop processing: n_tokens = 8191, truncated = 1",
+    "kv_ejected_total": "0 across every arm and every probe",
+    "arms_run": [
+      "VITRIOL_KV_SCORE_EVERY=8",
+      "=16",
+      "=32"
+    ],
+    "decode_tps": "~18.2-19.5 tok/s, no arm separation",
+    "recall_guard": "recalled in every accepted run once --reasoning off was set"
+  },
+  "findings": [
+    "RECALL LOST in the first sweep was a harness artifact: reasoning mode consumed the output budget and left content empty. The guard caught it \u2014 the snippet field (answer_head) is what made the artifact visible.",
+    "evict_sparse only runs when find_slot() fails (llama-kv-cache.cpp:874), which requires the window to be full; admission control prevents a single request from ever filling it.",
+    "Reachable configurations for eviction: --parallel > 1 with a shared --kv-unified allocation, or an eager floor (VITRIOL_KV_FLOOR > 0, off in the live config).",
+    "So the knob is scoped to multi-session pressure, not single-lane depth."
+  ],
+  "engine": "engine/build/bin/vitriol-server, Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf, -c 4096 and -c 8192 probes, --reasoning off, MTP off",
+  "restored": "live unit restarted after the window; n_ctx 262144, fingerprint ts=27,21 c=262144 score=probe"
+}

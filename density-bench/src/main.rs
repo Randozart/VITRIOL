@@ -267,15 +267,35 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
                             None => "",
                         }
                     ),
-                    Err(e) => eprintln!("  {:<12} run {} failed: {e}", shape.id, run + 1),
+                    Err(e) => eprintln!("  {:<12} run {} failed: {e:#}", shape.id, run + 1),
                 }
             }
         }
+        print_eviction_metrics(&args.url);
         let _ = child.kill();
         let _ = child.wait();
     }
     println!("\n  sweep complete — logs under /tmp/density-sweep-arm*.log");
     Ok(())
+}
+
+/// Print the arm's eviction counters.
+///
+/// E6's whole question is what eviction DID, not only how fast the answer came
+/// back: a sweep that never ejected anything measured nothing. Failures print a
+/// note rather than aborting the arm.
+fn print_eviction_metrics(url: &str) {
+    let endpoint = format!("{}/metrics", url.trim_end_matches('/'));
+    let Ok(res) = ureq::get(&endpoint).timeout(std::time::Duration::from_secs(5)).call() else {
+        println!("  metrics unavailable at {endpoint}");
+        return;
+    };
+    let body = res.into_string().unwrap_or_default();
+    for line in body.lines() {
+        if line.contains("kv_ejected_total") || line.contains("kv_cache_bytes") {
+            println!("  {line}");
+        }
+    }
 }
 
 /// Poll `/health` until the engine answers or the deadline passes.
@@ -368,7 +388,7 @@ fn main() -> Result<()> {
                         samples.push(s);
                     }
                     Err(e) => {
-                        eprintln!("  {:<12} {:<9} run {} failed: {e}", shape.id, arm, run + 1)
+                        eprintln!("  {:<12} {:<9} run {} failed: {e:#}", shape.id, arm, run + 1)
                     }
                 }
             }

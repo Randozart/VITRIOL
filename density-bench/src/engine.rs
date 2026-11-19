@@ -138,6 +138,9 @@ impl Client {
         let recall_ok = shape
             .expect
             .map(|needle| crate::sample::contains(&content, needle));
+        let answer_head = shape
+            .expect
+            .map(|_| content.trim().chars().take(200).collect());
         Ok(Sample {
             shape: shape.id.to_string(),
             arm: arm.to_string(),
@@ -147,6 +150,7 @@ impl Client {
             content_chars: content.trim().chars().count(),
             valid,
             recall_ok,
+            answer_head,
         })
     }
 }

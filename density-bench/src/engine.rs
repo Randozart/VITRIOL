@@ -93,7 +93,12 @@ impl Client {
     }
 
     /// Non-streamed pass: authoritative timings + the content we validate.
-    fn timed(&self, shape: &Shape, style: RequestStyle) -> Result<(Timings, String)> {
+    /// Non-streamed pass: timings, content, reasoning chars, finish reason.
+    fn timed(
+        &self,
+        shape: &Shape,
+        style: RequestStyle,
+    ) -> Result<(Timings, String, Option<usize>, Option<String>)> {
         let body = self.body(shape, style, false);
         let res = ureq::post(&self.endpoint())
             .set("content-type", "application/json")
@@ -106,7 +111,16 @@ impl Client {
             .as_str()
             .unwrap_or_default()
             .to_string();
-        Ok((timings, content))
+        // Reasoning hygiene (2026-11-19): an unbudgeted thinker returns an empty
+        // answer with finish_reason=length. Both numbers travel with the sample so
+        // "the model said nothing" can never be mistaken for "the model was wrong".
+        let reasoning_chars = value["choices"][0]["message"]["reasoning_content"]
+            .as_str()
+            .map(|r| r.chars().count());
+        let finish_reason = value["choices"][0]["finish_reason"]
+            .as_str()
+            .map(str::to_string);
+        Ok((timings, content, reasoning_chars, finish_reason))
     }
 
     /// Streamed pass: seconds to first content delta and a delta-measured rate.
@@ -152,7 +166,7 @@ impl Client {
     /// Run one sample. `label` is recorded verbatim (engine knob + style), so an
     /// artifact always says what was actually asked.
     pub fn run(&self, shape: &Shape, label: &str, style: RequestStyle) -> Result<Sample> {
-        let (timings, content) = self.timed(shape, style)?;
+        let (timings, content, reasoning_chars, finish_reason) = self.timed(shape, style)?;
         let (ttft_s, stream_tps) = if self.stream {
             self.streamed(shape, style).unwrap_or((f64::NAN, 0.0))
         } else {
@@ -186,6 +200,8 @@ impl Client {
             ttft_s,
             stream_tps,
             content_chars: content.trim().chars().count(),
+            reasoning_chars,
+            finish_reason,
             valid,
             recall_ok,
             answer_head,

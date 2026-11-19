@@ -80,6 +80,15 @@ pub struct Sample {
     pub expanded_chars: Option<usize>,
     /// Symbols the model invented that the legend cannot decode (I4 failure).
     pub invented: Option<String>,
+    /// Reasoning characters the engine returned alongside the answer (2026-11-19).
+    ///
+    /// Recorded because an unbudgeted thinker spends `n_predict` on thinking and
+    /// returns an EMPTY answer with `finish_reason=length` — a sample that looks
+    /// like "the model said nothing" unless both numbers are kept.
+    pub reasoning_chars: Option<usize>,
+    /// Engine stop reason ("stop", "length", ...): distinguishes a short answer
+    /// from a truncated one that ran out of budget.
+    pub finish_reason: Option<String>,
 }
 
 /// Median of a list, ignoring NaN. Empty input yields NaN rather than panicking.

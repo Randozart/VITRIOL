@@ -426,7 +426,7 @@ fn main() -> Result<()> {
                     Ok(s) => {
                         println!(
                             "  {:<12} {:<9} run {} · prompt {:>7.1} tok/s · decode {:>6.2} tok/s · \
-                             ttft {:>6.2}s · {} chars{}{}{}",
+                             ttft {:>6.2}s · {} chars{}{}{}{}",
                             shape.id,
                             arm.name(),
                             run + 1,
@@ -443,6 +443,12 @@ fn main() -> Result<()> {
                                 Some(true) => " · recalled",
                                 Some(false) => " · RECALL LOST",
                                 None => "",
+                            },
+                            // A truncated answer is not a short answer: say so.
+                            match (&s.content_chars, &s.finish_reason) {
+                                (0, Some(f)) => format!(" · EMPTY ANSWER (finish={f})"),
+                                (_, Some(f)) if f != "stop" => format!(" · finish={f}"),
+                                _ => String::new(),
                             },
                             match (&s.expanded_chars, &s.invented) {
                                 (_, Some(sym)) => format!(" · INVENTED {sym:?}"),

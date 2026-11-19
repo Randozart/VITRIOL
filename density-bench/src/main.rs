@@ -18,12 +18,14 @@
 //   * `--deep-sections` states the depth instead of a token count (a window is
 //     not a fill); 40 sections ≈ 1.4k prompt tokens, 400 ≈ 14k.
 
+mod arms;
 mod engine;
 mod sample;
 mod shapes;
 mod sweep;
 
 use anyhow::Result;
+use arms::RequestStyle;
 use engine::Client;
 use sample::{median, Sample};
 use shapes::Shape;
@@ -31,7 +33,9 @@ use shapes::Shape;
 struct Args {
     url: String,
     model: String,
-    arms: Vec<String>,
+    arms: Vec<RequestStyle>,
+    /// One style applied to every sweep arm (engine knob × request style).
+    sweep_style: RequestStyle,
     shape_filter: Vec<String>,
     repeats: usize,
     max_tokens: u32,
@@ -61,7 +65,9 @@ OPTIONS:
   --url URL            engine base URL (default http://127.0.0.1:8279)
   --model NAME         model name to report in the artifact
   --arm NAME           arm to measure; repeatable (default: baseline)
-                       baseline = plain request, grammar = request + json_schema
+                       baseline = plain request, grammar = request + json_schema.
+                       In sweep mode --arm applies that style to every engine arm,
+                       so one run can cross an engine knob with a request style.
   --shapes LIST        comma-separated subset of structured,code-edit,deep-recall
   --repeats N          samples per arm per shape (default 3)
   --max-tokens N       output cap per request (default 256)
@@ -76,6 +82,7 @@ fn parse_args() -> Result<Args> {
         url: "http://127.0.0.1:8279".into(),
         model: "unknown".into(),
         arms: Vec::new(),
+        sweep_style: RequestStyle::Baseline,
         shape_filter: Vec::new(),
         repeats: 3,
         max_tokens: 256,
@@ -107,7 +114,12 @@ fn parse_args() -> Result<Args> {
                 i += 2;
             }
             "--arm" => {
-                args.arms.push(value(i)?);
+                let name = value(i)?;
+                let style = RequestStyle::from_name(&name).ok_or_else(|| {
+                    anyhow::anyhow!("unknown arm {name} (known: {})", RequestStyle::names())
+                })?;
+                args.arms.push(style);
+                args.sweep_style = style;
                 i += 2;
             }
             "--shapes" => {
@@ -169,7 +181,8 @@ fn parse_args() -> Result<Args> {
         }
     }
     if args.arms.is_empty() {
-        args.arms.push("baseline".into());
+        args.arms.push(RequestStyle::Baseline);
+        args.sweep_style = RequestStyle::Baseline;
     }
     if args.repeats == 0 {
         anyhow::bail!("--repeats must be at least 1");
@@ -249,7 +262,8 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
         };
         for shape in shapes {
             for run in 0..args.repeats {
-                match client.run(shape, &arm.label()) {
+                let label = sweep_label(&arm.label(), args.sweep_style);
+                match client.run(shape, &label, args.sweep_style) {
                     Ok(s) => println!(
                         "  {:<12} run {} · decode {:>6.2} tok/s · {} tok{}{}",
                         shape.id,
@@ -277,6 +291,27 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
     }
     println!("\n  sweep complete — logs under /tmp/density-sweep-arm*.log");
     Ok(())
+}
+
+/// I3: an arm's recorded label names the engine knobs *and* the request style.
+///
+/// Before the refactor `sweep` handed its engine label to the request builder as
+/// if it were a style, so "grammar" matched nothing and the report lied.
+fn sweep_label(engine_arm: &str, style: RequestStyle) -> String {
+    format!("{engine_arm} · {}", style.name())
+}
+
+#[cfg(test)]
+mod sweep_label_tests {
+    use super::*;
+
+    #[test]
+    fn i3_the_label_names_both_axes() {
+        let label = sweep_label("VITRIOL_KV_SCORE_EVERY=8", RequestStyle::Grammar);
+        assert!(label.contains("VITRIOL_KV_SCORE_EVERY=8"));
+        assert!(label.ends_with("· grammar"));
+        assert_eq!(sweep_label("", RequestStyle::Baseline), " · baseline");
+    }
 }
 
 /// Print the arm's eviction counters.
@@ -348,7 +383,11 @@ fn main() -> Result<()> {
     println!("  fingerprint: {}", fingerprint(&args.url));
     println!(
         "  arms   : {} · repeats {} · max_tokens {} · deep_sections {}",
-        args.arms.join(" + "),
+        args.arms
+            .iter()
+            .map(|a| a.name())
+            .collect::<Vec<_>>()
+            .join(" + "),
         args.repeats,
         args.max_tokens,
         args.deep_sections
@@ -359,19 +398,19 @@ fn main() -> Result<()> {
         // Paired measurement: the baseline is re-measured next to every arm, in
         // the same instant, because drift on this box is larger than most effects.
         let mut arms = args.arms.clone();
-        if !arms.iter().any(|a| a == "baseline") {
-            arms.insert(0, "baseline".into());
+        if !arms.contains(&RequestStyle::Baseline) {
+            arms.insert(0, RequestStyle::Baseline);
         }
         println!("  shape  : {} ({})", shape.id, shape.note);
         for arm in &arms {
             for run in 0..args.repeats {
-                match client.run(shape, arm) {
+                match client.run(shape, arm.name(), *arm) {
                     Ok(s) => {
                         println!(
                             "  {:<12} {:<9} run {} · prompt {:>7.1} tok/s · decode {:>6.2} tok/s · \
                              ttft {:>6.2}s · {} chars{}{}",
                             shape.id,
-                            arm,
+                            arm.name(),
                             run + 1,
                             s.timings.prompt_tps(),
                             s.timings.decode_tps(),
@@ -394,7 +433,7 @@ fn main() -> Result<()> {
                         eprintln!(
                             "  {:<12} {:<9} run {} failed: {e:#}",
                             shape.id,
-                            arm,
+                            arm.name(),
                             run + 1
                         )
                     }

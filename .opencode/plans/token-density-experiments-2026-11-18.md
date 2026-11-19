@@ -473,7 +473,7 @@ amnesia. **Effort:** low–medium (sweep script + recall set). **Kill if:** reca
 | 4 | E2 telegraphic | 1 day | **accuracy** (guarded) | output-token budget |
 | 5 | E4 MTP × grammar | ½ day | none | draft depth |
 | 6 | E5 Chinese CoT | ½ day | accuracy | close the question |
-| 7 | E3 lookup drafter | 1–2 weeks | none | the headline decode number |
+| 7 | E3 lookup drafter | **½ day — see correction** | none | the headline decode number |
 
 E1 first because it is the only candidate that cannot regress anything: it is per-request, harness-only,
 and reversible by deleting a table entry.
@@ -505,3 +505,9 @@ recall, accuracy) does not regress. Anything inside noise is re-run once, then c
 - **I3** a guard metric (recall / accuracy / valid-parse) is measured in the same run as any speed
   metric; a speed win with a guard regression is a loss.
 - **I4** experimental branches never merge to `main` without a second, independent measurement run.
+
+> **CORRECTION 2026-11-19:** E3 is not a port. `vitriol-server --help` and
+> `engine/common/speculative.cpp` show n-gram lookup speculative decoding is already in-tree
+> (`--spec-type ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` plus
+> `--spec-ngram-*` sizing flags). E3 therefore starts as a configuration sweep against the live
+> `spec=mtp:2` point. Plan: `.opencode/plans/density-e2-e4-e5-plan-2026-11-19.md` §4.

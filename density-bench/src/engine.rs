@@ -11,6 +11,7 @@ use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader};
 use std::time::Instant;
 
+use crate::arms::RequestStyle;
 use crate::sample::{satisfies, Sample, Timings};
 use crate::shapes::Shape;
 
@@ -36,7 +37,9 @@ pub fn content_of(line: &str) -> Option<String> {
 }
 
 impl Client {
-    fn body(&self, shape: &Shape, arm: &str, stream: bool) -> serde_json::Value {
+    /// Request body for one style. `Baseline` is the plain call; a style may only
+    /// change instructions or `response_format`, never the shape's schema (I2).
+    fn body(&self, shape: &Shape, style: RequestStyle, stream: bool) -> serde_json::Value {
         let mut body = serde_json::json!({
             "messages": [
                 { "role": "system", "content": shape.system },
@@ -46,7 +49,7 @@ impl Client {
             "temperature": 0,
             "stream": stream,
         });
-        if arm == "grammar" {
+        if style == RequestStyle::Grammar {
             if let Some(schema) = &shape.schema {
                 body["response_format"] = serde_json::json!({
                     "type": "json_schema",
@@ -62,8 +65,8 @@ impl Client {
     }
 
     /// Non-streamed pass: authoritative timings + the content we validate.
-    fn timed(&self, shape: &Shape, arm: &str) -> Result<(Timings, String)> {
-        let body = self.body(shape, arm, false);
+    fn timed(&self, shape: &Shape, style: RequestStyle) -> Result<(Timings, String)> {
+        let body = self.body(shape, style, false);
         let res = ureq::post(&self.endpoint())
             .set("content-type", "application/json")
             .timeout(std::time::Duration::from_secs(1800))
@@ -79,8 +82,8 @@ impl Client {
     }
 
     /// Streamed pass: seconds to first content delta and a delta-measured rate.
-    fn streamed(&self, shape: &Shape, arm: &str) -> Result<(f64, f64)> {
-        let body = self.body(shape, arm, true);
+    fn streamed(&self, shape: &Shape, style: RequestStyle) -> Result<(f64, f64)> {
+        let body = self.body(shape, style, true);
         let started = Instant::now();
         let res = ureq::post(&self.endpoint())
             .set("content-type", "application/json")
@@ -118,10 +121,12 @@ impl Client {
     }
 
     /// Measure one sample: engine timings, TTFT, validity.
-    pub fn run(&self, shape: &Shape, arm: &str) -> Result<Sample> {
-        let (timings, content) = self.timed(shape, arm)?;
+    /// Run one sample. `label` is recorded verbatim (engine knob + style), so an
+    /// artifact always says what was actually asked.
+    pub fn run(&self, shape: &Shape, label: &str, style: RequestStyle) -> Result<Sample> {
+        let (timings, content) = self.timed(shape, style)?;
         let (ttft_s, stream_tps) = if self.stream {
-            self.streamed(shape, arm).unwrap_or((f64::NAN, 0.0))
+            self.streamed(shape, style).unwrap_or((f64::NAN, 0.0))
         } else {
             (f64::NAN, 0.0)
         };
@@ -143,7 +148,7 @@ impl Client {
             .map(|_| content.trim().chars().take(200).collect());
         Ok(Sample {
             shape: shape.id.to_string(),
-            arm: arm.to_string(),
+            arm: label.to_string(),
             timings,
             ttft_s,
             stream_tps,
@@ -175,6 +180,58 @@ mod tests {
     }
 
     #[test]
+    fn i1_baseline_body_is_a_golden_plain_request() {
+        // Parity invariant: with no style, the request must be exactly what it was
+        // before styles existed. Any future style work that leaks into the
+        // baseline shows up here as a diff, not as a mysterious benchmark drift.
+        let client = Client {
+            base: "http://x".into(),
+            model: "m".into(),
+            max_tokens: 64,
+            stream: false,
+        };
+        let shape = &crate::shapes::all(4)[0];
+        let body = client.body(shape, RequestStyle::Baseline, false);
+        let expected = serde_json::json!({
+            "messages": [
+                { "role": "system", "content": shape.system },
+                { "role": "user", "content": shape.user }
+            ],
+            "max_tokens": 64,
+            "temperature": 0,
+            "stream": false,
+        });
+        assert_eq!(body, expected);
+    }
+
+    #[test]
+    fn i2_no_style_changes_the_declared_schema() {
+        // A style may add `response_format`; it may never edit the shape's schema,
+        // or two arms would be measuring different questions.
+        for shape in crate::shapes::all(4) {
+            let client = Client {
+                base: "http://x".into(),
+                model: "m".into(),
+                max_tokens: 64,
+                stream: false,
+            };
+            let body = client.body(&shape, RequestStyle::Grammar, false);
+            match (&shape.schema, body.get("response_format")) {
+                (Some(schema), Some(attached)) => {
+                    assert_eq!(&attached["json_schema"]["schema"], schema);
+                }
+                (None, None) => {}
+                (declared, attached) => panic!(
+                    "shape {} declares {:?} but attached {:?}",
+                    shape.id,
+                    declared.is_some(),
+                    attached.is_some()
+                ),
+            }
+        }
+    }
+
+    #[test]
     fn grammar_arm_attaches_the_schema_and_baseline_does_not() {
         let client = Client {
             base: "http://127.0.0.1:1".into(),
@@ -187,9 +244,9 @@ mod tests {
             .iter()
             .find(|s| s.id == "structured")
             .expect("structured shape");
-        let plain = client.body(shape, "baseline", false);
+        let plain = client.body(shape, RequestStyle::Baseline, false);
         assert!(plain.get("response_format").is_none());
-        let grammar = client.body(shape, "grammar", false);
+        let grammar = client.body(shape, RequestStyle::Grammar, false);
         assert_eq!(grammar["response_format"]["type"], "json_schema");
         assert_eq!(
             grammar["response_format"]["json_schema"]["schema"]["type"],
@@ -212,7 +269,7 @@ mod tests {
             .iter()
             .find(|s| s.id == "code-edit")
             .expect("prose shape");
-        let body = client.body(prose, "grammar", false);
+        let body = client.body(prose, RequestStyle::Grammar, false);
         assert!(body.get("response_format").is_none());
     }
 }

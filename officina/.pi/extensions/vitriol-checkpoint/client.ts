@@ -15,7 +15,6 @@
 // Layer sovereignty (Rule 2): HTTP API only — the ONLY engine surface.
 // Kill switch: TRIS_NO_VITRIOL_CKPT=1. Autosave cadence: TRIS_CKPT_EVERY_TURNS.
 
-
 /** Checkpoint extension config. */
 export interface CkptConfig {
   enabled: boolean;
@@ -23,6 +22,7 @@ export interface CkptConfig {
   slot: number;
   everyTurns: number; // 0 = autosave off (manual tool still available)
   sessionDir: string; // crash marker dir (workspace-relative)
+  keepTurns: number; // retention ring per session (cap-breach fix 2026-11-19)
 }
 
 export function ckptConfig(env: NodeJS.ProcessEnv = process.env): CkptConfig {
@@ -30,12 +30,21 @@ export function ckptConfig(env: NodeJS.ProcessEnv = process.env): CkptConfig {
     .replace(/\/+$/, "")
     .replace(/\/v1$/, "");
   const every = Number(env.TRIS_CKPT_EVERY_TURNS ?? "10");
+  const keep = Number(env.TRIS_CKPT_KEEP ?? "3");
   return {
     enabled: env.TRIS_NO_VITRIOL_CKPT !== "1",
     endpoint: base || "http://127.0.0.1:8279",
-    slot: Number.isFinite(Number(env.TRIS_CKPT_SLOT)) ? Math.max(0, Math.floor(Number(env.TRIS_CKPT_SLOT ?? 0))) : 0,
+    slot: Number.isFinite(Number(env.TRIS_CKPT_SLOT))
+      ? Math.max(0, Math.floor(Number(env.TRIS_CKPT_SLOT ?? 0)))
+      : 0,
     everyTurns: Number.isFinite(every) && every >= 0 ? Math.floor(every) : 10,
     sessionDir: env.TRIS_CKPT_DIR || ".pi/ckpt",
+    // 2026-11-19 cap breach: every turn file is a full ~2.5 GiB slot state in
+    // slot_save_path. The engine's budget scan (server-task.cpp disk_scan)
+    // counts only cache-*.bin / slot*.bin, so turn files were invisible to
+    // cache_max_gb and a long session wrote hundreds of GiB. Retention ring:
+    // keep the newest `keepTurns` per session, prune the rest.
+    keepTurns: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : 3,
   };
 }
 
@@ -44,8 +53,12 @@ import { turnFilename } from "../_shared/turnkeys.ts";
 export { turnFilename };
 
 /** URL for one slot action (validate shape before the request). */
-export function slotActionUrl(cfg: CkptConfig, action: "save" | "restore"): string {
-  if (action !== "save" && action !== "restore") throw new Error(`bad action: ${action}`);
+export function slotActionUrl(
+  cfg: CkptConfig,
+  action: "save" | "restore",
+): string {
+  if (action !== "save" && action !== "restore")
+    throw new Error(`bad action: ${action}`);
   return `${cfg.endpoint}/slots/${cfg.slot}?action=${action}`;
 }
 
@@ -68,7 +81,8 @@ export interface SlotOpResult {
 
 /** Pull the engine's error message out of either error body shape. Pure. */
 export function engineErrorMessage(status: number, body: unknown): string {
-  if (typeof body !== "object" || body === null || !("error" in body)) return `HTTP ${status}`;
+  if (typeof body !== "object" || body === null || !("error" in body))
+    return `HTTP ${status}`;
   const err = (body as { error: unknown }).error;
   if (typeof err === "string") return err || `HTTP ${status}`;
   const msg = (err as { message?: unknown } | null)?.message;
@@ -83,10 +97,17 @@ export function engineErrorMessage(status: number, body: unknown): string {
  *   error:   {"error":{"code":400,"message":"...","type":"..."}}
  * Unknown 2xx is treated as ok with no numbers — never guess values.
  */
-export function parseSlotOpResponse(status: number, body: unknown): SlotOpResult {
-  if (status >= 400) return { ok: false, status, error: engineErrorMessage(status, body) };
-  const b = (body ?? {}) as Record<string, unknown> & { timings?: Record<string, unknown> };
-  const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+export function parseSlotOpResponse(
+  status: number,
+  body: unknown,
+): SlotOpResult {
+  if (status >= 400)
+    return { ok: false, status, error: engineErrorMessage(status, body) };
+  const b = (body ?? {}) as Record<string, unknown> & {
+    timings?: Record<string, unknown>;
+  };
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" ? v : undefined;
   return {
     ok: true,
     status,
@@ -99,7 +120,9 @@ export function parseSlotOpResponse(status: number, body: unknown): SlotOpResult
 
 /** Marker file path for crash-recovery (session stem keyed, traversal-safe). */
 export function markerPath(dir: string, sessionStem: string): string {
-  const clean = sessionStem.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.{2,}/g, "_");
+  const clean = sessionStem
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .replace(/\.{2,}/g, "_");
   return `${dir}/${clean}.json`;
 }
 
@@ -120,17 +143,62 @@ export function encodeMarker(m: CkptMarker): string {
 export function decodeMarker(text: string): CkptMarker | null {
   try {
     const m = JSON.parse(text) as CkptMarker;
-    if (typeof m.filename !== "string" || typeof m.turn !== "number") return null;
+    if (typeof m.filename !== "string" || typeof m.turn !== "number")
+      return null;
     return m;
   } catch {
     return null;
   }
 }
 
+/**
+ * Retention: which turn files to prune after a save. Pure — the caller does
+ * the unlinking. Keeps the newest `keep` turns of THIS session (by turn
+ * number, not mtime: a crash-back number ordering is the rewind contract),
+ * never touches other sessions' files, slot snapshots, or engine spills.
+ * (2026-11-19: turn files bypass the engine's cache_max_gb budget —
+ * .opencode/plans/turn-checkpoint-cap-breach-2026-11-19.md — so the writer
+ * enforces its own ring.)
+ */
+export function prunableTurnFiles(
+  dirEntries: string[],
+  sessionStem: string,
+  keep: number,
+  justSavedTurn: number,
+): string[] {
+  const prefix = `${sessionStem}-turn-`;
+  const suffix = ".bin";
+  const own: { turn: number; name: string }[] = [];
+  for (const name of dirEntries) {
+    if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+    const mid = name.slice(prefix.length, -suffix.length);
+    if (!/^\d+$/.test(mid)) continue;
+    own.push({ turn: Number(mid), name });
+  }
+  // The just-saved turn is forced into the ring (it may be an old number via
+  // rewind); the remaining slots go to the newest other turns.
+  const others = [...new Set(own.map((o) => o.turn))]
+    .filter((t) => t !== justSavedTurn)
+    .sort((a, b) => b - a);
+  const keepN = Math.max(1, keep);
+  const keepSet = new Set([justSavedTurn, ...others.slice(0, keepN - 1)]);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const o of own) {
+    if (keepSet.has(o.turn) || seen.has(o.name)) continue;
+    seen.add(o.name);
+    out.push(o.name);
+  }
+  return out;
+}
+
 /** True when a marker should be restored: same engine slot + same model. */
-export function restoreIsCompatible(m: CkptMarker, currentModel: string): boolean {
+export function restoreIsCompatible(
+  m: CkptMarker,
+  currentModel: string,
+): boolean {
   if (!currentModel) return true; // unknown current model — engine validates
-    return m.model === currentModel; // restoring into a different model = corruption
+  return m.model === currentModel; // restoring into a different model = corruption
 }
 
 /**
@@ -140,7 +208,10 @@ export function restoreIsCompatible(m: CkptMarker, currentModel: string): boolea
  * written against another session's state — restoring it would land the
  * wrong conversation's KV.
  */
-export function markerMatchesSession(m: CkptMarker, sessionStem: string): boolean {
+export function markerMatchesSession(
+  m: CkptMarker,
+  sessionStem: string,
+): boolean {
   return m.filename === turnFilename(m.turn, sessionStem);
 }
 
@@ -164,4 +235,3 @@ export function checkpointPeerGate(livePeers: number): PeerGateVerdict {
   }
   return { allowed: true };
 }
-

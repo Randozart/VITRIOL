@@ -1,6 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import {
@@ -11,6 +17,7 @@ import {
   markerMatchesSession,
   markerPath,
   parseSlotOpResponse,
+  prunableTurnFiles,
   restoreIsCompatible,
   safeFilename,
   slotActionUrl,
@@ -57,6 +64,32 @@ export default function (pi: ExtensionAPI) {
   let modelId = process.env.TRIS_CKPT_MODEL ?? "";
 
   /** One engine call; never throws — the checkpoint layer must not break a run. */
+  /**
+   * Resolve the engine's slot_save_path: env override first, then the
+   * launcher config (same resolution the TUI's cache.rs uses — one source
+   * of truth on disk). Empty when unset: retention silently skips.
+   */
+  function slotSaveDir(): string | null {
+    const envDir = process.env.VITRIOL_KV_DISK_DIR?.trim();
+    if (envDir) return envDir.replace(/^~\/ /, `${process.env.HOME ?? ""}/`);
+    try {
+      const cfgText = readFileSync(
+        `${process.env.HOME}/.vitriol/config`,
+        "utf8",
+      );
+      for (const line of cfgText.split("\n")) {
+        const m = line.match(/^\s*slot_save_path\s*=\s*(.+)$/);
+        if (m) {
+          const v = m[1].trim();
+          return v.replace(/^~\//, `${process.env.HOME ?? ""}/`);
+        }
+      }
+    } catch {
+      // no config — retention cannot run without a dir
+    }
+    return null;
+  }
+
   async function slotOp(
     action: "save" | "restore",
     filename: string,
@@ -77,6 +110,42 @@ export default function (pi: ExtensionAPI) {
       return parseSlotOpResponse(res.status, body);
     } catch (e) {
       return { ok: false, status: 0, error: (e as Error).message };
+    }
+  }
+
+  /**
+   * Retention sweep (2026-11-19 cap breach): turn checkpoints live in the
+   * engine's slot_save_path, which the engine's cache_max_gb budget does NOT
+   * count (scan matches the cache and slot filename prefixes only —
+   * server-task.cpp:2394).
+   * The writer therefore enforces its own ring: keep the newest
+   * cfg.keepTurns files of THIS session, prune the rest. FS access is the
+   * documented exception to HTTP-only sovereignty (same host, dir from
+   * ~/.vitriol/config, precedent: TUI cache.rs). Best effort — a failure
+   * must never fail the save that triggered it.
+   */
+  function pruneOldTurns(justSavedTurn: number): void {
+    const dir = slotSaveDir();
+    if (!dir) return;
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of prunableTurnFiles(
+      names,
+      sessionStem,
+      cfg.keepTurns,
+      justSavedTurn,
+    )) {
+      // Containment: only ever unlink inside the resolved save dir.
+      if (name.includes("/") || name.includes("\\")) continue;
+      try {
+        unlinkSync(`${dir}/${name}`);
+      } catch {
+        // already gone or unwritable — retention is best effort
+      }
     }
   }
 
@@ -216,6 +285,7 @@ export default function (pi: ExtensionAPI) {
     if (!r.ok) return;
     lastSavedTurn = turn;
     writeMarker(filename, turn);
+    pruneOldTurns(turn);
     emitHarnessEvent(
       harnessEvent("lc-ckpt", "saved", {
         turn,

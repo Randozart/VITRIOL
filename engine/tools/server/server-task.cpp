@@ -745,7 +745,7 @@ json server_task_result_cmpl_final::to_json_anthropic() {
             { "type",      "thinking"            },
             { "thinking",  msg.reasoning_content },
             { "signature", ""                    }
-  // empty signature for local models (no cryptographic verification)
+            // empty signature for local models (no cryptographic verification)
         });
     }
 
@@ -1570,7 +1570,6 @@ std::string server_task_result_metrics::to_metrics() {
          (double) metrics.n_kv_cache_bytes },
     };
 
-
     std::stringstream prometheus;
 
     auto add_items = [&prometheus](const char * type, const std::vector<metric_item> & items) {
@@ -1690,7 +1689,6 @@ std::string server_task_result_metrics::to_metrics() {
 
     return vitriol_mirror_prometheus(prometheus.str());
 }
-
 
 //
 // server_task_result_slot_save_load
@@ -2391,11 +2389,20 @@ static size_t server_prompt_cache_disk_scan(const std::string &                 
         // count toward the budget too (owner 2026-11-17: "that's the whole
         // point") - they are the warm-resume states, so they are the most
         // valuable entries and eviction must see them.
+        // *-turn-*.bin = Officina per-turn checkpoints (vitriol-checkpoint,
+        // contract: _shared/turnkeys.ts). 2026-11-19 cap breach: a long
+        // session wrote hundreds of GiB of these past cache_max_gb because
+        // they matched no pattern and were invisible to the budget. They are
+        // budget-visible and evictable (NOT protected snapshots — the writer
+        // keeps its own keep-last-K ring, so the engine evicting older turns
+        // is exactly the policy the extension enforces client-side).
         const bool        is_state =
             name.rfind("cache-", 0) == 0 && name.size() >= 10 && name.compare(name.size() - 4, 4, ".bin") == 0;
         const bool is_snapshot =
             name.rfind("slot", 0) == 0 && name.size() >= 9 && name.compare(name.size() - 4, 4, ".bin") == 0;
-        if (!is_state && !(include_snapshots && is_snapshot)) {
+        const bool is_turn_checkpoint = name.size() >= 14 && name.compare(name.size() - 4, 4, ".bin") == 0 &&
+                                        name.find("-turn-") != std::string::npos;
+        if (!is_state && !is_turn_checkpoint && !(include_snapshots && is_snapshot)) {
             continue;
         }
         struct stat st;

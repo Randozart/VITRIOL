@@ -260,6 +260,33 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             expect_exact: Some("10"),
             history: Vec::new(),
         },
+        // The easy fixtures above finish thinking in ~40 tokens, so every budget
+        // above 64 is non-binding and the sweep says nothing (measured: identical
+        // output across 0..2048). These two force real deliberation, which is
+        // where a budget bound can actually bite.
+        Shape {
+            id: "exact-hard-mul",
+            note: "five-digit product — thinking is load-bearing, answer exact",
+            system: "Answer with only the integer. No words, no separators, no units.",
+            user: "What is 12345 * 6789?".to_string(),
+            schema: None,
+            expect: None,
+            expect_exact: Some("83810205"),
+            history: Vec::new(),
+        },
+        Shape {
+            id: "exact-hard-chain",
+            note: "ten-step accumulation — order matters, answer exact",
+            system: "Answer with only the integer. No words, no units.",
+            user: "A tank starts empty. Each hour it gains that hour's number of litres \
+                   (hour 1 gains 1, hour 2 gains 2, ... hour 10 gains 10) and then loses 3 \
+                   litres. After 10 hours, how many litres remain?"
+                .to_string(),
+            schema: None,
+            expect: None,
+            expect_exact: Some("25"),
+            history: Vec::new(),
+        },
         Shape {
             id: "exact-trace",
             note: "loop trace — exact answer, wrong by one is wrong",
@@ -282,7 +309,7 @@ mod tests {
     #[test]
     fn every_shape_is_present_and_distinct() {
         let shapes = all(4);
-        assert_eq!(shapes.len(), 10);
+        assert_eq!(shapes.len(), 12);
         let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
         assert_eq!(
             ids,
@@ -296,6 +323,8 @@ mod tests {
                 "preserve-history",
                 "exact-arith",
                 "exact-logic",
+                "exact-hard-mul",
+                "exact-hard-chain",
                 "exact-trace"
             ]
         );

@@ -42,6 +42,8 @@ struct Args {
     max_tokens: u32,
     /// Raw JSON passed through as `chat_template_kwargs` (T1: template arms).
     template_kwargs: Option<String>,
+    /// Thinking budget in tokens (T2). 0 = no thinking at all.
+    think_budget: Option<u32>,
     deep_sections: usize,
     json_out: Option<String>,
     /// Sweep mode inputs (engine binary, base args, dimensions).
@@ -78,6 +80,7 @@ OPTIONS:
   --deep-sections N    size of the deep-recall prompt (default 40)
   --template-kwargs J  JSON sent as chat_template_kwargs, e.g. {\"preserve_thinking\": false}
                        (T1: a template variable becomes an arm without a restart)
+  --think-budget N     enable thinking bounded to N tokens (T2; CROSS x N)
   --json PATH          write the raw samples as JSON
   --no-stream          skip the TTFT pass (tokens only; use on a shared engine)
 "
@@ -93,6 +96,7 @@ fn parse_args() -> Result<Args> {
         repeats: 3,
         max_tokens: 256,
         template_kwargs: None,
+        think_budget: None,
         deep_sections: 40,
         json_out: None,
         no_stream: false,
@@ -177,6 +181,10 @@ fn parse_args() -> Result<Args> {
             "--dry-run" => {
                 args.dry_run = true;
                 i += 1;
+            }
+            "--think-budget" => {
+                args.think_budget = Some(value(i)?.parse()?);
+                i += 2;
             }
             "--template-kwargs" => {
                 args.template_kwargs = Some(value(i)?.to_string());
@@ -295,6 +303,7 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
             model: args.model.clone(),
             max_tokens: args.max_tokens,
             template_kwargs: args.template_kwargs_json()?,
+            think_budget: args.think_budget,
             stream: !args.no_stream,
         };
         for shape in shapes {
@@ -402,6 +411,7 @@ fn main() -> Result<()> {
         model: args.model.clone(),
         max_tokens: args.max_tokens,
         template_kwargs: args.template_kwargs_json()?,
+        think_budget: args.think_budget,
         stream: !args.no_stream,
     };
     let all = shapes::all(args.deep_sections);

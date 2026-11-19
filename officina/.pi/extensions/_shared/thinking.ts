@@ -25,8 +25,33 @@
 /** `[[officina-think]]` or `[[officina-think N]]`. */
 const MARKER = /\[\[officina-think(?:\s+(\d+))?\]\]/gi;
 
-/** Thinking budget used when the marker names none. */
-export const DEFAULT_THINKING_BUDGET = 1024;
+/**
+ * Thinking budget used when the marker names none.
+ *
+ * 256, measured (T2, 2026-11-19) on hard exact-answer tasks — a five-digit
+ * product and a ten-step accumulation — at budgets 8/32/64/128/256/512:
+ *
+ *   8..128 : 0/4 correct. 128 produced CONFIDENT WRONG answers (83810085 and
+ *            83817305 where the answer is 83810205); 64 produced an EMPTY answer
+ *            with finish_reason=stop, the silent-turn failure this module exists
+ *            to prevent.
+ *   256    : 4/4 correct.
+ *   512    : 4/4 correct, at 1.8x the thinking tokens — no accuracy gain.
+ *
+ * So 256 is the floor where thinking actually helps on a task that needs it, and
+ * 1024 (the earlier guess) buys nothing but latency. Easy tasks never bind: they
+ * finish thinking in ~40 tokens whatever the cap.
+ */
+export const DEFAULT_THINKING_BUDGET = 256;
+
+/**
+ * Below this, thinking is not worth enabling at all (same measurement).
+ *
+ * If the request's answer room cannot hold this much thinking, a truncated
+ * thinker is strictly worse than no thinker: it burns the output budget and
+ * returns either nothing or a confidently wrong number.
+ */
+export const MIN_USEFUL_THINKING_BUDGET = 256;
 
 /** Answer room reserved even when the caller's max_tokens is tiny. */
 export const MIN_ANSWER_ROOM = 256;
@@ -127,7 +152,13 @@ export function applyThinkingInstruction(
       return payload;
   }
 
-  const budget = clampBudget(requested, answerRoom(payload));
+  const room = answerRoom(payload);
+  if (room < MIN_USEFUL_THINKING_BUDGET) {
+    // No room for useful thinking: drop it rather than truncate it. The marker is
+    // still stripped — it is an instruction to us, not to the model.
+    return stripMarkers(payload);
+  }
+  const budget = clampBudget(requested, room);
   return {
     ...stripMarkers(payload),
     chat_template_kwargs: {

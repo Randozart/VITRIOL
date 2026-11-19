@@ -31,6 +31,10 @@ pub struct Client {
     /// `preserve_reasoning`, and a template that tests `preserve_thinking`
     /// (the live Qwen3.8 one does) ignores it entirely.
     pub template_kwargs: Option<serde_json::Value>,
+    /// Thinking budget in tokens (T2). `Some(n)` asks the engine to think, bounded
+    /// by `n`: an unbounded thinking request is the failure mode that returns an
+    /// empty answer with `finish_reason=length`, so no arm may omit the bound.
+    pub think_budget: Option<u32>,
 }
 
 /// One SSE chunk's payload, if it carries content.
@@ -98,8 +102,13 @@ impl Client {
             body["messages"][0]["content"] =
                 serde_json::Value::String(format!("{system} {suffix}"));
         }
-        if let Some(kwargs) = &self.template_kwargs {
-            body["chat_template_kwargs"] = kwargs.clone();
+        let mut kwargs = self.template_kwargs.clone().unwrap_or_else(|| serde_json::json!({}));
+        if let Some(budget) = self.think_budget {
+            kwargs["enable_thinking"] = serde_json::Value::Bool(true);
+            body["reasoning_budget_tokens"] = serde_json::Value::from(budget);
+        }
+        if kwargs.as_object().is_some_and(|o| !o.is_empty()) {
+            body["chat_template_kwargs"] = kwargs;
         }
         if style == RequestStyle::Grammar {
             if let Some(schema) = &shape.schema {
@@ -268,6 +277,7 @@ mod tests {
             max_tokens: 64,
             stream: false,
             template_kwargs: None,
+            think_budget: None,
         };
         let shape = &crate::shapes::all(4)[0];
         let body = client.body(shape, RequestStyle::Baseline, false);
@@ -294,6 +304,7 @@ mod tests {
                 max_tokens: 64,
                 stream: false,
             template_kwargs: None,
+            think_budget: None,
             };
             let body = client.body(&shape, RequestStyle::Grammar, false);
             match (&shape.schema, body.get("response_format")) {
@@ -319,6 +330,7 @@ mod tests {
             max_tokens: 64,
             stream: false,
             template_kwargs: None,
+            think_budget: None,
         };
         let all = crate::shapes::all(1);
         let shape = all
@@ -345,6 +357,7 @@ mod tests {
             max_tokens: 64,
             stream: false,
             template_kwargs: None,
+            think_budget: None,
         };
         let all = crate::shapes::all(1);
         let prose = all
@@ -367,6 +380,7 @@ mod tests {
             max_tokens: 8,
             stream: false,
             template_kwargs: None,
+            think_budget: None,
         };
         let shape = crate::shapes::all(4)
             .into_iter()

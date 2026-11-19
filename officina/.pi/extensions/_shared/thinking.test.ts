@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_THINKING_BUDGET,
+  MIN_USEFUL_THINKING_BUDGET,
   MIN_THINKING_BUDGET,
   answerRoom,
   applyThinkingInstruction,
@@ -47,15 +48,30 @@ describe("per-lane thinking (S4)", () => {
     expect(tight.reasoning_budget_tokens).toBe(1024 - 256);
   });
 
-  it("never returns an unrestricted budget, even when max_tokens is tiny", () => {
-    // A degenerate request still produces a finite cap (the floor), because -1
-    // means "nothing can force </think>" and that is the failure we are removing.
+  it("drops thinking entirely when there is no room for a useful budget", () => {
+    // Measured (T2, 2026-11-19): a truncated thinker is the worst outcome — at
+    // budget 64 the answer was EMPTY with finish_reason=stop, at 128 it was
+    // confidently wrong. So a request that cannot afford MIN_USEFUL_THINKING_BUDGET
+    // gets no thinker at all, and the marker is still consumed.
     const out = applyThinkingInstruction(
       withMarker("[[officina-think]]", 100),
       on,
     );
-    expect(out.reasoning_budget_tokens).toBe(MIN_THINKING_BUDGET);
-    expect(out.reasoning_budget_tokens).toBeGreaterThan(0);
+    expect(out.reasoning_budget_tokens).toBeUndefined();
+    expect(out.chat_template_kwargs).toBeUndefined();
+    const messages = out.messages as { content: string }[];
+    expect(messages[0].content).not.toContain("officina-think");
+  });
+
+  it("defaults to the measured floor, not a guess", () => {
+    // 256 is where hard tasks start being answered correctly; 1024 (the earlier
+    // guess) spent 1.8x the thinking tokens for no accuracy gain.
+    const out = applyThinkingInstruction(
+      withMarker("[[officina-think]]", 2048),
+      on,
+    );
+    expect(out.reasoning_budget_tokens).toBe(DEFAULT_THINKING_BUDGET);
+    expect(out.reasoning_budget_tokens).toBe(MIN_USEFUL_THINKING_BUDGET);
   });
 
   it("is off unless the knob says otherwise (negative control)", () => {

@@ -126,9 +126,10 @@ compute_fingerprint() {
 # reasoning_guard: a launch that enables thinking WITHOUT a finite budget is
 # unlaunchable (2026-11-19). Thinking and the answer share n_predict, and the
 # engine only constructs its budget sampler at budget >= 0
-# (common/sampling.cpp:311) — so -1 lets an eager thinker spend every answer
-# token: finish_reason=length with EMPTY content (proven with one request:
-# think+no budget -> content ""; think+budget 24 -> "Red, blue, and yellow.").
+# (common/sampling.cpp:311), so -1 lets an eager thinker spend the whole answer
+# allowance and return finish_reason=length with EMPTY content. Proven with one
+# request: thinking with no budget gave an empty reply; thinking capped at 24
+# gave the correct one-line answer.
 # --dry-run warns and continues (review must not be blocked); a real launch exits 2.
 reasoning_guard() {
     local mode="${1:-off}" budget="${2:--1}"

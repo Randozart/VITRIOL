@@ -293,3 +293,28 @@ is a pressure-relief fallback; neither is a tuning knob.*
 `--reason-lang en|zh` appends a deliberation-language instruction to the system message, leaving the
 task byte-identical. Both arms at the measured budget floor (256). Expected honest null; recorded so
 it stops being an open question.
+
+---
+
+# RESULTS — T4: Chinese vs English CoT (2026-11-19)
+
+Bounded at the measured budget floor (256), `--reason-lang en|zh`, 3 repeats each,
+both arms on the same two hard exact-answer tasks.
+
+| lang | shape | exact | reason chars | out tok | decode |
+|---|---|---|---|---|---|
+| en | exact-hard-chain | 3/3 | 830 | 260 | 31.4 |
+| en | exact-hard-mul   | 3/3 | 342 | 266 | 33.9 |
+| zh | exact-hard-chain | 3/3 | 894 | 260 | 32.2 |
+| zh | exact-hard-mul   | 3/3 | 470 | 266 | 33.1 |
+
+**Honest null, as expected.** Both languages get every task right at budget 256.
+Chinese deliberates in *more* characters (~8–40 % more thinking) for no accuracy
+gain and the same output length. So on this model, "think in Chinese" is not a
+lever for accuracy or economy — it is at best a tie, at worst more thinking
+tokens to spend. Recorded so the open question closes: language of thought does
+not change the answer here.
+
+The useful finding is the budget one: **256 is enough for both languages**, which
+re-confirms T2's floor. If Chinese thought were *sharper* it would show up as
+fewer thinking chars at the same accuracy — it does not.

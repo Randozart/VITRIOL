@@ -44,6 +44,8 @@ struct Args {
     template_kwargs: Option<String>,
     /// Thinking budget in tokens (T2). 0 = no thinking at all.
     think_budget: Option<u32>,
+    /// Language the model is told to think in (T4): "en" (no-op) or "zh".
+    reason_lang: Option<String>,
     deep_sections: usize,
     json_out: Option<String>,
     /// Sweep mode inputs (engine binary, base args, dimensions).
@@ -81,6 +83,7 @@ OPTIONS:
   --template-kwargs J  JSON sent as chat_template_kwargs, e.g. {\"preserve_thinking\": false}
                        (T1: a template variable becomes an arm without a restart)
   --think-budget N     enable thinking bounded to N tokens (T2; CROSS x N)
+  --reason-lang L      tell the model to deliberate in L (en|zh) — T4, same task
   --json PATH          write the raw samples as JSON
   --no-stream          skip the TTFT pass (tokens only; use on a shared engine)
 "
@@ -97,6 +100,7 @@ fn parse_args() -> Result<Args> {
         max_tokens: 256,
         template_kwargs: None,
         think_budget: None,
+        reason_lang: None,
         deep_sections: 40,
         json_out: None,
         no_stream: false,
@@ -182,6 +186,10 @@ fn parse_args() -> Result<Args> {
                 args.dry_run = true;
                 i += 1;
             }
+            "--reason-lang" => {
+                args.reason_lang = Some(value(i)?.to_string());
+                i += 2;
+            }
             "--think-budget" => {
                 args.think_budget = Some(value(i)?.parse()?);
                 i += 2;
@@ -215,6 +223,16 @@ fn parse_args() -> Result<Args> {
 }
 
 impl Args {
+    /// System-message suffix for the reasoning-language arm. `en` is a no-op so
+    /// the control arm is byte-identical to a plain run.
+    fn system_append(&self) -> Option<String> {
+        match self.reason_lang.as_deref() {
+            None | Some("en") => None,
+            Some("zh") => Some("Think in Chinese 中文 before answering; the final answer must still be the integer only.".to_string()),
+            Some(other) => Some(format!("Think in {other} before answering.")),
+        }
+    }
+
     /// Parse `--template-kwargs` once, at the boundary: a typo in the JSON must
     /// fail the run, not silently send no kwargs and make two arms identical.
     fn template_kwargs_json(&self) -> Result<Option<serde_json::Value>> {
@@ -304,6 +322,7 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
             max_tokens: args.max_tokens,
             template_kwargs: args.template_kwargs_json()?,
             think_budget: args.think_budget,
+            system_append: args.system_append(),
             stream: !args.no_stream,
         };
         for shape in shapes {
@@ -412,6 +431,7 @@ fn main() -> Result<()> {
         max_tokens: args.max_tokens,
         template_kwargs: args.template_kwargs_json()?,
         think_budget: args.think_budget,
+        system_append: args.system_append(),
         stream: !args.no_stream,
     };
     let all = shapes::all(args.deep_sections);

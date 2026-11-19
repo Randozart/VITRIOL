@@ -35,6 +35,10 @@ pub struct Client {
     /// by `n`: an unbounded thinking request is the failure mode that returns an
     /// empty answer with `finish_reason=length`, so no arm may omit the bound.
     pub think_budget: Option<u32>,
+    /// Extra line appended to the system message (T4: reason in language X).
+    /// A system instruction rather than a prompt rewrite, so the task itself is
+    /// identical between arms and only the language of deliberation changes.
+    pub system_append: Option<String>,
 }
 
 /// One SSE chunk's payload, if it carries content.
@@ -101,6 +105,11 @@ impl Client {
                 .to_string();
             body["messages"][0]["content"] =
                 serde_json::Value::String(format!("{system} {suffix}"));
+        }
+        if let Some(extra) = &self.system_append {
+            let system = body["messages"][0]["content"].as_str().unwrap_or_default().to_string();
+            body["messages"][0]["content"] =
+                serde_json::Value::String(format!("{system} {extra}"));
         }
         let mut kwargs = self.template_kwargs.clone().unwrap_or_else(|| serde_json::json!({}));
         if let Some(budget) = self.think_budget {
@@ -278,6 +287,7 @@ mod tests {
             stream: false,
             template_kwargs: None,
             think_budget: None,
+            system_append: None,
         };
         let shape = &crate::shapes::all(4)[0];
         let body = client.body(shape, RequestStyle::Baseline, false);
@@ -305,6 +315,7 @@ mod tests {
                 stream: false,
             template_kwargs: None,
             think_budget: None,
+            system_append: None,
             };
             let body = client.body(&shape, RequestStyle::Grammar, false);
             match (&shape.schema, body.get("response_format")) {
@@ -331,6 +342,7 @@ mod tests {
             stream: false,
             template_kwargs: None,
             think_budget: None,
+            system_append: None,
         };
         let all = crate::shapes::all(1);
         let shape = all
@@ -358,6 +370,7 @@ mod tests {
             stream: false,
             template_kwargs: None,
             think_budget: None,
+            system_append: None,
         };
         let all = crate::shapes::all(1);
         let prose = all
@@ -381,6 +394,7 @@ mod tests {
             stream: false,
             template_kwargs: None,
             think_budget: None,
+            system_append: None,
         };
         let shape = crate::shapes::all(4)
             .into_iter()

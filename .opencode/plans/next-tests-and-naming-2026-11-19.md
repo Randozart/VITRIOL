@@ -318,3 +318,27 @@ not change the answer here.
 The useful finding is the budget one: **256 is enough for both languages**, which
 re-confirms T2's floor. If Chinese thought were *sharper* it would show up as
 fewer thinking chars at the same accuracy — it does not.
+
+---
+
+# LIVE VERIFICATION (2026-11-19 13:50) — everything shipped, one restart
+
+Engine restarted via the unit. Evidence, in order:
+
+- **Fingerprint journal** (`~/.vitriol/fingerprint.log`): `... spec=mtp,ngram-simple:2 par=1 ssp=1
+  pr=0 cram=16384 ...` — the new preserve token rides the fingerprint.
+- **Server argv** (`/proc/<MainPID>/cmdline`): `--reasoning off --no-reasoning-preserve` — the
+  default flip is in the actual process, not just the config.
+- **Metric mirror**: `/metrics` now carries BOTH
+  `llamacpp:kv_ejected_total 0` and `vitriol:kv_ejected_total 0`.
+- **Reasoning hygiene**: `reasoning_forced_total 0`, `reasoning_unbounded_total 0` (must stay 0).
+- `/health` → `{"status":"ok"}`.
+
+Provider alias: `loadProviders` provably unifies the engine spellings
+(vitriol IS llamacpp, same object) — pinned by test; the probe fires once per
+endpoint; a swap re-registers under both spellings with the fresh window.
+
+The operator's user override (`~/.config/little-coder/models.json`, a bare
+`llamacpp` entry) resolves through the alias — nothing orphaned. TUI rebuilt and
+installed (b2a1162); restart Officina to pick up both the provider rename and the
+flicker fixes.

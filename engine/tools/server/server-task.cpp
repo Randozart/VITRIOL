@@ -1,27 +1,28 @@
 #include "server-task.h"
 
 #include "build-info.h"
-#include "server-chat.h"
 #include "chat.h"
 #include "common.h"
-#include "reasoning-budget.h"
 #include "json-schema-to-grammar.h"
 #include "llama.h"
+#include "reasoning-budget.h"
 #include "sampling.h"
-#include "speculative.h"
+#include "server-chat.h"
 #include "server-common.h"
+#include "speculative.h"
 
-#include <sstream>
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
-#include <dirent.h>
-#include <thread>
 #include <limits>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <sys/time.h>
+#include <sstream>
+#include <thread>
 
 //
 // task_params
@@ -31,8 +32,8 @@ json task_params::format_logit_bias(const std::vector<llama_logit_bias> & logit_
     json data = json::array();
     for (const auto & lb : logit_bias) {
         data.push_back(json{
-            {"bias", lb.bias},
-            {"token", lb.token},
+            { "bias",  lb.bias  },
+            { "token", lb.token },
         });
     }
     return data;
@@ -47,53 +48,56 @@ json task_params::to_json(bool only_metrics) const {
 
     json lora = json::array();
     for (auto & it : this->lora) {
-        lora.push_back({{"id", it.first}, {"scale", it.second}});
+        lora.push_back({
+            { "id",    it.first  },
+            { "scale", it.second }
+        });
     }
 
     if (only_metrics) {
-        return json {
-            {"seed",                      sampling.seed},
-            {"temperature",               sampling.temp},
-            {"dynatemp_range",            sampling.dynatemp_range},
-            {"dynatemp_exponent",         sampling.dynatemp_exponent},
-            {"top_k",                     sampling.top_k},
-            {"top_p",                     sampling.top_p},
-            {"min_p",                     sampling.min_p},
-            {"top_n_sigma",               sampling.top_n_sigma},
-            {"xtc_probability",           sampling.xtc_probability},
-            {"xtc_threshold",             sampling.xtc_threshold},
-            {"typical_p",                 sampling.typ_p},
-            {"repeat_last_n",             sampling.penalty_last_n},
-            {"repeat_penalty",            sampling.penalty_repeat},
-            {"presence_penalty",          sampling.penalty_present},
-            {"frequency_penalty",         sampling.penalty_freq},
-            {"dry_multiplier",            sampling.dry_multiplier},
-            {"dry_base",                  sampling.dry_base},
-            {"dry_allowed_length",        sampling.dry_allowed_length},
-            {"dry_penalty_last_n",        sampling.dry_penalty_last_n},
-            {"mirostat",                  sampling.mirostat},
-            {"mirostat_tau",              sampling.mirostat_tau},
-            {"mirostat_eta",              sampling.mirostat_eta},
-            {"adaptive_target",           sampling.adaptive_target},
-            {"adaptive_decay",            sampling.adaptive_decay},
-            {"max_tokens",                n_predict},
-            {"n_predict",                 n_predict}, // TODO: deduplicate?
-            {"n_keep",                    n_keep},
-            {"n_discard",                 n_discard},
-            {"ignore_eos",                sampling.ignore_eos},
-            {"stream",                    stream},
-            {"n_probs",                   sampling.n_probs},
-            {"min_keep",                  sampling.min_keep},
-            {"chat_format",               common_chat_format_name(chat_parser_params.format)},
-            {"reasoning_format",          common_reasoning_format_name(chat_parser_params.reasoning_format)},
-            {"reasoning_in_content",      chat_parser_params.reasoning_in_content},
-            {"generation_prompt",         chat_parser_params.generation_prompt},
-            {"samplers",                  samplers},
-            {"speculative.types",         common_speculative_type_name_str(speculative.types)},
-            {"timings_per_token",         timings_per_token},
-            {"post_sampling_probs",       post_sampling_probs},
-            {"backend_sampling",          sampling.backend_sampling},
-            {"lora",                      lora},
+        return json{
+            { "seed",                 sampling.seed                                                     },
+            { "temperature",          sampling.temp                                                     },
+            { "dynatemp_range",       sampling.dynatemp_range                                           },
+            { "dynatemp_exponent",    sampling.dynatemp_exponent                                        },
+            { "top_k",                sampling.top_k                                                    },
+            { "top_p",                sampling.top_p                                                    },
+            { "min_p",                sampling.min_p                                                    },
+            { "top_n_sigma",          sampling.top_n_sigma                                              },
+            { "xtc_probability",      sampling.xtc_probability                                          },
+            { "xtc_threshold",        sampling.xtc_threshold                                            },
+            { "typical_p",            sampling.typ_p                                                    },
+            { "repeat_last_n",        sampling.penalty_last_n                                           },
+            { "repeat_penalty",       sampling.penalty_repeat                                           },
+            { "presence_penalty",     sampling.penalty_present                                          },
+            { "frequency_penalty",    sampling.penalty_freq                                             },
+            { "dry_multiplier",       sampling.dry_multiplier                                           },
+            { "dry_base",             sampling.dry_base                                                 },
+            { "dry_allowed_length",   sampling.dry_allowed_length                                       },
+            { "dry_penalty_last_n",   sampling.dry_penalty_last_n                                       },
+            { "mirostat",             sampling.mirostat                                                 },
+            { "mirostat_tau",         sampling.mirostat_tau                                             },
+            { "mirostat_eta",         sampling.mirostat_eta                                             },
+            { "adaptive_target",      sampling.adaptive_target                                          },
+            { "adaptive_decay",       sampling.adaptive_decay                                           },
+            { "max_tokens",           n_predict                                                         },
+            { "n_predict",            n_predict                                                         }, // TODO: deduplicate?
+            { "n_keep",               n_keep                                                            },
+            { "n_discard",            n_discard                                                         },
+            { "ignore_eos",           sampling.ignore_eos                                               },
+            { "stream",               stream                                                            },
+            { "n_probs",              sampling.n_probs                                                  },
+            { "min_keep",             sampling.min_keep                                                 },
+            { "chat_format",          common_chat_format_name(chat_parser_params.format)                },
+            { "reasoning_format",     common_reasoning_format_name(chat_parser_params.reasoning_format) },
+            { "reasoning_in_content", chat_parser_params.reasoning_in_content                           },
+            { "generation_prompt",    chat_parser_params.generation_prompt                              },
+            { "samplers",             samplers                                                          },
+            { "speculative.types",    common_speculative_type_name_str(speculative.types)               },
+            { "timings_per_token",    timings_per_token                                                 },
+            { "post_sampling_probs",  post_sampling_probs                                               },
+            { "backend_sampling",     sampling.backend_sampling                                         },
+            { "lora",                 lora                                                              },
         };
     }
 
@@ -103,88 +107,84 @@ json task_params::to_json(bool only_metrics) const {
         grammar_triggers.push_back(ct.to_json());
     }
 
-    return json {
-        {"seed",                      sampling.seed},
-        {"temperature",               sampling.temp},
-        {"dynatemp_range",            sampling.dynatemp_range},
-        {"dynatemp_exponent",         sampling.dynatemp_exponent},
-        {"top_k",                     sampling.top_k},
-        {"top_p",                     sampling.top_p},
-        {"min_p",                     sampling.min_p},
-        {"top_n_sigma",               sampling.top_n_sigma},
-        {"xtc_probability",           sampling.xtc_probability},
-        {"xtc_threshold",             sampling.xtc_threshold},
-        {"typical_p",                 sampling.typ_p},
-        {"repeat_last_n",             sampling.penalty_last_n},
-        {"repeat_penalty",            sampling.penalty_repeat},
-        {"presence_penalty",          sampling.penalty_present},
-        {"frequency_penalty",         sampling.penalty_freq},
-        {"dry_multiplier",            sampling.dry_multiplier},
-        {"dry_base",                  sampling.dry_base},
-        {"dry_allowed_length",        sampling.dry_allowed_length},
-        {"dry_penalty_last_n",        sampling.dry_penalty_last_n},
-        {"dry_sequence_breakers",     sampling.dry_sequence_breakers},
-        {"mirostat",                  sampling.mirostat},
-        {"mirostat_tau",              sampling.mirostat_tau},
-        {"mirostat_eta",              sampling.mirostat_eta},
-        {"adaptive_target",           sampling.adaptive_target},
-        {"adaptive_decay",            sampling.adaptive_decay},
-        {"stop",                      antiprompt},
-        {"max_tokens",                n_predict},
-        {"n_predict",                 n_predict}, // TODO: deduplicate?
-        {"n_keep",                    n_keep},
-        {"n_discard",                 n_discard},
-        {"ignore_eos",                sampling.ignore_eos},
-        {"stream",                    stream},
-        {"logit_bias",                format_logit_bias(sampling.logit_bias)},
-        {"n_probs",                   sampling.n_probs},
-        {"min_keep",                  sampling.min_keep},
-        {"grammar",                   common_grammar_value(sampling.grammar)},
-        {"grammar_lazy",              sampling.grammar_lazy},
-        {"grammar_triggers",          grammar_triggers},
-        {"preserved_tokens",          sampling.preserved_tokens},
-        {"chat_format",               common_chat_format_name(chat_parser_params.format)},
-        {"reasoning_format",          common_reasoning_format_name(chat_parser_params.reasoning_format)},
-        {"reasoning_in_content",      chat_parser_params.reasoning_in_content},
-        {"generation_prompt",         chat_parser_params.generation_prompt},
-        {"samplers",                  samplers},
-        {"speculative.types",         common_speculative_type_name_str(speculative.types)},
-        {"timings_per_token",         timings_per_token},
-        {"post_sampling_probs",       post_sampling_probs},
-        {"backend_sampling",          sampling.backend_sampling},
-        {"lora",                      lora},
+    return json{
+        { "seed",                  sampling.seed                                                     },
+        { "temperature",           sampling.temp                                                     },
+        { "dynatemp_range",        sampling.dynatemp_range                                           },
+        { "dynatemp_exponent",     sampling.dynatemp_exponent                                        },
+        { "top_k",                 sampling.top_k                                                    },
+        { "top_p",                 sampling.top_p                                                    },
+        { "min_p",                 sampling.min_p                                                    },
+        { "top_n_sigma",           sampling.top_n_sigma                                              },
+        { "xtc_probability",       sampling.xtc_probability                                          },
+        { "xtc_threshold",         sampling.xtc_threshold                                            },
+        { "typical_p",             sampling.typ_p                                                    },
+        { "repeat_last_n",         sampling.penalty_last_n                                           },
+        { "repeat_penalty",        sampling.penalty_repeat                                           },
+        { "presence_penalty",      sampling.penalty_present                                          },
+        { "frequency_penalty",     sampling.penalty_freq                                             },
+        { "dry_multiplier",        sampling.dry_multiplier                                           },
+        { "dry_base",              sampling.dry_base                                                 },
+        { "dry_allowed_length",    sampling.dry_allowed_length                                       },
+        { "dry_penalty_last_n",    sampling.dry_penalty_last_n                                       },
+        { "dry_sequence_breakers", sampling.dry_sequence_breakers                                    },
+        { "mirostat",              sampling.mirostat                                                 },
+        { "mirostat_tau",          sampling.mirostat_tau                                             },
+        { "mirostat_eta",          sampling.mirostat_eta                                             },
+        { "adaptive_target",       sampling.adaptive_target                                          },
+        { "adaptive_decay",        sampling.adaptive_decay                                           },
+        { "stop",                  antiprompt                                                        },
+        { "max_tokens",            n_predict                                                         },
+        { "n_predict",             n_predict                                                         }, // TODO: deduplicate?
+        { "n_keep",                n_keep                                                            },
+        { "n_discard",             n_discard                                                         },
+        { "ignore_eos",            sampling.ignore_eos                                               },
+        { "stream",                stream                                                            },
+        { "logit_bias",            format_logit_bias(sampling.logit_bias)                            },
+        { "n_probs",               sampling.n_probs                                                  },
+        { "min_keep",              sampling.min_keep                                                 },
+        { "grammar",               common_grammar_value(sampling.grammar)                            },
+        { "grammar_lazy",          sampling.grammar_lazy                                             },
+        { "grammar_triggers",      grammar_triggers                                                  },
+        { "preserved_tokens",      sampling.preserved_tokens                                         },
+        { "chat_format",           common_chat_format_name(chat_parser_params.format)                },
+        { "reasoning_format",      common_reasoning_format_name(chat_parser_params.reasoning_format) },
+        { "reasoning_in_content",  chat_parser_params.reasoning_in_content                           },
+        { "generation_prompt",     chat_parser_params.generation_prompt                              },
+        { "samplers",              samplers                                                          },
+        { "speculative.types",     common_speculative_type_name_str(speculative.types)               },
+        { "timings_per_token",     timings_per_token                                                 },
+        { "post_sampling_probs",   post_sampling_probs                                               },
+        { "backend_sampling",      sampling.backend_sampling                                         },
+        { "lora",                  lora                                                              },
     };
 }
 
 //
 // task_result_state
 //
-task_result_state::task_result_state(const common_chat_parser_params & chat_parser_params)
-    : chat_parser_params(chat_parser_params)
-    , oai_resp_id("resp_" + random_string())
-    , oai_resp_reasoning_id("rs_" + random_string())
-    , oai_resp_message_id("msg_" + random_string()) {
+task_result_state::task_result_state(const common_chat_parser_params & chat_parser_params) :
+    chat_parser_params(chat_parser_params),
+    oai_resp_id("resp_" + random_string()),
+    oai_resp_reasoning_id("rs_" + random_string()),
+    oai_resp_message_id("msg_" + random_string()) {
     if (chat_parser_params.is_continuation && !chat_parser_params.echo) {
         // initialize chat_msg to avoid emitting a delta containing the assistant prefill
         chat_msg = common_chat_parse("", true, chat_parser_params);
     }
 }
 
-common_chat_msg task_result_state::update_chat_msg(
-        const std::string & text_added,
-        bool is_partial,
-        std::vector<common_chat_msg_diff> & diffs,
-        bool filter_tool_calls) {
+common_chat_msg task_result_state::update_chat_msg(const std::string &                 text_added,
+                                                   bool                                is_partial,
+                                                   std::vector<common_chat_msg_diff> & diffs,
+                                                   bool                                filter_tool_calls) {
     generated_text += text_added;
     auto msg_prv_copy = chat_msg;
     //SRV_DBG("Parsing chat message: %s\n", generated_text.c_str());
-    auto new_msg = common_chat_parse(
-        generated_text,
-        is_partial,
-        chat_parser_params);
+    auto new_msg      = common_chat_parse(generated_text, is_partial, chat_parser_params);
     if (!new_msg.empty()) {
         new_msg.set_tool_call_ids(generated_tool_call_ids, gen_tool_call_id);
-        chat_msg = new_msg;
+        chat_msg       = new_msg;
         auto all_diffs = common_chat_msg_diff::compute_diffs(msg_prv_copy, chat_msg);
 
         if (!filter_tool_calls) {
@@ -251,20 +251,24 @@ common_chat_msg task_result_state::update_chat_msg(
 // result_prompt_progress
 //
 json result_prompt_progress::to_json() const {
-    return json {
-        {"total",     total},
-        {"cache",     cache},
-        {"processed", processed},
-        {"time_ms",   time_ms},
+    return json{
+        { "total",     total     },
+        { "cache",     cache     },
+        { "processed", processed },
+        { "time_ms",   time_ms   },
     };
 }
 
 static inline std::string stop_type_to_str(stop_type type) {
     switch (type) {
-        case STOP_TYPE_EOS:   return "eos";
-        case STOP_TYPE_WORD:  return "word";
-        case STOP_TYPE_LIMIT: return "limit";
-        default:              return "none";
+        case STOP_TYPE_EOS:
+            return "eos";
+        case STOP_TYPE_WORD:
+            return "word";
+        case STOP_TYPE_LIMIT:
+            return "limit";
+        default:
+            return "none";
     }
 }
 
@@ -277,36 +281,28 @@ json completion_token_output::to_json(bool post_sampling_probs) const {
     for (const auto & p : probs) {
         std::string txt(p.txt);
         txt.resize(validate_utf8(txt));
-        probs_for_token.push_back(json {
-            {"id",      p.tok},
-            {"token",   txt},
-            {"bytes",   str_to_bytes(p.txt)},
-            {
-                post_sampling_probs ? "prob" : "logprob",
-                post_sampling_probs ? p.prob : logarithm(p.prob)
-            },
+        probs_for_token.push_back(json{
+            { "id",                                     p.tok                                            },
+            { "token",                                  txt                                              },
+            { "bytes",                                  str_to_bytes(p.txt)                              },
+            { post_sampling_probs ? "prob" : "logprob", post_sampling_probs ? p.prob : logarithm(p.prob) },
         });
     }
     return probs_for_token;
 }
 
-json completion_token_output::probs_vector_to_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs) {
+json completion_token_output::probs_vector_to_json(const std::vector<completion_token_output> & probs,
+                                                   bool                                         post_sampling_probs) {
     json out = json::array();
     for (const auto & p : probs) {
         std::string txt(p.text_to_send);
         txt.resize(validate_utf8(txt));
-        out.push_back(json {
-            {"id",           p.tok},
-            {"token",        txt},
-            {"bytes",        str_to_bytes(p.text_to_send)},
-            {
-                post_sampling_probs ? "prob" : "logprob",
-                post_sampling_probs ? p.prob : logarithm(p.prob)
-            },
-            {
-                post_sampling_probs ? "top_probs" : "top_logprobs",
-                p.to_json(post_sampling_probs)
-            },
+        out.push_back(json{
+            { "id",                                               p.tok                                            },
+            { "token",                                            txt                                              },
+            { "bytes",                                            str_to_bytes(p.text_to_send)                     },
+            { post_sampling_probs ? "prob" : "logprob",           post_sampling_probs ? p.prob : logarithm(p.prob) },
+            { post_sampling_probs ? "top_probs" : "top_logprobs", p.to_json(post_sampling_probs)                   },
         });
     }
     return out;
@@ -349,66 +345,65 @@ json server_task_result_cmpl_final::to_json() {
 }
 
 json server_task_result_cmpl_final::to_json_non_oaicompat() {
-    json res = json {
-        {"index",               index},
-        {"content",             content},
-        {"tokens",              tokens},
-        {"id_slot",             id_slot},
-        {"stop",                true},
-        {"model",               oaicompat_model},
-        {"tokens_predicted",    n_decoded},
-        {"tokens_evaluated",    n_prompt_tokens},
-        {"generation_settings", generation_params.to_json()},
-        {"prompt",              prompt},
-        {"has_new_line",        has_new_line},
-        {"truncated",           truncated},
-        {"stop_type",           stop_type_to_str(stop)},
-        {"stopping_word",       stopping_word},
-        {"tokens_cached",       n_tokens_cached},
-        {"timings",             stats.to_json()},
+    json res = json{
+        { "index",               index                       },
+        { "content",             content                     },
+        { "tokens",              tokens                      },
+        { "id_slot",             id_slot                     },
+        { "stop",                true                        },
+        { "model",               oaicompat_model             },
+        { "tokens_predicted",    n_decoded                   },
+        { "tokens_evaluated",    n_prompt_tokens             },
+        { "generation_settings", generation_params.to_json() },
+        { "prompt",              prompt                      },
+        { "has_new_line",        has_new_line                },
+        { "truncated",           truncated                   },
+        { "stop_type",           stop_type_to_str(stop)      },
+        { "stopping_word",       stopping_word               },
+        { "tokens_cached",       n_tokens_cached             },
+        { "timings",             stats.to_json()             },
     };
     if (!stream && !probs_output.empty()) {
-        res["completion_probabilities"] = completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
+        res["completion_probabilities"] =
+            completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs);
     }
     return response_fields.empty() ? res : json_get_nested_values(response_fields, res);
 }
 
 json server_task_result_cmpl_final::usage_json_oaicompat() {
-    return json {
-        {"completion_tokens", n_decoded},
-        {"prompt_tokens",     n_prompt_tokens},
-        {"total_tokens",      n_decoded + n_prompt_tokens},
-        {"prompt_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
+    return json{
+        { "completion_tokens",     n_decoded                                          },
+        { "prompt_tokens",         n_prompt_tokens                                    },
+        { "total_tokens",          n_decoded + n_prompt_tokens                        },
+        { "prompt_tokens_details", json{ { "cached_tokens", n_prompt_tokens_cache } } },
     };
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat() {
-    std::time_t t = std::time(0);
-    json logprobs = json(nullptr); // OAI default to null
+    std::time_t t        = std::time(0);
+    json        logprobs = json(nullptr);  // OAI default to null
     if (!stream && probs_output.size() > 0) {
         logprobs = json{
-            {"content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs)},
+            { "content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs) },
         };
     }
     json finish_reason = "length";
     if (stop == STOP_TYPE_WORD || stop == STOP_TYPE_EOS) {
         finish_reason = "stop";
     }
-    json res = json {
-        {"choices",            json::array({
-            json{
-                {"text",          content},
-                {"index",         index},
-                {"logprobs",      logprobs},
-                {"finish_reason", finish_reason},
-            }
-        })},
-        {"created",            t},
-        {"model",              oaicompat_model},
-        {"system_fingerprint", std::string(llama_build_info())},
-        {"object",             "text_completion"},
-        {"usage",              usage_json_oaicompat()},
-        {"id", oaicompat_cmpl_id}
+    json res = json{
+        { "choices",            json::array({ json{
+                         { "text", content },
+                         { "index", index },
+                         { "logprobs", logprobs },
+                         { "finish_reason", finish_reason },
+                     } })                   },
+        { "created",            t                               },
+        { "model",              oaicompat_model                 },
+        { "system_fingerprint", std::string(llama_build_info()) },
+        { "object",             "text_completion"               },
+        { "usage",              usage_json_oaicompat()          },
+        { "id",                 oaicompat_cmpl_id               }
     };
 
     // extra fields for debugging purposes
@@ -423,40 +418,40 @@ json server_task_result_cmpl_final::to_json_oaicompat() {
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat_chat() {
-    std::string finish_reason = "length";
+    std::string     finish_reason = "length";
     common_chat_msg msg;
     if (!oaicompat_msg.empty()) {
         msg = oaicompat_msg;
     } else {
-        msg.role = "assistant";
+        msg.role    = "assistant";
         msg.content = content;
     }
     if (stop == STOP_TYPE_WORD || stop == STOP_TYPE_EOS) {
         finish_reason = msg.tool_calls.empty() ? "stop" : "tool_calls";
     }
 
-    json choice {
-        {"finish_reason", finish_reason},
-        {"index", index},
-        {"message", msg.to_json_oaicompat()},
+    json choice{
+        { "finish_reason", finish_reason           },
+        { "index",         index                   },
+        { "message",       msg.to_json_oaicompat() },
     };
 
     if (!stream && probs_output.size() > 0) {
         choice["logprobs"] = json{
-            {"content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs)},
+            { "content", completion_token_output::probs_vector_to_json(probs_output, post_sampling_probs) },
         };
     }
 
     std::time_t t = std::time(0);
 
-    json res = json {
-        {"choices",            json::array({choice})},
-        {"created",            t},
-        {"model",              oaicompat_model},
-        {"system_fingerprint", std::string(llama_build_info())},
-        {"object",             "chat.completion"},
-        {"usage",              usage_json_oaicompat()},
-        {"id", oaicompat_cmpl_id}
+    json res = json{
+        { "choices",            json::array({ choice })         },
+        { "created",            t                               },
+        { "model",              oaicompat_model                 },
+        { "system_fingerprint", std::string(llama_build_info()) },
+        { "object",             "chat.completion"               },
+        { "usage",              usage_json_oaicompat()          },
+        { "id",                 oaicompat_cmpl_id               }
     };
 
     // extra fields for debugging purposes
@@ -471,7 +466,7 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat() {
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
-    std::time_t t = std::time(0);
+    std::time_t t             = std::time(0);
     std::string finish_reason = "length";
     if (stop == STOP_TYPE_WORD || stop == STOP_TYPE_EOS) {
         finish_reason = oaicompat_msg.tool_calls.empty() ? "stop" : "tool_calls";
@@ -480,47 +475,47 @@ json server_task_result_cmpl_final::to_json_oaicompat_chat_stream() {
     json deltas = json::array();
     for (const auto & diff : oaicompat_msg_diffs) {
         deltas.push_back({
-            {"choices", json::array({
-                json {
-                    {"finish_reason", nullptr},
-                    {"index", index},
-                    {"delta", server_chat_msg_diff_to_json_oaicompat(diff)},
-                },
-            })},
-            {"created", t},
-            {"id", oaicompat_cmpl_id},
-            {"model", oaicompat_model},
-            {"system_fingerprint", std::string(llama_build_info())},
-            {"object", "chat.completion.chunk"},
+            { "choices",            json::array({
+                             json{
+                                 { "finish_reason", nullptr },
+                                 { "index", index },
+                                 { "delta", server_chat_msg_diff_to_json_oaicompat(diff) },
+                             },
+                         })                 },
+            { "created",            t                               },
+            { "id",                 oaicompat_cmpl_id               },
+            { "model",              oaicompat_model                 },
+            { "system_fingerprint", std::string(llama_build_info()) },
+            { "object",             "chat.completion.chunk"         },
         });
     }
 
     deltas.push_back({
-        {"choices", json::array({
-            json {
-                {"finish_reason", finish_reason},
-                {"index", index},
-                {"delta", json::object()},
-            },
-        })},
-        {"created",            t},
-        {"id",                 oaicompat_cmpl_id},
-        {"model",              oaicompat_model},
-        {"system_fingerprint", std::string(llama_build_info())},
-        {"object",             "chat.completion.chunk"},
+        { "choices",            json::array({
+                         json{
+                             { "finish_reason", finish_reason },
+                             { "index", index },
+                             { "delta", json::object() },
+                         },
+                     })                     },
+        { "created",            t                               },
+        { "id",                 oaicompat_cmpl_id               },
+        { "model",              oaicompat_model                 },
+        { "system_fingerprint", std::string(llama_build_info()) },
+        { "object",             "chat.completion.chunk"         },
     });
 
     if (include_usage) {
         // OpenAI API spec for chat.completion.chunks specifies an empty `choices` array for the last chunk when including usage
         // https://platform.openai.com/docs/api-reference/chat_streaming/streaming#chat_streaming/streaming-choices
         deltas.push_back({
-            {"choices", json::array()},
-            {"created",            t},
-            {"id",                 oaicompat_cmpl_id},
-            {"model",              oaicompat_model},
-            {"system_fingerprint", std::string(llama_build_info())},
-            {"object",             "chat.completion.chunk"},
-            {"usage",              usage_json_oaicompat()},
+            { "choices",            json::array()                   },
+            { "created",            t                               },
+            { "id",                 oaicompat_cmpl_id               },
+            { "model",              oaicompat_model                 },
+            { "system_fingerprint", std::string(llama_build_info()) },
+            { "object",             "chat.completion.chunk"         },
+            { "usage",              usage_json_oaicompat()          },
         });
     }
 
@@ -541,67 +536,68 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp() {
     if (!oaicompat_msg.empty()) {
         msg = oaicompat_msg;
     } else {
-        msg.role = "assistant";
+        msg.role    = "assistant";
         msg.content = content;
     }
 
     std::vector<json> output;
 
     if (msg.reasoning_content != "") {
-        output.push_back(json {
-            {"id",      "rs_" + random_string()},
-            {"summary", json::array()},
-            {"type",    "reasoning"},
-            {"content", json::array({ json {
-                {"text", msg.reasoning_content},
-                {"type", "reasoning_text"},
-            }})},
-            {"encrypted_content", ""},
-            {"status",            "completed"},
+        output.push_back(json{
+            { "id",                "rs_" + random_string() },
+            { "summary",           json::array()           },
+            { "type",              "reasoning"             },
+            { "content",           json::array({ json{
+                             { "text", msg.reasoning_content },
+                             { "type", "reasoning_text" },
+                         } })      },
+            { "encrypted_content", ""                      },
+            { "status",            "completed"             },
         });
     }
 
     if (msg.content != "") {
-        output.push_back(json {
-            {"content", json::array({ json {
-                {"type",        "output_text"},
-                {"annotations", json::array()},
-                {"logprobs",    json::array()},
-                {"text",        msg.content},
-            }})},
-            {"id",     "msg_" + random_string()},
-            {"role",   msg.role},
-            {"status", "completed"},
-            {"type",   "message"},
+        output.push_back(json{
+            { "content", json::array({ json{
+                             { "type", "output_text" },
+                             { "annotations", json::array() },
+                             { "logprobs", json::array() },
+                             { "text", msg.content },
+                         } }) },
+            { "id",      "msg_" + random_string()     },
+            { "role",    msg.role                     },
+            { "status",  "completed"                  },
+            { "type",    "message"                    },
         });
     }
 
     for (const common_chat_tool_call & tool_call : oaicompat_msg.tool_calls) {
-        output.push_back(json {
-            {"id",        "fc_" + tool_call.id},
-            {"type",      "function_call"},
-            {"status",    "completed"},
-            {"arguments", tool_call.arguments},
-            {"call_id",   "call_" + tool_call.id},
-            {"name",      tool_call.name},
+        output.push_back(json{
+            { "id",        "fc_" + tool_call.id   },
+            { "type",      "function_call"        },
+            { "status",    "completed"            },
+            { "arguments", tool_call.arguments    },
+            { "call_id",   "call_" + tool_call.id },
+            { "name",      tool_call.name         },
         });
     }
 
-    std::time_t t = std::time(0);
-    json res = {
-        {"completed_at", t},
-        {"created_at",   t},
-        {"id",           oai_resp_id},
-        {"model",        oaicompat_model},
-        {"object",       "response"},
-        {"output",       output},
-        {"status",       "completed"},
-        {"usage",        json {
-            {"input_tokens",  n_prompt_tokens},
-            {"output_tokens", n_decoded},
-            {"total_tokens",  n_decoded + n_prompt_tokens},
-            {"input_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
-        }},
+    std::time_t t   = std::time(0);
+    json        res = {
+        { "completed_at", t               },
+        { "created_at",   t               },
+        { "id",           oai_resp_id     },
+        { "model",        oaicompat_model },
+        { "object",       "response"      },
+        { "output",       output          },
+        { "status",       "completed"     },
+        { "usage",
+         json{
+              { "input_tokens", n_prompt_tokens },
+              { "output_tokens", n_decoded },
+              { "total_tokens", n_decoded + n_prompt_tokens },
+              { "input_tokens_details", json{ { "cached_tokens", n_prompt_tokens_cache } } },
+          }                               },
     };
 
     return res;
@@ -612,109 +608,96 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
     std::vector<json> output;
 
     if (oaicompat_msg.reasoning_content != "") {
-        const json output_item = json {
-            {"id",      oai_resp_reasoning_id},
-            {"summary", json::array()},
-            {"type",    "reasoning"},
-            {"content", json::array({ json {
-                {"text", oaicompat_msg.reasoning_content},
-                {"type", "reasoning_text"},
-            }})},
-            {"encrypted_content", ""},
+        const json output_item = json{
+            { "id",                oai_resp_reasoning_id },
+            { "summary",           json::array()         },
+            { "type",              "reasoning"           },
+            { "content",           json::array({ json{
+                             { "text", oaicompat_msg.reasoning_content },
+                             { "type", "reasoning_text" },
+                         } })    },
+            { "encrypted_content", ""                    },
         };
 
-        server_sent_events.push_back(json {
-            {"event", "response.output_item.done"},
-            {"data", json {
-                {"type", "response.output_item.done"},
-                {"item", output_item}
-            }}
+        server_sent_events.push_back(json{
+            { "event", "response.output_item.done"                                              },
+            { "data",  json{ { "type", "response.output_item.done" }, { "item", output_item } } }
         });
         output.push_back(output_item);
     }
 
     if (oaicompat_msg.content != "") {
-        server_sent_events.push_back(json {
-            {"event", "response.output_text.done"},
-            {"data", json {
-                {"type",    "response.output_text.done"},
-                {"item_id", oai_resp_message_id},
-                {"text",    oaicompat_msg.content}
-            }}
+        server_sent_events.push_back(json{
+            { "event", "response.output_text.done"                                   },
+            { "data",  json{ { "type", "response.output_text.done" },
+                            { "item_id", oai_resp_message_id },
+                            { "text", oaicompat_msg.content } } }
         });
 
         const json content_part = {
-            {"type",        "output_text"},
-            {"annotations", json::array()},
-            {"logprobs",    json::array()},
-            {"text",        oaicompat_msg.content}
+            { "type",        "output_text"         },
+            { "annotations", json::array()         },
+            { "logprobs",    json::array()         },
+            { "text",        oaicompat_msg.content }
         };
 
-        server_sent_events.push_back(json {
-            {"event", "response.content_part.done"},
-            {"data", json {
-                {"type",    "response.content_part.done"},
-                {"item_id", oai_resp_message_id},
-                {"part",    content_part}
-            }}
+        server_sent_events.push_back(json{
+            { "event", "response.content_part.done"                         },
+            { "data",  json{ { "type", "response.content_part.done" },
+                            { "item_id", oai_resp_message_id },
+                            { "part", content_part } } }
         });
         const json output_item = {
-            {"type",    "message"},
-            {"status",  "completed"},
-            {"id",      oai_resp_message_id},
-            {"content", json::array({content_part})},
-            {"role",    "assistant"}
+            { "type",    "message"                     },
+            { "status",  "completed"                   },
+            { "id",      oai_resp_message_id           },
+            { "content", json::array({ content_part }) },
+            { "role",    "assistant"                   }
         };
 
-        server_sent_events.push_back(json {
-            {"event", "response.output_item.done"},
-            {"data", json {
-                {"type", "response.output_item.done"},
-                {"item", output_item}
-            }}
+        server_sent_events.push_back(json{
+            { "event", "response.output_item.done"                                              },
+            { "data",  json{ { "type", "response.output_item.done" }, { "item", output_item } } }
         });
         output.push_back(output_item);
     }
 
     for (const common_chat_tool_call & tool_call : oaicompat_msg.tool_calls) {
         const json output_item = {
-            {"id",        "fc_" + tool_call.id},
-            {"type",      "function_call"},
-            {"status",    "completed"},
-            {"arguments", tool_call.arguments},
-            {"call_id",   "call_" + tool_call.id},
-            {"name",      tool_call.name}
+            { "id",        "fc_" + tool_call.id   },
+            { "type",      "function_call"        },
+            { "status",    "completed"            },
+            { "arguments", tool_call.arguments    },
+            { "call_id",   "call_" + tool_call.id },
+            { "name",      tool_call.name         }
         };
-        server_sent_events.push_back(json {
-            {"event", "response.output_item.done"},
-            {"data", json {
-                {"type", "response.output_item.done"},
-                {"item", output_item}
-            }}
+        server_sent_events.push_back(json{
+            { "event", "response.output_item.done"                                              },
+            { "data",  json{ { "type", "response.output_item.done" }, { "item", output_item } } }
         });
         output.push_back(output_item);
     }
 
     std::time_t t = std::time(0);
-    server_sent_events.push_back(json {
-        {"event", "response.completed"},
-        {"data", json {
-            {"type", "response.completed"},
-            {"response", json {
-                {"id",         oai_resp_id},
-                {"object",     "response"},
-                {"created_at", t},
-                {"status",     "completed"},
-                {"model",      oaicompat_model},
-                {"output",     output},
-                {"usage",      json {
-                    {"input_tokens",  n_prompt_tokens},
-                    {"output_tokens", n_decoded},
-                    {"total_tokens",  n_decoded + n_prompt_tokens},
-                    {"input_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
-                }}
-            }},
-        }}
+    server_sent_events.push_back(json{
+        { "event", "response.completed" },
+        { "data",
+         json{
+              { "type", "response.completed" },
+              { "response", json{ { "id", oai_resp_id },
+                                  { "object", "response" },
+                                  { "created_at", t },
+                                  { "status", "completed" },
+                                  { "model", oaicompat_model },
+                                  { "output", output },
+                                  { "usage",
+                                    json{
+                                        { "input_tokens", n_prompt_tokens },
+                                        { "output_tokens", n_decoded },
+                                        { "total_tokens", n_decoded + n_prompt_tokens },
+                                        { "input_tokens_details", json{ { "cached_tokens", n_prompt_tokens_cache } } },
+                                    } } } },
+          }                             }
     });
 
     if (stats.is_set()) {
@@ -725,16 +708,17 @@ json server_task_result_cmpl_final::to_json_oaicompat_resp_stream() {
 }
 
 json server_task_result_cmpl_final::to_json_oaicompat_asr() {
-    json event = json {
-        {"type",  "transcript.text.done"},
-        {"text",  oaicompat_msg.content},
-        {"usage", json {
-            {"type",         "tokens"},
-            {"input_tokens",  n_prompt_tokens},
-            {"output_tokens", n_decoded},
-            {"total_tokens",  n_decoded + n_prompt_tokens},
-            {"input_tokens_details", json { {"cached_tokens", n_prompt_tokens_cache} }},
-        }},
+    json event = json{
+        { "type",  "transcript.text.done" },
+        { "text",  oaicompat_msg.content  },
+        { "usage",
+         json{
+              { "type", "tokens" },
+              { "input_tokens", n_prompt_tokens },
+              { "output_tokens", n_decoded },
+              { "total_tokens", n_decoded + n_prompt_tokens },
+              { "input_tokens_details", json{ { "cached_tokens", n_prompt_tokens_cache } } },
+          }                               },
     };
     return event;
 }
@@ -751,31 +735,32 @@ json server_task_result_cmpl_final::to_json_anthropic() {
     if (!oaicompat_msg.empty()) {
         msg = oaicompat_msg;
     } else {
-        msg.role = "assistant";
+        msg.role    = "assistant";
         msg.content = content;
     }
 
     // thinking block comes first (Anthropic extended thinking format)
     if (!msg.reasoning_content.empty()) {
         content_blocks.push_back({
-            {"type", "thinking"},
-            {"thinking", msg.reasoning_content},
-            {"signature", ""}  // empty signature for local models (no cryptographic verification)
+            { "type",      "thinking"            },
+            { "thinking",  msg.reasoning_content },
+            { "signature", ""                    }
+  // empty signature for local models (no cryptographic verification)
         });
     }
 
     if (!msg.content.empty()) {
         content_blocks.push_back({
-            {"type", "text"},
-            {"text", msg.content}
+            { "type", "text"      },
+            { "text", msg.content }
         });
     }
 
     for (const auto & tool_call : msg.tool_calls) {
         json tool_use_block = {
-            {"type", "tool_use"},
-            {"id", tool_call.id},
-            {"name", tool_call.name}
+            { "type", "tool_use"     },
+            { "id",   tool_call.id   },
+            { "name", tool_call.name }
         };
 
         try {
@@ -788,18 +773,17 @@ json server_task_result_cmpl_final::to_json_anthropic() {
     }
 
     json res = {
-        {"id", oaicompat_cmpl_id},
-        {"type", "message"},
-        {"role", "assistant"},
-        {"content", content_blocks},
-        {"model", oaicompat_model},
-        {"stop_reason", stop_reason},
-        {"stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word)},
-        {"usage", {
-            {"cache_read_input_tokens", n_prompt_tokens_cache},
-            {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
-            {"output_tokens", n_decoded}
-        }}
+        { "id",            oaicompat_cmpl_id                                     },
+        { "type",          "message"                                             },
+        { "role",          "assistant"                                           },
+        { "content",       content_blocks                                        },
+        { "model",         oaicompat_model                                       },
+        { "stop_reason",   stop_reason                                           },
+        { "stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word) },
+        { "usage",
+         { { "cache_read_input_tokens", n_prompt_tokens_cache },
+            { "input_tokens", n_prompt_tokens - n_prompt_tokens_cache },
+            { "output_tokens", n_decoded } }                                     }
     };
 
     return res;
@@ -813,16 +797,16 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
         stop_reason = oaicompat_msg.tool_calls.empty() ? "end_turn" : "tool_use";
     }
 
-    bool has_thinking = !oaicompat_msg.reasoning_content.empty();
-    bool has_text     = !oaicompat_msg.content.empty();
+    bool   has_thinking   = !oaicompat_msg.reasoning_content.empty();
+    bool   has_text       = !oaicompat_msg.content.empty();
     size_t num_tool_calls = oaicompat_msg.tool_calls.size();
 
     // content block indices: thinking (0) -> text (0 or 1) -> tool_use (n+)
     size_t thinking_block_index = 0;
     size_t text_block_index     = has_thinking ? 1 : 0;
 
-    bool thinking_block_started = false;
-    bool text_block_started     = false;
+    bool                       thinking_block_started = false;
+    bool                       text_block_started     = false;
     std::unordered_set<size_t> tool_calls_started;
 
     for (const auto & diff : oaicompat_msg_diffs) {
@@ -830,29 +814,21 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
         if (!diff.reasoning_content_delta.empty()) {
             if (!thinking_block_started) {
                 events.push_back({
-                    {"event", "content_block_start"},
-                    {"data", {
-                        {"type", "content_block_start"},
-                        {"index", thinking_block_index},
-                        {"content_block", {
-                            {"type", "thinking"},
-                            {"thinking", ""}
-                        }}
-                    }}
+                    { "event", "content_block_start"                                          },
+                    { "data",
+                     { { "type", "content_block_start" },
+                        { "index", thinking_block_index },
+                        { "content_block", { { "type", "thinking" }, { "thinking", "" } } } } }
                 });
                 thinking_block_started = true;
             }
 
             events.push_back({
-                {"event", "content_block_delta"},
-                {"data", {
-                    {"type", "content_block_delta"},
-                    {"index", thinking_block_index},
-                    {"delta", {
-                        {"type", "thinking_delta"},
-                        {"thinking", diff.reasoning_content_delta}
-                    }}
-                }}
+                { "event", "content_block_delta"                                                                  },
+                { "data",
+                 { { "type", "content_block_delta" },
+                    { "index", thinking_block_index },
+                    { "delta", { { "type", "thinking_delta" }, { "thinking", diff.reasoning_content_delta } } } } }
             });
         }
 
@@ -860,29 +836,21 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
         if (!diff.content_delta.empty()) {
             if (!text_block_started) {
                 events.push_back({
-                    {"event", "content_block_start"},
-                    {"data", {
-                        {"type", "content_block_start"},
-                        {"index", text_block_index},
-                        {"content_block", {
-                            {"type", "text"},
-                            {"text", ""}
-                        }}
-                    }}
+                    { "event", "content_block_start"                                  },
+                    { "data",
+                     { { "type", "content_block_start" },
+                        { "index", text_block_index },
+                        { "content_block", { { "type", "text" }, { "text", "" } } } } }
                 });
                 text_block_started = true;
             }
 
             events.push_back({
-                {"event", "content_block_delta"},
-                {"data", {
-                    {"type", "content_block_delta"},
-                    {"index", text_block_index},
-                    {"delta", {
-                        {"type", "text_delta"},
-                        {"text", diff.content_delta}
-                    }}
-                }}
+                { "event", "content_block_delta"                                                },
+                { "data",
+                 { { "type", "content_block_delta" },
+                    { "index", text_block_index },
+                    { "delta", { { "type", "text_delta" }, { "text", diff.content_delta } } } } }
             });
         }
 
@@ -894,31 +862,27 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
                 const auto & full_tool_call = oaicompat_msg.tool_calls[diff.tool_call_index];
 
                 events.push_back({
-                    {"event", "content_block_start"},
-                    {"data", {
-                        {"type", "content_block_start"},
-                        {"index", content_block_index},
-                        {"content_block", {
-                            {"type", "tool_use"},
-                            {"id", full_tool_call.id},
-                            {"name", full_tool_call.name}
-                        }}
-                    }}
+                    { "event", "content_block_start"              },
+                    { "data",
+                     { { "type", "content_block_start" },
+                        { "index", content_block_index },
+                        { "content_block",
+                          { { "type", "tool_use" },
+                            { "id", full_tool_call.id },
+                            { "name", full_tool_call.name } } } } }
                 });
                 tool_calls_started.insert(diff.tool_call_index);
             }
 
             if (!diff.tool_call_delta.arguments.empty()) {
                 events.push_back({
-                    {"event", "content_block_delta"},
-                    {"data", {
-                        {"type", "content_block_delta"},
-                        {"index", content_block_index},
-                        {"delta", {
-                            {"type", "input_json_delta"},
-                            {"partial_json", diff.tool_call_delta.arguments}
-                        }}
-                    }}
+                    { "event", "content_block_delta"                                 },
+                    { "data",
+                     { { "type", "content_block_delta" },
+                        { "index", content_block_index },
+                        { "delta",
+                          { { "type", "input_json_delta" },
+                            { "partial_json", diff.tool_call_delta.arguments } } } } }
                 });
             }
         }
@@ -929,65 +893,46 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
         // Anthropic API requires a signature_delta before closing thinking blocks
         // We use an empty signature since we can't generate a cryptographic signature for local models
         events.push_back({
-            {"event", "content_block_delta"},
-            {"data", {
-                {"type", "content_block_delta"},
-                {"index", thinking_block_index},
-                {"delta", {
-                    {"type", "signature_delta"},
-                    {"signature", ""}
-                }}
-            }}
+            { "event", "content_block_delta"                                          },
+            { "data",
+             { { "type", "content_block_delta" },
+                { "index", thinking_block_index },
+                { "delta", { { "type", "signature_delta" }, { "signature", "" } } } } }
         });
         events.push_back({
-            {"event", "content_block_stop"},
-            {"data", {
-                {"type", "content_block_stop"},
-                {"index", thinking_block_index}
-            }}
+            { "event", "content_block_stop"                                                    },
+            { "data",  { { "type", "content_block_stop" }, { "index", thinking_block_index } } }
         });
     }
 
     if (has_text) {
         events.push_back({
-            {"event", "content_block_stop"},
-            {"data", {
-                {"type", "content_block_stop"},
-                {"index", text_block_index}
-            }}
+            { "event", "content_block_stop"                                                },
+            { "data",  { { "type", "content_block_stop" }, { "index", text_block_index } } }
         });
     }
 
     for (size_t i = 0; i < num_tool_calls; i++) {
         size_t content_block_index = (has_thinking ? 1 : 0) + (has_text ? 1 : 0) + i;
         events.push_back({
-            {"event", "content_block_stop"},
-            {"data", {
-                {"type", "content_block_stop"},
-                {"index", content_block_index}
-            }}
+            { "event", "content_block_stop"                                                   },
+            { "data",  { { "type", "content_block_stop" }, { "index", content_block_index } } }
         });
     }
 
     events.push_back({
-        {"event", "message_delta"},
-        {"data", {
-            {"type", "message_delta"},
-            {"delta", {
-                {"stop_reason", stop_reason},
-                {"stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word)}
-            }},
-            {"usage", {
-                {"output_tokens", n_decoded}
-            }}
-        }}
+        { "event", "message_delta"                            },
+        { "data",
+         { { "type", "message_delta" },
+            { "delta",
+              { { "stop_reason", stop_reason },
+                { "stop_sequence", stopping_word.empty() ? nullptr : json(stopping_word) } } },
+            { "usage", { { "output_tokens", n_decoded } } } } }
     });
 
     events.push_back({
-        {"event", "message_stop"},
-        {"data", {
-            {"type", "message_stop"}
-        }}
+        { "event", "message_stop"                 },
+        { "data",  { { "type", "message_stop" } } }
     });
 
     return events;
@@ -999,7 +944,7 @@ json server_task_result_cmpl_final::to_json_anthropic_stream() {
 void server_task_result_cmpl_partial::update(task_result_state & state) {
     is_updated = true;
     if (is_begin) {
-        return; // begin marker only flushes headers, skip parsing
+        return;  // begin marker only flushes headers, skip parsing
     }
     state.update_chat_msg(content, true, oaicompat_msg_diffs);
 
@@ -1007,11 +952,11 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
     thinking_block_started = state.thinking_block_started;
     text_block_started     = state.text_block_started;
 
-    oai_resp_created       = state.oai_resp_created;
-    oai_resp_id            = state.oai_resp_id;
-    oai_resp_reasoning_id  = state.oai_resp_reasoning_id;
-    oai_resp_message_id    = state.oai_resp_message_id;
-    oai_resp_fc_id         = state.oai_resp_fc_id;
+    oai_resp_created      = state.oai_resp_created;
+    oai_resp_id           = state.oai_resp_id;
+    oai_resp_reasoning_id = state.oai_resp_reasoning_id;
+    oai_resp_message_id   = state.oai_resp_message_id;
+    oai_resp_fc_id        = state.oai_resp_fc_id;
 
     // track if the accumulated message has any reasoning content
     anthropic_has_reasoning = !state.chat_msg.reasoning_content.empty();
@@ -1037,7 +982,7 @@ void server_task_result_cmpl_partial::update(task_result_state & state) {
 json server_task_result_cmpl_partial::to_json() {
     GGML_ASSERT(is_updated && "update() must be called before to_json()");
     if (is_begin) {
-        return nullptr; // simply signal to HTTP handler to send the headers and status code
+        return nullptr;  // simply signal to HTTP handler to send the headers and status code
     }
     switch (res_type) {
         case TASK_RESPONSE_TYPE_NONE:
@@ -1059,14 +1004,14 @@ json server_task_result_cmpl_partial::to_json() {
 
 json server_task_result_cmpl_partial::to_json_non_oaicompat() {
     // non-OAI-compat JSON
-    json res = json {
-        {"index",            index},
-        {"content",          content},
-        {"tokens",           tokens},
-        {"stop",             false},
-        {"id_slot",          id_slot},
-        {"tokens_predicted", n_decoded},
-        {"tokens_evaluated", n_prompt_tokens},
+    json res = json{
+        { "index",            index           },
+        { "content",          content         },
+        { "tokens",           tokens          },
+        { "stop",             false           },
+        { "id_slot",          id_slot         },
+        { "tokens_predicted", n_decoded       },
+        { "tokens_evaluated", n_prompt_tokens },
     };
     // populate the timings object when needed (usually for the last response or with timings_per_token enabled)
     if (stats.is_set()) {
@@ -1076,33 +1021,32 @@ json server_task_result_cmpl_partial::to_json_non_oaicompat() {
         res["prompt_progress"] = progress.to_json();
     }
     if (!prob_output.probs.empty()) {
-        res["completion_probabilities"] = completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs);
+        res["completion_probabilities"] =
+            completion_token_output::probs_vector_to_json({ prob_output }, post_sampling_probs);
     }
     return res;
 }
 
 json server_task_result_cmpl_partial::to_json_oaicompat() {
-    std::time_t t = std::time(0);
-    json logprobs = json(nullptr); // OAI default to null
+    std::time_t t        = std::time(0);
+    json        logprobs = json(nullptr);  // OAI default to null
     if (prob_output.probs.size() > 0) {
         logprobs = json{
-            {"content", completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs)},
+            { "content", completion_token_output::probs_vector_to_json({ prob_output }, post_sampling_probs) },
         };
     }
-    json res = json {
-        {"choices",            json::array({
-            json{
-                {"text",          content},
-                {"index",         index},
-                {"logprobs",      logprobs},
-                {"finish_reason", nullptr},
-            }
-        })},
-        {"created",            t},
-        {"model",              oaicompat_model},
-        {"system_fingerprint", std::string(llama_build_info())},
-        {"object",             "text_completion"},
-        {"id",                 oaicompat_cmpl_id}
+    json res = json{
+        { "choices",            json::array({ json{
+                         { "text", content },
+                         { "index", index },
+                         { "logprobs", logprobs },
+                         { "finish_reason", nullptr },
+                     } })                   },
+        { "created",            t                               },
+        { "model",              oaicompat_model                 },
+        { "system_fingerprint", std::string(llama_build_info()) },
+        { "object",             "text_completion"               },
+        { "id",                 oaicompat_cmpl_id               }
     };
 
     // extra fields for debugging purposes
@@ -1120,32 +1064,32 @@ json server_task_result_cmpl_partial::to_json_oaicompat() {
 }
 
 json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
-    bool first = n_decoded == 1;
-    std::time_t t = std::time(0);
-    json choices;
+    bool        first = n_decoded == 1;
+    std::time_t t     = std::time(0);
+    json        choices;
 
     std::vector<json> deltas;
-    auto add_delta = [&](const json & delta) {
+    auto              add_delta = [&](const json & delta) {
         deltas.push_back({
-            {"choices", json::array({
-                json {
-                    {"finish_reason", nullptr},
-                    {"index", index},
-                    {"delta", delta},
-                },
-            })},
-            {"created", t},
-            {"id", oaicompat_cmpl_id},
-            {"model", oaicompat_model},
-            {"system_fingerprint", std::string(llama_build_info())},
-            {"object", "chat.completion.chunk"},
+            { "choices",            json::array({
+                             json{
+                                 { "finish_reason", nullptr },
+                                 { "index", index },
+                                 { "delta", delta },
+                             },
+                         })                 },
+            { "created",            t                               },
+            { "id",                 oaicompat_cmpl_id               },
+            { "model",              oaicompat_model                 },
+            { "system_fingerprint", std::string(llama_build_info()) },
+            { "object",             "chat.completion.chunk"         },
         });
     };
     // We have to send an initial update to conform to openai behavior
     if (first || is_progress) {
         add_delta({
-            {"role", "assistant"},
-            {"content", nullptr},
+            { "role",    "assistant" },
+            { "content", nullptr     },
         });
     }
 
@@ -1158,8 +1102,8 @@ json server_task_result_cmpl_partial::to_json_oaicompat_chat() {
         GGML_ASSERT(last_json.at("choices").size() >= 1);
 
         if (prob_output.probs.size() > 0) {
-            last_json.at("choices").at(0)["logprobs"] = json {
-                {"content", completion_token_output::probs_vector_to_json({prob_output}, post_sampling_probs)},
+            last_json.at("choices").at(0)["logprobs"] = json{
+                { "content", completion_token_output::probs_vector_to_json({ prob_output }, post_sampling_probs) },
             };
         }
 
@@ -1178,135 +1122,152 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
     std::vector<json> events;
 
     if (!oai_resp_created) {
-        events.push_back(json {
-            {"event", "response.created"},
-            {"data", json {
-                {"type", "response.created"},
-                {"response", json {
-                    {"id",     oai_resp_id},
-                    {"object", "response"},
-                    {"status", "in_progress"},
-                }},
-            }},
+        events.push_back(json{
+            { "event", "response.created" },
+            { "data",
+             json{
+                  { "type", "response.created" },
+                  { "response",
+                    json{
+                        { "id", oai_resp_id },
+                        { "object", "response" },
+                        { "status", "in_progress" },
+                    } },
+              }                           },
         });
-        events.push_back(json {
-            {"event", "response.in_progress"},
-            {"data", json {
-                {"type", "response.in_progress"},
-                {"response", json {
-                    {"id",     oai_resp_id},
-                    {"object", "response"},
-                    {"status", "in_progress"},
-                }},
-            }},
+        events.push_back(json{
+            { "event", "response.in_progress" },
+            { "data",
+             json{
+                  { "type", "response.in_progress" },
+                  { "response",
+                    json{
+                        { "id", oai_resp_id },
+                        { "object", "response" },
+                        { "status", "in_progress" },
+                    } },
+              }                               },
         });
     } else if (is_progress) {
-        events.push_back(json {
-            {"event", "response.in_progress"},
-            {"data", json {
-                {"type", "response.in_progress"},
-                {"response", json {
-                    {"id",     oai_resp_id},
-                    {"object", "response"},
-                    {"status", "in_progress"},
-                }},
-            }},
+        events.push_back(json{
+            { "event", "response.in_progress" },
+            { "data",
+             json{
+                  { "type", "response.in_progress" },
+                  { "response",
+                    json{
+                        { "id", oai_resp_id },
+                        { "object", "response" },
+                        { "status", "in_progress" },
+                    } },
+              }                               },
         });
     }
 
     for (const common_chat_msg_diff & diff : oaicompat_msg_diffs) {
         if (!diff.reasoning_content_delta.empty()) {
             if (!thinking_block_started) {
-                events.push_back(json {
-                    {"event", "response.output_item.added"},
-                    {"data", json {
-                        {"type", "response.output_item.added"},
-                        {"item", json {
-                            {"id",                oai_resp_reasoning_id},
-                            {"summary",           json::array()},
-                            {"type",              "reasoning"},
-                            {"content",           json::array()},
-                            {"encrypted_content", ""},
-                            {"status",            "in_progress"},
-                        }},
-                    }},
+                events.push_back(json{
+                    { "event", "response.output_item.added" },
+                    { "data",
+                     json{
+                          { "type", "response.output_item.added" },
+                          { "item",
+                            json{
+                                { "id", oai_resp_reasoning_id },
+                                { "summary", json::array() },
+                                { "type", "reasoning" },
+                                { "content", json::array() },
+                                { "encrypted_content", "" },
+                                { "status", "in_progress" },
+                            } },
+                      }                                     },
                 });
                 thinking_block_started = true;
             }
-            events.push_back(json {
-                {"event", "response.reasoning_text.delta"},
-                {"data", json {
-                    {"type",    "response.reasoning_text.delta"},
-                    {"delta",   diff.reasoning_content_delta},
-                    {"item_id", oai_resp_reasoning_id},
-                }},
+            events.push_back(json{
+                { "event", "response.reasoning_text.delta" },
+                { "data",
+                 json{
+                      { "type", "response.reasoning_text.delta" },
+                      { "delta", diff.reasoning_content_delta },
+                      { "item_id", oai_resp_reasoning_id },
+                  }                                        },
             });
         }
 
         if (!diff.content_delta.empty()) {
             if (!text_block_started) {
-                events.push_back(json {
-                    {"event", "response.output_item.added"},
-                    {"data", json {
-                        {"type", "response.output_item.added"},
-                        {"item", json {
-                            {"content", json::array()},
-                            {"id",      oai_resp_message_id},
-                            {"role",    "assistant"},
-                            {"status",  "in_progress"},
-                            {"type",    "message"},
-                        }},
-                    }},
+                events.push_back(json{
+                    { "event", "response.output_item.added" },
+                    { "data",
+                     json{
+                          { "type", "response.output_item.added" },
+                          { "item",
+                            json{
+                                { "content", json::array() },
+                                { "id", oai_resp_message_id },
+                                { "role", "assistant" },
+                                { "status", "in_progress" },
+                                { "type", "message" },
+                            } },
+                      }                                     },
                 });
-                events.push_back(json {
-                    {"event", "response.content_part.added"},
-                    {"data", json {
-                        {"type",    "response.content_part.added"},
-                        {"item_id", oai_resp_message_id},
-                        {"part", json {
-                            {"type", "output_text"},
-                            {"text", ""},
-                        }},
-                    }},
+                events.push_back(json{
+                    { "event", "response.content_part.added" },
+                    { "data",
+                     json{
+                          { "type", "response.content_part.added" },
+                          { "item_id", oai_resp_message_id },
+                          { "part",
+                            json{
+                                { "type", "output_text" },
+                                { "text", "" },
+                            } },
+                      }                                      },
                 });
                 text_block_started = true;
             }
-            events.push_back(json {
-                {"event", "response.output_text.delta"},
-                {"data", json {
-                    {"type",    "response.output_text.delta"},
-                    {"item_id", oai_resp_message_id},
-                    {"delta",   diff.content_delta},
-                }},
+            events.push_back(json{
+                { "event", "response.output_text.delta" },
+                { "data",
+                 json{
+                      { "type", "response.output_text.delta" },
+                      { "item_id", oai_resp_message_id },
+                      { "delta", diff.content_delta },
+                  }                                     },
             });
         }
 
         if (!diff.tool_call_delta.name.empty()) {
-            events.push_back(json {
-                {"event", "response.output_item.added"},
-                {"data", json {
-                    {"type",  "response.output_item.added"},
-                    {"item", json {
-                        {"id",        "fc_" + diff.tool_call_delta.id},
-                        {"arguments", ""},
-                        {"call_id",   "call_" + diff.tool_call_delta.id},
-                        {"name",      diff.tool_call_delta.name},
-                        {"type",      "function_call"},
-                        {"status",    "in_progress"},
-                    }},
-                }},
+            events.push_back(json{
+                { "event", "response.output_item.added" },
+                { "data",
+                 json{
+                      { "type", "response.output_item.added" },
+                      { "item",
+                        json{
+                            { "id", "fc_" + diff.tool_call_delta.id },
+                            { "arguments", "" },
+                            { "call_id", "call_" + diff.tool_call_delta.id },
+                            { "name", diff.tool_call_delta.name },
+                            { "type", "function_call" },
+                            { "status", "in_progress" },
+                        } },
+                  }                                     },
             });
             oai_resp_fc_id = diff.tool_call_delta.id;
         }
 
         if (!diff.tool_call_delta.arguments.empty()) {
-            events.push_back(json {
-                {"event", "response.function_call_arguments.delta"},
-                {"data", json {
-                    {"type",    "response.function_call_arguments.delta"},
-                    {"delta",   diff.tool_call_delta.arguments},
-                    {"item_id", "fc_" + oai_resp_fc_id},
-                }},
+            events.push_back(json{
+                { "event", "response.function_call_arguments.delta" },
+                { "data",
+                 json{
+                      { "type", "response.function_call_arguments.delta" },
+                      { "delta", diff.tool_call_delta.arguments },
+                      { "item_id", "fc_" + oai_resp_fc_id },
+                  }                                                 },
             });
         }
     }
@@ -1325,39 +1286,36 @@ json server_task_result_cmpl_partial::to_json_oaicompat_resp() {
 }
 
 json server_task_result_cmpl_partial::to_json_oaicompat_asr() {
-    json event = json {
-        {"type", "transcript.text.delta"},
-        {"delta", content},
+    json event = json{
+        { "type",  "transcript.text.delta" },
+        { "delta", content                 },
     };
     return event;
 }
 
 json server_task_result_cmpl_partial::to_json_anthropic() {
     json events = json::array();
-    bool first = (n_decoded == 1);
+    bool first  = (n_decoded == 1);
     // use member variables to track block state across streaming calls
     // (anthropic_thinking_block_started, anthropic_text_block_started)
 
     if (first) {
         events.push_back({
-            {"event", "message_start"},
-            {"data", {
-                {"type", "message_start"},
-                {"message", {
-                    {"id", oaicompat_cmpl_id},
-                    {"type", "message"},
-                    {"role", "assistant"},
-                    {"content", json::array()},
-                    {"model", oaicompat_model},
-                    {"stop_reason", nullptr},
-                    {"stop_sequence", nullptr},
-                    {"usage", {
-                        {"cache_read_input_tokens", n_prompt_tokens_cache},
-                        {"input_tokens", n_prompt_tokens - n_prompt_tokens_cache},
-                        {"output_tokens", 0}
-                    }}
-                }}
-            }}
+            { "event", "message_start"                   },
+            { "data",
+             { { "type", "message_start" },
+                { "message",
+                  { { "id", oaicompat_cmpl_id },
+                    { "type", "message" },
+                    { "role", "assistant" },
+                    { "content", json::array() },
+                    { "model", oaicompat_model },
+                    { "stop_reason", nullptr },
+                    { "stop_sequence", nullptr },
+                    { "usage",
+                      { { "cache_read_input_tokens", n_prompt_tokens_cache },
+                        { "input_tokens", n_prompt_tokens - n_prompt_tokens_cache },
+                        { "output_tokens", 0 } } } } } } }
         });
     }
 
@@ -1376,29 +1334,21 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
         if (!diff.reasoning_content_delta.empty()) {
             if (!thinking_started) {
                 events.push_back({
-                    {"event", "content_block_start"},
-                    {"data", {
-                        {"type", "content_block_start"},
-                        {"index", thinking_block_index},
-                        {"content_block", {
-                            {"type", "thinking"},
-                            {"thinking", ""}
-                        }}
-                    }}
+                    { "event", "content_block_start"                                          },
+                    { "data",
+                     { { "type", "content_block_start" },
+                        { "index", thinking_block_index },
+                        { "content_block", { { "type", "thinking" }, { "thinking", "" } } } } }
                 });
                 thinking_started = true;
             }
 
             events.push_back({
-                {"event", "content_block_delta"},
-                {"data", {
-                    {"type", "content_block_delta"},
-                    {"index", thinking_block_index},
-                    {"delta", {
-                        {"type", "thinking_delta"},
-                        {"thinking", diff.reasoning_content_delta}
-                    }}
-                }}
+                { "event", "content_block_delta"                                                                  },
+                { "data",
+                 { { "type", "content_block_delta" },
+                    { "index", thinking_block_index },
+                    { "delta", { { "type", "thinking_delta" }, { "thinking", diff.reasoning_content_delta } } } } }
             });
         }
 
@@ -1406,63 +1356,52 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
         if (!diff.content_delta.empty()) {
             if (!text_started) {
                 events.push_back({
-                    {"event", "content_block_start"},
-                    {"data", {
-                        {"type", "content_block_start"},
-                        {"index", text_block_index},
-                        {"content_block", {
-                            {"type", "text"},
-                            {"text", ""}
-                        }}
-                    }}
+                    { "event", "content_block_start"                                  },
+                    { "data",
+                     { { "type", "content_block_start" },
+                        { "index", text_block_index },
+                        { "content_block", { { "type", "text" }, { "text", "" } } } } }
                 });
                 text_started = true;
             }
 
             events.push_back({
-                {"event", "content_block_delta"},
-                {"data", {
-                    {"type", "content_block_delta"},
-                    {"index", text_block_index},
-                    {"delta", {
-                        {"type", "text_delta"},
-                        {"text", diff.content_delta}
-                    }}
-                }}
+                { "event", "content_block_delta"                                                },
+                { "data",
+                 { { "type", "content_block_delta" },
+                    { "index", text_block_index },
+                    { "delta", { { "type", "text_delta" }, { "text", diff.content_delta } } } } }
             });
         }
 
         // handle tool calls
         if (diff.tool_call_index != std::string::npos) {
             // use anthropic_has_reasoning for thinking block count (persists across calls)
-            size_t content_block_index = (anthropic_has_reasoning ? 1 : 0) + (text_started ? 1 : 0) + diff.tool_call_index;
+            size_t content_block_index =
+                (anthropic_has_reasoning ? 1 : 0) + (text_started ? 1 : 0) + diff.tool_call_index;
 
             if (!diff.tool_call_delta.name.empty()) {
                 events.push_back({
-                    {"event", "content_block_start"},
-                    {"data", {
-                        {"type", "content_block_start"},
-                        {"index", content_block_index},
-                        {"content_block", {
-                            {"type", "tool_use"},
-                            {"id", diff.tool_call_delta.id},
-                            {"name", diff.tool_call_delta.name}
-                        }}
-                    }}
+                    { "event", "content_block_start"                    },
+                    { "data",
+                     { { "type", "content_block_start" },
+                        { "index", content_block_index },
+                        { "content_block",
+                          { { "type", "tool_use" },
+                            { "id", diff.tool_call_delta.id },
+                            { "name", diff.tool_call_delta.name } } } } }
                 });
             }
 
             if (!diff.tool_call_delta.arguments.empty()) {
                 events.push_back({
-                    {"event", "content_block_delta"},
-                    {"data", {
-                        {"type", "content_block_delta"},
-                        {"index", content_block_index},
-                        {"delta", {
-                            {"type", "input_json_delta"},
-                            {"partial_json", diff.tool_call_delta.arguments}
-                        }}
-                    }}
+                    { "event", "content_block_delta"                                 },
+                    { "data",
+                     { { "type", "content_block_delta" },
+                        { "index", content_block_index },
+                        { "delta",
+                          { { "type", "input_json_delta" },
+                            { "partial_json", diff.tool_call_delta.arguments } } } } }
                 });
             }
         }
@@ -1475,23 +1414,21 @@ json server_task_result_cmpl_partial::to_json_anthropic() {
 // server_task_result_embd
 //
 json server_task_result_embd::to_json() {
-    return res_type == TASK_RESPONSE_TYPE_OAI_EMBD
-        ? to_json_oaicompat()
-        : to_json_non_oaicompat();
+    return res_type == TASK_RESPONSE_TYPE_OAI_EMBD ? to_json_oaicompat() : to_json_non_oaicompat();
 }
 
 json server_task_result_embd::to_json_non_oaicompat() {
-    return json {
-        {"index",     index},
-        {"embedding", embedding},
+    return json{
+        { "index",     index     },
+        { "embedding", embedding },
     };
 }
 
 json server_task_result_embd::to_json_oaicompat() {
-    return json {
-        {"index",            index},
-        {"embedding",        embedding[0]},
-        {"tokens_evaluated", n_tokens},
+    return json{
+        { "index",            index        },
+        { "embedding",        embedding[0] },
+        { "tokens_evaluated", n_tokens     },
     };
 }
 
@@ -1499,10 +1436,10 @@ json server_task_result_embd::to_json_oaicompat() {
 // server_task_result_rerank
 //
 json server_task_result_rerank::to_json() {
-    return json {
-        {"index",            index},
-        {"score",            score},
-        {"tokens_evaluated", n_tokens},
+    return json{
+        { "index",            index    },
+        { "score",            score    },
+        { "tokens_evaluated", n_tokens },
     };
 }
 
@@ -1531,153 +1468,121 @@ json server_task_result_metrics::to_json() {
 }
 
 // metrics definition: https://prometheus.io/docs/practices/naming/#metric-names
+// VITRIOL metric namespace (A1, 2026-11-19).
+//
+// The historical `llamacpp:` series is emitted unchanged and a mirror with the
+// `vitriol:` prefix is appended, so both names carry identical values:
+//
+//   llamacpp:kv_ejected_total 42
+//   vitriol:kv_ejected_total 42
+//
+// Why a mirror and not a rename: the consumers of these names are spread across
+// the Rust dashboard (vitriol-tui/poller.rs), the Officina decode strip
+// (_shared + vitriol-decode), the demiurge pressure reader and the operator's
+// own scrapers. Renaming is a coordinated four-language change with a restart in
+// the middle and a silent-telemetry-gap failure mode, for a string nobody reads
+// on purpose. Mirroring gives the new name an existence and a migration window
+// at the cost of one duplicated series set; the alias can be dropped once
+// `grep -rn llamacpp: ` finds no consumer.
+//
+// Both spellings of every series must stay value-identical — pinned by the
+// /metrics test in the engine suite.
+static std::string vitriol_mirror_prometheus(const std::string & text) {
+    static const std::string old_prefix = "llamacpp:";
+    static const std::string new_prefix = "vitriol:";
+
+    std::string mirror;
+    mirror.reserve(text.size());
+    size_t pos = 0;
+    while (true) {
+        const size_t hit = text.find(old_prefix, pos);
+        if (hit == std::string::npos) {
+            mirror.append(text, pos, std::string::npos);
+            break;
+        }
+        mirror.append(text, pos, hit - pos);
+        mirror.append(new_prefix);
+        pos = hit + old_prefix.size();
+    }
+    return text + mirror;
+}
+
 std::string server_task_result_metrics::to_metrics() {
     const std::vector<metric_item> counters = {
-        {
-            "prompt_tokens_total",
-            "Number of prompt tokens processed, excluding cached tokens",
-            (double) metrics.prompt.count
-        }, {
-            "prompt_tokens_cached_total",
-            "Number of prompt tokens reused from the cache",
-            (double) metrics.n_prompt_cached
-        }, {
-            "prompt_seconds_total",
-            "Total time spent processing prompts",
-            metrics.prompt.time / 1.e6
-        }, {
-            "tokens_predicted_total",
-            "Number of generation tokens processed",
-            (double) metrics.predict.count
-        }, {
-            "tokens_predicted_seconds_total",
-            "Total time spent generating tokens",
-            metrics.predict.time / 1.e6
-        }, {
-            "n_decode_total",
-            "Total number of llama_decode() calls, excluding speculative decoding and multimodal decoding",
-            (double) metrics.n_decode
-        }, {
-            "n_tokens_max",
-            "Largest observed sequence length (prompt + generation)",
-            (double) metrics.n_tokens_max
-        }, {
-            "spec_decode_num_draft_tokens_total",
-            "Speculative: Total draft tokens generated",
-            (double) metrics.n_draft_tokens
-        }, {
-            "spec_decode_num_accepted_tokens_total",
-            "Speculative: Total draft tokens accepted by the target model",
-            (double) metrics.n_draft_accepted
-        }, {
-            "spec_decode_num_drafts_total",
-            "Speculative: Total speculative decoding verification steps",
-            (double) metrics.n_draft_verif_steps
-        },
+        { "prompt_tokens_total",                   "Number of prompt tokens processed, excluding cached tokens",
+         (double) metrics.prompt.count                                                                                                            },
+        { "prompt_tokens_cached_total",            "Number of prompt tokens reused from the cache",
+         (double) metrics.n_prompt_cached                                                                                                         },
+        { "prompt_seconds_total",                  "Total time spent processing prompts",                          metrics.prompt.time / 1.e6     },
+        { "tokens_predicted_total",                "Number of generation tokens processed",                        (double) metrics.predict.count },
+        { "tokens_predicted_seconds_total",        "Total time spent generating tokens",                           metrics.predict.time / 1.e6    },
+        { "n_decode_total",
+         "Total number of llama_decode() calls, excluding speculative decoding and multimodal decoding",           (double) metrics.n_decode      },
+        { "n_tokens_max",                          "Largest observed sequence length (prompt + generation)",       (double) metrics.n_tokens_max  },
+        { "spec_decode_num_draft_tokens_total",    "Speculative: Total draft tokens generated",
+         (double) metrics.n_draft_tokens                                                                                                          },
+        { "spec_decode_num_accepted_tokens_total", "Speculative: Total draft tokens accepted by the target model",
+         (double) metrics.n_draft_accepted                                                                                                        },
+        { "spec_decode_num_drafts_total",          "Speculative: Total speculative decoding verification steps",
+         (double) metrics.n_draft_verif_steps                                                                                                     },
     };
 
     const std::vector<metric_item> gauges = {
-        {
-            "prompt_tokens_seconds",
-            "Average prompt throughput in tokens/s",
-            metrics.prompt_bucket.n_per_second()
-        }, {
-            "predicted_tokens_seconds",
-            "Average generation throughput in tokens/s",
-            metrics.predict_bucket.n_per_second()
-        }, {
-            "requests_processing",
-            "Number of requests processing",
-            (double) n_processing_slots
-        }, {
-            "requests_deferred",
-            "Number of requests deferred",
-            (double) n_tasks_deferred
-        }, {
-            "n_busy_slots_per_decode",
-            "Average number of busy slots per llama_decode() call",
-            (double) metrics.n_busy_slots / std::max((double) metrics.n_decode, 1.0)
-        }, {
-            "spec_decode_acceptance_rate",
-            "Speculative: Fraction of drafted tokens accepted (accepted / drafted)",
-            metrics.n_draft_tokens > 0
-                ? (double) metrics.n_draft_accepted / (double) metrics.n_draft_tokens
-                : 0.0
-        }, {
-            "spec_decode_accepted_per_step",
-            "Speculative: Mean draft tokens accepted per verification step (0 when idle)",
-            metrics.n_draft_verif_steps > 0
-                ? (double) metrics.n_draft_accepted / (double) metrics.n_draft_verif_steps
-                : 0.0
-        }, {
-            "reasoning_forced_total",
-            "VITRIOL reasoning hygiene: thinking blocks closed by the budget sampler "
-            "(0 = no budget was set, or no thinking happened)",
-            (double) common_reasoning_budget_forced_total()
-        }, {
-            "reasoning_unbounded_total",
-            "VITRIOL reasoning hygiene: requests admitted with thinking enabled and "
-            "NO budget (must stay 0; non-zero predicts empty answers at finish=length)",
-            (double) metrics.n_reasoning_unbounded
-        }, {
-            "kv_ejected_total",
-            "VITRIOL sparse-KV: KV cells ejected since boot (attention-scored eviction + eager floor sweep)",
-            (double) metrics.n_kv_ejected
-        }, {
-            "kv_cache_spill_total",
-            "VITRIOL Optane tier: prompt-cache states mirrored to disk since boot",
-            (double) metrics.n_kv_cache_spills
-        }, {
-            "kv_cache_disk_restored_total",
-            "VITRIOL Optane tier: disk states loaded into RAM (boot or fetch)",
-            (double) metrics.n_kv_cache_disk_restored
-        }, {
-            "kv_cache_disk_fetched_total",
-            "VITRIOL Optane tier: runtime disk fetches that restored a state",
-            (double) metrics.n_kv_cache_disk_fetched
-        }, {
-            "kv_cache_disk_miss_total",
-            "VITRIOL Optane tier: disk scans that found no usable mirror",
-            (double) metrics.n_kv_cache_disk_miss
-        }, {
-            "kv_cache_disk_rejected_total",
-            "VITRIOL Optane tier: disk states rejected for identity mismatch",
-            (double) metrics.n_kv_cache_disk_rejected
-        }, {
-            "kv_cache_disk_unverified_total",
-            "VITRIOL Optane tier: v1 disk states accepted without identity",
-            (double) metrics.n_kv_cache_disk_unverified
-        }, {
-            "kv_cache_disk_pruned_total",
-            "VITRIOL Optane tier: disk states removed (damaged or VITRIOL_KV_DISK_PRUNE=1)",
-            (double) metrics.n_kv_cache_disk_pruned
-        }, {
-            "kv_cache_mem_entries",
-            "VITRIOL Optane tier: prompt states currently held in the RAM cache",
-            (double) metrics.n_kv_cache_mem_entries
-        }, {
-            "kv_cache_evicted_total",
-            "VITRIOL cache cap: disk entries evicted because the budget was exceeded",
-            (double) metrics.n_kv_cache_evicted
-        }, {
-            "kv_cache_bytes",
-            "VITRIOL cache cap: bytes on disk (mirror states + slot snapshots)",
-            (double) metrics.n_kv_cache_bytes
-        },
+        { "prompt_tokens_seconds", "Average prompt throughput in tokens/s", metrics.prompt_bucket.n_per_second() },
+        { "predicted_tokens_seconds", "Average generation throughput in tokens/s",
+         metrics.predict_bucket.n_per_second() },
+        { "requests_processing", "Number of requests processing", (double) n_processing_slots },
+        { "requests_deferred", "Number of requests deferred", (double) n_tasks_deferred },
+        { "n_busy_slots_per_decode", "Average number of busy slots per llama_decode() call",
+         (double) metrics.n_busy_slots / std::max((double) metrics.n_decode, 1.0) },
+        { "spec_decode_acceptance_rate", "Speculative: Fraction of drafted tokens accepted (accepted / drafted)",
+         metrics.n_draft_tokens > 0 ? (double) metrics.n_draft_accepted / (double) metrics.n_draft_tokens : 0.0 },
+        { "spec_decode_accepted_per_step",
+         "Speculative: Mean draft tokens accepted per verification step (0 when idle)", metrics.n_draft_verif_steps > 0 ? (double) metrics.n_draft_accepted / (double) metrics.n_draft_verif_steps :
+                                            0.0 },
+        { "reasoning_forced_total",
+         "VITRIOL reasoning hygiene: thinking blocks closed by the budget sampler "
+          "(0 = no budget was set, or no thinking happened)", (double) common_reasoning_budget_forced_total() },
+        { "reasoning_unbounded_total",
+         "VITRIOL reasoning hygiene: requests admitted with thinking enabled and "
+          "NO budget (must stay 0; non-zero predicts empty answers at finish=length)", (double) metrics.n_reasoning_unbounded },
+        { "kv_ejected_total",
+         "VITRIOL sparse-KV: KV cells ejected since boot (attention-scored eviction + eager floor sweep)", (double) metrics.n_kv_ejected },
+        { "kv_cache_spill_total", "VITRIOL Optane tier: prompt-cache states mirrored to disk since boot",
+         (double) metrics.n_kv_cache_spills },
+        { "kv_cache_disk_restored_total", "VITRIOL Optane tier: disk states loaded into RAM (boot or fetch)",
+         (double) metrics.n_kv_cache_disk_restored },
+        { "kv_cache_disk_fetched_total", "VITRIOL Optane tier: runtime disk fetches that restored a state",
+         (double) metrics.n_kv_cache_disk_fetched },
+        { "kv_cache_disk_miss_total", "VITRIOL Optane tier: disk scans that found no usable mirror",
+         (double) metrics.n_kv_cache_disk_miss },
+        { "kv_cache_disk_rejected_total", "VITRIOL Optane tier: disk states rejected for identity mismatch",
+         (double) metrics.n_kv_cache_disk_rejected },
+        { "kv_cache_disk_unverified_total", "VITRIOL Optane tier: v1 disk states accepted without identity",
+         (double) metrics.n_kv_cache_disk_unverified },
+        { "kv_cache_disk_pruned_total", "VITRIOL Optane tier: disk states removed (damaged or VITRIOL_KV_DISK_PRUNE=1)",
+         (double) metrics.n_kv_cache_disk_pruned },
+        { "kv_cache_mem_entries", "VITRIOL Optane tier: prompt states currently held in the RAM cache",
+         (double) metrics.n_kv_cache_mem_entries },
+        { "kv_cache_evicted_total", "VITRIOL cache cap: disk entries evicted because the budget was exceeded",
+         (double) metrics.n_kv_cache_evicted },
+        { "kv_cache_bytes", "VITRIOL cache cap: bytes on disk (mirror states + slot snapshots)",
+         (double) metrics.n_kv_cache_bytes },
     };
+
 
     std::stringstream prometheus;
 
     auto add_items = [&prometheus](const char * type, const std::vector<metric_item> & items) {
         for (const auto & item : items) {
             prometheus << "# HELP llamacpp:" << item.name << " " << item.description << "\n"
-                       << "# TYPE llamacpp:" << item.name << " " << type             << "\n"
-                       << "llamacpp:"        << item.name << " " << item.value       << "\n";
+                       << "# TYPE llamacpp:" << item.name << " " << type << "\n"
+                       << "llamacpp:" << item.name << " " << item.value << "\n";
         }
     };
 
     add_items("counter", counters);
-    add_items("gauge",   gauges);
+    add_items("gauge", gauges);
 
     // labeled counter: one time series per draft position
     if (!metrics.n_accepted_per_pos.empty()) {
@@ -1685,8 +1590,8 @@ std::string server_task_result_metrics::to_metrics() {
                       " Accepted tokens per draft position\n"
                    << "# TYPE llamacpp:spec_decode_num_accepted_tokens_per_pos_total counter\n";
         for (size_t i = 0; i < metrics.n_accepted_per_pos.size(); i++) {
-            prometheus << "llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position=\""
-                       << i << "\"} " << metrics.n_accepted_per_pos[i] << "\n";
+            prometheus << "llamacpp:spec_decode_num_accepted_tokens_per_pos_total{position=\"" << i << "\"} "
+                       << metrics.n_accepted_per_pos[i] << "\n";
         }
     }
 
@@ -1696,8 +1601,8 @@ std::string server_task_result_metrics::to_metrics() {
                       " Draft tokens offered for verification at each draft position\n"
                    << "# TYPE llamacpp:spec_decode_num_offered_tokens_per_pos_total counter\n";
         for (size_t i = 0; i < metrics.n_offered_per_pos.size(); i++) {
-            prometheus << "llamacpp:spec_decode_num_offered_tokens_per_pos_total{position=\""
-                       << i << "\"} " << metrics.n_offered_per_pos[i] << "\n";
+            prometheus << "llamacpp:spec_decode_num_offered_tokens_per_pos_total{position=\"" << i << "\"} "
+                       << metrics.n_offered_per_pos[i] << "\n";
         }
     }
 
@@ -1712,9 +1617,8 @@ std::string server_task_result_metrics::to_metrics() {
                 if (metrics.n_verify_hist[r][c] == 0) {
                     continue;
                 }
-                prometheus << "llamacpp:spec_decode_verify_outcomes_total{draft_len=\""
-                           << r << "\",accepted=\"" << c << "\"} "
-                           << metrics.n_verify_hist[r][c] << "\n";
+                prometheus << "llamacpp:spec_decode_verify_outcomes_total{draft_len=\"" << r << "\",accepted=\"" << c
+                           << "\"} " << metrics.n_verify_hist[r][c] << "\n";
             }
         }
     }
@@ -1722,74 +1626,50 @@ std::string server_task_result_metrics::to_metrics() {
     // PROVENANCE: inspiration - vLLM (Apache-2.0) v1 metrics; re-derived.
     {
         const std::vector<metric_item> vitriol_counters = {
-            {
-                "sampling_time_seconds_total",
-                "Host-side sampling time since boot (grammar + samplers, excludes GPU wait)",
-                (double) metrics.n_sampling_us / 1.e6
-            }, {
-                "sampling_calls_total",
-                "Number of common_sampler_sample() calls since boot",
-                (double) metrics.n_sampling_calls
-            }, {
-                "graph_captures_total",
-                "CUDA graphs: capture rounds since boot",
-                (double) metrics.graph_captures
-            }, {
-                "graph_reuse_total",
-                "CUDA graphs: launches without recapture since boot",
-                (double) metrics.graph_reuse
-            }, {
-                "graph_updates_total",
-                "CUDA graphs: exec updates/instantiations after property change",
-                (double) metrics.graph_updates
-            }, {
-                "graph_evicts_total",
-                "CUDA graphs: graphs dropped by the 10s-idle sweep",
-                (double) metrics.graph_evicts
-            },
+            { "sampling_time_seconds_total",
+             "Host-side sampling time since boot (grammar + samplers, excludes GPU wait)",                     (double) metrics.n_sampling_us / 1.e6 },
+            { "sampling_calls_total",        "Number of common_sampler_sample() calls since boot",
+             (double) metrics.n_sampling_calls                                                                                                       },
+            { "graph_captures_total",        "CUDA graphs: capture rounds since boot",                         (double) metrics.graph_captures       },
+            { "graph_reuse_total",           "CUDA graphs: launches without recapture since boot",             (double) metrics.graph_reuse          },
+            { "graph_updates_total",         "CUDA graphs: exec updates/instantiations after property change",
+             (double) metrics.graph_updates                                                                                                          },
+            { "graph_evicts_total",          "CUDA graphs: graphs dropped by the 10s-idle sweep",
+             (double) metrics.graph_evicts                                                                                                           },
         };
         add_items("counter", vitriol_counters);
 
-        const double cached = (double) metrics.n_prompt_cached;
-        const double processed = (double) metrics.prompt.count;
+        const double                   cached         = (double) metrics.n_prompt_cached;
+        const double                   processed      = (double) metrics.prompt.count;
         const std::vector<metric_item> vitriol_gauges = {
-            {
-                "cache_hit_ratio",
-                "Fraction of prompt tokens served from cache (cached / (cached + processed))",
-                (cached + processed) > 0 ? cached / (cached + processed) : 0.0
-            },
+            { "cache_hit_ratio", "Fraction of prompt tokens served from cache (cached / (cached + processed))",
+             (cached + processed) > 0 ? cached / (cached + processed) : 0.0 },
         };
         add_items("gauge", vitriol_gauges);
 
         // prometheus histogram helper (bucket + _sum + _count)
-        auto add_hist = [&prometheus](const char * name, const char * help,
-                                      const uint64_t * buckets, int n_buckets,
+        auto add_hist = [&prometheus](const char * name, const char * help, const uint64_t * buckets, int n_buckets,
                                       const int64_t * bounds_us, uint64_t count, uint64_t sum_us) {
             prometheus << "# HELP llamacpp:" << name << " " << help << "\n"
                        << "# TYPE llamacpp:" << name << " histogram\n";
             uint64_t cum = 0;
             for (int i = 0; i < n_buckets; i++) {
                 cum += buckets[i];
-                prometheus << "llamacpp:" << name << "_bucket{le=\""
-                           << (bounds_us[i] / 1e6) << "\"} " << cum << "\n";
+                prometheus << "llamacpp:" << name << "_bucket{le=\"" << (bounds_us[i] / 1e6) << "\"} " << cum << "\n";
             }
             prometheus << "llamacpp:" << name << "_bucket{le=\"+Inf\"} " << count << "\n"
-                       << "llamacpp:" << name << "_sum "    << sum_us / 1e6 << "\n"
-                       << "llamacpp:" << name << "_count "  << count << "\n";
+                       << "llamacpp:" << name << "_sum " << sum_us / 1e6 << "\n"
+                       << "llamacpp:" << name << "_count " << count << "\n";
         };
 
-        add_hist("ttft_seconds",
-                 "Time from task post to first token out",
-                 metrics.ttft_bucket, server_metrics::N_LAT_BUCKETS,
-                 server_metrics::lat_bounds_us, metrics.ttft_count, metrics.ttft_sum_us);
-        add_hist("itl_seconds",
-                 "Inter-token latency (one sample per decode step that emitted >= 1 token)",
-                 metrics.itl_bucket, server_metrics::N_LAT_BUCKETS,
-                 server_metrics::lat_bounds_us, metrics.itl_count, metrics.itl_sum_us);
-        add_hist("queue_time_seconds",
-                 "Time from task post to slot launch",
-                 metrics.queue_bucket, server_metrics::N_LAT_BUCKETS,
-                 server_metrics::lat_bounds_us, metrics.queue_count, metrics.queue_sum_us);
+        add_hist("ttft_seconds", "Time from task post to first token out", metrics.ttft_bucket,
+                 server_metrics::N_LAT_BUCKETS, server_metrics::lat_bounds_us, metrics.ttft_count, metrics.ttft_sum_us);
+        add_hist("itl_seconds", "Inter-token latency (one sample per decode step that emitted >= 1 token)",
+                 metrics.itl_bucket, server_metrics::N_LAT_BUCKETS, server_metrics::lat_bounds_us, metrics.itl_count,
+                 metrics.itl_sum_us);
+        add_hist("queue_time_seconds", "Time from task post to slot launch", metrics.queue_bucket,
+                 server_metrics::N_LAT_BUCKETS, server_metrics::lat_bounds_us, metrics.queue_count,
+                 metrics.queue_sum_us);
 
         // prefix reuse depth at launch (labeled cumulative counter, tokens)
         prometheus << "# HELP llamacpp:cache_reuse_lcp_bucket"
@@ -1799,8 +1679,8 @@ std::string server_task_result_metrics::to_metrics() {
             uint64_t cum = 0;
             for (int i = 0; i < server_metrics::N_LCP_BUCKETS; i++) {
                 cum += metrics.lcp_bucket[i];
-                prometheus << "llamacpp:cache_reuse_lcp_bucket{le=\""
-                           << server_metrics::lcp_bounds[i] << "\"} " << cum << "\n";
+                prometheus << "llamacpp:cache_reuse_lcp_bucket{le=\"" << server_metrics::lcp_bounds[i] << "\"} " << cum
+                           << "\n";
             }
             cum += metrics.lcp_inf;
             prometheus << "llamacpp:cache_reuse_lcp_bucket{le=\"+Inf\"} " << cum << "\n"
@@ -1808,33 +1688,30 @@ std::string server_task_result_metrics::to_metrics() {
         }
     }
 
-    return prometheus.str();
+    return vitriol_mirror_prometheus(prometheus.str());
 }
+
 
 //
 // server_task_result_slot_save_load
 //
 json server_task_result_slot_save_load::to_json() {
     if (is_save) {
-        return json {
-            { "id_slot",   id_slot },
-            { "filename",  filename },
-            { "n_saved",   n_tokens },
-            { "n_written", n_bytes },
-            { "timings", {
-                { "save_ms", t_ms }
-            }},
+        return json{
+            { "id_slot",   id_slot                 },
+            { "filename",  filename                },
+            { "n_saved",   n_tokens                },
+            { "n_written", n_bytes                 },
+            { "timings",   { { "save_ms", t_ms } } },
         };
     }
 
-    return json {
-        { "id_slot",    id_slot },
-        { "filename",   filename },
-        { "n_restored", n_tokens },
-        { "n_read",     n_bytes },
-        { "timings", {
-            { "restore_ms", t_ms }
-        }},
+    return json{
+        { "id_slot",    id_slot                    },
+        { "filename",   filename                   },
+        { "n_restored", n_tokens                   },
+        { "n_read",     n_bytes                    },
+        { "timings",    { { "restore_ms", t_ms } } },
     };
 }
 
@@ -1842,8 +1719,8 @@ json server_task_result_slot_save_load::to_json() {
 // server_task_result_slot_erase
 //
 json server_task_result_slot_erase::to_json() {
-    return json {
-        { "id_slot",  id_slot },
+    return json{
+        { "id_slot",  id_slot  },
         { "n_erased", n_erased },
     };
 }
@@ -1852,11 +1729,11 @@ json server_task_result_slot_erase::to_json() {
 // server_task_result_kv_policy
 //
 json server_task_result_kv_policy::to_json() {
-    return json {
-        { "floor",        floor },
-        { "protect",      protect },
-        { "swept",        swept },
-        { "resident",     resident },
+    return json{
+        { "floor",        floor        },
+        { "protect",      protect      },
+        { "swept",        swept        },
+        { "resident",     resident     },
         { "buffer_bytes", buffer_bytes },
     };
 }
@@ -1865,10 +1742,10 @@ json server_task_result_kv_policy::to_json() {
 // server_task_result_ctx_resize
 //
 json server_task_result_ctx_resize::to_json() {
-    return json {
-        { "n_ctx_old",        n_ctx_old },
-        { "n_ctx_new",        n_ctx_new },
-        { "n_spooled",        n_spooled },
+    return json{
+        { "n_ctx_old",        n_ctx_old        },
+        { "n_ctx_new",        n_ctx_new        },
+        { "n_spooled",        n_spooled        },
         { "n_tokens_spooled", n_tokens_spooled },
     };
 }
@@ -1880,13 +1757,13 @@ json server_task_result_ctx_resize::to_json() {
 json server_task_result_get_lora::to_json() {
     json result = json::array();
     for (size_t i = 0; i < loras.size(); ++i) {
-        auto & lora = loras[i];
-        json entry = {
-            {"id",            i},
-            {"path",          lora.info.path},
-            {"scale",         lora.info.scale},
-            {"task_name",     lora.info.task_name},
-            {"prompt_prefix", lora.info.prompt_prefix},
+        auto & lora  = loras[i];
+        json   entry = {
+            { "id",            i                       },
+            { "path",          lora.info.path          },
+            { "scale",         lora.info.scale         },
+            { "task_name",     lora.info.task_name     },
+            { "prompt_prefix", lora.info.prompt_prefix },
         };
         if (!lora.alora_invocation_tokens.empty()) {
             entry["alora_invocation_string"] = lora.alora_invocation_string;
@@ -1902,7 +1779,9 @@ json server_task_result_get_lora::to_json() {
 //
 
 json server_task_result_apply_lora::to_json() {
-    return json {{ "success", true }};
+    return json{
+        { "success", true }
+    };
 }
 
 //
@@ -1928,7 +1807,9 @@ size_t server_prompt_cache::n_tokens() const {
     return res;
 }
 
-server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt, size_t state_size_tgt, size_t state_size_dft) {
+server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & prompt,
+                                                       size_t                state_size_tgt,
+                                                       size_t                state_size_dft) {
     // first check if the current state is contained fully in the cache
     for (auto it = states.begin(); it != states.end(); ++it) {
         const int cur_lcp_len = it->prompt.tokens.get_common_prefix(prompt.tokens);
@@ -1978,8 +1859,10 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
                 }
             }
 
-            SRV_WRN(" - making room for prompt cache entry, removing least-recently-hit entry (hits = %llu, size = %.3f MiB)\n",
-                    (unsigned long long) it_victim->n_hits, it_victim->size() / (1024.0 * 1024.0));
+            SRV_WRN(
+                " - making room for prompt cache entry, removing least-recently-hit entry (hits = %llu, size = %.3f "
+                "MiB)\n",
+                (unsigned long long) it_victim->n_hits, it_victim->size() / (1024.0 * 1024.0));
 
             states.erase(it_victim);
         }
@@ -1995,7 +1878,7 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     } catch (const std::bad_alloc & e) {
         SRV_ERR("failed to allocate memory for prompt cache state: %s\n", e.what());
 
-        limit_size = std::max<size_t>(1, 0.4*size());
+        limit_size = std::max<size_t>(1, 0.4 * size());
 
         SRV_WRN(" - cache size limit reduced to %.3f MiB\n", limit_size / (1024.0 * 1024.0));
 
@@ -2005,29 +1888,35 @@ server_prompt_cache_state * server_prompt_cache::alloc(const server_prompt & pro
     }
 
     states.push_back({
-        /*.prompt =*/ {
-            /*.tokens      =*/ prompt.tokens.clone(),
-            /*.checkpoints =*/ prompt.checkpoints,
+        /*.prompt =*/{
+                      /*.tokens      =*/prompt.tokens.clone(),
+                      /*.checkpoints =*/prompt.checkpoints,
 #ifdef VITRIOL_CACHE_STORE
-            /*.cache_owner =*/ prompt.cache_owner,
-            /*.cache_read =*/ {},
-            /*.cache_source =*/ {},
+                      /*.cache_owner =*/prompt.cache_owner,
+                      /*.cache_read =*/{},
+                      /*.cache_source =*/{},
 #endif
-        },
-        /*.data   =*/ {
-            /*.main =*/ std::make_shared<std::vector<uint8_t>>(std::move(state_data_tgt)),
-            /*.drft =*/ std::make_shared<std::vector<uint8_t>>(std::move(state_data_dft)),
-        },
+                      },
+        /*.data   =*/
+        {
+                      /*.main =*/std::make_shared<std::vector<uint8_t>>(std::move(state_data_tgt)),
+                      /*.drft =*/std::make_shared<std::vector<uint8_t>>(std::move(state_data_dft)),
+                      },
     });
 
     return &states.back();
 }
 
-bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tokens_new, llama_context * ctx_tgt, llama_context * ctx_dft, int32_t id_slot) {
+bool server_prompt_cache::load(server_prompt &       prompt,
+                               const server_tokens & tokens_new,
+                               llama_context *       ctx_tgt,
+                               llama_context *       ctx_dft,
+                               int32_t               id_slot) {
     const int lcp_best = prompt.tokens.get_common_prefix(tokens_new);
 
-    float f_keep_best = prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f; // empty slot: any cache entry wins
-    float f_sim_best  = float(lcp_best) / tokens_new.size();
+    float f_keep_best =
+        prompt.tokens.size() > 0 ? float(lcp_best) / prompt.tokens.size() : -1.0f;  // empty slot: any cache entry wins
+    float f_sim_best = float(lcp_best) / tokens_new.size();
 
     SRV_TRC(" - looking for better prompt, base f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
 
@@ -2040,7 +1929,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
         const float f_keep_cur = float(lcp_cur) / it->prompt.tokens.size();
         const float f_sim_cur  = float(lcp_cur) / tokens_new.size();
 
-        SRV_TRC("   - prompt with length %7zu, lcp = %7d, f_keep = %.3f, f_sim = %.3f\n", it->prompt.tokens.size(), lcp_cur, f_keep_cur, f_sim_cur);
+        SRV_TRC("   - prompt with length %7zu, lcp = %7d, f_keep = %.3f, f_sim = %.3f\n", it->prompt.tokens.size(),
+                lcp_cur, f_keep_cur, f_sim_cur);
 
         // a state saved under a larger window cannot fit a smaller one
         // (VITRIOL /ctx/resize: n_ctx left the identity, so fit is per-state)
@@ -2065,15 +1955,14 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
     // take the better one, instead of consulting disk only when RAM is empty.
     {
         std::string disk_path;
-        float disk_keep = 0.0f;
-        float disk_sim  = 0.0f;
+        float       disk_keep = 0.0f;
+        float       disk_sim  = 0.0f;
         if (disk_find_best(tokens_new, disk_path, disk_keep, disk_sim)) {
-            const bool ram_has  = it_best != states.end();
-            const bool disk_wins = !ram_has ||
-                disk_keep > f_keep_best ||
-                (disk_keep == f_keep_best && disk_sim > f_sim_best);
+            const bool ram_has = it_best != states.end();
+            const bool disk_wins =
+                !ram_has || disk_keep > f_keep_best || (disk_keep == f_keep_best && disk_sim > f_sim_best);
             if (disk_wins && disk_read_best(disk_path, disk_keep)) {
-                it_best = std::prev(states.end());
+                it_best     = std::prev(states.end());
                 f_keep_best = disk_keep;
                 f_sim_best  = disk_sim;
                 SRV_TRC(" - disk fetch wins: f_keep = %.3f, f_sim = %.3f\n", f_keep_best, f_sim_best);
@@ -2096,7 +1985,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
             auto & data = *it_best->data.main;
 
             const size_t size = data.size();
-            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
+            const size_t n    = llama_state_seq_set_data_ext(ctx_tgt, data.data(), size, id_slot, 0);
             if (n != size) {
                 SRV_ERR("failed to restore state with size %zu\n", size);
 
@@ -2115,7 +2004,7 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
                 GGML_ASSERT(ctx_dft);
 
                 const size_t size = data_ptr->size();
-                const size_t n = llama_state_seq_set_data_ext(ctx_dft, data_ptr->data(), size, id_slot, 0);
+                const size_t n    = llama_state_seq_set_data_ext(ctx_dft, data_ptr->data(), size, id_slot, 0);
                 if (n != size) {
                     SRV_WRN("failed to restore state with size %zu\n", size);
 
@@ -2131,8 +2020,8 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
         if (keep_restored) {
             // copy (not move): the entry must keep its tokens to stay
             // matchable; server_tokens is move-assign only, hence clone()
-            prompt.tokens       = it_best->prompt.tokens.clone();
-            prompt.checkpoints  = it_best->prompt.checkpoints;
+            prompt.tokens      = it_best->prompt.tokens.clone();
+            prompt.checkpoints = it_best->prompt.checkpoints;
 #ifdef VITRIOL_CACHE_STORE
             prompt.cache_owner  = it_best->prompt.cache_owner;
             prompt.cache_read   = it_best->prompt.cache_read;
@@ -2171,7 +2060,8 @@ void server_prompt_cache::update() {
     const float size_per_token = std::max<float>(1.0f, float(size()) / (std::max<size_t>(1, n_tokens())));
 
     // dynamically increase the token limit if it can fit in the memory limit
-    const size_t limit_tokens_cur = limit_size > 0 ? std::max<size_t>(limit_tokens, limit_size/size_per_token) : limit_tokens;
+    const size_t limit_tokens_cur =
+        limit_size > 0 ? std::max<size_t>(limit_tokens, limit_size / size_per_token) : limit_tokens;
 
     if (limit_tokens > 0) {
         while (!states.empty() && n_tokens() > limit_tokens_cur) {
@@ -2182,12 +2072,12 @@ void server_prompt_cache::update() {
         }
     }
 
-    SRV_TRC(" - cache state: %zu prompts, %.3f MiB (limits: %.3f MiB, %zu tokens, %zu est)\n",
-            states.size(), size() / (1024.0 * 1024.0), limit_size / (1024.0 * 1024.0), limit_tokens, limit_tokens_cur);
+    SRV_TRC(" - cache state: %zu prompts, %.3f MiB (limits: %.3f MiB, %zu tokens, %zu est)\n", states.size(),
+            size() / (1024.0 * 1024.0), limit_size / (1024.0 * 1024.0), limit_tokens, limit_tokens_cur);
 
     for (const auto & state : states) {
-        SRV_TRC("   - prompt %p: %7d tokens, checkpoints: %2zu, %9.3f MiB\n",
-                (const void *)&state, state.prompt.n_tokens(), state.prompt.checkpoints.size(), state.size() / (1024.0 * 1024.0));
+        SRV_TRC("   - prompt %p: %7d tokens, checkpoints: %2zu, %9.3f MiB\n", (const void *) &state,
+                state.prompt.n_tokens(), state.prompt.checkpoints.size(), state.size() / (1024.0 * 1024.0));
     }
 }
 
@@ -2200,8 +2090,8 @@ void server_prompt_cache::update() {
 // size only, so states evicted from RAM stay restorable until trimmed.
 //
 
-static const uint32_t SERVER_PROMPT_CACHE_DISK_MAGIC   = 0x63706767; // 'ggpc'
-static const uint32_t SERVER_PROMPT_CACHE_DISK_VERSION = 2; // v1 = no identity block, still readable
+static const uint32_t SERVER_PROMPT_CACHE_DISK_MAGIC   = 0x63706767;  // 'ggpc'
+static const uint32_t SERVER_PROMPT_CACHE_DISK_VERSION = 2;           // v1 = no identity block, still readable
 
 static_assert(sizeof(server_prompt_cache_identity) == 48, "disk identity block must stay 48 bytes");
 
@@ -2217,19 +2107,20 @@ static bool server_prompt_cache_env_flag(const char * name, bool def) {
 // verdict codes used by disk read/scan and the /cache endpoint
 enum server_prompt_cache_verdict {
     SERVER_PROMPT_CACHE_VERDICT_UNKNOWN  = 0,
-    SERVER_PROMPT_CACHE_VERDICT_OK       = 1, // v2 and matches
-    SERVER_PROMPT_CACHE_VERDICT_MISMATCH = 2, // v2 but different model/config
-    SERVER_PROMPT_CACHE_VERDICT_V1       = 3, // no identity block
+    SERVER_PROMPT_CACHE_VERDICT_OK       = 1,  // v2 and matches
+    SERVER_PROMPT_CACHE_VERDICT_MISMATCH = 2,  // v2 but different model/config
+    SERVER_PROMPT_CACHE_VERDICT_V1       = 3,  // no identity block
 };
 
 // hard incompatibility: KV layout or semantics differ
-static bool server_prompt_cache_identity_hard_ok(
-        const server_prompt_cache_identity & cur, const server_prompt_cache_identity & f) {
+static bool server_prompt_cache_identity_hard_ok(const server_prompt_cache_identity & cur,
+                                                 const server_prompt_cache_identity & f) {
     return f.type_k == cur.type_k && f.type_v == cur.type_v && f.n_stream == cur.n_stream;
 }
 
-static int server_prompt_cache_identity_verdict(
-        const server_prompt_cache_identity & cur, const server_prompt_cache_identity & f, uint32_t version) {
+static int server_prompt_cache_identity_verdict(const server_prompt_cache_identity & cur,
+                                                const server_prompt_cache_identity & f,
+                                                uint32_t                             version) {
     if (version < 2) {
         return SERVER_PROMPT_CACHE_VERDICT_V1;
     }
@@ -2238,9 +2129,9 @@ static int server_prompt_cache_identity_verdict(
     }
     if (f.model_key != cur.model_key) {
         // model differs; strict by default, relaxed when explicitly allowed
-        return server_prompt_cache_env_flag("VITRIOL_KV_DISK_ALLOW_MODEL_MISMATCH", false)
-            ? SERVER_PROMPT_CACHE_VERDICT_OK
-            : SERVER_PROMPT_CACHE_VERDICT_MISMATCH;
+        return server_prompt_cache_env_flag("VITRIOL_KV_DISK_ALLOW_MODEL_MISMATCH", false) ?
+                   SERVER_PROMPT_CACHE_VERDICT_OK :
+                   SERVER_PROMPT_CACHE_VERDICT_MISMATCH;
     }
     return SERVER_PROMPT_CACHE_VERDICT_OK;
 }
@@ -2257,7 +2148,7 @@ static bool server_prompt_cache_verdict_accepts(int verdict) {
 }
 
 server_prompt_cache::server_prompt_cache(int32_t limit_size_mib, size_t limit_tokens, const std::string & disk_dir) {
-    this->limit_size   = 1024ull*1024ull*(limit_size_mib < 0 ? 0 : limit_size_mib);
+    this->limit_size   = 1024ull * 1024ull * (limit_size_mib < 0 ? 0 : limit_size_mib);
     this->limit_tokens = limit_tokens;
     if (!disk_dir.empty()) {
         this->disk_dir = disk_dir.back() == '/' ? disk_dir : disk_dir + "/";
@@ -2270,20 +2161,20 @@ server_prompt_cache::server_prompt_cache(int32_t limit_size_mib, size_t limit_to
 // FNV-1a over token count + head + tail: same prompt = same token hash
 static uint64_t server_prompt_cache_disk_token_hash(const server_tokens & tokens) {
     const llama_tokens & t = tokens.get_tokens();
-    const size_t n = t.size();
+    const size_t         n = t.size();
 
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&h] (uint64_t v) {
+    uint64_t h   = 1469598103934665603ull;
+    auto     mix = [&h](uint64_t v) {
         h ^= v;
         h *= 1099511628211ull;
     };
     mix(n);
     const size_t head = std::min<size_t>(n, 64);
     for (size_t i = 0; i < head; i++) {
-        mix((uint64_t)(uint32_t) t[i]);
+        mix((uint64_t) (uint32_t) t[i]);
     }
     for (size_t i = n - std::min<size_t>(n, 64); i < n; i++) {
-        mix((uint64_t)(uint32_t) t[i]);
+        mix((uint64_t) (uint32_t) t[i]);
     }
 
     return h;
@@ -2294,16 +2185,17 @@ static uint64_t server_prompt_cache_disk_token_hash(const server_tokens & tokens
 static std::string server_prompt_cache_disk_name(const server_tokens & tokens, uint64_t model_key) {
     const uint64_t th = server_prompt_cache_disk_token_hash(tokens);
 
-    char buf[48]; // "cache-" + 16 + "-" + 16 + ".bin" + NUL
-    snprintf(buf, sizeof(buf), "cache-%016llx-%016llx.bin",
-            (unsigned long long) model_key, (unsigned long long) th);
+    char buf[48];  // "cache-" + 16 + "-" + 16 + ".bin" + NUL
+    snprintf(buf, sizeof(buf), "cache-%016llx-%016llx.bin", (unsigned long long) model_key, (unsigned long long) th);
 
     return std::string(buf);
 }
 
-static bool server_prompt_cache_disk_write_bytes(const std::string & path,
-        const server_prompt_cache_identity & identity, const std::vector<char> & packed,
-        const std::vector<uint8_t> & data_main, const std::vector<uint8_t> & data_drft) {
+static bool server_prompt_cache_disk_write_bytes(const std::string &                  path,
+                                                 const server_prompt_cache_identity & identity,
+                                                 const std::vector<char> &            packed,
+                                                 const std::vector<uint8_t> &         data_main,
+                                                 const std::vector<uint8_t> &         data_drft) {
     FILE * f = fopen((path + ".tmp").c_str(), "wb");
     if (f == nullptr) {
         return false;
@@ -2315,12 +2207,11 @@ static bool server_prompt_cache_disk_write_bytes(const std::string & path,
     const uint64_t n_drft  = data_drft.size();
     const uint64_t n_pack  = packed.size();
 
-    auto ok_write = [&f] (const void * p, size_t n) {
+    auto ok_write = [&f](const void * p, size_t n) {
         return n == 0 || fwrite(p, 1, n, f) == n;
     };
 
-    bool ok = ok_write(&magic, 4) && ok_write(&version, 4) &&
-              ok_write(&identity, sizeof(identity)) &&
+    bool ok = ok_write(&magic, 4) && ok_write(&version, 4) && ok_write(&identity, sizeof(identity)) &&
               ok_write(&n_main, 8) && ok_write(&n_drft, 8) && ok_write(&n_pack, 8) &&
               ok_write(data_main.data(), n_main) && ok_write(data_drft.data(), n_drft) &&
               ok_write(packed.data(), n_pack);
@@ -2336,9 +2227,11 @@ static bool server_prompt_cache_disk_write_bytes(const std::string & path,
     return rename((path + ".tmp").c_str(), path.c_str()) == 0;
 }
 
-static bool server_prompt_cache_disk_write(const std::string & path,
-        const server_prompt_cache_identity & identity, const server_tokens & tokens,
-        const std::vector<uint8_t> & data_main, const std::vector<uint8_t> & data_drft) {
+static bool server_prompt_cache_disk_write(const std::string &                  path,
+                                           const server_prompt_cache_identity & identity,
+                                           const server_tokens &                tokens,
+                                           const std::vector<uint8_t> &         data_main,
+                                           const std::vector<uint8_t> &         data_drft) {
     try {
         return server_prompt_cache_disk_write_bytes(path, identity, tokens.serialize(), data_main, data_drft);
     } catch (const std::exception & error) {
@@ -2349,8 +2242,12 @@ static bool server_prompt_cache_disk_write(const std::string & path,
 
 // reads the header + token blob only; skips the KV bytes with fseek.
 // identity_out is zeroed for v1 files. Returns false on a damaged header.
-static bool server_prompt_cache_disk_read_tokens(const std::string & path, server_tokens & out,
-        uint64_t & n_main, uint64_t & n_drft, server_prompt_cache_identity & identity_out, uint32_t & version_out) {
+static bool server_prompt_cache_disk_read_tokens(const std::string &            path,
+                                                 server_tokens &                out,
+                                                 uint64_t &                     n_main,
+                                                 uint64_t &                     n_drft,
+                                                 server_prompt_cache_identity & identity_out,
+                                                 uint32_t &                     version_out) {
     FILE * f = fopen(path.c_str(), "rb");
     if (f == nullptr) {
         return false;
@@ -2360,7 +2257,7 @@ static bool server_prompt_cache_disk_read_tokens(const std::string & path, serve
     uint32_t version = 0;
     uint64_t n_pack  = 0;
 
-    auto ok_read = [&f] (void * p, size_t n) {
+    auto ok_read = [&f](void * p, size_t n) {
         return n == 0 || fread(p, 1, n, f) == n;
     };
 
@@ -2379,8 +2276,7 @@ static bool server_prompt_cache_disk_read_tokens(const std::string & path, serve
     std::vector<llama_token> packed;
     if (ok) {
         packed.resize(n_pack / sizeof(uint32_t));
-        ok = fseek(f, (long) (n_main + n_drft), SEEK_CUR) == 0 &&
-             ok_read(packed.data(), n_pack);
+        ok = fseek(f, (long) (n_main + n_drft), SEEK_CUR) == 0 && ok_read(packed.data(), n_pack);
     }
     fclose(f);
 
@@ -2400,8 +2296,10 @@ static bool server_prompt_cache_disk_read_tokens(const std::string & path, serve
     return out.size() > 0;
 }
 
-static bool server_prompt_cache_disk_read(const std::string & path, server_prompt_cache_state & out,
-        server_prompt_cache_identity & identity_out, uint32_t & version_out) {
+static bool server_prompt_cache_disk_read(const std::string &            path,
+                                          server_prompt_cache_state &    out,
+                                          server_prompt_cache_identity & identity_out,
+                                          uint32_t &                     version_out) {
     FILE * f = fopen(path.c_str(), "rb");
     if (f == nullptr) {
         return false;
@@ -2413,7 +2311,7 @@ static bool server_prompt_cache_disk_read(const std::string & path, server_promp
     uint64_t n_drft  = 0;
     uint64_t n_pack  = 0;
 
-    auto ok_read = [&f] (void * p, size_t n) {
+    auto ok_read = [&f](void * p, size_t n) {
         return n == 0 || fread(p, 1, n, f) == n;
     };
 
@@ -2426,8 +2324,8 @@ static bool server_prompt_cache_disk_read(const std::string & path, server_promp
     ok = ok && ok_read(&n_main, 8) && ok_read(&n_drft, 8) && ok_read(&n_pack, 8);
 
     ok = ok && magic == SERVER_PROMPT_CACHE_DISK_MAGIC && version >= 1 && version <= SERVER_PROMPT_CACHE_DISK_VERSION;
-    ok = ok && n_pack % sizeof(uint32_t) == 0 && n_pack <= (1ull << 30) &&
-         n_main <= (64ull << 30) && n_drft <= (8ull << 30);
+    ok = ok && n_pack % sizeof(uint32_t) == 0 && n_pack <= (1ull << 30) && n_main <= (64ull << 30) &&
+         n_drft <= (8ull << 30);
 
     if (!ok) {
         fclose(f);
@@ -2438,8 +2336,7 @@ static bool server_prompt_cache_disk_read(const std::string & path, server_promp
     out.data.drft = std::make_shared<std::vector<uint8_t>>(n_drft);
     std::vector<llama_token> packed(n_pack / sizeof(uint32_t));
 
-    ok = ok_read(out.data.main->data(), n_main) &&
-         ok_read(out.data.drft->data(), n_drft) &&
+    ok = ok_read(out.data.main->data(), n_main) && ok_read(out.data.drft->data(), n_drft) &&
          ok_read(packed.data(), n_pack);
     fclose(f);
 
@@ -2461,14 +2358,14 @@ static bool server_prompt_cache_disk_read(const std::string & path, server_promp
 
 // collect cache-*.bin entries, oldest first; returns total bytes
 struct server_prompt_cache_disk_file {
-    time_t mtime;
+    time_t      mtime;
     // Last *access* (restore), not last write: the LRU key. Under noatime the
     // kernel never bumps it implicitly, so restores touch it explicitly; when
     // it was never touched (atime <= mtime) write time stands in.
-    time_t atime = 0;
-    size_t size;
+    time_t      atime = 0;
+    size_t      size;
     std::string name;
-    bool managed = false;
+    bool        managed = false;
 #ifdef VITRIOL_CACHE_STORE
     std::shared_ptr<server_owned_read> lease = {};
 #endif
@@ -2477,8 +2374,9 @@ struct server_prompt_cache_disk_file {
 // `include_snapshots` = budget view (mirror states + slot snapshots). The
 // listing/loading paths pass false: a snapshot is not a prompt-cache state and
 // reading a 2.6 GiB one to list it would be absurd.
-static size_t server_prompt_cache_disk_scan(const std::string & dir,
-        std::vector<server_prompt_cache_disk_file> & files, bool include_snapshots = false) {
+static size_t server_prompt_cache_disk_scan(const std::string &                          dir,
+                                            std::vector<server_prompt_cache_disk_file> & files,
+                                            bool                                         include_snapshots = false) {
     size_t total = 0;
 
     DIR * d = opendir(dir.c_str());
@@ -2493,10 +2391,10 @@ static size_t server_prompt_cache_disk_scan(const std::string & dir,
         // count toward the budget too (owner 2026-11-17: "that's the whole
         // point") - they are the warm-resume states, so they are the most
         // valuable entries and eviction must see them.
-        const bool is_state    = name.rfind("cache-", 0) == 0 && name.size() >= 10 &&
-                                 name.compare(name.size() - 4, 4, ".bin") == 0;
-        const bool is_snapshot = name.rfind("slot", 0) == 0 && name.size() >= 9 &&
-                                 name.compare(name.size() - 4, 4, ".bin") == 0;
+        const bool        is_state =
+            name.rfind("cache-", 0) == 0 && name.size() >= 10 && name.compare(name.size() - 4, 4, ".bin") == 0;
+        const bool is_snapshot =
+            name.rfind("slot", 0) == 0 && name.size() >= 9 && name.compare(name.size() - 4, 4, ".bin") == 0;
         if (!is_state && !(include_snapshots && is_snapshot)) {
             continue;
         }
@@ -2521,19 +2419,32 @@ std::vector<server_prompt_cache_disk_file> server_prompt_cache::disk_files() con
     std::vector<server_prompt_cache_disk_file> files;
     server_prompt_cache_disk_scan(disk_dir, files);
 #ifdef VITRIOL_CACHE_STORE
-    if (!owned) { return files; }
+    if (!owned) {
+        return files;
+    }
     json listing;
-    auto status = owned->call(json{{"op", "list"}}, listing);
-    if (!status) { return files; }
+    auto status = owned->call(
+        json{
+            { "op", "list" }
+    },
+        listing);
+    if (!status) {
+        return files;
+    }
     for (const auto & item : listing.at("snapshots")) {
-        const std::string id = item.at("id").get<std::string>();
-        auto lease = owned->read(id);
-        if (!lease) { continue; }
+        const std::string id    = item.at("id").get<std::string>();
+        auto              lease = owned->read(id);
+        if (!lease) {
+            continue;
+        }
         const std::string path = owned->directory + "/" + id;
-        struct stat metadata;
-        if (stat(path.c_str(), &metadata) != 0) { continue; }
+        struct stat       metadata;
+        if (stat(path.c_str(), &metadata) != 0) {
+            continue;
+        }
         // 2026-11-18: preserve access time in the owned-cache LRU entry too.
-        files.push_back({metadata.st_mtime, metadata.st_atime, static_cast<size_t>(metadata.st_size), "owned-kv-v1/" + id, true, std::move(*lease)});
+        files.push_back({ metadata.st_mtime, metadata.st_atime, static_cast<size_t>(metadata.st_size),
+                          "owned-kv-v1/" + id, true, std::move(*lease) });
     }
 #endif
     return files;
@@ -2561,8 +2472,8 @@ static size_t server_prompt_cache_disk_cap_bytes(size_t limit_size) {
 }
 
 static size_t server_prompt_cache_disk_trim_limit(size_t limit_size) {
-    int mult = 12;
-    const char * v = getenv("VITRIOL_KV_DISK_TRIM_X");
+    int          mult = 12;
+    const char * v    = getenv("VITRIOL_KV_DISK_TRIM_X");
     if (v != nullptr && v[0] != '\0') {
         const int parsed = atoi(v);
         if (parsed >= 1 && parsed <= 1024) {
@@ -2591,9 +2502,10 @@ static time_t server_prompt_cache_disk_last_access(const server_prompt_cache_dis
 // slot snapshot (the warm-resume state this process just restored or wrote) and
 // every managed entry (their owner reclaims them, not us).
 static bool server_prompt_cache_disk_protected(const server_prompt_cache_disk_file & f,
-        const std::string & newest_snapshot, const std::string & incoming_name) {
+                                               const std::string &                   newest_snapshot,
+                                               const std::string &                   incoming_name) {
     if (f.managed || (!incoming_name.empty() && f.name == incoming_name) ||
-            (!newest_snapshot.empty() && f.name == newest_snapshot)) {
+        (!newest_snapshot.empty() && f.name == newest_snapshot)) {
         return true;
     }
     return false;
@@ -2601,10 +2513,14 @@ static bool server_prompt_cache_disk_protected(const server_prompt_cache_disk_fi
 
 // Bring the directory under `limit_bytes`, evicting the entries addressed
 // longest ago. Returns the number of bytes still over the cap (0 = compliant).
-static size_t server_prompt_cache_disk_trim(const std::string & dir, size_t limit_bytes, size_t incoming,
-        const std::string & incoming_name, uint64_t * n_evicted, size_t * bytes_after) {
+static size_t server_prompt_cache_disk_trim(const std::string & dir,
+                                            size_t              limit_bytes,
+                                            size_t              incoming,
+                                            const std::string & incoming_name,
+                                            uint64_t *          n_evicted,
+                                            size_t *            bytes_after) {
     std::vector<server_prompt_cache_disk_file> files;
-    size_t total = server_prompt_cache_disk_scan(dir, files, true);
+    size_t                                     total = server_prompt_cache_disk_scan(dir, files, true);
     if (bytes_after != nullptr) {
         *bytes_after = total;
     }
@@ -2615,10 +2531,10 @@ static size_t server_prompt_cache_disk_trim(const std::string & dir, size_t limi
     // Protect the newest snapshot, not "slot0.bin" by name: with several slots
     // only the freshest one is the warm-resume state.
     std::string newest_snapshot;
-    time_t newest_mtime = 0;
+    time_t      newest_mtime = 0;
     for (const auto & f : files) {
         if (f.name.rfind("slot", 0) == 0 && f.mtime > newest_mtime) {
-            newest_mtime = f.mtime;
+            newest_mtime    = f.mtime;
             newest_snapshot = f.name;
         }
     }
@@ -2637,7 +2553,7 @@ static size_t server_prompt_cache_disk_trim(const std::string & dir, size_t limi
     SRV_WRN(" - cache cap: %.1f GiB + incoming %.1f GiB exceeds %.1f GiB, evicting least-recently-addressed\n",
             total / 1073741824.0, incoming / 1073741824.0, limit_bytes / 1073741824.0);
 
-    size_t n_removed = 0;
+    size_t n_removed     = 0;
     size_t bytes_removed = 0;
     for (const auto & file : files) {
         if (total + incoming <= limit_bytes) {
@@ -2650,14 +2566,13 @@ static size_t server_prompt_cache_disk_trim(const std::string & dir, size_t limi
             total -= file.size;
             bytes_removed += file.size;
             n_removed++;
-            SRV_WRN(" - cache cap: evicted %s (%.2f GiB, last used %lld)\n",
-                    file.name.c_str(), file.size / 1073741824.0,
-                    (long long) server_prompt_cache_disk_last_access(file));
+            SRV_WRN(" - cache cap: evicted %s (%.2f GiB, last used %lld)\n", file.name.c_str(),
+                    file.size / 1073741824.0, (long long) server_prompt_cache_disk_last_access(file));
         }
     }
 
-    SRV_WRN(" - cache cap: evicted %zu files (%.1f GiB), directory now %.1f GiB\n",
-            n_removed, bytes_removed / 1073741824.0, total / 1073741824.0);
+    SRV_WRN(" - cache cap: evicted %zu files (%.1f GiB), directory now %.1f GiB\n", n_removed,
+            bytes_removed / 1073741824.0, total / 1073741824.0);
     if (n_evicted != nullptr) {
         *n_evicted = n_removed;
     }
@@ -2669,36 +2584,69 @@ static size_t server_prompt_cache_disk_trim(const std::string & dir, size_t limi
 
 #ifdef VITRIOL_CACHE_STORE
 void server_prompt_cache::owned_init() {
-    if (disk_dir.empty() || limit_size == 0 || !server_prompt_cache_env_flag("VITRIOL_KV_OWNED_CACHE", false)) { return; }
+    if (disk_dir.empty() || limit_size == 0 || !server_prompt_cache_env_flag("VITRIOL_KV_OWNED_CACHE", false)) {
+        return;
+    }
     const size_t maximum = server_prompt_cache_disk_cap_bytes(limit_size);
-    if (maximum == 0) { return; }
-    auto runtime = server_owned_runtime::open(disk_dir + "owned-kv-v1", json{
-        {"maxBytes", maximum}, {"reclaim", server_prompt_cache_env_flag("VITRIOL_KV_OWNED_RECLAIM", false)},
-        {"maxGcFiles", 2}, {"maxGcBytes", maximum}});
-    if (runtime) { owned = std::move(*runtime); }
+    if (maximum == 0) {
+        return;
+    }
+    auto runtime = server_owned_runtime::open(
+        disk_dir + "owned-kv-v1", json{
+                                      { "maxBytes", maximum },
+                                      { "reclaim", server_prompt_cache_env_flag("VITRIOL_KV_OWNED_RECLAIM", false) },
+                                      { "maxGcFiles", 2 },
+                                      { "maxGcBytes", maximum }
+    });
+    if (runtime) {
+        owned = std::move(*runtime);
+    }
 }
 
-std::shared_ptr<server_owned_request> server_prompt_cache::owned_begin(const std::string & session, const std::string & branch) {
-    if (!owned || session.empty() || branch.empty()) { return {}; }
+std::shared_ptr<server_owned_request> server_prompt_cache::owned_begin(const std::string & session,
+                                                                       const std::string & branch) {
+    if (!owned || session.empty() || branch.empty()) {
+        return {};
+    }
     auto request = owned->begin(session, branch);
-    if (!request) { return {}; }
+    if (!request) {
+        return {};
+    }
     return std::move(*request);
 }
 
 json server_prompt_cache::owned_info() const {
-    if (!owned) { return json{{"enabled", false}}; }
+    if (!owned) {
+        return json{
+            { "enabled", false }
+        };
+    }
     json state;
-    auto status = owned->call(json{{"op", "list"}}, state);
-    if (!status) { return json{{"enabled", true}, {"available", false}}; }
-    return json{{"enabled", true}, {"available", true}, {"spills", owned->spills.load(std::memory_order_relaxed)}, {"store", state}};
+    auto status = owned->call(
+        json{
+            { "op", "list" }
+    },
+        state);
+    if (!status) {
+        return json{
+            { "enabled",   true  },
+            { "available", false }
+        };
+    }
+    return json{
+        { "enabled",   true                                          },
+        { "available", true                                          },
+        { "spills",    owned->spills.load(std::memory_order_relaxed) },
+        { "store",     state                                         }
+    };
 }
 
 struct server_prompt_cache_owned_write {
     std::shared_ptr<server_owned_runtime> runtime;
     std::shared_ptr<server_owned_request> owner;
-    server_prompt_cache_identity identity;
-    std::vector<char> packed;
-    json publication;
+    server_prompt_cache_identity          identity;
+    std::vector<char>                     packed;
+    json                                  publication;
     std::shared_ptr<std::vector<uint8_t>> main;
     std::shared_ptr<std::vector<uint8_t>> draft;
 
@@ -2706,45 +2654,90 @@ struct server_prompt_cache_owned_write {
         const auto ticket = publication.at("ticket").get<uint64_t>();
         try {
             const std::vector<uint8_t> empty;
-            const auto path = publication.at("path").get<std::string>();
-            const bool written = server_prompt_cache_disk_write_bytes(path, identity, packed, *main, draft ? *draft : empty);
+            const auto                 path = publication.at("path").get<std::string>();
+            const bool                 written =
+                server_prompt_cache_disk_write_bytes(path, identity, packed, *main, draft ? *draft : empty);
             json result;
-            auto committed = runtime->call(json{{"op", written ? "commit" : "abort"}, {"ticket", ticket}}, result);
+            auto committed = runtime->call(
+                json{
+                    { "op",     written ? "commit" : "abort" },
+                    { "ticket", ticket                       }
+            },
+                result);
             if (written && committed) {
                 runtime->spills.fetch_add(1, std::memory_order_relaxed);
                 return;
             }
-        } catch (const std::exception & error) { SRV_WRN(" - managed disk writer failed: %s\n", error.what()); }
+        } catch (const std::exception & error) {
+            SRV_WRN(" - managed disk writer failed: %s\n", error.what());
+        }
         // Failed publications release their reservation; storage faults retain recovery intent.
-        try { json ignored; (void)runtime->call(json{{"op", "abort"}, {"ticket", ticket}}, ignored); } catch (...) {}
+        try {
+            json ignored;
+            (void) runtime->call(
+                json{
+                    { "op",     "abort" },
+                    { "ticket", ticket  }
+            },
+                ignored);
+        } catch (...) {
+        }
     }
 };
 
-bool server_prompt_cache::disk_spill_owned(server_prompt & prompt,
-        std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft) {
-    if (!owned || !prompt.cache_owner || prompt.cache_owner->runtime != owned) { return false; }
+bool server_prompt_cache::disk_spill_owned(server_prompt &                       prompt,
+                                           std::shared_ptr<std::vector<uint8_t>> data_main,
+                                           std::shared_ptr<std::vector<uint8_t>> data_drft) {
+    if (!owned || !prompt.cache_owner || prompt.cache_owner->runtime != owned) {
+        return false;
+    }
     uint64_t prepared_ticket = 0;
     try {
-        auto packed = prompt.tokens.serialize();
+        auto         packed = prompt.tokens.serialize();
         const size_t header = 2 * sizeof(uint32_t) + sizeof(identity) + 3 * sizeof(uint64_t);
-        size_t bytes = header;
-        for (size_t size : {data_main->size(), data_drft ? data_drft->size() : 0, packed.size()}) {
-            if (size > std::numeric_limits<size_t>::max() - bytes) { return true; }
+        size_t       bytes  = header;
+        for (size_t size : { data_main->size(), data_drft ? data_drft->size() : 0, packed.size() }) {
+            if (size > std::numeric_limits<size_t>::max() - bytes) {
+                return true;
+            }
             bytes += size;
         }
         const std::string model = string_format("%016llx", static_cast<unsigned long long>(identity.model_key));
-        const std::string layout = string_format("%016llx-%u-%u-%u-%u", static_cast<unsigned long long>(identity.build_key), identity.n_ctx, identity.type_k, identity.type_v, identity.n_stream);
+        const std::string layout =
+            string_format("%016llx-%u-%u-%u-%u", static_cast<unsigned long long>(identity.build_key), identity.n_ctx,
+                          identity.type_k, identity.type_v, identity.n_stream);
         json publication;
-        auto status = owned->call(json{{"op", "prepare"}, {"generation", prompt.cache_owner->generation}, {"model", model}, {"layout", layout}, {"bytes", bytes}}, publication);
-        if (!status) { return true; }
-        prepared_ticket = publication.at("ticket").get<uint64_t>();
+        auto status = owned->call(
+            json{
+                { "op",         "prepare"                      },
+                { "generation", prompt.cache_owner->generation },
+                { "model",      model                          },
+                { "layout",     layout                         },
+                { "bytes",      bytes                          }
+        },
+            publication);
+        if (!status) {
+            return true;
+        }
+        prepared_ticket     = publication.at("ticket").get<uint64_t>();
         prompt.cache_source = publication.at("id").get<std::string>();
         // Keep the generation's completion status alive until the detached publication finishes.
-        server_prompt_cache_owned_write write{owned, prompt.cache_owner, identity, std::move(packed), std::move(publication), data_main, data_drft};
+        server_prompt_cache_owned_write write{
+            owned, prompt.cache_owner, identity, std::move(packed), std::move(publication), data_main, data_drft
+        };
         std::thread([write = std::move(write)]() { write.run(); }).detach();
     } catch (const std::exception & error) {
         if (prepared_ticket != 0) {
-            try { json ignored; (void)owned->call(json{{"op", "abort"}, {"ticket", prepared_ticket}}, ignored); } catch (...) {}
+            try {
+                json ignored;
+                (void) owned->call(
+                    json{
+                        { "op",     "abort"         },
+                        { "ticket", prepared_ticket }
+                },
+                    ignored);
+            } catch (...) {
+            }
             prompt.cache_source.clear();
         }
         SRV_WRN(" - managed disk publication skipped: %s\n", error.what());
@@ -2753,13 +2746,16 @@ bool server_prompt_cache::disk_spill_owned(server_prompt & prompt,
 }
 #endif
 
-void server_prompt_cache::disk_spill(server_prompt & prompt,
-        std::shared_ptr<std::vector<uint8_t>> data_main, std::shared_ptr<std::vector<uint8_t>> data_drft) {
+void server_prompt_cache::disk_spill(server_prompt &                       prompt,
+                                     std::shared_ptr<std::vector<uint8_t>> data_main,
+                                     std::shared_ptr<std::vector<uint8_t>> data_drft) {
     if (disk_dir.empty() || prompt.tokens.has_mtmd || !data_main) {
         return;
     }
 #ifdef VITRIOL_CACHE_STORE
-    if (disk_spill_owned(prompt, data_main, data_drft)) { return; }
+    if (disk_spill_owned(prompt, data_main, data_drft)) {
+        return;
+    }
 #endif
 
     const size_t spill_size = data_main->size() + (data_drft ? data_drft->size() : 0);
@@ -2768,32 +2764,36 @@ void server_prompt_cache::disk_spill(server_prompt & prompt,
     // Enforce the cap before writing: the incoming state is the one entry that
     // must not be evicted by its own spill.
     {
-        uint64_t n_evicted = 0;
-        size_t bytes_after = 0;
-        server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_cap_bytes(limit_size), spill_size,
-                name, &n_evicted, &bytes_after);
+        uint64_t n_evicted   = 0;
+        size_t   bytes_after = 0;
+        server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_cap_bytes(limit_size), spill_size, name,
+                                      &n_evicted, &bytes_after);
         if (n_evicted != 0) {
             n_cache_evicted += n_evicted;
         }
         n_cache_bytes.store(bytes_after + spill_size);
     }
-    const std::string path = disk_dir + name;
-    const server_prompt_cache_identity id = identity;
+    const std::string                  path = disk_dir + name;
+    const server_prompt_cache_identity id   = identity;
 
     // detached writer: dispatch hands off the bytes (shared, no copy) and
     // returns immediately; a torn .tmp from a lost race is inert
     std::thread([this, name, path, id, tokens = prompt.tokens.clone(), data_main, data_drft]() {
-        if (server_prompt_cache_disk_write(path, id, tokens, *data_main, data_drft ? *data_drft : std::vector<uint8_t>())) {
+        if (server_prompt_cache_disk_write(path, id, tokens, *data_main,
+                                           data_drft ? *data_drft : std::vector<uint8_t>())) {
             n_disk_spills++;
-            SRV_TRC(" - disk spill: %s (%.1f MiB)\n", name.c_str(), (data_main->size() + (data_drft ? data_drft->size() : 0)) / (1024.0 * 1024.0));
+            SRV_TRC(" - disk spill: %s (%.1f MiB)\n", name.c_str(),
+                    (data_main->size() + (data_drft ? data_drft->size() : 0)) / (1024.0 * 1024.0));
         } else {
             SRV_WRN(" - disk spill failed: %s\n", path.c_str());
         }
     }).detach();
 }
 
-bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::string & path_out,
-        float & f_keep_out, float & f_sim_out) {
+bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new,
+                                         std::string &         path_out,
+                                         float &               f_keep_out,
+                                         float &               f_sim_out) {
     path_out.clear();
     if (disk_dir.empty() || tokens_new.size() == 0) {
         return false;
@@ -2808,9 +2808,9 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
         return a.name > b.name;
     });
 
-    const bool prune = server_prompt_cache_env_flag("VITRIOL_KV_DISK_PRUNE", false);
-    float best_keep = 0.0f;
-    float best_sim  = 0.0f;
+    const bool prune     = server_prompt_cache_env_flag("VITRIOL_KV_DISK_PRUNE", false);
+    float      best_keep = 0.0f;
+    float      best_sim  = 0.0f;
 
     // near-miss diagnostics: best candidate that failed the f_keep gate
     int    rejected_keep  = 0;
@@ -2823,11 +2823,11 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
         const std::string path = disk_dir + file.name;
         n_scanned++;
 
-        server_tokens cand;
-        uint64_t n_main = 0;
-        uint64_t n_drft = 0;
-        server_prompt_cache_identity id {};
-        uint32_t version = 0;
+        server_tokens                cand;
+        uint64_t                     n_main = 0;
+        uint64_t                     n_drft = 0;
+        server_prompt_cache_identity id{};
+        uint32_t                     version = 0;
         if (!server_prompt_cache_disk_read_tokens(path, cand, n_main, n_drft, id, version)) {
             n_disk_damaged++;
             if (prune && !file.managed) {
@@ -2846,8 +2846,8 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
                     n_disk_rejected_config++;
                 }
             }
-            SRV_WRN(" - disk fetch: skip %s (identity mismatch, key %016llx)\n",
-                    file.name.c_str(), (unsigned long long) id.model_key);
+            SRV_WRN(" - disk fetch: skip %s (identity mismatch, key %016llx)\n", file.name.c_str(),
+                    (unsigned long long) id.model_key);
             if (prune && !file.managed) {
                 remove(path.c_str());
                 n_disk_pruned++;
@@ -2900,10 +2900,13 @@ bool server_prompt_cache::disk_find_best(const server_tokens & tokens_new, std::
         n_disk_miss++;
         if (rejected_keep > 0) {
             // a mirror of this conversation exists but the f_keep gate refused it
-            SRV_WRN(" - disk fetch: no usable mirror for %zu tokens (%zu files scanned, %d rejected below f_keep 0.25: best lcp kept %.2f of %zu tokens, f_sim %.2f)\n",
-                    tokens_new.size(), n_scanned, rejected_keep, worst_keep, worst_keep_tok, worst_keep_sim);
+            SRV_WRN(
+                " - disk fetch: no usable mirror for %zu tokens (%zu files scanned, %d rejected below f_keep 0.25: "
+                "best lcp kept %.2f of %zu tokens, f_sim %.2f)\n",
+                tokens_new.size(), n_scanned, rejected_keep, worst_keep, worst_keep_tok, worst_keep_sim);
         } else {
-            SRV_TRC(" - disk fetch: no usable mirror for %zu tokens (%zu files scanned)\n", tokens_new.size(), n_scanned);
+            SRV_TRC(" - disk fetch: no usable mirror for %zu tokens (%zu files scanned)\n", tokens_new.size(),
+                    n_scanned);
         }
         return false;
     }
@@ -2919,27 +2922,31 @@ bool server_prompt_cache::disk_read_best(const std::string & path, float f_keep)
     const bool managed = owned && path.rfind(owned->directory + "/", 0) == 0;
     if (managed) {
         st.prompt.cache_source = path.substr(owned->directory.size() + 1);
-        auto lease = owned->read(st.prompt.cache_source);
-        if (!lease) { return false; }
+        auto lease             = owned->read(st.prompt.cache_source);
+        if (!lease) {
+            return false;
+        }
         st.prompt.cache_read = std::move(*lease);
     }
 #else
     const bool managed = false;
 #endif
-    server_prompt_cache_identity id {};
-    uint32_t version = 0;
+    server_prompt_cache_identity id{};
+    uint32_t                     version = 0;
     if (!server_prompt_cache_disk_read(path, st, id, version)) {
         SRV_WRN(" - disk fetch: damaged state %s\n", path.c_str());
         n_disk_damaged++;
-        if (!managed) { remove(path.c_str()); }
+        if (!managed) {
+            remove(path.c_str());
+        }
         return false;
     }
 
     const int verdict = server_prompt_cache_identity_verdict(identity, id, version);
     if (!server_prompt_cache_verdict_accepts(verdict)) {
         n_disk_rejected_model++;
-        SRV_WRN(" - disk fetch: rejecting %s (identity mismatch, key %016llx)\n",
-                path.c_str(), (unsigned long long) id.model_key);
+        SRV_WRN(" - disk fetch: rejecting %s (identity mismatch, key %016llx)\n", path.c_str(),
+                (unsigned long long) id.model_key);
         return false;
     }
 
@@ -2957,22 +2964,24 @@ bool server_prompt_cache::disk_read_best(const std::string & path, float f_keep)
     }
 
     SRV_WRN(" - disk fetch: restored %.1f MiB state (%d tokens, keep %.2f, key %016llx) from %s\n",
-            st.size() / (1024.0 * 1024.0), st.prompt.n_tokens(), f_keep,
-            (unsigned long long) id.model_key, path.c_str());
+            st.size() / (1024.0 * 1024.0), st.prompt.n_tokens(), f_keep, (unsigned long long) id.model_key,
+            path.c_str());
     states.push_back(std::move(st));
     n_disk_restored++;
     n_disk_fetched++;
 
     // refresh mtime so the oldest-first trim prefers least-recently-fetched
-    if (!managed) { utimes(path.c_str(), nullptr); }
+    if (!managed) {
+        utimes(path.c_str(), nullptr);
+    }
 
     return true;
 }
 
 bool server_prompt_cache::disk_fetch(const server_tokens & tokens_new) {
     std::string path;
-    float f_keep = 0.0f;
-    float f_sim  = 0.0f;
+    float       f_keep = 0.0f;
+    float       f_sim  = 0.0f;
     if (!disk_find_best(tokens_new, path, f_keep, f_sim)) {
         return false;
     }
@@ -2994,18 +3003,20 @@ void server_prompt_cache::disk_load() {
         return a.name > b.name;
     });
 
-    const bool prune = server_prompt_cache_env_flag("VITRIOL_KV_DISK_PRUNE", false);
-    size_t n_loaded    = 0;
-    size_t n_dropped   = 0;
-    size_t n_rejected  = 0;
-    size_t n_unverified = 0;
+    const bool prune        = server_prompt_cache_env_flag("VITRIOL_KV_DISK_PRUNE", false);
+    size_t     n_loaded     = 0;
+    size_t     n_dropped    = 0;
+    size_t     n_rejected   = 0;
+    size_t     n_unverified = 0;
     for (const auto & file : files) {
-        server_prompt_cache_state st;
-        server_prompt_cache_identity id {};
-        uint32_t version = 0;
+        server_prompt_cache_state    st;
+        server_prompt_cache_identity id{};
+        uint32_t                     version = 0;
         if (!server_prompt_cache_disk_read(disk_dir + file.name, st, id, version)) {
             SRV_WRN(" - disk load: removing damaged state %s\n", file.name.c_str());
-            if (!file.managed) { remove((disk_dir + file.name).c_str()); }
+            if (!file.managed) {
+                remove((disk_dir + file.name).c_str());
+            }
             n_disk_damaged++;
             n_dropped++;
             continue;
@@ -3018,8 +3029,8 @@ void server_prompt_cache::disk_load() {
             } else {
                 n_disk_rejected_config++;
             }
-            SRV_WRN(" - disk load: skip %s (identity mismatch, key %016llx)\n",
-                    file.name.c_str(), (unsigned long long) id.model_key);
+            SRV_WRN(" - disk load: skip %s (identity mismatch, key %016llx)\n", file.name.c_str(),
+                    (unsigned long long) id.model_key);
             if (prune && !file.managed) {
                 remove((disk_dir + file.name).c_str());
                 n_disk_pruned++;
@@ -3055,7 +3066,7 @@ void server_prompt_cache::disk_load() {
 
 #ifdef VITRIOL_CACHE_STORE
         if (file.managed) {
-            st.prompt.cache_read = file.lease;
+            st.prompt.cache_read   = file.lease;
             st.prompt.cache_source = file.name.substr(std::string("owned-kv-v1/").size());
         }
 #endif
@@ -3072,10 +3083,10 @@ void server_prompt_cache::disk_load() {
     // Boot sweep: bound the directory before anything restores from it, so a
     // capped cache is already compliant when the first request arrives.
     {
-        uint64_t n_evicted = 0;
-        size_t bytes_after = 0;
-        server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_cap_bytes(limit_size), 0,
-                std::string(), &n_evicted, &bytes_after);
+        uint64_t n_evicted   = 0;
+        size_t   bytes_after = 0;
+        server_prompt_cache_disk_trim(disk_dir, server_prompt_cache_disk_cap_bytes(limit_size), 0, std::string(),
+                                      &n_evicted, &bytes_after);
         if (n_evicted != 0) {
             n_cache_evicted += n_evicted;
         }
@@ -3114,11 +3125,11 @@ std::vector<server_prompt_cache_disk_info> server_prompt_cache::disk_list() cons
         info.size  = file.size;
         info.mtime = file.mtime;
 
-        server_tokens cand;
-        uint64_t n_main = 0;
-        uint64_t n_drft = 0;
-        server_prompt_cache_identity id {};
-        uint32_t version = 0;
+        server_tokens                cand;
+        uint64_t                     n_main = 0;
+        uint64_t                     n_drft = 0;
+        server_prompt_cache_identity id{};
+        uint32_t                     version = 0;
         if (server_prompt_cache_disk_read_tokens(disk_dir + file.name, cand, n_main, n_drft, id, version)) {
             info.n_tokens  = cand.size();
             info.version   = version;

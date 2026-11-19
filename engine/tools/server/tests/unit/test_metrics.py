@@ -35,6 +35,39 @@ def parse_metrics(text: str) -> dict:
     return out
 
 
+def test_vitriol_prefix_mirrors_llamacpp():
+    """A1 (2026-11-19): every metric exists under both prefixes with equal values.
+
+    The `vitriol:` series is a mirror of the historical `llamacpp:` one, added so the
+    name can migrate without a coordinated four-language flag day. The invariant is
+    exact: no series may exist under one prefix only, and no value may differ — a
+    partially-mirrored set is worse than no mirror, because a dashboard would read
+    a stale twin and look healthy.
+    """
+    text = fetch_metrics(server)
+    old = {k: v for k, v in parse_metrics(text).items() if k.startswith("llamacpp:")}
+    assert old, "no llamacpp: series at all - the harness itself is broken"
+
+    new = {}
+    types = {}
+    for line in text.splitlines():
+        if line.startswith("# TYPE ") and line.split(" ", 3)[2].startswith("vitriol:"):
+            types[line.split(" ", 3)[2]] = line.split(" ", 3)[3]
+        elif line.startswith("vitriol:") and "{" not in line:
+            name, value = line.split(" ", 1)
+            assert name in types, f"{name} has no # TYPE line"
+            new[name] = float(value)
+
+    expected = {name.replace("llamacpp:", "vitriol:", 1): v for name, v in old.items()}
+    assert set(new) == set(expected), (
+        f"mirror is incomplete: missing={sorted(set(expected) - set(new))} "
+        f"extra={sorted(set(new) - set(expected))}"
+    )
+    for name, (kind, value) in expected.items():
+        assert new[name] == value, f"{name} differs from its llamacpp twin"
+        assert types[name] == kind, f"{name} has a different TYPE than its twin"
+
+
 def test_metrics_disabled():
     global server
     server.server_metrics = False

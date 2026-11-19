@@ -4,6 +4,7 @@ import type { ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { observeLocalTransport } from "./transport-diagnostics.ts";
 import { localCacheOwner } from "./owner.ts";
 import { attachStructuredOutput } from "../_shared/structured-output.ts";
+import { applyTerseInstruction } from "../_shared/terse.ts";
 
 /** Keep healthy prefill alive using this request's native SSE progress, not global activity. */
 export const streamLocalWithProgress: NonNullable<
@@ -45,7 +46,10 @@ export const streamLocalWithProgress: NonNullable<
       // `[[officina-json <schema>]]` gets a real grammar. Measured: nested schemas
       // went from INVALID 3/3 and 533 chars to valid 3/3 at 310 chars, while a
       // simple flat schema showed no gain — so the prompt decides, not the provider.
-      const structured = attachStructuredOutput(request);
+      // Terse lanes (2026-11-19, E2): `[[officina-terse]]` adds one measured
+      // sentence. The codebook that lost to it (a legend cost more tokens than it
+      // saved) is deliberately not shipped.
+      const structured = applyTerseInstruction(attachStructuredOutput(request));
       // Hooks see the progress option and retain their existing replacement contract.
       return (
         (await options?.onPayload?.(structured, requestModel)) ?? structured

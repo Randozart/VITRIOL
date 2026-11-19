@@ -1,5 +1,17 @@
 # VITRIOL AI Agent Guidelines
 
+## CPU buffer research update — 2026-11-19 09:26
+
+Private no-host/none selects CPU+CPU_REPACK weights,12.43GBanonymous/Swap0 survives
+warmup. All5STTtexts/WAVs exact/all5playback gates pass, but CPU browser6.83–6.86s
+vsreversehost6.12s: no promotion. Native repack23.6–23.9t/s vs20.7–21.5host;
+no-repack20.95 isolates kernel benefit. Currentvoice T3tokens1.309s/HiFT.583s/
+flow.406s(estimator.196 within),4profilePCMexact; nextsplitT3prefill/decode, no
+newtraining. Originalv9/voice/20Bcommand/pins restored, generator intentionally
+restarted/newPID, thread0–15/Performance/extraction/clientACKready verified09:22.
+No exactPID/cachewarmth claim or runtime/homeprofile change. Avatar owns code/
+evidence; .opencode/plans/ptl-cpu-buffers-2026-11-19.md.0autoemployeehours.
+
 ## Memory research update — 2026-11-18 16:30
 
 Private late-prime placement passes matched speech/browser gates; first audio

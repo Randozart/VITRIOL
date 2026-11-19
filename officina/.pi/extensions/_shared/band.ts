@@ -167,6 +167,15 @@ export function flushBand(): void {
   const payload = JSON.stringify(lines);
   if (payload === state.last) return;
   state.last = payload;
+  // OFFICINA_BAND_DEBUG=1: print the strip on every change so a flicker report
+  // comes with evidence instead of "something else is in that row" (2026-11-19).
+  // The strip is otherwise invisible: it lives only in the TUI buffer.
+  if (process.env.OFFICINA_BAND_DEBUG === "1") {
+    const rows = bandSnapshot()
+      .map((r) => `${r.id}[${r.tier}]=${r.lines.length}`)
+      .join(" ");
+    console.error(`[band] ${payload}  rows: ${rows}`);
+  }
   try {
     ui.setWidget(BAND_WIDGET_KEY, lines, { placement: "belowEditor" });
   } catch {

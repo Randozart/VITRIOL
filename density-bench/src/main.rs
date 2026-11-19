@@ -286,7 +286,10 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
 /// note rather than aborting the arm.
 fn print_eviction_metrics(url: &str) {
     let endpoint = format!("{}/metrics", url.trim_end_matches('/'));
-    let Ok(res) = ureq::get(&endpoint).timeout(std::time::Duration::from_secs(5)).call() else {
+    let Ok(res) = ureq::get(&endpoint)
+        .timeout(std::time::Duration::from_secs(5))
+        .call()
+    else {
         println!("  metrics unavailable at {endpoint}");
         return;
     };
@@ -388,7 +391,12 @@ fn main() -> Result<()> {
                         samples.push(s);
                     }
                     Err(e) => {
-                        eprintln!("  {:<12} {:<9} run {} failed: {e:#}", shape.id, arm, run + 1)
+                        eprintln!(
+                            "  {:<12} {:<9} run {} failed: {e:#}",
+                            shape.id,
+                            arm,
+                            run + 1
+                        )
                     }
                 }
             }

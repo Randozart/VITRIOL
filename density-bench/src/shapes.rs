@@ -130,8 +130,7 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             user: format!(
                 "{}\n### question\nWhat is the exact cache budget value (cache_max_gb) stated in \
                  the second section? Reply with the number only, then one short sentence about \
-                 the eviction policy, then list every section number in order (1, 2, 3, ...) so \
-                 the answer is long enough to cross a small window mid-generation.",
+                 the eviction policy.",
                 deep_context(
                     "The engine mirrors slot states to disk under a budget, prunes by last access, \
                      and exempts the newest snapshot and the in-flight file. Config keys ride the \

@@ -342,3 +342,37 @@ The operator's user override (`~/.config/little-coder/models.json`, a bare
 `llamacpp` entry) resolves through the alias — nothing orphaned. TUI rebuilt and
 installed (b2a1162); restart Officina to pick up both the provider rename and the
 flicker fixes.
+
+---
+
+# ADDENDUM — the "Cannot read properties of undefined (reading 'runtime')" errors (2026-11-19 13:18–13:20)
+
+Operator-visible in a second Officina session (grind loop, agnes/agnes-3.0-flash lane, 429-limited).
+
+## What it is NOT
+
+- **Not our extension code.** Exhaustive sweep: zero `.runtime` property reads anywhere in
+  `.pi/extensions/**` (production or test). The only receivers of `.runtime` in pi itself are
+  `this.runtime` (ExtensionRunner, always set in its constructor) and `extensionsResult.runtime`
+  (always produced by `loadExtensionsInternal`, which fabricates a runtime when none is passed).
+- **Not the A2 mid-edit state.** The failing turns ran 13:18–13:20; the first A2 file
+  (`engine-provider.ts`) landed 13:22, `index.ts` 13:45. The errors predate the rename work.
+- **Not the engine.** The lane is caduceus/omniroute (cloud), not the local engine; the restart
+  at 13:50 is unrelated to a 13:18 failure.
+
+## What it most plausibly is
+
+The failing session's TUI binary is **deleted on disk** (`/proc/779637/exe → ~/.local/bin/officina
+(deleted)`) — it predates today's rebuilds. Combined with pi's extension cache being keyed by cwd
+and the extension tree changing under it, a respawned pi could load a mixed old/new extension set.
+That is a transient of shipping work under a running session, not a standing defect.
+
+## Fix for the operator
+
+**Restart the second Officina instance.** It will pick up the new TUI binary (b2a1162), the
+consistent extension tree, and the renamed provider. If the error recurs on a fresh binary with a
+stable tree, it is a real bug — capture `OFFICINA_BAND_DEBUG`-style evidence (the failing session's
+exact model/route and a stack) and reopen.
+
+The 429 itself is the free-lane quota (agnes, 1 req / 3 min) — expected behaviour of a free tier,
+handled by the existing cooldown logic; not a defect either.

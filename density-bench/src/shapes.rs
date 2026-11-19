@@ -143,6 +143,23 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             // that lost its memory cannot contain it.
             expect: Some(RECALL_EXPECT),
         },
+        // Lookup-friendly shape for E3: the answer is largely a copy of the
+        // prompt, which is the only condition where an n-gram drafter can pay
+        // (it can only propose text it has already seen).
+        Shape {
+            id: "repeat-echo",
+            note: "verbatim reuse — the case n-gram drafting is designed for",
+            system: "Repeat the numbered lines the user gives, exactly, one per line.                      No commentary.",
+            user: {
+                let lines: Vec<String> = (0..24)
+                    .map(|i| format!("{i}: the quick brown fox jumps over the lazy dog while the \
+                                      engine mirrors slot states to disk under a budget"))
+                    .collect();
+                format!("{}", lines.join("\n"))
+            },
+            schema: None,
+            expect: Some("the quick brown fox"),
+        },
     ]
 }
 
@@ -153,7 +170,7 @@ mod tests {
     #[test]
     fn every_shape_is_present_and_distinct() {
         let shapes = all(4);
-        assert_eq!(shapes.len(), 4);
+        assert_eq!(shapes.len(), 5);
         let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
         assert_eq!(
             ids,
@@ -161,7 +178,8 @@ mod tests {
                 "structured",
                 "structured-nested",
                 "code-edit",
-                "deep-recall"
+                "deep-recall",
+                "repeat-echo"
             ]
         );
         for s in &shapes {

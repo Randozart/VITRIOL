@@ -195,3 +195,46 @@ corruption.
 **Deliberately out of scope:** `scripts/vitriol` (3,612 lines of bash, fingerprint-critical) and
 `officina/scripts/gen-desktop-theme.mjs` (361 lines, 4 passing tests). Rewriting either buys nothing
 for this work and carries real blast radius.
+
+## 8. E3 RESULT (2026-11-19) — lookup drafting was already there, and it is fast
+
+**Verdict: ADOPT.** `--spec-type ngram-simple` is a configuration flag, not a port, and on
+lookup-friendly content it is **5.5x** the daily driver at zero cost elsewhere.
+
+Measured with `density-bench sweep`, one engine per variant, identical base args (live config,
+`-c 262144`, `--reasoning off`), `temperature 0`, `--no-stream`, 2 repeats, medians:
+
+| shape | none | `mtp:2` (was live) | `mtp:2 + ngram-simple` | `ngram-simple` |
+|---|---|---|---|---|
+| repeat-echo (verbatim reuse) | 19.3 | 35.6 | **110.6** | **115.0** |
+| code-edit | 19.7 | 29.9 | 30.3 | 19.4 |
+| deep-recall (prose) | 20.0 | 31.3 | 32.5 | 20.0 |
+
+Reading it:
+- the n-gram drafter pays **only** where the answer reuses prompt text — exactly as advertised,
+  and it is 3x better than MTP there because it proposes whole verbatim spans rather than one token;
+- on prose it is a no-op, not a regression (19.4-20.0 vs 19.3-20.0);
+- **combined is the right general setting**: MTP still carries the non-repetitive case (30.3 vs 19.4)
+  while ngram carries the repetitive one (110.6 vs 35.6). The two do not fight; combined was within
+  noise of the best arm on every shape.
+
+All five n-gram variants were measured (medians, repeat-echo): `ngram-simple` **115.0**,
+`ngram-mod` 86.3, `ngram-cache` 50.4, `ngram-map-k` 44.5, `ngram-map-k4v` 33.1 — so the default
+`ngram-simple` is the right pick; no tuning was needed.
+
+**Applied:** `~/.vitriol/config` `[spec] type = mtp` -> `mtp,ngram-simple` (backup kept), unit
+restarted, fingerprint now reads `spec=mtp,ngram-simple:2`, and a live measurement on the daily
+driver shows repeat-echo at **103.7 / 110.4 tok/s** (was 19.3). Evidence:
+`experiments/density-e3-spec-variants-2026-11-19.log`, `…-ngram-types-…log`,
+`experiments/density-e3-live-2026-11-19.json`.
+
+Two engine observations, not fixed here:
+1. `common/speculative.cpp` registers `"mtp"` **twice** in the type table (lines 41 and 44) — a
+   duplicate alias entry; harmless under last-wins but it is a typo waiting to become a bug.
+2. When `draft-mtp` is present, an `ngram-*` type in the same list contributes nothing to
+   *decoding* on its own terms — it is the draft context that logs; the ngram impl was built but
+   the MTP acceptance dominates. The combined arm's win comes from ngram filling the gaps, which
+   is why it must be listed *and* measured, never assumed.
+
+Also found and fixed while running E3: `sweep` never wrote `--json`, so the corroboration run above
+produced no artifact. `write_artifact` is now shared by both paths.

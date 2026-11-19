@@ -46,6 +46,7 @@ struct Args {
     base_args: String,
     sets: Vec<String>,
     env_sets: Vec<String>,
+    variant_specs: Vec<String>,
     dry_run: bool,
     wait_health_s: u64,
     /// Skip the streamed pass. Token metrics are contention-independent; timing is
@@ -93,6 +94,7 @@ fn parse_args() -> Result<Args> {
         base_args: String::new(),
         sets: Vec::new(),
         env_sets: Vec::new(),
+        variant_specs: Vec::new(),
         dry_run: false,
         wait_health_s: 300,
     };
@@ -158,6 +160,10 @@ fn parse_args() -> Result<Args> {
                 args.sets.push(value(i)?);
                 i += 2;
             }
+            "--variant" => {
+                args.variant_specs.push(value(i)?);
+                i += 2;
+            }
             "--env" => {
                 args.env_sets.push(value(i)?);
                 i += 2;
@@ -221,7 +227,14 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
         .engine
         .clone()
         .ok_or_else(|| anyhow::anyhow!("sweep needs --engine <path to llama-server>"))?;
-    let arms = sweep::matrix(&args.sets, &args.env_sets);
+    // A named variant states its flag words, so knobs that need two flags at once
+    // (spec-type + draft depth) stay one arm instead of a bogus cross-product.
+    let arms = if args.variant_specs.is_empty() {
+        sweep::matrix(&args.sets, &args.env_sets)
+    } else {
+        sweep::variants(&args.variant_specs)
+    };
+    let mut samples: Vec<Sample> = Vec::new();
     println!("density-bench sweep · {} arm(s)", arms.len());
     for (i, arm) in arms.iter().enumerate() {
         println!("  arm {i}: {}", arm.label());
@@ -264,7 +277,9 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
             for run in 0..args.repeats {
                 let label = sweep_label(&arm.label(), args.sweep_style);
                 match client.run(shape, &label, args.sweep_style) {
-                    Ok(s) => println!(
+                    Ok(s) => {
+                        samples.push(s.clone());
+                        println!(
                         "  {:<12} run {} · decode {:>6.2} tok/s · {} tok{}{}",
                         shape.id,
                         run + 1,
@@ -279,8 +294,8 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
                             Some(true) => " · recalled",
                             Some(false) => " · RECALL LOST",
                             None => "",
-                        }
-                    ),
+                        })
+                    }
                     Err(e) => eprintln!("  {:<12} run {} failed: {e:#}", shape.id, run + 1),
                 }
             }
@@ -289,6 +304,7 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
         let _ = child.kill();
         let _ = child.wait();
     }
+    write_artifact(args, &samples)?;
     println!("\n  sweep complete — logs under /tmp/density-sweep-arm*.log");
     Ok(())
 }
@@ -443,23 +459,32 @@ fn main() -> Result<()> {
     }
 
     summarize(&samples);
-    if let Some(path) = args.json_out {
-        let doc = serde_json::json!({
-            "ts": std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64())
-                .unwrap_or(0.0),
-            "engine": args.url,
-            "fingerprint": fingerprint(&args.url),
-            "model": args.model,
-            "max_tokens": args.max_tokens,
-            "deep_sections": args.deep_sections,
-            "repeats": args.repeats,
-            "samples": samples,
-        });
-        std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
-        println!("  json   : {path}");
-    }
+    write_artifact(&args, &samples)?;
+    Ok(())
+}
+
+/// Write the JSON artifact. Both the plain and the sweep path call this: a sweep
+/// without an artifact is an opinion, not evidence (E3 produced exactly that
+/// before this existed).
+fn write_artifact(args: &Args, samples: &[Sample]) -> Result<()> {
+    let Some(path) = &args.json_out else {
+        return Ok(());
+    };
+    let doc = serde_json::json!({
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0),
+        "engine": args.url,
+        "fingerprint": fingerprint(&args.url),
+        "model": args.model,
+        "max_tokens": args.max_tokens,
+        "deep_sections": args.deep_sections,
+        "repeats": args.repeats,
+        "samples": samples,
+    });
+    std::fs::write(path, serde_json::to_string_pretty(&doc)?)?;
+    println!("  json   : {path}");
     Ok(())
 }
 

@@ -19,15 +19,29 @@
 /// One configuration arm: the extra flags and env for a single engine start.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Arm {
+    /// Named variant label; empty for a matrix arm (its label is generated).
+    pub name: String,
     pub flags: Vec<(String, String)>,
     pub env: Vec<(String, String)>,
+    /// Verbatim flag words for a named variant (`--spec-type draft-mtp` etc.).
+    ///
+    /// A knob that needs *two* flags at once (spec-type + draft depth) cannot be
+    /// expressed as a one-dimensional `--set`, and crossing two `--set`s would
+    /// sweep combinations nobody asked for. A variant states the words.
+    pub raw: Vec<String>,
 }
 
 impl Arm {
     /// Human label: `score_every=8 · VITRIOL_KV_SCORE=probe`.
     pub fn label(&self) -> String {
+        if !self.name.is_empty() {
+            return self.name.clone();
+        }
         let mut parts: Vec<String> = self.flags.iter().map(|(k, v)| format!("{k}={v}")).collect();
         parts.extend(self.env.iter().map(|(k, v)| format!("{k}={v}")));
+        if !self.raw.is_empty() {
+            parts.push(self.raw.join(" "));
+        }
         parts.join(" · ")
     }
 
@@ -35,6 +49,7 @@ impl Arm {
     pub fn argv(&self, base: &str, engine: &str) -> Vec<String> {
         let mut argv = vec![engine.to_string()];
         argv.extend(base.split_whitespace().map(|s| s.to_string()));
+        argv.extend(self.raw.iter().cloned());
         for (k, v) in &self.flags {
             argv.push(format!("--{k}"));
             argv.push(v.clone());
@@ -93,6 +108,28 @@ pub fn matrix(flag_specs: &[String], env_specs: &[String]) -> Vec<Arm> {
     arms
 }
 
+/// Named variants: `label=--flag val --flag2 val2`, repeatable.
+///
+/// An empty flag string is legitimate — it is the "no speculative decoding" arm,
+/// and the probe that proves the label is honoured rather than ignored.
+pub fn variants(specs: &[String]) -> Vec<Arm> {
+    specs
+        .iter()
+        .filter_map(|spec| {
+            let (label, flags) = spec.split_once('=')?;
+            if label.trim().is_empty() {
+                return None;
+            }
+            Some(Arm {
+                name: label.trim().to_string(),
+                flags: Vec::new(),
+                env: Vec::new(),
+                raw: flags.split_whitespace().map(|w| w.to_string()).collect(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -130,10 +167,40 @@ mod tests {
     }
 
     #[test]
+    fn a_variant_carries_verbatim_flag_words() {
+        let arms = variants(&["mtp2=--spec-type mtp --spec-draft-n-max 2".to_string()]);
+        assert_eq!(arms.len(), 1);
+        assert_eq!(arms[0].label(), "mtp2");
+        assert_eq!(
+            arms[0].argv("--model /m.gguf", "/bin/s"),
+            vec![
+                "/bin/s",
+                "--model",
+                "/m.gguf",
+                "--spec-type",
+                "mtp",
+                "--spec-draft-n-max",
+                "2",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_variant_may_carry_no_flags() {
+        // The "off" arm is a real arm: it must start, not vanish.
+        let arms = variants(&["none=".to_string()]);
+        assert_eq!(arms.len(), 1);
+        assert!(arms[0].raw.is_empty());
+        assert_eq!(arms[0].argv("--x", "/bin/s"), vec!["/bin/s", "--x"]);
+    }
+
+    #[test]
     fn argv_keeps_the_base_and_appends_arm_flags() {
         let arm = Arm {
+            name: String::new(),
             flags: vec![("score_every".into(), "8".into())],
             env: vec![],
+            raw: vec![],
         };
         let argv = arm.argv("--model /m.gguf --port 8287", "/bin/llama-server");
         assert_eq!(

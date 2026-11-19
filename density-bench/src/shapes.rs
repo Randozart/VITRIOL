@@ -169,7 +169,7 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                     .map(|i| format!("{i}: the quick brown fox jumps over the lazy dog while the \
                                       engine mirrors slot states to disk under a budget"))
                     .collect();
-                format!("{}", lines.join("\n"))
+                lines.join("\n")
             },
             schema: None,
             expect: Some("the quick brown fox"),

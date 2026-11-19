@@ -50,19 +50,25 @@ export function isLocalEngine(id: string | null | undefined): boolean {
  * canonical spelling first, then each legacy alias, so a selection stored under
  * any spelling still finds its model. Returns the first non-undefined, or
  * `fallback` when none resolve.
+ *
+ * CALL DISCIPLINE (2026-11-19 incident): `find` MUST be invoked ATTACHED
+ * (`registry.find(...)`), never via a detached local (`const f = registry.find;
+ * f(...)`). pi's ModelRegistry.find reads `this.runtime`; a detached call passes
+ * `this === undefined` and throws exactly "Cannot read properties of undefined
+ * (reading 'runtime')" on every virtual-model route. Pinned by
+ * engine-provider.test.ts (findEngineModel calls find attached).
  */
 export function findEngineModel<T>(
   registry: {
-    find?: (provider: string, modelId: string) => T | undefined;
+    find?: (this: unknown, provider: string, modelId: string) => T | undefined;
   },
   modelId: string,
   fallback?: T,
 ): T | undefined {
-  const find = registry.find;
-  if (!find) return fallback;
+  if (!registry.find) return fallback;
   const ids = [ENGINE_PROVIDER_ID, ...LEGACY_ENGINE_PROVIDER_IDS];
   for (const provider of ids) {
-    const hit = find(provider, modelId);
+    const hit = registry.find(provider, modelId);
     if (hit !== undefined) return hit;
   }
   return fallback;

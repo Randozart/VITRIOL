@@ -2076,6 +2076,23 @@ private:
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
 
         slot.task = std::make_unique<const server_task>(std::move(task));
+
+        // VITRIOL reasoning hygiene (2026-11-19): the engine launched with
+        // thinking enabled but no token budget. Thinking and the answer share
+        // n_predict, and the budget sampler is not even constructed at budget
+        // < 0 (common/sampling.cpp:311), so nothing can force </think>: the
+        // request may return finish_reason=length with EMPTY content. Counted
+        // (llamacpp:reasoning_unbounded_total) and warned once so a hand-rolled
+        // launch cannot reproduce the bug silently.
+        if (params_base.enable_reasoning != 0
+            && params_base.sampling.reasoning_budget_tokens < 0) {
+            metrics.n_reasoning_unbounded++;
+            if (metrics.n_reasoning_unbounded == 1) {
+                SRV_WRN("%s", "thinking is ENABLED with reasoning_budget=-1 (unrestricted): "
+                        "the answer may be consumed by reasoning and return empty. "
+                        "Launch with --reasoning-budget N or --reasoning off.\n", __func__);
+            }
+        }
 #ifdef VITRIOL_CACHE_STORE
         slot.prompt.cache_owner.reset();
         if (prompt_cache && slot.task->type == SERVER_TASK_TYPE_COMPLETION &&

@@ -478,6 +478,13 @@ struct server_metrics {
     // eviction + eager floor sweep) - surfaced as llamacpp:kv_ejected_total.
     uint64_t n_kv_ejected = 0;
 
+    // VITRIOL reasoning hygiene (2026-11-19): thinking without a token budget is
+    // the recurring "reasoning works poorly" bug - the thinker consumes n_predict
+    // and the answer comes back empty (finish_reason=length). n_reasoning_unbounded
+    // counts requests admitted in that state; it must stay 0 under the launcher's
+    // guard. Surfaced as llamacpp:reasoning_unbounded_total.
+    uint64_t n_reasoning_unbounded = 0;
+
     // VITRIOL Optane tier: prompt-cache states mirrored to disk since boot
     // - surfaced as llamacpp:kv_cache_spill_total.
     uint64_t n_kv_cache_spills = 0;

@@ -50,3 +50,6 @@ const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sa
 // Manually transition the reasoning budget sampler into the FORCING state.
 // Returns true if the transition occurred.
 bool common_reasoning_budget_force(struct llama_sampler * smpl);
+
+// Cumulative count of thinking blocks closed by the budget (VITRIOL 2026-11-19).
+uint64_t common_reasoning_budget_forced_total(void);

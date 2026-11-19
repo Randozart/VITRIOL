@@ -4,6 +4,7 @@
 #include "server-chat.h"
 #include "chat.h"
 #include "common.h"
+#include "reasoning-budget.h"
 #include "json-schema-to-grammar.h"
 #include "llama.h"
 #include "sampling.h"
@@ -1608,6 +1609,16 @@ std::string server_task_result_metrics::to_metrics() {
             metrics.n_draft_verif_steps > 0
                 ? (double) metrics.n_draft_accepted / (double) metrics.n_draft_verif_steps
                 : 0.0
+        }, {
+            "reasoning_forced_total",
+            "VITRIOL reasoning hygiene: thinking blocks closed by the budget sampler "
+            "(0 = no budget was set, or no thinking happened)",
+            (double) common_reasoning_budget_forced_total()
+        }, {
+            "reasoning_unbounded_total",
+            "VITRIOL reasoning hygiene: requests admitted with thinking enabled and "
+            "NO budget (must stay 0; non-zero predicts empty answers at finish=length)",
+            (double) metrics.n_reasoning_unbounded
         }, {
             "kv_ejected_total",
             "VITRIOL sparse-KV: KV cells ejected since boot (attention-scored eviction + eager floor sweep)",

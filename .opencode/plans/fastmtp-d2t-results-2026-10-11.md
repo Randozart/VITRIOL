@@ -212,13 +212,25 @@ draft sampler and maps only for the result/batch. Needs engine-level
 debugging (SPC_TRC) + bisect vs pre-`02233899c` build. 3+ failed local
 hypotheses → ascensus candidate per escalation policy.
 
-### Manual-launch gotcha (cost ~1 h)
+### Manual-launch gotcha (cost ~1 h) — RETRACTED REASONING, KEPT DISCIPLINE (2026-11-19)
 
 Bare `llama-server` launches without `--reasoning off` silently corrupt
 raw `/completion` generation at depth (instant eos ≥15k-ish prompts),
 while shallow benches pass. The unit always passes it; any manual
 experiment launch MUST carry the unit's full flag set — diff against
 `/proc/<unit MainPID>/cmdline` first.
+
+**Retraction (2026-11-19, reasoning audit):** the *reasoning* half of this note was
+a coincidence, and the note's own evidence says so — the external-draft-mtp corruption
+above "reproduces with `--reasoning off`", so it was never reasoning. Mechanically the
+flag cannot be the cause on a raw `/completion` either: the budget sampler is only
+constructed when `reasoning_budget_tokens >= 0` (`common/sampling.cpp:311`), so with the
+default `-1` there is no think branch in the engine to take — the same conclusion the
+`gateb-close-perf` T2 test reached (plain20 / `<think>`-open20 / `<think>`-preclosed20
+all DEAD; thinking tokens irrelevant to the n_tokens>=16 cliff).
+The *discipline* stands on its own (AGENTS §4 flag provenance): diff against
+`/proc/<MainPID>/cmdline` before a manual launch. See
+`.opencode/plans/reasoning-budget-diagnosis-2026-11-19.md` §5.
 
 ### Verdict
 

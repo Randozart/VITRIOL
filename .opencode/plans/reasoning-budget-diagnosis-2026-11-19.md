@@ -200,3 +200,67 @@ be reproduced.
 
 S1 alone would have made every historical instance of this bug self-diagnosing. That is the
 argument for doing it first, and for not touching the budget until it is in.
+
+---
+
+# IMPLEMENTED 2026-11-19 (all stages, verified live)
+
+The diagnosis held. Every stage shipped, and the probe from §6 was the first thing run.
+
+## The two-request acceptance test (live engine, `--reasoning off`, no restart)
+
+| request | finish_reason | content | reasoning |
+|---|---|---|---|
+| `enable_thinking=true`, no budget | `length` | `""` (0 chars) | 266 chars — *all 64 tokens* |
+| same + `reasoning_budget_tokens: 24` | `stop` | `"Red, blue, and yellow."` | 101 chars, closed |
+| no kwargs (engine default) | `stop` | `"Red, blue, and yellow."` | none |
+
+Also proven: **per-request `chat_template_kwargs.enable_thinking` works on an engine
+launched `--reasoning off`** — a reasoning lane needs no restart.
+
+## What landed
+
+- **S2** `f6ee846` — `[server] reasoning_budget` → `--reasoning-budget`, `rb=`/`rea=`
+  in the fingerprint, `reasoning_guard()` refusing a thinking launch with `-1`
+  (`--dry-run` warns instead so review is never blocked). Interactive reasoning
+  toggle now sets budget 1024 when it turns thinking on. Parity verified: with the
+  live config the fingerprint is byte-identical (no `rea=`/`rb=` fields).
+- **S4** `1e484fe` — `[[officina-think]]` / `[[officina-think N]]` sets
+  `enable_thinking` **and** `reasoning_budget_tokens` in one payload, budget clamped
+  to `max_tokens - 256` (floor 32). 8 tests including "never returns -1".
+- **S3** `4eb9d95` — `reasoning:false` in the local model entry is now documented and
+  pinned as a *contract*: declaring `reasoning:true` would make pi inject its own
+  thinking budget and inflate `maxTokens`, competing with the marker over the same
+  answer room. The "capability lie" was actually correct behaviour.
+- **S1** `7530868` — `llamacpp:reasoning_forced_total` (budget actually closed a
+  thinking block) and `llamacpp:reasoning_unbounded_total` (thinking enabled at
+  launch with no budget; logs `SRV_WRN` once). Verified: forcing counter 0→1 across
+  the probe, unbounded stayed 0.
+- **S1b** `2ce511d` — `tui/reasoning_guard.rs`: a turn that thought and did not answer
+  raises a named notice instead of a blank turn. Bench samples carry
+  `reasoning_chars` + `finish_reason`; the run line prints `EMPTY ANSWER (finish=length)`.
+- **S5** — the 2026-10-11 launch note's *reasoning* justification is **retracted** (its
+  own text says the corruption reproduced *with* `--reasoning off`, and at budget `-1`
+  no budget sampler exists, so a raw `/completion` has no think branch at all). The
+  flag-provenance half of the note stands.
+
+## Known limits (stated, not hidden)
+
+- `reasoning_unbounded_total` keys on the **launch** flag, so per-request
+  `enable_thinking` on a `--reasoning off` engine is not counted engine-side (that
+  path needs the thought-open state, which lives in the generation prompt, not in a
+  bool). The client-side symptom is covered instead by the TUI notice and the bench's
+  `EMPTY ANSWER` marker.
+- `make llama-server` is blocked in this build tree by a stale `llama-ui-assets`
+  target (upstream now wants workbox assets the pinned `dist.tar.gz` lacks). The
+  objects, `libserver-context.a`, `libllama-common.so`, `libllama-server-impl.so` were
+  rebuilt individually and the executable relinked from `link.txt` — same flags, no
+  fabricated assets. Worth repairing separately.
+- The engine default budget stays `-1` while `reasoning = off`; that is the parity
+  case and it is unlaunchable-with-thinking by guard, not by default.
+
+## E5 is now runnable
+
+`[[officina-think 1024]]` (opt-in `OFFICINA_THINKING=1`) gives a bounded thinker on any
+lane without an engine restart. E5 should be measured with that marker, not with a
+global `--reasoning on`, so the arm cannot silently become an unbounded stream.

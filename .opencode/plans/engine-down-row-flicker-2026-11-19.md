@@ -145,3 +145,60 @@ running TUI needs the same restart any extension change needs.
 
 F3 changes Rust, so that stage needs the rebuild + install (`~/.local/bin/officina`) per the
 standing rule.
+
+---
+
+# IMPLEMENTED 2026-11-19 (F1-F5)
+
+All five stages landed. Two of them turned out to be different defects than the plan assumed.
+
+## What shipped
+
+- **F1/F2** `4a76bfa` — `decodeBandRows(up, progress)` returns exactly one populated tier. The
+  down state is a band **`state`** row that clears the progress row; recovery clears the state row.
+  **The legacy `setWidget` path is deleted** — the only `belowEditor` `setWidget` left in the
+  extensions is `engine-fire` (the flame data feed the TUI filters from display).
+- **F4** `b9ad0fd` — `BAND_SETTLE` 700 → 900 ms, with the rule on the constant: *the settle must
+  exceed the slowest producer's period; the engine poll is 700 ms and an equal settle aliases into
+  a visible beat.* state.rs kept inside its size-ratchet budget by compressing the comment to the
+  previous line count.
+- **F5** `b9ad0fd` — `OFFICINA_BAND_DEBUG=1` dumps the assembled strip plus its rows
+  (`id[tier]=n`) at `flushBand`'s single choke point, so the next report arrives with evidence.
+  Declared in `_shared/config.ts` (the undeclared-knob gate).
+- **F3** `a474025` — the producer gate now matches whitespace-squashed source.
+- TUI rebuilt and installed (`03b4c6c8`), 382 cargo + 1574 vitest, clippy/fmt/tsc clean.
+
+## What the plan got wrong, and what the work found instead
+
+**1. The drip was a missing clear, but the gate that should have caught it was blind.**
+`band.test.ts` already scanned for `setWidget("vitriol-decode"`) and already named the key. The
+offending call was:
+
+```ts
+ui.setWidget(
+  "vitriol-decode",
+```
+
+so the literal never appeared in the text. The guard has been format-dependent since 2026-11-18 —
+it only ever proved that *nobody formatted a call that way*. Fixed by squashing whitespace before
+matching, with a test that pins the format-dependence itself and a hand-verified negative control
+(a probe file fails the gate, then passes once deleted).
+
+**2. Rows are keyed by PRODUCER ID, not `(id, tier)`.** Discovered by the flap test failing:
+`setBandRow("vitriol-decode", "state", null)` deletes the **progress** row too, because
+`clearBandRow` deletes by id. So "clear the other tier, then publish" is the required order in both
+directions, and any producer holding two tiers for one id will silently lose one. Now documented on
+`setBandRow` and followed at both call sites. This is the more dangerous finding of the two: an
+extension that publishes `state` and `progress` under one id wipes itself.
+
+## Test coverage added
+
+- `vitriol-decode/band-row.test.ts` (5): down publishes state only; up publishes progress only;
+  up-with-nothing publishes nothing; **up → down → up payload identity** (the test that would have
+  caught the original bug); the assembled strip holds exactly one decode row across a flap.
+- `_shared/band.test.ts` (+1): the gate sees multi-line calls.
+
+## Residual risk
+
+The settle bump is a mitigation, not a proof: if any producer's cadence ever exceeds 900 ms the
+aliasing returns. The constant now says so, and `OFFICINA_BAND_DEBUG=1` will show it.

@@ -153,9 +153,15 @@ must stay OUT of the ggml-cuda source GLOB.
 - KV cache computed from model dims: `(embd_len / head_count) * head_count_kv * 2.5 / 1M`.
 - Per-layer expert cost from tensor name analysis (`ffn_*_exps` patterns).
 
-## Sweep Controller (Python)
+## Sweep Controller (Python) — placement only
 
 - **`libvitriol/sweep_controller.py`** — automated benchmark sweep via HTTP POST `/completion`
+- **Scope (2026-11-19):** this is the *placement* sweeper (pin/MTP/ubatch/ts grid -> CSV) and the
+  `vitriol-tui` dashboard shells out to it. Token-density comparisons (grammar vs prose,
+  speculative-decoding variants, recall guards, JSON artifacts) live in
+  `density-bench sweep --engine <vitriol-server> --variant "label=flags" ...`, which also runs one
+  engine per arm but measures prompt shapes and records a fingerprint per run. Do not delete either
+  to "consolidate" without moving the TUI path first.
 - Starts `llama-server` subprocess per config, benchmarks 64-token generation (1 warmup + 3 measured rounds), reports t/s
 - Server readiness: polls `/health` then `/completion` until model fully loads (~15s warmup on GTX 1070 Ti)
 - Use: `python3 libvitriol/sweep_controller.py --model <path> --pin 0 8 12 16 --mtp 0 3 5 6`

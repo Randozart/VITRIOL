@@ -178,12 +178,13 @@ and a JSON splice — slower, and it would need its own IPC contract.
 
 **Already Rust, no action:** `density-bench` (all five modules: shapes, engine, sample, sweep, main).
 
-**One real consolidation (`libvitriol/sweep_controller.py`, 357 lines).** It does what
-`density-bench sweep` now does — start one engine per config, poll `/health`, benchmark, report — and
-it opens with `pkill -f "llama-server"`, the exact pattern that killed my own shell twice today.
-It is referenced only by historical plans, never by a script or by code. Proposal: park the Python
-file, point the docs at `density-bench sweep`, and delete it once one real sweep has been run through
-the Rust path (E3 will be that sweep).
+**Correction (2026-11-19, after checking instead of assuming): `sweep_controller.py` stays.**
+It looks like a duplicate of `density-bench sweep` — same shape (start one engine per config, poll
+`/health`, benchmark, tabulate) — but it answers a different question (**placement**: pin/MTP/ubatch/
+tensor-split → CSV) and, decisively, **`vitriol-tui` shells out to it**
+(`vitriol-tui/src/control.rs:229`, the dashboard's placement-sweep action). Deleting it would break
+that button silently. Its header now states the split: placement here, token density in
+`density-bench`. It remains Python's one legitimate foothold (plus the launcher's own helper).
 
 **Codec (E2) rule — one implementation, one fixture.** Write the telegraphic codec in Rust inside
 `density-bench`. If it later ships to Officina, do **not** re-implement from the prose: export golden

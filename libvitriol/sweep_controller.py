@@ -1,6 +1,18 @@
 #!/usr/bin/env python3
 """VITRIOL Sweep Controller — empirically finds optimal pin/MTP/ubatch config.
 Calls llama-server directly with env vars (same pattern as vitriol serve).
+
+ROLE (updated 2026-11-19): this is the **placement** sweeper — it walks a
+pin/MTP/ubatch/tensor-split grid and emits CSV, and `vitriol-tui`'s dashboard
+"placement sweep" action shells out to it (vitriol-tui/src/control.rs). Keep it.
+
+Token-density comparisons (grammar vs prose, speculative-decoding variants,
+recall guards, JSON artifacts, fingerprint) live in `density-bench sweep`
+instead: it also starts one engine per arm, but it measures prompt shapes and
+refuses to report an arm it did not fingerprint. Two tools, two questions.
+
+Do NOT fold them together without moving the dashboard path first: deleting this
+file silently breaks the TUI's sweep button.
 """
 
 import argparse

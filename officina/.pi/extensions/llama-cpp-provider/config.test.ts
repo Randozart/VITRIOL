@@ -241,6 +241,14 @@ describe("fillModelDefaults (issue #36)", () => {
     });
   });
 
+  it("keeps reasoning:false as the default so pi never injects a second thinking budget", () => {
+    // Pinned because it looks like a bug and is not: reasoning:true would make pi
+    // size a thinking budget AND inflate maxTokens, competing with the marker's
+    // reasoning_budget_tokens over the same answer room (2026-11-19 diagnosis).
+    const out = fillModelDefaults({ id: "local.gguf" }, "llamacpp", 0);
+    expect(out.reasoning).toBe(false);
+  });
+
   it("preserves user-supplied values over defaults", () => {
     const out = fillModelDefaults(
       {

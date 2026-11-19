@@ -58,11 +58,25 @@ impl Client {
     /// Request body for one style. `Baseline` is the plain call; a style may only
     /// change instructions or `response_format`, never the shape's schema (I2).
     fn body(&self, shape: &Shape, style: RequestStyle, stream: bool) -> serde_json::Value {
+        // History is rendered BEFORE the final user turn and only when a shape
+        // declares it, so the baseline body of every historical shape is byte
+        // identical to what it was (pinned by `baseline_parity`).
+        let mut messages: Vec<serde_json::Value> = vec![serde_json::json!({
+            "role": "system", "content": shape.system
+        })];
+        for (role, content, reasoning) in &shape.history {
+            let mut msg = serde_json::json!({ "role": role, "content": content });
+            if let Some(reasoning) = reasoning {
+                // The engine parses this back into a `thinking` block
+                // (common/chat.cpp:452), which the template then renders or
+                // drops depending on `preserve_thinking`.
+                msg["reasoning_content"] = serde_json::Value::String((*reasoning).to_string());
+            }
+            messages.push(msg);
+        }
+        messages.push(serde_json::json!({ "role": "user", "content": shape.user }));
         let mut body = serde_json::json!({
-            "messages": [
-                { "role": "system", "content": shape.system },
-                { "role": "user", "content": shape.user }
-            ],
+            "messages": messages,
             "max_tokens": self.max_tokens,
             "temperature": 0,
             "stream": stream,
@@ -187,12 +201,15 @@ impl Client {
             .map(|keys| keys.iter().filter_map(|k| k.as_str()).collect())
             .unwrap_or_default();
         let valid = shape.schema.as_ref().map(|_| satisfies(decoded, &required));
-        let recall_ok = shape
-            .expect
-            .map(|needle| crate::sample::contains(decoded, needle));
-        let answer_head = shape
-            .expect
-            .map(|_| content.trim().chars().take(200).collect());
+        // `expect_exact` wins over `expect`: when a shape can be scored exactly,
+        // a substring match is a weaker question than the one being asked.
+        let recall_ok = match (shape.expect_exact, shape.expect) {
+            (Some(want), _) => Some(crate::sample::exact_answer(decoded, want)),
+            (None, Some(needle)) => Some(crate::sample::contains(decoded, needle)),
+            (None, None) => None,
+        };
+        let answer_head = (shape.expect.is_some() || shape.expect_exact.is_some())
+            .then(|| content.trim().chars().take(200).collect());
         Ok(Sample {
             shape: shape.id.to_string(),
             arm: label.to_string(),
@@ -322,5 +339,41 @@ mod tests {
             .expect("prose shape");
         let body = client.body(prose, RequestStyle::Grammar, false);
         assert!(body.get("response_format").is_none());
+    }
+
+    #[test]
+    fn history_renders_in_order_before_the_final_question() {
+        // T1 (2026-11-19): the preserve_thinking measurement only means anything
+        // if the seeded reasoning actually reaches the template. If this silently
+        // dropped `reasoning_content`, both arms would cost the same and the
+        // experiment would "prove" that preserving is free.
+        let client = Client {
+            base: "http://x".into(),
+            model: "m".into(),
+            max_tokens: 8,
+            stream: false,
+        };
+        let shape = crate::shapes::all(4)
+            .into_iter()
+            .find(|s| s.id == "preserve-history")
+            .expect("preserve shape");
+        let body = client.body(&shape, RequestStyle::Baseline, false);
+        let messages = body["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 2 + shape.history.len());
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[messages.len() - 1]["role"], "user");
+        assert_eq!(messages[messages.len() - 1]["content"], shape.user);
+        // Every seeded assistant turn carries reasoning; every user turn does not.
+        let mut assistants_with_reasoning = 0;
+        for msg in &messages[1..messages.len() - 1] {
+            let has = msg.get("reasoning_content").is_some();
+            if msg["role"] == "assistant" {
+                assert!(has, "assistant turn lost its reasoning block");
+                assistants_with_reasoning += 1;
+            } else {
+                assert!(!has, "a user turn must not carry reasoning");
+            }
+        }
+        assert_eq!(assistants_with_reasoning, 6);
     }
 }

@@ -106,6 +106,28 @@ pub fn median(values: &[f64]) -> f64 {
     }
 }
 
+/// Does the answer say exactly this, and nothing else? (T2, 2026-11-19)
+///
+/// Normalisation is deliberately narrow: case, surrounding whitespace, trailing
+/// sentence punctuation, surrounding quotes and backticks, and a leading
+/// "answer:" label. Anything more forgiving would let a model that reasoned to
+/// the wrong conclusion pass on a stray digit — which is the failure mode the
+/// substring guard has.
+pub fn exact_answer(content: &str, want: &str) -> bool {
+    let mut got = content.trim().to_string();
+    for label in ["the answer is", "answer:", "answer ="] {
+        if let Some(rest) = got.to_lowercase().strip_prefix(label) {
+            got = rest.trim().to_string();
+        }
+    }
+    let got = got
+        .trim_matches(|c: char| c.is_whitespace() || "\"'`*".contains(c))
+        .trim_end_matches(['.', ',', '!', ';'])
+        .trim()
+        .to_lowercase();
+    got == want.trim().to_lowercase()
+}
+
 /// Case-insensitive substring check used by the recall guard.
 pub fn contains(content: &str, needle: &str) -> bool {
     content.to_lowercase().contains(&needle.to_lowercase())
@@ -182,5 +204,18 @@ mod tests {
         ));
         assert!(!satisfies("{\"verdict\":\"safe\"}", &["verdict", "lane"]));
         assert!(!satisfies("Sure — safe to run.", &["verdict"]));
+    }
+
+    #[test]
+    fn exact_answer_accepts_the_value_and_rejects_a_near_miss() {
+        // Negative controls matter more than the positive one: a budget sweep
+        // scored by a forgiving matcher is how "more thinking is better" gets
+        // invented out of nothing.
+        assert!(exact_answer("907", "907"));
+        assert!(exact_answer("  The answer is 907.\n", "907"));
+        assert!(exact_answer("`10`", "10"));
+        assert!(!exact_answer("908", "907"));
+        assert!(!exact_answer("907 or maybe 906, depending", "907"));
+        assert!(!exact_answer("", "907"));
     }
 }

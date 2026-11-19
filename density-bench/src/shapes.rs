@@ -24,7 +24,27 @@ pub struct Shape {
     /// must still retrieve after a sweep, a speed win is indistinguishable from
     /// amnesia. `None` = no recall requirement.
     pub expect: Option<&'static str>,
+
+    /// The answer must be EXACTLY this (T2, 2026-11-19), after normalisation.
+    ///
+    /// A substring guard cannot score a reasoning budget: an answer that reasons
+    /// its way to the wrong conclusion while mentioning the right number passes
+    /// `expect`. When this is set it wins over `expect`.
+    pub expect_exact: Option<&'static str>,
+
+    /// Seeded conversation history, rendered ahead of `user` (T1, 2026-11-19).
+    ///
+    /// `(role, content, reasoning)`. Used to price `preserve_thinking`, which
+    /// re-renders every historical assistant turn's `<think>` block into every
+    /// request: with history, two arms of the same conversation genuinely differ
+    /// in prompt tokens. Empty = the historical single-turn shape.
+    pub history: Vec<(&'static str, &'static str, Option<&'static str>)>,
 }
+
+/// Reasoning filler for the preserve-history shape. Deterministic on purpose:
+/// the cost being measured is the re-rendered token count, so the text may not
+/// vary between arms or repeats.
+const SEEDED_REASONING: &str = "Checking the constraint against the evidence. The budget     appears in the setup message and must be quoted verbatim; recency is not the same as     correctness, so the earliest statement is the anchor. Consider the alternative readings:     a per-slot ceiling, a per-token ceiling, and a cumulative ceiling. Only the first is     stated. Therefore the fact has one value and it lives at the start of the conversation.";
 
 /// The fact the deep-recall guard asks for. It lives in **section 1** — as far
 /// back as the prompt goes — so an answer proves retrieval, not recency.
@@ -77,6 +97,8 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 "additionalProperties": false
             })),
             expect: None,
+            expect_exact: None,
+            history: Vec::new(),
         },
         Shape {
             id: "structured-nested",
@@ -110,6 +132,8 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 "additionalProperties": false
             })),
             expect: None,
+            expect_exact: None,
+            history: Vec::new(),
         },
         Shape {
             id: "code-edit",
@@ -122,6 +146,8 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 .to_string(),
             schema: None,
             expect: None,
+            expect_exact: None,
+            history: Vec::new(),
         },
         Shape {
             id: "deep-recall",
@@ -142,6 +168,8 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             // The recall guard: the number appears in the filler, so an answer
             // that lost its memory cannot contain it.
             expect: Some(RECALL_EXPECT),
+            expect_exact: None,
+            history: Vec::new(),
         },
         // E2's consumer: a plan the operator reads through a rendered view, so a
         // compressed notation costs nothing if it decodes. The guard fact is a
@@ -156,6 +184,8 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
                 .to_string(),
             schema: None,
             expect: Some("47"),
+            expect_exact: None,
+            history: Vec::new(),
         },
         // Lookup-friendly shape for E3: the answer is largely a copy of the
         // prompt, which is the only condition where an n-gram drafter can pay
@@ -173,6 +203,74 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             },
             schema: None,
             expect: Some("the quick brown fox"),
+            expect_exact: None,
+            history: Vec::new(),
+        },
+        // T1 (2026-11-19): the shape that makes `preserve_thinking` measurable.
+        // Six assistant turns each carry a seeded `<think>` block; the engine
+        // re-renders every one of them into every request unless
+        // `--no-reasoning-preserve` is set, and nobody has ever priced that.
+        // The fact asked for is in the FIRST turn, so a long prompt cannot be
+        // mistaken for a good one.
+        Shape {
+            id: "preserve-history",
+            note: "multi-turn with seeded reasoning — prices preserve_thinking",
+            system: "You are in a long technical conversation. Answer the final question briefly.",
+            user: "What KV cache budget did I state at the start? Answer with the number only."
+                .to_string(),
+            schema: None,
+            expect: Some("61"),
+            expect_exact: None,
+            history: vec![
+                ("user", "Setup: the KV cache budget for this bench is 61 GiB.", None),
+                ("assistant", "Noted.", Some(SEEDED_REASONING)),
+                ("user", "Second note: the bench has two GPUs.", None),
+                ("assistant", "Noted.", Some(SEEDED_REASONING)),
+                ("user", "Third note: the mirror lives on NVMe.", None),
+                ("assistant", "Noted.", Some(SEEDED_REASONING)),
+                ("user", "Fourth note: restarts are warm.", None),
+                ("assistant", "Noted.", Some(SEEDED_REASONING)),
+                ("user", "Fifth note: eviction is a fallback, not a knob.", None),
+                ("assistant", "Noted.", Some(SEEDED_REASONING)),
+                ("user", "Sixth note: the recall guard matters more than the rate.", None),
+                ("assistant", "Noted.", Some(SEEDED_REASONING)),
+            ],
+        },
+        // T2 (2026-11-19): budgets need answers that are RIGHT or WRONG, not
+        // answers that merely mention the right digits. Exact-match only.
+        Shape {
+            id: "exact-arith",
+            note: "two-step arithmetic — exact answer, no partial credit",
+            system: "Answer with only the integer. No words, no units.",
+            user: "What is 37 * 24 + 19?".to_string(),
+            schema: None,
+            expect: None,
+            expect_exact: Some("907"),
+            history: Vec::new(),
+        },
+        Shape {
+            id: "exact-logic",
+            note: "one-hop combinatorics — exact answer",
+            system: "Answer with only the integer. No words, no units.",
+            user: "In a room of 5 people, every person shakes hands with every other person \
+                   exactly once. How many handshakes happen in total?"
+                .to_string(),
+            schema: None,
+            expect: None,
+            expect_exact: Some("10"),
+            history: Vec::new(),
+        },
+        Shape {
+            id: "exact-trace",
+            note: "loop trace — exact answer, wrong by one is wrong",
+            system: "Answer with only the integer. No words, no units.",
+            user: "Rust: `let mut x = 1; for i in 1..=4 { x = x * i + 1; }` — what is x at the \
+                   end?"
+                .to_string(),
+            schema: None,
+            expect: None,
+            expect_exact: Some("65"),
+            history: Vec::new(),
         },
     ]
 }
@@ -184,7 +282,7 @@ mod tests {
     #[test]
     fn every_shape_is_present_and_distinct() {
         let shapes = all(4);
-        assert_eq!(shapes.len(), 6);
+        assert_eq!(shapes.len(), 10);
         let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
         assert_eq!(
             ids,
@@ -194,7 +292,11 @@ mod tests {
                 "code-edit",
                 "deep-recall",
                 "internal-plan",
-                "repeat-echo"
+                "repeat-echo",
+                "preserve-history",
+                "exact-arith",
+                "exact-logic",
+                "exact-trace"
             ]
         );
         for s in &shapes {

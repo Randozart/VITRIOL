@@ -200,7 +200,15 @@ describe("shipped models.json", () => {
 
   it("still registers llamacpp and ollama alongside lmstudio (and zen, parity 1.3)", () => {
     const result = loadProviders(pkgRoot, {});
-    expect(Object.keys(result.providers).sort()).toEqual(["llamacpp", "lmstudio", "ollama", "zen"]);
+    // A2 alias period (2026-11-19): the canonical `vitriol` ships ALONGSIDE the
+    // legacy `llamacpp` so a stored legacy selection keeps resolving. The legacy
+    // entry is deleted only at the end of the alias period — this test pins both
+    // halves of that contract while it lasts.
+    expect(Object.keys(result.providers).sort()).toEqual(
+      ["llamacpp", "lmstudio", "ollama", "vitriol", "zen"],
+    );
+    expect(result.providers.vitriol.baseUrl).toBe(result.providers.llamacpp.baseUrl);
+    expect(result.providers.vitriol.api).toBe(result.providers.llamacpp.api);
   });
 
   it("zen free tier ships the free catalog without training-trade models (2026-09-27)", () => {

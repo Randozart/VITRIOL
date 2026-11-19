@@ -34,6 +34,12 @@ import {
   withContextWindow,
   type ProviderModelEntry,
 } from "./config.ts";
+import {
+  ENGINE_PROVIDER_ID,
+  LEGACY_ENGINE_PROVIDER_IDS,
+  isEngineProvider,
+  findEngineModel,
+} from "../_shared/engine-provider.ts";
 
 // Sovereignty divergence: pkgRoot = scaffold root (two levels up, not three).
 const here = dirname(fileURLToPath(import.meta.url));
@@ -79,7 +85,18 @@ export default async function (pi: ExtensionAPI) {
       }
     | undefined;
 
+  // A2 alias period (2026-11-19): the engine ships under several names that all
+  // point at the SAME endpoint object (loadProviders unifies them). The loop
+  // registers every name so selections stored under any spelling resolve, but
+  // the PROBE and the `llamacpp` state capture run once per ENDPOINT, not once
+  // per name — otherwise the second spelling's probe overwrites the first's
+  // window (measured: legacy ended at the swap window before any swap).
+  const probedEngineEndpoints = new Set<unknown>();
+
   for (const [name, entry] of Object.entries(result.providers)) {
+    const isEngine = isEngineProvider(name);
+    const firstSighting = isEngine && !probedEngineEndpoints.has(entry);
+    if (isEngine) probedEngineEndpoints.add(entry);
     let models = entry.models;
 
     // Auto-detect the server's live context window so the model registers with
@@ -87,10 +104,15 @@ export default async function (pi: ExtensionAPI) {
     // declared default — the TUI readout, read-guard, and context budget all
     // follow the registered window. llama.cpp-only (the /props endpoint); any
     // failure silently keeps the declared window, so this never breaks startup.
-    if (!probeDisabled && name === "llamacpp" && entry.models.length > 0) {
+    if (!probeDisabled && firstSighting && entry.models.length > 0) {
       const probed = await probeContextWindow(entry.baseUrl, probeOpts());
       if (probed) {
-        models = withContextWindow(entry.models, probed);
+        // Write the probed window back onto the SHARED entry, not just the local
+        // `models` — every engine spelling registers from this same entry, so a
+        // probe that only rebinds the local would leave the next spelling
+        // probing the same server again and landing on a different window
+        // (measured: vitriol=65536, llamacpp=32768 from one server).
+        entry.models = withContextWindow(entry.models, probed);
       }
     }
 
@@ -100,7 +122,7 @@ export default async function (pi: ExtensionAPI) {
     // static defaultModel with the engine's truth. When the engine is
     // unreachable the fetch fails silently — pi falls back to defaultModel.
     let engineAlias = "";
-    if (name === "llamacpp") {
+    if (isEngine && firstSighting) {
       try {
         const resp = await fetch(modelsUrlFor(entry.baseUrl), {
           signal: AbortSignal.timeout(3000),
@@ -132,14 +154,16 @@ export default async function (pi: ExtensionAPI) {
     }
 
     pi.registerProvider(name, {
-      streamSimple: name === "llamacpp" ? streamLocalWithProgress : undefined,
+      streamSimple: isEngineProvider(name)
+        ? streamLocalWithProgress
+        : undefined,
       baseUrl: entry.baseUrl,
       apiKey: entry.apiKey,
       api: entry.api,
       models,
     });
 
-    if (name === "llamacpp") {
+    if (isEngineProvider(name)) {
       llamacpp = {
         baseUrl: entry.baseUrl,
         apiKey: entry.apiKey,
@@ -150,6 +174,29 @@ export default async function (pi: ExtensionAPI) {
       };
     }
   }
+
+  // Re-register the engine provider under every spelling it was loaded under
+  // (the alias period, 2026-11-19, A2): the canonical `vitriol` plus any
+  // legacy ids (`llamacpp`) that a user models.json still carries. After a
+  // swap / re-probe the fresh models must stay resolvable under ALL of them, or
+  // a selection stored under a legacy spelling would orphan. The set is derived
+  // from what was actually loaded, so we never invent a provider that isn't
+  // there.
+  const engineNames = Object.keys(result.providers).filter((n) =>
+    isEngineProvider(n),
+  );
+  const reRegisterEngine = (lc: NonNullable<typeof llamacpp>): void => {
+    const cfg = {
+      streamSimple: streamLocalWithProgress,
+      baseUrl: lc.baseUrl,
+      apiKey: lc.apiKey,
+      api: lc.api,
+      models: lc.models,
+    };
+    for (const n of engineNames.length ? engineNames : [ENGINE_PROVIDER_ID]) {
+      pi.registerProvider(n, cfg);
+    }
+  };
 
   // Issue #54: llama-swap can swap the loaded model under a single endpoint,
   // which changes the server's live n_ctx. The startup probe only runs once, so
@@ -166,7 +213,7 @@ export default async function (pi: ExtensionAPI) {
       const lc = llamacpp!;
       const model = (event as any).model;
       const previous = (event as any).previousModel;
-      if (!model || model.provider !== "llamacpp" || !previous) return;
+      if (!model || !isEngineProvider(model.provider) || !previous) return;
 
       const probed = await probeContextWindow(lc.baseUrl, probeOpts());
       const change = windowChange(lc.registeredCtx, probed);
@@ -182,13 +229,7 @@ export default async function (pi: ExtensionAPI) {
           ? { ...m, maxTokens: engineMaxTokens(change.to) }
           : m,
       );
-      pi.registerProvider("llamacpp", {
-        streamSimple: streamLocalWithProgress,
-        baseUrl: lc.baseUrl,
-        apiKey: lc.apiKey,
-        api: lc.api,
-        models: lc.models,
-      });
+      reRegisterEngine(lc);
 
       const from =
         change.from !== undefined ? formatContextWindow(change.from) : "?";
@@ -248,17 +289,11 @@ export default async function (pi: ExtensionAPI) {
                     // without it a compaction summary hits the 4096 default cap.
                     maxTokens: engineMaxTokens(lc.registeredCtx),
                   },
-                  "llamacpp",
+                  ENGINE_PROVIDER_ID,
                   lc.models.length,
                 ),
               ];
-              pi.registerProvider("llamacpp", {
-                streamSimple: streamLocalWithProgress,
-                baseUrl: lc.baseUrl,
-                apiKey: lc.apiKey,
-                api: lc.api,
-                models: lc.models,
-              });
+              reRegisterEngine(lc);
             }
             lc.engineAlias = alias;
           }
@@ -273,7 +308,9 @@ export default async function (pi: ExtensionAPI) {
       if (!shouldArmEngineSync(currentProvider)) return true;
       const current = ctx?.model?.id;
       if (current === alias) return true; // aligned
-      const model = ctx?.modelRegistry?.find?.("llamacpp", alias);
+      const model = ctx?.modelRegistry
+        ? findEngineModel(ctx.modelRegistry, alias)
+        : undefined;
       if (!model) return false; // registry not ready yet — keep retrying
       // applyModel announces the intent, so adaptive-router does not read this
       // glue as the operator pinning the session to local (2026-11-18).
@@ -355,17 +392,11 @@ export default async function (pi: ExtensionAPI) {
                 // 134k-token conversation, so every local compaction failed.
                 maxTokens: engineMaxTokens(lc.registeredCtx),
               },
-              "llamacpp",
+              ENGINE_PROVIDER_ID,
               lc.models.length,
             ),
           ];
-          pi.registerProvider("llamacpp", {
-            streamSimple: streamLocalWithProgress,
-            baseUrl: lc.baseUrl,
-            apiKey: lc.apiKey,
-            api: lc.api,
-            models: lc.models,
-          });
+          reRegisterEngine(lc);
         }
         lc.engineAlias = alias;
         return true;

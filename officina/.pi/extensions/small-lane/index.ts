@@ -10,6 +10,7 @@ import {
   resolveLaneConfig,
   fallbackDetail,
 } from "./lane.ts";
+import { isEngineProvider } from "../_shared/engine-provider.ts";
 
 // Small-lane compaction (M1, docs/CRUSH-MINING-PLAN-2026-08-31.md, 2026-08-31).
 //
@@ -38,26 +39,32 @@ export default function (pi: ExtensionAPI) {
 
   if (lane.enabled) {
     pi.registerProvider("small-lane", {
-    baseUrl: lane.baseUrl,
-    apiKey: "none", // local llama-server; the header is required, the value is not
-    api: "openai-completions",
-    models: [
-      {
-        id: lane.modelId,
-        name: `Small lane (${lane.modelId}) — compaction/summarization only`,
-        reasoning: false,
-        input: ["text"],
-        contextWindow: lane.contextWindow,
-        maxTokens: 8192,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-      },
-    ],
+      baseUrl: lane.baseUrl,
+      apiKey: "none", // local llama-server; the header is required, the value is not
+      api: "openai-completions",
+      models: [
+        {
+          id: lane.modelId,
+          name: `Small lane (${lane.modelId}) — compaction/summarization only`,
+          reasoning: false,
+          input: ["text"],
+          contextWindow: lane.contextWindow,
+          maxTokens: 8192,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      ],
     });
   }
 
   pi.on("session_before_compact", async (event, ctx) => {
     const { preparation, signal } = event;
-    const { messagesToSummarize, turnPrefixMessages, tokensBefore, firstKeptEntryId, previousSummary } = preparation;
+    const {
+      messagesToSummarize,
+      turnPrefixMessages,
+      tokensBefore,
+      firstKeptEntryId,
+      previousSummary,
+    } = preparation;
 
     const messages = [...messagesToSummarize, ...turnPrefixMessages];
     // Fit-aware summarizer (2026-11-14): compaction hands the WHOLE
@@ -108,7 +115,10 @@ export default function (pi: ExtensionAPI) {
     // transcript, shrink deterministically to the largest admitted window and
     // retry once.
     if (order.length === 0) {
-      const largest = candidates.reduce((max, c) => Math.max(max, c.contextWindow), 0);
+      const largest = candidates.reduce(
+        (max, c) => Math.max(max, c.contextWindow),
+        0,
+      );
       if (largest > 0) {
         const budgetChars = Math.max(20_000, Math.floor(largest * 4 * 0.6));
         const shrunk = shrinkMessages(messages, budgetChars);
@@ -131,15 +141,18 @@ export default function (pi: ExtensionAPI) {
     // fitting model by descending window, cloud before local on ties. A 429
     // or quota 403 on one summarizer must not end compaction — try the next
     // one, down to the local stone.
-    const maxTries = Math.max(1, Number(process.env.OFFICINA_COMPACTION_MAX_TRIES) || 6);
+    const maxTries = Math.max(
+      1,
+      Number(process.env.OFFICINA_COMPACTION_MAX_TRIES) || 6,
+    );
     const full: Array<{ provider: string; id: string }> = [];
     if (lane.enabled) full.push({ provider: "small-lane", id: lane.modelId });
     for (const c of order) full.push({ provider: c.provider, id: c.id });
     // Bound the attempts; always keep the local stone in the chain — it is
     // the one summarizer whose window and availability we control.
-    const localCand = order.find((c) => c.provider === "llamacpp");
+    const localCand = order.find((c) => isEngineProvider(c.provider));
     const chain = full.slice(0, maxTries);
-    if (localCand && !chain.some((c) => c.provider === "llamacpp")) {
+    if (localCand && !chain.some((c) => isEngineProvider(c.provider))) {
       chain.push({ provider: localCand.provider, id: localCand.id });
     }
 
@@ -161,10 +174,13 @@ export default function (pi: ExtensionAPI) {
         continue;
       }
       const headers = auth.headers
-        ? Object.entries(auth.headers).reduce<Record<string, string>>((acc, [key, value]) => {
-            if (value !== null) acc[key] = value;
-            return acc;
-          }, {})
+        ? Object.entries(auth.headers).reduce<Record<string, string>>(
+            (acc, [key, value]) => {
+              if (value !== null) acc[key] = value;
+              return acc;
+            },
+            {},
+          )
         : undefined;
       try {
         const { text, usage } = await generateSummaryWithUsage(
@@ -223,7 +239,9 @@ export default function (pi: ExtensionAPI) {
         "warning",
       );
       emitHarnessEvent(
-        harnessEvent("lc-lane", "fallback", { detail: fallbackDetail(chain, lastError) }),
+        harnessEvent("lc-lane", "fallback", {
+          detail: fallbackDetail(chain, lastError),
+        }),
       );
     }
     return; // pi default compaction — the task still gets done

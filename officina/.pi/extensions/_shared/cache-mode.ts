@@ -1,6 +1,8 @@
 // Cross-extension cache mode. pi loads every extension through a separate jiti
 // instance (moduleCache: false), so the shared state must live on globalThis.
 
+import { isLocalEngine } from "./engine-provider.ts";
+
 export type CacheModeSetting = "auto" | "local" | "cloud" | "off";
 
 export interface CacheModeState {
@@ -15,18 +17,30 @@ const GLOBAL_KEY = "__officinaCacheModeState";
 function state(): CacheModeState {
   const g = globalThis as Record<string, unknown>;
   if (!g[GLOBAL_KEY]) {
-    g[GLOBAL_KEY] = { setting: "auto", provider: "", cloud: false, reason: "local" };
+    g[GLOBAL_KEY] = {
+      setting: "auto",
+      provider: "",
+      cloud: false,
+      reason: "local",
+    };
   }
   return g[GLOBAL_KEY] as CacheModeState;
 }
 
-export function cacheModeSetting(env: NodeJS.ProcessEnv = process.env): CacheModeSetting {
-  const raw = String(env.OFFICINA_CACHE_MODE ?? "auto").trim().toLowerCase();
+export function cacheModeSetting(
+  env: NodeJS.ProcessEnv = process.env,
+): CacheModeSetting {
+  const raw = String(env.OFFICINA_CACHE_MODE ?? "auto")
+    .trim()
+    .toLowerCase();
   return raw === "local" || raw === "cloud" || raw === "off" ? raw : "auto";
 }
 
 export function providerIsLocal(provider: string | undefined): boolean {
-  return !provider || provider === "llamacpp";
+  // No provider, or any engine spelling (vitriol | llamacpp | llama.cpp):
+  // isLocalEngine centralises the check so the rename alias period stays in
+  // one place (2026-11-19, A2).
+  return isLocalEngine(provider);
 }
 
 export function resolveCacheMode(
@@ -34,9 +48,12 @@ export function resolveCacheMode(
   provider: string | undefined,
 ): CacheModeState {
   const p = String(provider ?? "");
-  if (setting === "off") return { setting, provider: p, cloud: false, reason: "off" };
-  if (setting === "cloud") return { setting, provider: p, cloud: true, reason: "forced-cloud" };
-  if (setting === "local") return { setting, provider: p, cloud: false, reason: "local" };
+  if (setting === "off")
+    return { setting, provider: p, cloud: false, reason: "off" };
+  if (setting === "cloud")
+    return { setting, provider: p, cloud: true, reason: "forced-cloud" };
+  if (setting === "local")
+    return { setting, provider: p, cloud: false, reason: "local" };
   return {
     setting,
     provider: p,
@@ -66,7 +83,9 @@ export function isCloudCacheMode(): boolean {
   return state().cloud;
 }
 
-export function cacheClearPercent(env: NodeJS.ProcessEnv = process.env): number {
+export function cacheClearPercent(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   const parsed = Number(env.OFFICINA_CACHE_CLEAR_PCT ?? 92);
   if (!Number.isFinite(parsed)) return 92;
   return Math.min(100, Math.max(50, Math.round(parsed)));

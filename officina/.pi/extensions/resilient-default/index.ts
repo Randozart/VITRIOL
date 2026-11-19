@@ -7,9 +7,22 @@ import type {
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getEngineSnapshot, onEngineUpdate, startEnginePolling } from "../_shared/engine.ts";
+import {
+  getEngineSnapshot,
+  onEngineUpdate,
+  startEnginePolling,
+} from "../_shared/engine.ts";
+import {
+  isEngineProvider,
+  findEngineModel,
+} from "../_shared/engine-provider.ts";
 import { classifyTurn } from "../auto-route/classifier.ts";
-import { configFromEnv, decideTier, parseModelSpec, type Tier } from "../adaptive-router/overflow.ts";
+import {
+  configFromEnv,
+  decideTier,
+  parseModelSpec,
+  type Tier,
+} from "../adaptive-router/overflow.ts";
 import type { PeerView, SelfView } from "../adaptive-router/peer-policy.ts";
 import { extractCatalogModels, toolCandidates } from "../caduceus/catalog.ts";
 import {
@@ -24,11 +37,14 @@ import {
   budgetSummaryText,
   canSpendCloud,
 } from "../_shared/budget.ts";
-import { readLivePeers, writeRegistryEntry } from "../_shared/routing-registry.ts";
+import {
+  readLivePeers,
+  writeRegistryEntry,
+} from "../_shared/routing-registry.ts";
 import { routingPresence } from "../_shared/routing-presence.ts";
 import { busyPeerLanes, spreadPick } from "./lane-spread.ts";
 import { isVerified } from "../_shared/probe-scheduler.ts";
-import { admitLane, effectiveWindow } from "../_shared/admission.ts";
+import { admitLane } from "../_shared/admission.ts";
 import { coreAdmissions, coreEnabled } from "../_shared/core-rpc.ts";
 import {
   markGatewayCooldown,
@@ -45,7 +61,11 @@ import {
   parseOwnerPause,
   readGatewayMarks,
 } from "../_shared/gateway-health.ts";
-import { formatLanes, getLaneHealth, type LaneRow } from "../_shared/lane-health.ts";
+import {
+  formatLanes,
+  getLaneHealth,
+  type LaneRow,
+} from "../_shared/lane-health.ts";
 import {
   cooldownRemaining,
   cooling as healthCooling,
@@ -141,7 +161,11 @@ function messageText(content: unknown): string {
   return content
     .map((part) => {
       if (typeof part === "string") return part;
-      if (part && typeof part === "object" && (part as { type?: string }).type === "text") {
+      if (
+        part &&
+        typeof part === "object" &&
+        (part as { type?: string }).type === "text"
+      ) {
         return String((part as { text?: unknown }).text ?? "");
       }
       return "";
@@ -159,10 +183,15 @@ function estimatePromptTokens(messages: ReadonlyArray<unknown>): number {
       chars += content.length;
     } else if (Array.isArray(content)) {
       for (const part of content) {
-        const p = part as { text?: unknown; thinking?: unknown; input?: unknown };
+        const p = part as {
+          text?: unknown;
+          thinking?: unknown;
+          input?: unknown;
+        };
         if (typeof p?.text === "string") chars += p.text.length;
         else if (typeof p?.thinking === "string") chars += p.thinking.length;
-        else if (p?.input !== undefined) chars += JSON.stringify(p.input).length;
+        else if (p?.input !== undefined)
+          chars += JSON.stringify(p.input).length;
       }
     }
   }
@@ -180,7 +209,9 @@ function latestUserText(messages: readonly unknown[]): string {
 export default function (pi: ExtensionAPI) {
   if (process.env.OFFICINA_RESILIENT_DEFAULT === "0") return;
   const cfg = configFromEnv();
-  const fallbacks = (process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK || DEFAULT_FALLBACKS.join(","))
+  const fallbacks = (
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK || DEFAULT_FALLBACKS.join(",")
+  )
     .split(",")
     .map((s) => parseModelSpec(s))
     .filter((s): s is { provider: string; id: string } => !!s);
@@ -203,7 +234,11 @@ export default function (pi: ExtensionAPI) {
   onEngineUpdate(() => {
     const s = getEngineSnapshot();
     const busy =
-      !s.up || s.processing > 0 || s.deferred > 0 || s.stalled || s.queueWaitMs >= cfg.queueWaitMs;
+      !s.up ||
+      s.processing > 0 ||
+      s.deferred > 0 ||
+      s.stalled ||
+      s.queueWaitMs >= cfg.queueWaitMs;
     if (busy) localIdleSince = null;
     else if (localIdleSince == null) localIdleSince = Date.now();
   });
@@ -225,7 +260,8 @@ export default function (pi: ExtensionAPI) {
     healthSig = sig;
     cloudCandidates = [];
     const profile = readProfile();
-    const ownerOf = (spec: { id: string }): string => (spec.id.split("/")[0] ?? "").toLowerCase();
+    const ownerOf = (spec: { id: string }): string =>
+      (spec.id.split("/")[0] ?? "").toLowerCase();
     const pool: Array<{
       provider: string;
       id: string;
@@ -255,7 +291,14 @@ export default function (pi: ExtensionAPI) {
     }
     // Explicit fallbacks keep their backstop role; policy still applies to
     // them (routing off / deny / rank), never enablement (I2).
-    pool.push(...fallbacks.map((s) => ({ ...s, owner: ownerOf(s), free: false, freeTier: false })));
+    pool.push(
+      ...fallbacks.map((s) => ({
+        ...s,
+        owner: ownerOf(s),
+        free: false,
+        freeTier: false,
+      })),
+    );
     // Two-class ordering (2026-11-13): free-tier lanes first, paid
     // subscription lanes after — a free lane exhausting (cooling/429)
     // walks the router down the line into the paid layer.
@@ -280,19 +323,39 @@ export default function (pi: ExtensionAPI) {
       return true;
     });
     const envCaps = {
-      perOwner: Math.max(1, Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8)),
-      max: Math.max(1, Math.min(256, Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48)),
+      perOwner: Math.max(
+        1,
+        Math.min(32, Number(process.env.OFFICINA_OVERFLOW_PER_OWNER) || 8),
+      ),
+      max: Math.max(
+        1,
+        Math.min(
+          256,
+          Number(process.env.OFFICINA_OVERFLOW_MAX_CANDIDATES) || 48,
+        ),
+      ),
     };
     // Resolve before capping: unresolvable/unauthenticated lanes must not
     // consume per-owner slots (historical behaviour, pinned by tests).
     const resolved = unique
-      .map((spec) => ({ spec, model: ctx.modelRegistry.find(spec.provider, spec.id) }))
+      .map((spec) => ({
+        spec,
+        model: ctx.modelRegistry.find(spec.provider, spec.id),
+      }))
       .filter(
-        (x): x is { spec: typeof unique[number]; model: NonNullable<typeof x.model> } =>
-          !!x.model && ctx.modelRegistry.hasConfiguredAuth(x.model),
+        (
+          x,
+        ): x is {
+          spec: (typeof unique)[number];
+          model: NonNullable<typeof x.model>;
+        } => !!x.model && ctx.modelRegistry.hasConfiguredAuth(x.model),
       );
     cloudCandidates = capCandidates(
-      resolved.map((r) => ({ id: r.spec.id, owner: r.spec.owner, model: r.model })),
+      resolved.map((r) => ({
+        id: r.spec.id,
+        owner: r.spec.owner,
+        model: r.model,
+      })),
       prefs,
       envCaps,
     ).map((c) => c.model);
@@ -342,7 +405,10 @@ export default function (pi: ExtensionAPI) {
       const owner = ownerOfLane(m.id);
       return {
         id: m.id,
-        invalid: marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner),
+        invalid:
+          marks.invalid.has(m.id) ||
+          marks.models.has(m.id) ||
+          marks.owners.has(owner),
         cooling: healthCooling(m.provider, m.id, now),
         ownerPaused: marks.pausedOwners.has(owner),
         declared: Number(m.contextWindow ?? 0),
@@ -369,7 +435,10 @@ export default function (pi: ExtensionAPI) {
       limits: {} as Record<string, number>,
       offered: {} as Record<string, string[]>,
       aliases: {} as Record<string, string>,
-      probes: {} as Record<string, import("../_shared/gateway-health.ts").ProbeFact>,
+      probes: {} as Record<
+        string,
+        import("../_shared/gateway-health.ts").ProbeFact
+      >,
     };
     if (process.env.OFFICINA_NO_GATEWAY_MARKS !== "1") {
       try {
@@ -387,7 +456,10 @@ export default function (pi: ExtensionAPI) {
           promptTokens: tokens,
           reserveTokens: CLOUD_RESERVE_TOKENS,
           lane: {
-            invalid: marks.invalid.has(m.id) || marks.models.has(m.id) || marks.owners.has(owner),
+            invalid:
+              marks.invalid.has(m.id) ||
+              marks.models.has(m.id) ||
+              marks.owners.has(owner),
             cooling: healthCooling(m.provider, m.id, now),
             ownerPaused: marks.pausedOwners.has(owner),
           },
@@ -409,7 +481,7 @@ export default function (pi: ExtensionAPI) {
     const remapped: Model[] = [];
     for (const m of eligible) {
       const rep = marks.aliases[m.id];
-      const chosen = rep ? eligible.find((x) => x.id === rep) ?? m : m;
+      const chosen = rep ? (eligible.find((x) => x.id === rep) ?? m) : m;
       if (!seen.has(chosen.id)) {
         seen.add(chosen.id);
         remapped.push(chosen);
@@ -422,14 +494,18 @@ export default function (pi: ExtensionAPI) {
       const fact = marks.probes[m.id];
       if (!fact) return true;
       if (fact.kind === "invalid") return false;
-      if ((fact.kind === "cooling" || fact.kind === "paused") && Number(fact.until ?? 0) > now) {
+      if (
+        (fact.kind === "cooling" || fact.kind === "paused") &&
+        Number(fact.until ?? 0) > now
+      ) {
         return false;
       }
       return true;
     });
     probeAllowed.sort(
       (a, b) =>
-        Number(!isVerified(a.id, marks.probes, now)) - Number(!isVerified(b.id, marks.probes, now)),
+        Number(!isVerified(a.id, marks.probes, now)) -
+        Number(!isVerified(b.id, marks.probes, now)),
     );
     return probeAllowed;
   };
@@ -466,8 +542,10 @@ export default function (pi: ExtensionAPI) {
   ): void => {
     try {
       const sessionId =
-        (ctx as { sessionManager?: { getSessionFile?: () => string } })
-          .sessionManager?.getSessionFile?.()
+        (
+          ctx as { sessionManager?: { getSessionFile?: () => string } }
+        ).sessionManager
+          ?.getSessionFile?.()
           ?.split("/")
           .pop() ?? `tui-${tuiPid}`;
       writeRegistryEntry(
@@ -521,8 +599,10 @@ export default function (pi: ExtensionAPI) {
     // llamacpp model — stale sessions stay usable after an engine restart
     // even when the startup alias probe failed.
     const local =
-      ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ??
-      ctx.modelRegistry.getAvailable().find((m) => m.provider === "llamacpp");
+      findEngineModel(ctx.modelRegistry, "Lapis Occultus") ??
+      ctx.modelRegistry
+        .getAvailable()
+        .find((m) => isEngineProvider(m.provider));
     const snap = getEngineSnapshot();
     const localDown = cfg.failover && snap.polled && !snap.up;
     const load = {
@@ -536,17 +616,26 @@ export default function (pi: ExtensionAPI) {
     // recovery the session counter lags the request (171k prompt read as
     // ~165k), so a lane that cannot fit was still selected. Use the larger
     // of the reported usage and a message estimate.
-    const failedMessage = request.failed?.message as { errorMessage?: string } | undefined;
+    const failedMessage = request.failed?.message as
+      { errorMessage?: string } | undefined;
     const failureText = failedMessage?.errorMessage;
     const overflowTokens = parseOverflowPromptTokens(failureText);
     const learnedLimit = parseContextLimit(failureText);
     const estimated = estimatePromptTokens(request.messages);
-    const tokens = Math.max(ctx.getContextUsage()?.tokens ?? 0, estimated, overflowTokens ?? 0);
+    const tokens = Math.max(
+      ctx.getContextUsage()?.tokens ?? 0,
+      estimated,
+      overflowTokens ?? 0,
+    );
     // Phase-2 sidecar (2026-11-14): one batched admission call per decision.
     // Fail-open — a missing/broken sidecar yields undefined and the TS
     // implementation below decides (gate I1).
     const coreOverride = coreEnabled()
-      ? await coreAdmissions(tokens, CLOUD_RESERVE_TOKENS, admissionLanesForCore(now))
+      ? await coreAdmissions(
+          tokens,
+          CLOUD_RESERVE_TOKENS,
+          admissionLanesForCore(now),
+        )
       : undefined;
     let candidate =
       profileAllowsCloud(profile) && canSpendCloud()
@@ -572,11 +661,15 @@ export default function (pi: ExtensionAPI) {
     const remember = (chosen: Model, chosenTier: Tier): void => {
       const stateKind: LastDecision["localState"] = localDown
         ? "down"
-        : load.processing > 0 || load.deferred > 0 || load.queueWaitMs >= cfg.queueWaitMs
+        : load.processing > 0 ||
+            load.deferred > 0 ||
+            load.queueWaitMs >= cfg.queueWaitMs
           ? "busy"
           : "up";
       lastDecision = {
-        sessionId: ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`,
+        sessionId:
+          ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ??
+          `tui-${tuiPid}`,
         reason: request.reason,
         tier: chosenTier,
         provider: chosen.provider,
@@ -589,12 +682,22 @@ export default function (pi: ExtensionAPI) {
       publishPeerDecision(chosenTier, chosen, tokens, ctx, now);
     };
 
-    if (request.reason === "continuation" && previous && previous.id !== "lapis") {
+    if (
+      request.reason === "continuation" &&
+      previous &&
+      previous.id !== "lapis"
+    ) {
       // Never leave the current physical model mid tool-loop.
-      const physicalTier = previous.provider === "llamacpp" ? "local" : "cloud";
+      const physicalTier = isEngineProvider(previous.provider)
+        ? "local"
+        : "cloud";
       remember(previous, physicalTier);
       setRouteWidget(ctx, physicalTier, previous, profile);
-      return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
+      return {
+        model: previous,
+        thinkingLevel: request.thinkingLevel,
+        state: request.state,
+      };
     }
 
     if (learnedLimit && failed) markModelLimit(failed.id, learnedLimit);
@@ -620,7 +723,11 @@ export default function (pi: ExtensionAPI) {
       // Context overflow (2026-11-14): another cloud lane that fits is a
       // lottery; the local stone has 262k and is the deterministic answer
       // when the prompt no longer fits the failed lane.
-      if ((overflowTokens || learnedLimit) && local && local.provider === "llamacpp") {
+      if (
+        (overflowTokens || learnedLimit) &&
+        local &&
+        isEngineProvider(local.provider)
+      ) {
         if (state.tier !== "local") {
           ctx.ui?.notify?.(
             "route: local (Lapis Occultus) after context overflow — the first turn re-prefills",
@@ -636,8 +743,10 @@ export default function (pi: ExtensionAPI) {
           state: { ...state, tier: "local", failoverActive: true },
         };
       }
-      if (failed && failed.provider === "llamacpp") {
-        recordFailure(failed.provider, failed.id, undefined, { errorClass: "local_retry" });
+      if (failed && isEngineProvider(failed.provider)) {
+        recordFailure(failed.provider, failed.id, undefined, {
+          errorClass: "local_retry",
+        });
         tier = candidate ? "cloud" : "local";
         state = { ...state, failoverActive: true };
       } else if (failed && failed.provider === "caduceus") {
@@ -649,7 +758,11 @@ export default function (pi: ExtensionAPI) {
         const cooldownMs = parseCooldownFromError(errorText, now);
         const notFound = parseModelNotFound(errorText);
         recordFailure(failed.provider, failed.id, undefined, {
-          errorClass: notFound ? "model_not_found" : cooldownMs ? "model_cooldown" : "cloud_retry",
+          errorClass: notFound
+            ? "model_not_found"
+            : cooldownMs
+              ? "model_cooldown"
+              : "cloud_retry",
           retryAfterMs: cooldownMs,
         });
         if (cooldownMs) {
@@ -676,11 +789,18 @@ export default function (pi: ExtensionAPI) {
           const replacement = eligibleNow.find((m) => offered.includes(m.id));
           if (replacement) {
             markAlias(failed.id, replacement.id);
-            const next = { ...state, cloudRetries: (state.cloudRetries ?? 0) + 1 };
+            const next = {
+              ...state,
+              cloudRetries: (state.cloudRetries ?? 0) + 1,
+            };
             activeCloud = replacement;
             remember(replacement, "cloud");
             setRouteWidget(ctx, "cloud", replacement, profile);
-            return { model: replacement, thinkingLevel: request.thinkingLevel, state: next };
+            return {
+              model: replacement,
+              thinkingLevel: request.thinkingLevel,
+              state: next,
+            };
           }
         }
         if (pause) {
@@ -748,7 +868,9 @@ export default function (pi: ExtensionAPI) {
           state = {
             tier,
             // Peer demotions are arbitration, not cache-affinity churn.
-            switches: state.switches + (emergency || state.failoverActive || peerDemoted ? 0 : 1),
+            switches:
+              state.switches +
+              (emergency || state.failoverActive || peerDemoted ? 0 : 1),
             turnsOnTier: 1,
             failoverActive: emergency ? true : state.failoverActive,
           };
@@ -787,7 +909,11 @@ export default function (pi: ExtensionAPI) {
       activeCloud = undefined;
       remember(local, "local");
       setRouteWidget(ctx, "local", undefined, profile);
-      return { model: local, thinkingLevel: request.thinkingLevel, state: { ...state, tier: "local", failoverActive: false } };
+      return {
+        model: local,
+        thinkingLevel: request.thinkingLevel,
+        state: { ...state, tier: "local", failoverActive: false },
+      };
     }
     if (candidate) {
       activeCloud = candidate;
@@ -819,7 +945,7 @@ export default function (pi: ExtensionAPI) {
           })();
     const registered = ctx.modelRegistry
       .getAll()
-      .filter((m) => m.provider === "llamacpp")
+      .filter((m) => isEngineProvider(m.provider))
       .map((m) => m.id);
     const localWhy =
       registered.length > 0
@@ -833,9 +959,15 @@ export default function (pi: ExtensionAPI) {
   pi.on("after_provider_response", (event) => {
     if (!activeCloud) return;
     const status = event.status;
-    const retryAfterMs = recordRetryAfter(activeCloud.provider, activeCloud.id, event.headers ?? {});
+    const retryAfterMs = recordRetryAfter(
+      activeCloud.provider,
+      activeCloud.id,
+      event.headers ?? {},
+    );
     if (status && status >= 400) {
-      recordFailure(activeCloud.provider, activeCloud.id, status, { retryAfterMs });
+      recordFailure(activeCloud.provider, activeCloud.id, status, {
+        retryAfterMs,
+      });
     }
   });
 
@@ -877,7 +1009,8 @@ export default function (pi: ExtensionAPI) {
       costEstimate: 0,
       outcome: failed ? "error" : "ok",
       errorClass: failed ? "completion_error" : undefined,
-      candidatesSkipped: decision.skipped.length > 0 ? decision.skipped : undefined,
+      candidatesSkipped:
+        decision.skipped.length > 0 ? decision.skipped : undefined,
     };
     recordRoute(entry);
     lastDecision = null;
@@ -902,8 +1035,12 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("route-why", {
     description: "Explain the last routing decision",
     handler: async (_args: string, ctx: ExtensionContext) => {
-      const sessionId = ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`;
-      const last = lastDecision ? { ...lastDecision, outcome: "in flight" } : lastRouteEntry(sessionId);
+      const sessionId =
+        ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ??
+        `tui-${tuiPid}`;
+      const last = lastDecision
+        ? { ...lastDecision, outcome: "in flight" }
+        : lastRouteEntry(sessionId);
       if (!last) {
         await ctx.ui.notify?.("why: no routing entries yet", "info");
         return;
@@ -936,7 +1073,9 @@ export default function (pi: ExtensionAPI) {
         return `${i + 1}. ${m.id} · ${Math.round((m.contextWindow ?? 0) / 1000)}k${cool > 0 ? ` · cooling ${Math.ceil(cool / 60_000)}m` : ""}`;
       });
       await (ctx.ui as any).notify?.(
-        rows.length ? `free candidates (${cloudCandidates.length}):\n${rows.join("\n")}` : "free: no candidates",
+        rows.length
+          ? `free candidates (${cloudCandidates.length}):\n${rows.join("\n")}`
+          : "free: no candidates",
         "info",
       );
     },
@@ -987,20 +1126,48 @@ export default function (pi: ExtensionAPI) {
   ): Promise<ModelRoute<NimbusState>> => {
     await loadCandidates(ctx);
     const now = Date.now();
-    const failureText = (request.failed?.message as { errorMessage?: string } | undefined)?.errorMessage;
-    const tokens = Math.max(ctx.getContextUsage()?.tokens ?? 0, estimatePromptTokens(request.messages), parseOverflowPromptTokens(failureText) ?? 0);
+    const failureText = (
+      request.failed?.message as { errorMessage?: string } | undefined
+    )?.errorMessage;
+    const tokens = Math.max(
+      ctx.getContextUsage()?.tokens ?? 0,
+      estimatePromptTokens(request.messages),
+      parseOverflowPromptTokens(failureText) ?? 0,
+    );
     const previous = request.previous?.model;
     // Mid tool-loop: never swap the physical model under the agent.
-    if (request.reason === "continuation" && previous && previous.id !== "nimbus") {
-      return { model: previous, thinkingLevel: request.thinkingLevel, state: request.state };
+    if (
+      request.reason === "continuation" &&
+      previous &&
+      previous.id !== "nimbus"
+    ) {
+      return {
+        model: previous,
+        thinkingLevel: request.thinkingLevel,
+        state: request.state,
+      };
     }
-    const cloudRetries = request.reason === "user" ? 0 : request.state?.cloudRetries ?? 0;
-    if (request.reason === "retry" && request.failed?.model.provider === "caduceus") {
+    const cloudRetries =
+      request.reason === "user" ? 0 : (request.state?.cloudRetries ?? 0);
+    if (
+      request.reason === "retry" &&
+      request.failed?.model.provider === "caduceus"
+    ) {
       const failed = request.failed.model;
       const cooldownMs = parseCooldownFromError(failureText, now) ?? 60_000;
-      recordFailure(failed.provider, failed.id, undefined, { retryAfterMs: cooldownMs, errorClass: "cloud_retry" });
-      markGatewayCooldown({ model: failed.id, untilMs: now + cooldownMs, reason: "Nimbus failed cloud attempt" });
-      if (cloudRetries >= maxCloudRetries()) throw new Error(`Nimbus: cloud retry budget exhausted (${maxCloudRetries()})`);
+      recordFailure(failed.provider, failed.id, undefined, {
+        retryAfterMs: cooldownMs,
+        errorClass: "cloud_retry",
+      });
+      markGatewayCooldown({
+        model: failed.id,
+        untilMs: now + cooldownMs,
+        reason: "Nimbus failed cloud attempt",
+      });
+      if (cloudRetries >= maxCloudRetries())
+        throw new Error(
+          `Nimbus: cloud retry budget exhausted (${maxCloudRetries()})`,
+        );
     }
     const candidate = pickCloud(tokens, now);
     if (!candidate) {
@@ -1010,7 +1177,9 @@ export default function (pi: ExtensionAPI) {
     }
     activeCloud = candidate;
     lastDecision = {
-      sessionId: ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ?? `tui-${tuiPid}`,
+      sessionId:
+        ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ??
+        `tui-${tuiPid}`,
       reason: request.reason,
       tier: "cloud",
       provider: candidate.provider,
@@ -1025,7 +1194,10 @@ export default function (pi: ExtensionAPI) {
     return {
       model: candidate,
       thinkingLevel: request.thinkingLevel,
-      state: { turnsOnTier: (request.state?.turnsOnTier ?? 0) + 1, cloudRetries: cloudRetries + 1 },
+      state: {
+        turnsOnTier: (request.state?.turnsOnTier ?? 0) + 1,
+        cloudRetries: cloudRetries + 1,
+      },
     };
   };
 

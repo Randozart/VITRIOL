@@ -2,7 +2,17 @@
 // Provenance: original work, this repo (First-Party Mandate). See header
 // block below.
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { LAPIS, loadCouplings, providerTagOf, type CouplingDef } from "../_shared/couplings.ts";
+import {
+  LAPIS,
+  loadCouplings,
+  providerTagOf,
+  type CouplingDef,
+} from "../_shared/couplings.ts";
+import {
+  isLocalEngine,
+  isEngineProvider,
+  findEngineModel,
+} from "../_shared/engine-provider.ts";
 import { applyModel } from "../_shared/routing/apply.ts";
 
 // coupling (2026-08-31, owner request): the default coupling is
@@ -30,7 +40,7 @@ export default function (pi: ExtensionAPI) {
         id: m.id,
         name: m.name,
         reasoning: false,
-        input: ["text"] as ("text")[],
+        input: ["text"] as "text"[],
         contextWindow: m.contextWindow,
         maxTokens: m.maxTokens,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -41,7 +51,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("model-swap", {
     description:
       "Show couplings, or hot-swap: /model-swap <id> (default: lapis-occultus = whatever VITRIOL is serving)",
-    handler: async (args: string, ctx: { ui: any; modelRegistry: any; model?: { provider?: string } }) => {
+    handler: async (
+      args: string,
+      ctx: { ui: any; modelRegistry: any; model?: { provider?: string } },
+    ) => {
       const wanted = args.trim();
       const lines: string[] = [`◈ ${LAPIS.name} (default)`];
       for (const c of couplings) {
@@ -51,53 +64,76 @@ export default function (pi: ExtensionAPI) {
 
       if (!wanted) {
         const currentProvider = ctx.model?.provider;
-        const current =
-          !currentProvider || currentProvider === "llamacpp"
-            ? LAPIS.name
-            : (couplings.find((c) => providerTagOf(c) === currentProvider)?.name ?? currentProvider);
+        const current = isLocalEngine(currentProvider)
+          ? LAPIS.name
+          : (couplings.find((c) => providerTagOf(c) === currentProvider)
+              ?.name ?? currentProvider);
         lines.push("");
         lines.push(`current: ${current}`);
         lines.push(`switch:  /model-swap ${couplings[0]?.id ?? "<id>"}`);
-        await ctx.ui.select(lines.join("\n"), couplings.map((c) => c.id).concat(["__stay__"]))
+        await ctx.ui
+          .select(
+            lines.join("\n"),
+            couplings.map((c) => c.id).concat(["__stay__"]),
+          )
           .catch(() => undefined);
         return;
       }
 
       if (wanted === LAPIS.id || wanted === "vitriol" || wanted === "lapis") {
         // Back to the stone: whatever VITRIOL is serving right now.
-        const model = ctx.modelRegistry.find("llamacpp", undefined as never) ?? undefined;
+        const model =
+          findEngineModel(ctx.modelRegistry, undefined as never) ?? undefined;
         const anyLlamacpp =
           model ??
-          (ctx.modelRegistry as { getAll?: () => Array<{ provider: string }> }).getAll?.().find(
-            (m) => m.provider === "llamacpp",
-          );
+          (ctx.modelRegistry as { getAll?: () => Array<{ provider: string }> })
+            .getAll?.()
+            .find((m) => isEngineProvider(m.provider));
         if (!anyLlamacpp) {
-          await ctx.ui.notify?.("no llamacpp model registered — is the VITRIOL provider loaded?", "error");
+          await ctx.ui.notify?.(
+            "no llamacpp model registered — is the VITRIOL provider loaded?",
+            "error",
+          );
           return;
         }
         const ok = await applyModel(pi, anyLlamacpp, {
           owner: "coupling",
           reason: "couple to the local stone",
         });
-        await ctx.ui.notify?.(ok ? `coupled: ${LAPIS.name}` : "switch refused", ok ? "info" : "warning");
+        await ctx.ui.notify?.(
+          ok ? `coupled: ${LAPIS.name}` : "switch refused",
+          ok ? "info" : "warning",
+        );
         return;
       }
 
       const def = couplings.find((c) => c.id === wanted);
       if (!def) {
-        await ctx.ui.notify?.(`unknown coupling '${wanted}' — /model-swap lists them`, "error");
+        await ctx.ui.notify?.(
+          `unknown coupling '${wanted}' — /model-swap lists them`,
+          "error",
+        );
         return;
       }
-      const model = ctx.modelRegistry.find(providerTagOf(def), def.models[0]!.id);
+      const model = ctx.modelRegistry.find(
+        providerTagOf(def),
+        def.models[0]!.id,
+      );
       if (!model) {
-        await ctx.ui.notify?.(`coupling '${wanted}' registered no usable model`, "error");
+        await ctx.ui.notify?.(
+          `coupling '${wanted}' registered no usable model`,
+          "error",
+        );
         return;
       }
       const ok = await applyModel(pi, model, {
         owner: "coupling",
         reason: `couple to ${def.name}`,
       });
-      await ctx.ui.notify?.(ok ? `coupled: ${def.name}` : "switch refused", ok ? "info" : "warning");
+      await ctx.ui.notify?.(
+        ok ? `coupled: ${def.name}` : "switch refused",
+        ok ? "info" : "warning",
+      );
     },
   });
 }

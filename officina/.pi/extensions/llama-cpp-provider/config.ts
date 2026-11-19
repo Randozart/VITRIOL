@@ -15,6 +15,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  ENGINE_PROVIDER_ID,
+  LEGACY_ENGINE_PROVIDER_IDS,
+  isLocalEngine,
+} from "../_shared/engine-provider.ts";
 
 /** Exponential backoff for engine-alias discovery (2026-11-14): one-shot
  *  probes gave up before a slow engine boot finished; the watcher retries
@@ -31,7 +36,12 @@ export interface ProviderModelEntry {
   input: ("text" | "image")[];
   contextWindow: number;
   maxTokens: number;
-  cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  cost: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+  };
 }
 
 export interface ProviderEntry {
@@ -48,7 +58,11 @@ export interface ModelsFile {
 export interface LoadResult {
   providers: Record<string, ProviderEntry>;
   /** Files that were attempted, in resolution order. Useful for diagnostics. */
-  sources: { path: string; status: "ok" | "missing" | "invalid"; error?: string }[];
+  sources: {
+    path: string;
+    status: "ok" | "missing" | "invalid";
+    error?: string;
+  }[];
 }
 
 /** Provider env knob: if set, overrides the provider's baseUrl. Originally a
@@ -62,7 +76,9 @@ const LEGACY_BASE_URL_ENV: Record<string, string> = {
 };
 
 /** Resolution order for the user-override file. First existing path wins. */
-export function resolveOverridePath(env: NodeJS.ProcessEnv = process.env): string | undefined {
+export function resolveOverridePath(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
   if (env.LITTLE_CODER_MODELS_FILE) return env.LITTLE_CODER_MODELS_FILE;
   const xdg = env.XDG_CONFIG_HOME;
   if (xdg) return join(xdg, "little-coder", "models.json");
@@ -73,13 +89,18 @@ export function resolveOverridePath(env: NodeJS.ProcessEnv = process.env): strin
 
 function parseModelsFile(raw: string): ModelsFile {
   const parsed = JSON.parse(raw);
-  const hasProviders = parsed && typeof parsed === "object" && parsed.providers && typeof parsed.providers === "object";
+  const hasProviders =
+    parsed &&
+    typeof parsed === "object" &&
+    parsed.providers &&
+    typeof parsed.providers === "object";
   if (!hasProviders) {
     throw new Error("expected top-level { providers: { ... } }");
   }
   const providers = parsed.providers as Record<string, ProviderEntry>;
   for (const [name, entry] of Object.entries(providers)) {
-    const usable = entry && typeof entry === "object" && Array.isArray(entry.models);
+    const usable =
+      entry && typeof entry === "object" && Array.isArray(entry.models);
     if (!usable) continue;
     entry.models = entry.models.map((m, i) => fillModelDefaults(m, name, i));
   }
@@ -110,9 +131,20 @@ export function engineMaxTokens(contextWindow: number | undefined): number {
   return ctx >= 32768 ? 16384 : 4096;
 }
 
-export function fillModelDefaults(m: any, providerName: string, index: number): ProviderModelEntry {
-  if (!m || typeof m !== "object" || typeof m.id !== "string" || m.id.length === 0) {
-    throw new Error(`provider '${providerName}' model at index ${index}: missing or invalid "id"`);
+export function fillModelDefaults(
+  m: any,
+  providerName: string,
+  index: number,
+): ProviderModelEntry {
+  if (
+    !m ||
+    typeof m !== "object" ||
+    typeof m.id !== "string" ||
+    m.id.length === 0
+  ) {
+    throw new Error(
+      `provider '${providerName}' model at index ${index}: missing or invalid "id"`,
+    );
   }
   const defaults = {
     name: m.id,
@@ -134,17 +166,28 @@ export function fillModelDefaults(m: any, providerName: string, index: number): 
   return { ...defaults, ...m };
 }
 
-function readIfPresent(path: string): { kind: "ok"; data: ModelsFile } | { kind: "missing" } | { kind: "invalid"; error: string } {
+function readIfPresent(
+  path: string,
+):
+  | { kind: "ok"; data: ModelsFile }
+  | { kind: "missing" }
+  | { kind: "invalid"; error: string } {
   if (!existsSync(path)) return { kind: "missing" };
   try {
     const raw = readFileSync(path, "utf-8");
     return { kind: "ok", data: parseModelsFile(raw) };
   } catch (err) {
-    return { kind: "invalid", error: err instanceof Error ? err.message : String(err) };
+    return {
+      kind: "invalid",
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
-export function applyEnvOverrides(providers: Record<string, ProviderEntry>, env: NodeJS.ProcessEnv = process.env): Record<string, ProviderEntry> {
+export function applyEnvOverrides(
+  providers: Record<string, ProviderEntry>,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, ProviderEntry> {
   const out: Record<string, ProviderEntry> = {};
   for (const [name, entry] of Object.entries(providers)) {
     const envVar = LEGACY_BASE_URL_ENV[name];
@@ -178,23 +221,34 @@ export function mergeProviders(
  * apply env-var baseUrl overrides for the legacy providers, and return the
  * merged provider map plus diagnostics for each source.
  */
-type ReadResult = { kind: "ok"; data: ModelsFile } | { kind: "missing" } | { kind: "invalid"; error: string };
+type ReadResult =
+  | { kind: "ok"; data: ModelsFile }
+  | { kind: "missing" }
+  | { kind: "invalid"; error: string };
 
 function readSource(path: string): ReadResult {
   return readIfPresent(path);
 }
 
-function sourceEntry(path: string, read: ReadResult): LoadResult["sources"][number] {
+function sourceEntry(
+  path: string,
+  read: ReadResult,
+): LoadResult["sources"][number] {
   if (read.kind === "ok") return { path, status: "ok" };
   if (read.kind === "missing") return { path, status: "missing" };
   return { path, status: "invalid", error: read.error };
 }
 
-function providersOf(read: ReadResult): Record<string, ProviderEntry> | undefined {
+function providersOf(
+  read: ReadResult,
+): Record<string, ProviderEntry> | undefined {
   return read.kind === "ok" ? read.data.providers : undefined;
 }
 
-export function loadProviders(pkgRoot: string, env: NodeJS.ProcessEnv = process.env): LoadResult {
+export function loadProviders(
+  pkgRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
+): LoadResult {
   const sources: LoadResult["sources"] = [];
 
   const defaultPath = join(pkgRoot, "models.json");
@@ -212,6 +266,22 @@ export function loadProviders(pkgRoot: string, env: NodeJS.ProcessEnv = process.
 
   const merged = mergeProviders(pkgDefault, userOverride);
   const withEnv = applyEnvOverrides(merged, env);
+  // A2 alias period (2026-11-19): the engine endpoint is ONE server, but it
+  // ships under several names (canonical `vitriol` + legacy `llamacpp`). Two
+  // independent provider entries would each run the startup /props probe
+  // against the same server and the second entry's registeredCtx would win —
+  // measured: with a 2-step stub the legacy entry ended at the SWAP window
+  // before any swap happened, and the swap handler then saw "no change".
+  // So the spellings are unified here: the CANONICAL entry carries the config,
+  // the legacy entries become references to the same object. Registration and
+  // probing happen once per ENDPOINT; names are resolved through
+  // _shared/engine-provider (isEngineProvider / findEngineModel).
+  const canonical = withEnv[ENGINE_PROVIDER_ID];
+  if (canonical) {
+    for (const legacy of LEGACY_ENGINE_PROVIDER_IDS) {
+      if (withEnv[legacy]) withEnv[legacy] = canonical;
+    }
+  }
   return { providers: withEnv, sources };
 }
 
@@ -246,7 +316,10 @@ export function modelsUrlFor(baseUrl: string): string {
  *  conversation can use); some builds also expose a top-level n_ctx. Returns
  *  undefined when absent or not a positive number. */
 export function contextWindowFromProps(json: unknown): number | undefined {
-  const j = json as { default_generation_settings?: { n_ctx?: unknown }; n_ctx?: unknown } | null;
+  const j = json as {
+    default_generation_settings?: { n_ctx?: unknown };
+    n_ctx?: unknown;
+  } | null;
   const n = Number(j?.default_generation_settings?.n_ctx ?? j?.n_ctx);
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
@@ -282,8 +355,12 @@ export function windowChange(
  *  llamacpp (or has no selection yet). Any explicit non-local selection — e.g.
  *  the Caduceus gateway (and virtual defaults) — must survive session_start unchanged. Pure so the
  *  local-vs-explicit selection rule is testable without a pi runtime. */
-export function shouldArmEngineSync(currentProvider: string | undefined): boolean {
-  return !currentProvider || currentProvider === "llamacpp";
+export function shouldArmEngineSync(
+  currentProvider: string | undefined,
+): boolean {
+  // Any engine spelling (or no selection) may be forced to the engine alias;
+  // an explicit non-local (cloud/caduceus) selection must survive (2026-11-19, A2).
+  return isLocalEngine(currentProvider);
 }
 
 export interface ProbeDeps {
@@ -296,7 +373,10 @@ export interface ProbeDeps {
  *  undefined on ANY failure (server down, no /props, non-JSON, timeout) so the
  *  caller falls back to the declared window — never throws, never blocks beyond
  *  timeoutMs. */
-export async function probeContextWindow(baseUrl: string, deps: ProbeDeps = {}): Promise<number | undefined> {
+export async function probeContextWindow(
+  baseUrl: string,
+  deps: ProbeDeps = {},
+): Promise<number | undefined> {
   const fetchImpl = deps.fetchImpl ?? fetch;
   const url = deps.url ?? propsUrlFor(baseUrl);
   const timeoutMs = deps.timeoutMs ?? 1500;

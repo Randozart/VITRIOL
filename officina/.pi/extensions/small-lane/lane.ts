@@ -11,6 +11,8 @@
 //   LITTLE_CODER_SMALL_LANE_MODEL       model id (default mellum2-instruct)
 //   LITTLE_CODER_SMALL_LANE_CTX         context window registered (default 131072)
 
+import { isEngineProvider } from "../_shared/engine-provider.ts";
+
 export interface LaneConfig {
   enabled: boolean;
   baseUrl: string;
@@ -22,9 +24,16 @@ const DEFAULT_URL = "http://127.0.0.1:8287/v1";
 const DEFAULT_MODEL = "mellum2-instruct";
 const DEFAULT_CTX = 131072;
 
-export function resolveLaneConfig(env: NodeJS.ProcessEnv = process.env): LaneConfig {
+export function resolveLaneConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): LaneConfig {
   if (env.LITTLE_CODER_NO_SMALL_LANE === "1") {
-    return { enabled: false, baseUrl: DEFAULT_URL, modelId: DEFAULT_MODEL, contextWindow: DEFAULT_CTX };
+    return {
+      enabled: false,
+      baseUrl: DEFAULT_URL,
+      modelId: DEFAULT_MODEL,
+      contextWindow: DEFAULT_CTX,
+    };
   }
   const rawUrl = env.LITTLE_CODER_SMALL_LANE_URL?.trim();
   const rawModel = env.LITTLE_CODER_SMALL_LANE_MODEL?.trim();
@@ -56,20 +65,32 @@ Format the summary as structured markdown with clear sections.
 {{CONVERSATION}}
 </conversation>`;
 
-export function buildSummaryText(conversationText: string, previousSummary?: string): string {
-  const prev = previousSummary ? `\n\nPrevious session summary for context:\n${previousSummary}` : "";
-  return SUMMARY_PROMPT.replace("captures:", `captures:${prev}`).replace("{{CONVERSATION}}", conversationText);
+export function buildSummaryText(
+  conversationText: string,
+  previousSummary?: string,
+): string {
+  const prev = previousSummary
+    ? `\n\nPrevious session summary for context:\n${previousSummary}`
+    : "";
+  return SUMMARY_PROMPT.replace("captures:", `captures:${prev}`).replace(
+    "{{CONVERSATION}}",
+    conversationText,
+  );
 }
 
 // Decision after the lane call returns: use the summary, or fall back to pi's
 // default compaction on the main model? Empty/whitespace output falls back —
 // a blank summary silently destroying history would be worse than no lane.
-export function laneCompactionOutcome(summary: string | null | undefined): "use" | "fallback" {
+export function laneCompactionOutcome(
+  summary: string | null | undefined,
+): "use" | "fallback" {
   return summary && summary.trim() ? "use" : "fallback";
 }
 
 /** chars/4 estimate over the messages a compaction must summarize. */
-export function estimateMessagesTokens(messages: ReadonlyArray<unknown>): number {
+export function estimateMessagesTokens(
+  messages: ReadonlyArray<unknown>,
+): number {
   let chars = 0;
   for (const raw of messages) {
     const m = raw as { content?: unknown };
@@ -78,10 +99,15 @@ export function estimateMessagesTokens(messages: ReadonlyArray<unknown>): number
       chars += content.length;
     } else if (Array.isArray(content)) {
       for (const part of content) {
-        const p = part as { text?: unknown; thinking?: unknown; input?: unknown };
+        const p = part as {
+          text?: unknown;
+          thinking?: unknown;
+          input?: unknown;
+        };
         if (typeof p?.text === "string") chars += p.text.length;
         else if (typeof p?.thinking === "string") chars += p.thinking.length;
-        else if (p?.input !== undefined) chars += JSON.stringify(p.input).length;
+        else if (p?.input !== undefined)
+          chars += JSON.stringify(p.input).length;
       }
     }
   }
@@ -110,8 +136,8 @@ export function orderSummarizers(
   fit.sort((a, b) => {
     const byWindow = Number(b.contextWindow) - Number(a.contextWindow);
     if (byWindow !== 0) return byWindow;
-    const localA = a.provider === "llamacpp" ? 1 : 0;
-    const localB = b.provider === "llamacpp" ? 1 : 0;
+    const localA = isEngineProvider(a.provider) ? 1 : 0;
+    const localB = isEngineProvider(b.provider) ? 1 : 0;
     if (localA !== localB) return localA - localB; // cloud first on ties
     return a.id.localeCompare(b.id);
   });
@@ -162,7 +188,10 @@ function digestOf(messages: ReadonlyArray<unknown>): string {
               })
               .join(" ")
           : "";
-    const one = `${m?.role ?? "?"}: ${text.replace(/\s+/g, " ").trim()}`.slice(0, 180);
+    const one = `${m?.role ?? "?"}: ${text.replace(/\s+/g, " ").trim()}`.slice(
+      0,
+      180,
+    );
     if (one.length <= 8) continue;
     if (chars + one.length > 3000) break;
     lines.push(`- ${one}`);

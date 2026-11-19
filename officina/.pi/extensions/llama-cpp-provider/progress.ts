@@ -6,6 +6,7 @@ import { localCacheOwner } from "./owner.ts";
 import { attachStructuredOutput } from "../_shared/structured-output.ts";
 import { applyTerseInstruction } from "../_shared/terse.ts";
 import { applyThinkingInstruction } from "../_shared/thinking.ts";
+import { isEngineProvider } from "../_shared/engine-provider.ts";
 
 /** Keep healthy prefill alive using this request's native SSE progress, not global activity. */
 export const streamLocalWithProgress: NonNullable<
@@ -13,7 +14,7 @@ export const streamLocalWithProgress: NonNullable<
 > = (model, context, options) => {
   const api = getApiProvider(model.api);
   if (!api) throw new Error(`No API provider registered for api: ${model.api}`);
-  if (model.provider !== "llamacpp" || model.api !== "openai-completions") {
+  if (!isEngineProvider(model.provider) || model.api !== "openai-completions") {
     return api.streamSimple(model, context, options);
   }
   observeLocalTransport(model.baseUrl);

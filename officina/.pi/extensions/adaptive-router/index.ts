@@ -6,6 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
+import { findEngineModel } from "../_shared/engine-provider.ts";
 import {
   getEngineSnapshot,
   onEngineUpdate,
@@ -239,7 +240,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (!localModel) {
         localModel =
-          ctx.modelRegistry.find("llamacpp", "Lapis Occultus") ?? undefined;
+          findEngineModel(ctx.modelRegistry, "Lapis Occultus") ?? undefined;
       }
     }
     if (cloudCandidates.length === 0) {
@@ -750,9 +751,9 @@ export default function (pi: ExtensionAPI) {
           if (tier === "cloud" && localModel) {
             applying = true;
             const ok = await applyModel(pi, localModel, {
-        owner: "adaptive-router",
-        reason: "return to local (tier decision)",
-      });
+              owner: "adaptive-router",
+              reason: "return to local (tier decision)",
+            });
             applying = false;
             if (ok) {
               const wasFailover = failoverActive;

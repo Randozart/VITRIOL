@@ -776,7 +776,7 @@ fn provider_title(key: &str) -> String {
         "officina" => "OFFICINA".to_string(),
         "opencode-go" => "OpenCode Go".to_string(),
         "opencode" => "OpenCode".to_string(),
-        "llamacpp" => "VITRIOL local".to_string(),
+        "vitriol" | "llamacpp" | "llama.cpp" => "VITRIOL local".to_string(),
         "zai" => "Z.AI".to_string(),
         "glm" => "GLM".to_string(),
         "agentrouter" => "AgentRouter".to_string(),

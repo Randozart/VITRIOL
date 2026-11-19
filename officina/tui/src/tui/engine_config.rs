@@ -159,6 +159,11 @@ pub const DICTIONARY: &[(&str, &str, bool)] = &[
         false,
     ),
     (
+        "vitriol.preserve_reasoning",
+        "re-render historical thinking into every prompt (default 0; measured -73% prompt tokens without)",
+        false,
+    ),
+    (
         "server.host",
         "API bind — loopback only (no auth layer)",
         false,

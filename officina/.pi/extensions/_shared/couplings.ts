@@ -9,6 +9,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isEngineProvider } from "./engine-provider.ts";
 
 export const LAPIS = { id: "lapis-occultus", name: "Lapis Occultus – VITRIOL" };
 
@@ -19,27 +20,41 @@ export interface CouplingDef {
   api: string;
   apiKeyEnv?: string;
   apiKey?: string;
-  models: Array<{ id: string; name: string; contextWindow: number; maxTokens: number }>;
+  models: Array<{
+    id: string;
+    name: string;
+    contextWindow: number;
+    maxTokens: number;
+  }>;
 }
 
 export function couplingPaths(home: string): string[] {
-  return [join(home, ".vitriol", "officina", "couplings.json"), join(home, ".config", "officina", "couplings.json")];
+  return [
+    join(home, ".vitriol", "officina", "couplings.json"),
+    join(home, ".config", "officina", "couplings.json"),
+  ];
 }
 
-export function loadCouplings(env: NodeJS.ProcessEnv = process.env): CouplingDef[] {
+export function loadCouplings(
+  env: NodeJS.ProcessEnv = process.env,
+): CouplingDef[] {
   const home = env.HOME || env.USERPROFILE || "";
   if (!home) return [];
   for (const p of couplingPaths(home)) {
     if (!existsSync(p)) continue;
     try {
-      const parsed = JSON.parse(readFileSync(p, "utf-8")) as { couplings?: unknown };
+      const parsed = JSON.parse(readFileSync(p, "utf-8")) as {
+        couplings?: unknown;
+      };
       const arr = Array.isArray(parsed.couplings) ? parsed.couplings : [];
       const out: CouplingDef[] = [];
       for (const c of arr as Array<Record<string, unknown>>) {
         const id = typeof c.id === "string" ? c.id : "";
         const name = typeof c.name === "string" ? c.name : id;
         const baseUrl = typeof c.baseUrl === "string" ? c.baseUrl : "";
-        const models = Array.isArray(c.models) ? (c.models as CouplingDef["models"]) : [];
+        const models = Array.isArray(c.models)
+          ? (c.models as CouplingDef["models"])
+          : [];
         if (!id || !baseUrl || models.length === 0) continue;
         out.push({
           id,
@@ -72,17 +87,21 @@ export function couplingDisplay(
   couplings: CouplingDef[],
   vitriolModelId?: string,
 ): string {
-  if (!provider || provider === "llamacpp") {
+  // Not a named external provider = local engine (no provider, or any engine
+  // spelling). Written out so the type narrows to `string` below the guard:
+  // `isLocalEngine` is a call and TS cannot narrow through it (2026-11-19, A2).
+  if (provider === undefined || isEngineProvider(provider)) {
     return `${LAPIS.name}${vitriolModelId ? ` · ${vitriolModelId}` : ""}`;
   }
-  const def = couplings.find((c) => providerTagOf(c) === provider);
+  const prov = provider;
+  const def = couplings.find((c) => providerTagOf(c) === prov);
   if (def) return `${def.name} · ${modelId ?? ""}`.trim();
   // Unknown provider (caduceus, opencode, …): this file does not know the
   // model's formatted name, so show the id's short form WITH the provider —
   // never a bare code with no hint of who serves it (2026-11-16).
   const id = String(modelId ?? "").trim();
-  if (!id) return provider;
+  if (!id) return prov;
   // Full id (the caller truncates to the sidebar width) plus the provider, so
   // the row names who serves the model without hiding the id's owner segment.
-  return `${id} · ${provider}`;
+  return `${id} · ${prov}`;
 }

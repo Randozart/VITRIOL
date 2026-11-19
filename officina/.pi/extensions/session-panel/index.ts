@@ -172,7 +172,7 @@ export default function (pi: ExtensionAPI) {
   let cwd = "";
   let modelId = "";
   let sessionId = "";
-  let providerName = "llamacpp";
+  let providerName = "vitriol";
   /** Which facts this session's OWN work produces (2026-11-16). Display only. */
   let scope: TelemetryScope = "none";
   /** A facts file under ~/.vitriol/officina (cached reads only). */

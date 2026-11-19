@@ -109,7 +109,16 @@ cd "$BUILD_DIR"
 # cpp-httplib static lib is linked into libllama-common.so and a clean build
 # fails with "relocation R_X86_64_TPOFF32 ... recompile with -fPIC" without it.
 
-CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON"
+# No embedded web UI (2026-11-19). VITRIOL never serves the browser UI (the
+# operator runs the Rust TUI; the JS frontend is deprecated), and leaving asset
+# provisioning on made `make llama-server` fail: tools/ui/CMakeLists.txt defines
+# `llama-ui-assets` as an ALL target that falls through to a pinned HF archive
+# (LLAMA_USE_PREBUILT_UI defaults ON in existing build trees) whose contents no
+# longer satisfy the script's required-file check (workbox[hash].js), turning
+# every engine build into a FATAL_ERROR plus a manual object-relink dance.
+# Both flags OFF => empty embed table, which ui-assets.cmake explicitly supports
+# (ui_validate_assets() returns early on an empty file list).
+CMAKE_ARGS="-DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF"
 
 case "$BACKEND" in
     cuda)

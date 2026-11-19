@@ -186,3 +186,110 @@ is to name the ancestors precisely.
 
 If the operator's real complaint is only "I do not want to read `llamacpp` in my logs and header",
 then **A1 + A2 alone** solve 90 % of it, and A1 can ship today.
+
+---
+
+# RESULTS — T1 measured, and the hypothesis it refuted (2026-11-19)
+
+## Numbers
+
+Same six-turn fixture (`preserve-history` shape: six seeded `<think>` blocks, the fact in turn 1,
+the question at the end), live 27B, `cache_prompt=false` so `usage.prompt_tokens` is the real
+prompt length, not the cache delta:
+
+| arm | prompt tokens | answer | recall |
+|---|---|---|---|
+| default (preserve **on**) | **583** | "61" | correct |
+| `preserve_reasoning: false` | **158** | "61" | correct |
+| `preserve_thinking: false` | **158** | "61" | correct |
+
+**−73 % prompt tokens, no recall loss.** Well past the plan's >30 % kill threshold, so the default
+flips. Scaling: each seeded reasoning block is ~71 tokens; a 20-turn session with 1k-token thinking
+per turn carries ~20k extra prompt tokens on **every** request — at depth (~150 tok/s prefill) that
+is minutes per turn spent re-reading the model's own thinking.
+
+## The hypothesis that died
+
+First reading of the source said `--no-reasoning-preserve` was **inert**: the flag writes
+`default_template_kwargs["preserve_reasoning"]` (common/arg.cpp:3763) while the template tests
+`preserve_thinking` (2 occurrences, `preserve_reasoning` 0). The template is `chat-template-tolerant.j2`
+(our file, `ct=` in the fingerprint).
+
+Wrong. `common/jinja/caps.cpp:22` bridges the names:
+
+```cpp
+void caps_apply_preserve_reasoning(jinja::context & ctx, bool enabled) {
+    ctx.set_val("preserve_thinking", mk_val<value_bool>(enabled));
+    ctx.set_val("clear_thinking", ...); ctx.set_val("truncate_history_thinking", ...); ...
+```
+
+A request with `preserve_reasoning:false` also lands at 158 tokens — measured, not assumed. Had I
+"fixed" the template to test `preserve_reasoning`, I would have broken a working binding.
+
+**Lesson for the record**: a name that appears in a template and a name that appears in a flag are
+not evidence that they are unrelated — grep the bridge before declaring a flag dead.
+
+## What shipped
+
+- `density-bench`: `Shape.history` (seeded multi-turn), `--template-kwargs` (a template variable as
+  an arm, no restart), `--think-budget` (bounded thinking), `Shape.expect_exact` + `exact_answer()`
+  (T2's guard). 30 tests, `baseline_parity` still byte-exact.
+- Launcher: `preserve_reasoning = 0` default, `--preserve-reasoning 0|1`, fingerprint token `pr=`,
+  refuses anything but 0/1. Always passed explicitly (`--no-reasoning-preserve`), because the
+  engine's own default is the expensive one.
+- Live config records `preserve_reasoning = 0` with the measurement inline.
+
+Verified: default → `pr=0`, `--preserve-reasoning 1` → `pr=1`, value `7` → refuses.
+
+## Open
+
+The live engine still preserves until its next restart (the running binary predates the launcher
+change; the flag is argv, not a compile-time thing, so the next `systemctl restart` applies it).
+
+---
+
+# RESULTS — T3 reframed: the eager floor is a relief valve, not a knob (2026-11-19)
+
+The plan's T3 (`parallel=2`) would have produced another null for a new reason. Reframed to the
+knob an operator could actually touch, and then read from the source rather than measured blind.
+
+## What the two eviction paths actually are
+
+| path | trigger | selection | threshold |
+|---|---|---|---|
+| `evict_sparse()` | `find_slot()` **fails** (llama-kv-cache.cpp:871) | globally lowest scores, `n_evict` of them | none — pure fallback |
+| `vitriol_sweep_stream()` | floor > 0, called per stream | **per-cell** `score < floor_sc`, outside `pos_max - protect`, first 4 sinks immune | absolute score |
+
+Live probe: `POST /kv-policy {"floor":0.5,"protect":2048,"sweep":true}` →
+`{"floor":0.5,"protect":2048,"swept":0,"resident":1921,"buffer_bytes":4831838208}`.
+
+**Swept 0 with 1921 resident cells** — because every resident cell sat inside the 2048-position
+protect window. The floor did nothing, and could not have: a session shallower than `protect` has
+no sweepable cells at all. Restored to `floor=0.0` immediately.
+
+## Why a literal floor value is not portable
+
+`floor_sc` is compared against `score_get(i)` — probe attention scores, stored **unnormalised**.
+The *demand-driven* path knows this and normalises by observation (it tracks `sc_min`/`sc_max` over
+the candidates, llama-kv-cache.cpp:3130-3138). The eager floor does not: it trusts an absolute
+number. So `floor = 0.5` means "half of whatever the probe happened to write on this model at this
+depth", and a value tuned on one model can silently sweep everything or nothing on another.
+
+## Verdict
+
+- **Do not arm the eager floor on the daily driver.** It is a governor relief valve for the
+  `Relieved` rung (where losing prompt-cache locality beats losing the tenant), not a per-turn knob.
+- **Do not test it on an idle box.** On an idle box the honest answer is "nothing to relieve", and
+  the measurement is a null that says more about the test than the code.
+- If it is ever to be tuned, the floor should be expressed **relative** to the observed score
+  distribution (the way `evict_sparse` already does it), not as a literal. That is a small,
+  well-scoped change with a test that does not need a GPU.
+
+The E6 conclusion stands and is now sharper: *eviction is a slot-overflow fallback; the eager floor
+is a pressure-relief fallback; neither is a tuning knob.*
+
+## T4 note (running)
+
+`--reason-lang en|zh` appends a deliberation-language instruction to the system message, leaving the
+task byte-identical. Both arms at the measured budget floor (256). Expected honest null; recorded so
+it stops being an open question.

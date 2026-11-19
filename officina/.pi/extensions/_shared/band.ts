@@ -97,6 +97,12 @@ function normalize(lines: string[] | string | null | undefined): string[] {
 /**
  * Publish (or replace) one row. `lines` empty/null clears the row.
  * Producers call this whenever their content changes; flushing is automatic.
+ *
+ * Rows are keyed by PRODUCER ID, not by (id, tier): a producer owns exactly one
+ * row and declares its tier each time it publishes. Consequently
+ * `setBandRow(id, tierA, null)` also removes the row it published as tier B —
+ * clear-then-publish, never publish-then-clear (2026-11-19, found by the decode
+ * flap test: clearing the state tier silently deleted the progress row).
  */
 export function setBandRow(
   id: string,

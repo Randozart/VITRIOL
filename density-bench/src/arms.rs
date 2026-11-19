@@ -78,8 +78,17 @@ mod tests {
 
     #[test]
     fn the_decode_styles_are_distinct_from_the_plain_ones() {
-        assert_eq!(RequestStyle::from_name("telegraphic"), Some(RequestStyle::Telegraphic));
-        assert_eq!(RequestStyle::from_name("codebook"), Some(RequestStyle::Codebook));
-        assert_ne!(RequestStyle::Telegraphic.name(), RequestStyle::Codebook.name());
+        assert_eq!(
+            RequestStyle::from_name("telegraphic"),
+            Some(RequestStyle::Telegraphic)
+        );
+        assert_eq!(
+            RequestStyle::from_name("codebook"),
+            Some(RequestStyle::Codebook)
+        );
+        assert_ne!(
+            RequestStyle::Telegraphic.name(),
+            RequestStyle::Codebook.name()
+        );
     }
 }

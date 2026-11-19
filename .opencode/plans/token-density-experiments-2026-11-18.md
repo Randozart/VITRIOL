@@ -511,3 +511,18 @@ recall, accuracy) does not regress. Anything inside noise is re-run once, then c
 > (`--spec-type ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` plus
 > `--spec-ngram-*` sizing flags). E3 therefore starts as a configuration sweep against the live
 > `spec=mtp:2` point. Plan: `.opencode/plans/density-e2-e4-e5-plan-2026-11-19.md` §4.
+
+## 8. Status 2026-11-19 (evening) — three experiments closed, one adopted into the product
+
+| # | experiment | verdict | evidence |
+|---|---|---|---|
+| E1 | grammar lanes | **ADOPT** (nested schemas) | `experiments/density-e1-grammar-2026-11-18.json` |
+| E6 | eviction sweep | **INERT at parallel=1** | `experiments/density-e6-eviction-2026-11-19.json` |
+| E3 | lookup drafter | **ADOPT — 5.5x on verbatim reuse**, live config now `mtp,ngram-simple` | `experiments/density-e3-*.log`, `…-live-….json` |
+| E2 | telegraphic vs codebook | **ADOPT terseness, REJECT codebook** (-69.1 % vs -37.6 %) | `experiments/density-e2-codebook-2026-11-19.json` |
+| E4 | MTP x grammar | **no change** — drafting survives the grammar | `experiments/density-e4-mtp-grammar-2026-11-19.json` |
+| E5 | Chinese CoT | not run — needs `--reasoning on`, weakest hypothesis | — |
+
+Shipped: `[[officina-json …]]` (E1) and `[[officina-terse]]` (E2) markers in the provider hook,
+both opt-in. Harness: `density-bench sweep` with named variants, artifacts, and a recall guard that
+counts as a guard.

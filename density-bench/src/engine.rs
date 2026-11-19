@@ -70,8 +70,12 @@ impl Client {
         // A decode style appends its instruction to the system message: the shape
         // decides the question, the style decides the notation.
         if let Some(suffix) = style_instruction(style) {
-            let system = body["messages"][0]["content"].as_str().unwrap_or_default().to_string();
-            body["messages"][0]["content"] = serde_json::Value::String(format!("{system} {suffix}"));
+            let system = body["messages"][0]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            body["messages"][0]["content"] =
+                serde_json::Value::String(format!("{system} {suffix}"));
         }
         if style == RequestStyle::Grammar {
             if let Some(schema) = &shape.schema {
@@ -168,10 +172,7 @@ impl Client {
             .and_then(|s| s["required"].as_array())
             .map(|keys| keys.iter().filter_map(|k| k.as_str()).collect())
             .unwrap_or_default();
-        let valid = shape
-            .schema
-            .as_ref()
-            .map(|_| satisfies(decoded, &required));
+        let valid = shape.schema.as_ref().map(|_| satisfies(decoded, &required));
         let recall_ok = shape
             .expect
             .map(|needle| crate::sample::contains(decoded, needle));

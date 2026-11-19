@@ -281,21 +281,22 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
                     Ok(s) => {
                         samples.push(s.clone());
                         println!(
-                        "  {:<12} run {} · decode {:>6.2} tok/s · {} tok{}{}",
-                        shape.id,
-                        run + 1,
-                        s.timings.decode_tps(),
-                        s.timings.predicted_n,
-                        match s.valid {
-                            Some(true) => " · valid",
-                            Some(false) => " · INVALID",
-                            None => "",
-                        },
-                        match s.recall_ok {
-                            Some(true) => " · recalled",
-                            Some(false) => " · RECALL LOST",
-                            None => "",
-                        })
+                            "  {:<12} run {} · decode {:>6.2} tok/s · {} tok{}{}",
+                            shape.id,
+                            run + 1,
+                            s.timings.decode_tps(),
+                            s.timings.predicted_n,
+                            match s.valid {
+                                Some(true) => " · valid",
+                                Some(false) => " · INVALID",
+                                None => "",
+                            },
+                            match s.recall_ok {
+                                Some(true) => " · recalled",
+                                Some(false) => " · RECALL LOST",
+                                None => "",
+                            }
+                        )
                     }
                     Err(e) => eprintln!("  {:<12} run {} failed: {e:#}", shape.id, run + 1),
                 }

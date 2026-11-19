@@ -140,15 +140,33 @@ describe("band flush", () => {
         }
         if (!entry.name.endsWith(".ts") || entry.name.endsWith(".test.ts"))
           continue;
-        const text = readFileSync(full, "utf8");
+        // Squash whitespace before matching (2026-11-19): the gate existed and
+        // named vitriol-decode, but the offending call put the key on its own
+        // line, so the literal never appeared. A guard that only sees one
+        // formatting style guards only one formatting style.
+        const text = readFileSync(full, "utf8").replace(/\s+/g, "");
         for (const key of keys) {
-          if (text.includes(`setWidget("${key}"`))
-            offenders.push(`${entry.name}:${key}`);
+          if (text.includes(`setWidget("${key}"`)) offenders.push(`${entry.name}:${key}`);
         }
       }
     };
     walk(resolve(dir, ".."));
     expect(offenders).toEqual([]);
+  });
+
+  it("the producer gate sees multi-line calls (the form that slipped past it)", () => {
+    // The original regression, verbatim in shape: key on its own line. The old
+    // gate matched the un-squashed text, so this passed the guard and shipped.
+    const historical = [
+      "    if (!last.up) {",
+      '      ui.setWidget(',
+      '        "vitriol-decode",',
+      "        [`◈ VITRIOL  engine down (tris up to start)`],",
+      '        { placement: "belowEditor" },',
+      "      );",
+    ].join("\n");
+    expect(historical.includes('setWidget("vitriol-decode"')).toBe(false);
+    expect(historical.replace(/\s+/g, "")).toContain('setWidget("vitriol-decode"');
   });
 
   it("survives a ui that throws", () => {

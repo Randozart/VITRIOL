@@ -116,6 +116,15 @@ export function fillModelDefaults(m: any, providerName: string, index: number): 
   }
   const defaults = {
     name: m.id,
+    // reasoning:false is DELIBERATE and load-bearing (2026-11-19), not an oversight.
+    // Declaring reasoning:true makes pi inject its own thinking budget and inflate
+    // maxTokens for the turn (clampThinkingBudgetToAnswerRoom / adjustMaxTokensForThinking).
+    // The local engine's thinking is owned by the `[[officina-think]]` marker
+    // (_shared/thinking.ts), which sets reasoning_budget_tokens against the SAME
+    // max_tokens. Two owners of one number would fight, and the loser is the answer
+    // budget — which is exactly the bug that produced empty replies.
+    // The engine's real capability is per-request anyway: enable_thinking works
+    // even with the server launched `--reasoning off` (server-common.cpp:1315).
     reasoning: false,
     input: ["text"] as ("text" | "image")[],
     contextWindow: 32768,

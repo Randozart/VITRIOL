@@ -6,10 +6,21 @@
 #include "log.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+// VITRIOL (2026-11-19): cumulative count of thinking blocks force-closed by the
+// budget. Non-zero is PROOF the safety net fired; zero means either no thinking
+// happened or nobody set a budget (the server counts that case separately as
+// llamacpp:reasoning_unbounded_total). Surfaced as reasoning_forced_total.
+static std::atomic<uint64_t> g_reasoning_forced_total{0};
+
+uint64_t common_reasoning_budget_forced_total(void) {
+    return g_reasoning_forced_total.load(std::memory_order_relaxed);
+}
 
 struct token_matcher {
     std::vector<llama_tokens> seqs;
@@ -173,6 +184,11 @@ static void common_reasoning_budget_apply(struct llama_sampler * smpl, llama_tok
 
     if (ctx->force_pos >= ctx->forced_tokens.size()) {
         return;
+    }
+
+    if (ctx->force_pos == 0) {
+        // First forced token of this block: the budget just ended the thinking.
+        g_reasoning_forced_total.fetch_add(1, std::memory_order_relaxed);
     }
 
     const llama_token forced = ctx->forced_tokens[ctx->force_pos];

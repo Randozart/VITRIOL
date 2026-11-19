@@ -11,11 +11,11 @@ use crate::theme;
 use crate::tui::heal;
 
 // ── Tool verbosity (owner request 2026-09-03) ────────────────────────────
-/// How long a status-band height candidate must hold before the layout
-/// adopts it (2026-11-16). Widget/ctx data flickers on its own schedule; the
-/// band must be still. 700 ms is shorter than a human notices a legitimate
-/// change and longer than any transient datum lives.
-pub const BAND_SETTLE: std::time::Duration = std::time::Duration::from_millis(700);
+/// How long a status-band height candidate must hold before the layout adopts it
+/// (2026-11-16). Must EXCEED the slowest producer's period: the engine poll is
+/// 700 ms (`_shared/engine.ts`), and an equal settle aliases with it into a
+/// visible beat (2026-11-19). If a producer gets slower, raise this.
+pub const BAND_SETTLE: std::time::Duration = std::time::Duration::from_millis(900);
 
 /// A row count with settle hysteresis (2026-11-16).
 ///

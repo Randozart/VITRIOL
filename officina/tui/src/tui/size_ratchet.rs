@@ -21,7 +21,8 @@ mod tests {
     /// Frozen line counts, 2026-11-18. Lowering these over time is the point.
     const BUDGETS: &[(&str, usize)] = &[
         ("src/tui/state.rs", 9_604),
-        ("src/tui/mod.rs", 5_782),
+        // +2 (2026-11-19): reasoning_guard registration and its one-line call in agent_end.
+        ("src/tui/mod.rs", 5_784),
         ("src/tui/layout.rs", 5_617),
         ("src/session_guard.rs", 1_324),
         ("src/tui/caduceus.rs", 1_253),

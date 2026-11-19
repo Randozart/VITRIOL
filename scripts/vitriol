@@ -123,6 +123,26 @@ compute_fingerprint() {
     printf 'VITRIOL-FINGERPRINT model=%s ts=%s c=%s kv=%s/%s fa=on ub=%s mode=%s engine=%s ckpt=%s ckpts=%s lru=%s sparse=%s score=%s pool_reset=%s spec=%s:%s par=%s' "$@"
 }
 
+# reasoning_guard: a launch that enables thinking WITHOUT a finite budget is
+# unlaunchable (2026-11-19). Thinking and the answer share n_predict, and the
+# engine only constructs its budget sampler at budget >= 0
+# (common/sampling.cpp:311), so -1 lets an eager thinker spend the whole answer
+# allowance and return finish_reason=length with EMPTY content. Proven with one
+# request: thinking with no budget gave an empty reply; thinking capped at 24
+# gave the correct one-line answer.
+# --dry-run warns and continues (review must not be blocked); a real launch exits 2.
+reasoning_guard() {
+    local mode="${1:-off}" budget="${2:--1}"
+    [[ "${mode}" == "off" ]] && return 0
+    [[ "${budget}" != "-1" ]] && return 0
+    echo "REFUSING TO LAUNCH: reasoning = ${mode} with reasoning_budget = -1 (unrestricted)." >&2
+    echo "  Thinking and the answer share n_predict; an unbounded thinker returns" >&2
+    echo "  finish_reason=length with EMPTY content (proven 2026-11-19)." >&2
+    echo "  Fix: vitriol config set reasoning_budget 1024   (or --reasoning-budget 1024)" >&2
+    ${DRY_RUN:-false} && return 0
+    exit 2
+}
+
 config_fingerprint() {
     # Fingerprint from the CONFIG FILE ALONE (no CLI, no env). Used by
     # 'config bless'. Launches with CLI/env overrides will legitimately
@@ -294,6 +314,10 @@ DEFAULT_PREDICTIVE_PREFETCH="off"
 DEFAULT_PIN_FIRST_N_LAYERS=0
 DEFAULT_PRUNE_EXPERTS=0
 DEFAULT_REASONING="off"
+# Thinking budget in tokens: -1 = unrestricted, 0 = no thinking, N = cap (2026-11-19).
+# A reasoning MODE without a budget is the bug this guards: thinking and answer
+# share n_predict, so an unbounded thinker returns finish=length with empty content.
+DEFAULT_REASONING_BUDGET="-1"
 DEFAULT_UBATCH=256
 
 # ── config vars (set by parse_config) ────────────────────────────
@@ -358,6 +382,7 @@ CFG_PREDICTIVE_PREFETCH="$DEFAULT_PREDICTIVE_PREFETCH"
 CFG_PIN_FIRST_N_LAYERS="$DEFAULT_PIN_FIRST_N_LAYERS"
 CFG_PRUNE_EXPERTS="$DEFAULT_PRUNE_EXPERTS"
 CFG_REASONING="$DEFAULT_REASONING"
+CFG_REASONING_BUDGET="$DEFAULT_REASONING_BUDGET"
 CFG_CHIMERA_MODE="$DEFAULT_CHIMERA_MODE"
 CFG_UBATCH="$DEFAULT_UBATCH"
 
@@ -454,6 +479,7 @@ kv.score)              CFG_KV_SCORE="$val" ;;
                  vitriol.pin_first_n_layers) CFG_PIN_FIRST_N_LAYERS="$val" ;;
                  vitriol.prune_experts)     CFG_PRUNE_EXPERTS="$val" ;;
                  vitriol.reasoning)         CFG_REASONING="$val" ;;
+                 vitriol.reasoning_budget)  CFG_REASONING_BUDGET="$val" ;;
                 chimera.mode)            CFG_CHIMERA_MODE="$val" ;;
             esac
         fi
@@ -534,6 +560,11 @@ pin_first_n_layers = $CFG_PIN_FIRST_N_LAYERS
 prune_experts = $CFG_PRUNE_EXPERTS
 # Reasoning/thinking mode: on | off (off disables thinking, required for Qwen3.6)
 reasoning = $CFG_REASONING
+# Thinking token budget: -1 = unrestricted (FORBIDDEN with reasoning = on),
+# 0 = end thinking immediately, N > 0 = force </think> after N tokens.
+# Thinking and answer share n_predict: without a cap an eager thinker returns
+# finish_reason=length and EMPTY content (proven 2026-11-19, one request each).
+reasoning_budget = $CFG_REASONING_BUDGET
 
 [server]
 # API host address
@@ -711,6 +742,7 @@ config_reset() {
     CFG_PIN_FIRST_N_LAYERS="$DEFAULT_PIN_FIRST_N_LAYERS"
     CFG_PRUNE_EXPERTS="$DEFAULT_PRUNE_EXPERTS"
     CFG_REASONING="$DEFAULT_REASONING"
+    CFG_REASONING_BUDGET="$DEFAULT_REASONING_BUDGET"
     CFG_MODEL="$DEFAULT_MODEL"
     CFG_MMPROJ="$DEFAULT_MMPROJ"
     CFG_CTX="$DEFAULT_CTX"
@@ -773,6 +805,7 @@ config_set() {
         vitriol.pin_first_n_layers) CFG_PIN_FIRST_N_LAYERS="$val" ;;
         vitriol.prune_experts)     CFG_PRUNE_EXPERTS="$val" ;;
         vitriol.reasoning)         CFG_REASONING="$val" ;;
+        vitriol.reasoning_budget)  CFG_REASONING_BUDGET="$val" ;;
         server.host)           CFG_HOST="$val" ;;
         server.parallel)       CFG_PARALLEL="$val" ;;
         server.slot_context)   CFG_SLOT_CONTEXT="$val" ;;
@@ -1454,7 +1487,11 @@ tui_vitriol_menu() {
                 echo ""
                 if [[ "$CFG_REASONING" == "off" ]]; then
                     config_set vitriol.reasoning "on"
-                    echo "  → Reasoning set to on (auto-detect)"
+                    # Turning thinking on REQUIRES a cap: an unbounded thinker
+                    # spends the answer budget on reasoning (empty content).
+                    [[ "${CFG_REASONING_BUDGET:--1}" == "-1" ]] && \
+                        config_set vitriol.reasoning_budget "1024"
+                    echo "  → Reasoning set to on (auto-detect), budget ${CFG_REASONING_BUDGET:--1} -> 1024"
                 else
                     config_set vitriol.reasoning "off"
                     echo "  → Reasoning set to off (required for Qwen3.6)"
@@ -2182,6 +2219,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         EXPERT_COUNT="${CFG_EXPERT_COUNT}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         REASONING="${CLI_REASONING:-${CFG_REASONING}}"
+        REASONING_BUDGET="${CLI_REASONING_BUDGET:-${CFG_REASONING_BUDGET:--1}}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
         PRUNE_EXPERTS="${CLI_PRUNE_EXPERTS:-${CFG_PRUNE_EXPERTS}}"
@@ -2193,6 +2231,8 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # VITRIOL-FINGERPRINT: canonical one-line config identity. Emitted to
         # console and (on real launches) appended to GEN_LOG so any log excerpt
         # answers "what flags produced this?" without archaeology.
+        # Resolve thinking state BEFORE the fingerprint: rea=/rb= must reflect the
+        # CLI, not the config file (2026-11-19).
         kv_sparse_guard
         FINGERPRINT=$(compute_fingerprint \
             "$(basename "$MODEL")" "${TENSOR_SPLIT:-none}" "${CTX:-?}" "$KV_QUANT" "$KV_QUANT_V" "${UBATCH:-256}" "$MODE" "$ENGINE_MODE" "$CKPT_EVERY" "$CKPT_RING" "$LRU_MB"             "$KV_MODE" "$KV_SCORE" "${VITRIOL_POOL_RESET:-0}"             "${SPEC_TYPE:-none}" "${SPEC_DRAFT_N_MAX:-0}" "${PARALLEL:-1}")
@@ -2206,6 +2246,9 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ "${CFG_PREDICTIVE_PREFETCH:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT pf=1"
         [[ -n "${CFG_LRU_MB_GPU:-}" ]] && FINGERPRINT="$FINGERPRINT lrug=${CFG_LRU_MB_GPU}"
         [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
+        # Thinking state is provenance-bearing: rea=on / rb=N change the token stream.
+        [[ "${REASONING:-off}" != "off" ]] && FINGERPRINT="$FINGERPRINT rea=${REASONING}"
+        [[ "${REASONING_BUDGET:--1}" != "-1" ]] && FINGERPRINT="$FINGERPRINT rb=${REASONING_BUDGET}"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2382,6 +2425,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         CLI_PIN_LAYERS=""
         CLI_PRUNE_EXPERTS=""
         CLI_REASONING=""
+        CLI_REASONING_BUDGET=""
         DETACH=false
         DRY_RUN=false
 
@@ -2414,6 +2458,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
                 --pin-layers) CLI_PIN_LAYERS="$2"; shift 2 ;;
                 --prune-experts) CLI_PRUNE_EXPERTS="$2"; shift 2 ;;
                 --reasoning) CLI_REASONING="$2"; shift 2 ;;
+                --reasoning-budget) CLI_REASONING_BUDGET="$2"; shift 2 ;;
                 --detach) DETACH=true; shift ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift;;
@@ -2480,6 +2525,9 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         UBATCH="${CLI_UBATCH:-${CFG_UBATCH}}"
         CKPT_EVERY="${CLI_CKPT_EVERY:-${CFG_CKPT_EVERY:-2048}}"
         CKPT_RING="${CFG_CKPT_RING:-4}"
+        # Thinking state resolved BEFORE the fingerprint: rea=/rb= must reflect the CLI, not the config file (2026-11-19).
+        REASONING="${CLI_REASONING:-${CFG_REASONING}}"
+        REASONING_BUDGET="${CLI_REASONING_BUDGET:-${CFG_REASONING_BUDGET:--1}}"
         kv_sparse_guard
         serve_unit_guard
         FINGERPRINT=$(compute_fingerprint \
@@ -2491,6 +2539,10 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT specak=1"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
+        # Thinking state is provenance-bearing (2026-11-19): rea=on / rb=N change
+        # the token stream. Absent fields = historical parity (reasoning off, -1).
+        [[ "${REASONING:-off}" != "off" ]] && FINGERPRINT="$FINGERPRINT rea=${REASONING}"
+        [[ "${REASONING_BUDGET:--1}" != "-1" ]] && FINGERPRINT="$FINGERPRINT rb=${REASONING_BUDGET}"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
         [[ -n "${CACHE_MAX_GB:-}" ]] && FINGERPRINT="$FINGERPRINT cmax=$CACHE_MAX_GB"
         [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && FINGERPRINT="$FINGERPRINT creuse=$CACHE_REUSE"
@@ -2505,7 +2557,6 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ -n "${CFG_LRU_MB_GPU:-}" ]] && FINGERPRINT="$FINGERPRINT lrug=${CFG_LRU_MB_GPU}"
         [[ "${CFG_MMAP:-off}" == "on" ]] && FINGERPRINT="$FINGERPRINT mmap=on"
         fingerprint_journal
-        REASONING="${CFG_REASONING}"
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
         PRUNE_EXPERTS="${CLI_PRUNE_EXPERTS:-${CFG_PRUNE_EXPERTS}}"
@@ -2592,6 +2643,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         echo "═══════════════════════════"
         echo ""
 
+        reasoning_guard "${REASONING:-off}" "${REASONING_BUDGET:--1}"
         if $DRY_RUN; then
             exit 0
         fi
@@ -2680,9 +2732,11 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # KV-shift salvage after head divergence (mode switch / cancel): without
         # it a diverged turn prefills from token 0. Off unless config sets it.
         [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && CACHE_ARGS="$CACHE_ARGS --cache-reuse ${CACHE_REUSE}"
-        # Reasoning/thinking mode: off for Qwen3.6 models
+        # Reasoning/thinking mode: off for Qwen3.6 models. The guard runs above
+        # (before the dry-run exit); here we only translate the settings to flags.
         REASONING_ARGS=""
         [[ "${REASONING}" == "off" ]] && REASONING_ARGS="--reasoning off"
+        [[ "${REASONING_BUDGET:--1}" != "-1" ]] && REASONING_ARGS="$REASONING_ARGS --reasoning-budget ${REASONING_BUDGET}"
 
         if $DETACH; then
             echo "Starting server in background..."
@@ -3180,6 +3234,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         echo "══════════════════════"
         echo ""
 
+        reasoning_guard "${REASONING:-off}" "${REASONING_BUDGET:--1}"
         if $DRY_RUN; then
             exit 0
         fi

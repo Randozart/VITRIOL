@@ -5,6 +5,7 @@ import { observeLocalTransport } from "./transport-diagnostics.ts";
 import { localCacheOwner } from "./owner.ts";
 import { attachStructuredOutput } from "../_shared/structured-output.ts";
 import { applyTerseInstruction } from "../_shared/terse.ts";
+import { applyThinkingInstruction } from "../_shared/thinking.ts";
 
 /** Keep healthy prefill alive using this request's native SSE progress, not global activity. */
 export const streamLocalWithProgress: NonNullable<
@@ -49,7 +50,12 @@ export const streamLocalWithProgress: NonNullable<
       // Terse lanes (2026-11-19, E2): `[[officina-terse]]` adds one measured
       // sentence. The codebook that lost to it (a legend cost more tokens than it
       // saved) is deliberately not shipped.
-      const structured = applyTerseInstruction(attachStructuredOutput(request));
+      // Per-lane thinking (2026-11-19): `[[officina-think]]` sets enable_thinking
+      // AND a budget derived from max_tokens. Never one without the other — the
+      // budget is what stops the thinker consuming the answer (empty content).
+      const structured = applyThinkingInstruction(
+        applyTerseInstruction(attachStructuredOutput(request)),
+      );
       // Hooks see the progress option and retain their existing replacement contract.
       return (
         (await options?.onPayload?.(structured, requestModel)) ?? structured

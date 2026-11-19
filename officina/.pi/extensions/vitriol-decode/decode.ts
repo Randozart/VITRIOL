@@ -226,3 +226,24 @@ export function fireLoad(snap: FireLoadInput): number {
     ),
   );
 }
+
+/**
+ * The decode row's band payload for one engine snapshot (2026-11-19).
+ *
+ * Exactly ONE tier is ever populated. Before this, the down state was a separate
+ * `belowEditor` widget and the up state was a band row, and neither path cleared
+ * the other: an engine flap left a live row and a stale row about the same
+ * subject, alternating in and out of the 3-row strip as the layout's settled
+ * height drifted — the owner's "flickering, and I can't tell what else lives
+ * there" report. One subject, one row.
+ */
+export const DECODE_DOWN_LINE =
+  "◈ VITRIOL  engine down (tris up to start)";
+
+export function decodeBandRows(
+  up: boolean,
+  progressLines: string[],
+): { state: string[] | null; progress: string[] | null } {
+  if (!up) return { state: [DECODE_DOWN_LINE], progress: null };
+  return { state: null, progress: progressLines.length > 0 ? progressLines : null };
+}

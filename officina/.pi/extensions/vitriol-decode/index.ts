@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { fireLoad, fmtRate, fmtTokens } from "./decode.ts";
+import { decodeBandRows, fireLoad, fmtRate, fmtTokens } from "./decode.ts";
 import { RAMPS, renderGauge } from "./braille.ts";
 import {
   getEngineSnapshot,
@@ -74,11 +74,15 @@ export default function (pi: ExtensionAPI) {
       });
     }
     if (!last.up) {
-      ui.setWidget(
-        "vitriol-decode",
-        [`◈ VITRIOL  engine down (tris up to start)`],
-        { placement: "belowEditor" },
-      );
+      // A band `state` row, not a belowEditor widget (2026-11-19): the widget was
+      // never cleared on recovery, so it outlived the outage and fought the live
+      // progress row for the strip. State tier guarantees the row wins a slot.
+      const down = decodeBandRows(false, []);
+      setBandUi(ui);
+      // Order matters: rows are keyed by producer id, so clearing one tier clears
+      // the id. Clear the other tier first, then publish.
+      setBandRow("vitriol-decode", "progress", null);
+      setBandRow("vitriol-decode", "state", down.state);
       return;
     }
     // Vitriolum visual language (matches the engine TUI): slot capacity on
@@ -128,8 +132,11 @@ export default function (pi: ExtensionAPI) {
         : "";
     const lines = [line1 + rpc];
     if (line2) lines.push(line2);
+    const rows = decodeBandRows(true, lines);
     setBandUi(ui);
-    setBandRow("vitriol-decode", "progress", lines);
+    // Clear the down row before publishing progress (same id, one row).
+    setBandRow("vitriol-decode", "state", null);
+    setBandRow("vitriol-decode", "progress", rows.progress);
   };
 
   pi.on("session_start", (_event, ctx) => {

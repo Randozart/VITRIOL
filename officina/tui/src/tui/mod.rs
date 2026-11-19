@@ -10,6 +10,7 @@ pub mod janitor;
 pub mod layout;
 pub mod paste;
 pub mod question;
+pub mod reasoning_guard;
 pub mod review;
 pub mod routes;
 pub mod session_check;
@@ -741,6 +742,7 @@ async fn run_loop(
                         // live fill. agent_settled would double-fetch, so only
                         // agent_end triggers this.
                         if event.event_type == "agent_end" {
+                            crate::tui::reasoning_guard::raise_notice(state);
                             let _ = bridge
                                 .request(RpcCommand::GetSessionStats { id: None })
                                 .await;

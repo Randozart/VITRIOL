@@ -314,6 +314,16 @@ DEFAULT_PREDICTIVE_PREFETCH="off"
 DEFAULT_PIN_FIRST_N_LAYERS=0
 DEFAULT_PRUNE_EXPERTS=0
 DEFAULT_REASONING="off"
+# Preserve historical thinking traces in the prompt: 0 (default, 2026-11-19) or 1.
+#
+# The engine re-renders every assistant turn's reasoning block into every request
+# unless told otherwise (common/jinja/caps.cpp maps preserve_reasoning onto
+# preserve_thinking/clear_thinking/...). Measured on the live 27B with a six-turn
+# fixture: 583 prompt tokens preserving vs 158 not (-73%), with the recall answer
+# correct in both arms. Nothing else about the turn changed. Cost grows with
+# session length: a 20-turn session with 1k-token thinking per turn carries ~20k
+# extra prompt tokens on EVERY request.
+DEFAULT_PRESERVE_REASONING="0"
 # Thinking budget in tokens: -1 = unrestricted, 0 = no thinking, N = cap (2026-11-19).
 # A reasoning MODE without a budget is the bug this guards: thinking and answer
 # share n_predict, so an unbounded thinker returns finish=length with empty content.
@@ -383,6 +393,7 @@ CFG_PIN_FIRST_N_LAYERS="$DEFAULT_PIN_FIRST_N_LAYERS"
 CFG_PRUNE_EXPERTS="$DEFAULT_PRUNE_EXPERTS"
 CFG_REASONING="$DEFAULT_REASONING"
 CFG_REASONING_BUDGET="$DEFAULT_REASONING_BUDGET"
+CFG_PRESERVE_REASONING="$DEFAULT_PRESERVE_REASONING"
 CFG_CHIMERA_MODE="$DEFAULT_CHIMERA_MODE"
 CFG_UBATCH="$DEFAULT_UBATCH"
 
@@ -480,6 +491,8 @@ kv.score)              CFG_KV_SCORE="$val" ;;
                  vitriol.prune_experts)     CFG_PRUNE_EXPERTS="$val" ;;
                  vitriol.reasoning)         CFG_REASONING="$val" ;;
                  vitriol.reasoning_budget)  CFG_REASONING_BUDGET="$val" ;;
+        vitriol.preserve_reasoning) CFG_PRESERVE_REASONING="$val" ;;
+                 vitriol.preserve_reasoning) CFG_PRESERVE_REASONING="$val" ;;
                 chimera.mode)            CFG_CHIMERA_MODE="$val" ;;
             esac
         fi
@@ -565,6 +578,7 @@ reasoning = $CFG_REASONING
 # Thinking and answer share n_predict: without a cap an eager thinker returns
 # finish_reason=length and EMPTY content (proven 2026-11-19, one request each).
 reasoning_budget = $CFG_REASONING_BUDGET
+preserve_reasoning = $CFG_PRESERVE_REASONING
 
 [server]
 # API host address
@@ -716,6 +730,7 @@ config_show() {
         print_row "Expert Pruning:        " "drop ${CFG_PRUNE_EXPERTS} (keep ${keep})"
     fi
     print_row "Reasoning:             " "${CFG_REASONING:-on}"
+    print_row "Preserve thinking:     " "${CFG_PRESERVE_REASONING:-0}"
     if [[ -n "$CFG_SPEC_TYPE" ]]; then
         local mtp_ok=""
         model_has_mtp "$CFG_MODEL" && mtp_ok=" (MTP detected)"
@@ -2220,6 +2235,11 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         OUTPUT_CACHE="${CFG_OUTPUT_CACHE}"
         REASONING="${CLI_REASONING:-${CFG_REASONING}}"
         REASONING_BUDGET="${CLI_REASONING_BUDGET:-${CFG_REASONING_BUDGET:--1}}"
+        PRESERVE_REASONING="${CLI_PRESERVE_REASONING:-${CFG_PRESERVE_REASONING:-0}}"
+        case "$PRESERVE_REASONING" in
+            0|1) ;;
+            *) echo "VITRIOL: preserve_reasoning must be 0 or 1 (got '$PRESERVE_REASONING')." >&2; exit 2 ;;
+        esac
         PREDICTIVE_PREFETCH="${CFG_PREDICTIVE_PREFETCH}"
         PIN_FIRST_N_LAYERS="${CLI_PIN_LAYERS:-${CFG_PIN_FIRST_N_LAYERS}}"
         PRUNE_EXPERTS="${CLI_PRUNE_EXPERTS:-${CFG_PRUNE_EXPERTS}}"
@@ -2249,6 +2269,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # Thinking state is provenance-bearing: rea=on / rb=N change the token stream.
         [[ "${REASONING:-off}" != "off" ]] && FINGERPRINT="$FINGERPRINT rea=${REASONING}"
         [[ "${REASONING_BUDGET:--1}" != "-1" ]] && FINGERPRINT="$FINGERPRINT rb=${REASONING_BUDGET}"
+        FINGERPRINT="$FINGERPRINT pr=${PRESERVE_REASONING:-0}"
         fingerprint_journal
         # Auto-disable output cache when pinning is active
         if [[ "${PIN_FIRST_N_LAYERS:-0}" -gt 0 ]] && [[ "$OUTPUT_CACHE" == "on" ]]; then
@@ -2332,6 +2353,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
             echo "  Expert Prune: $PRUNE_EXPERTS (keeping $prune_keep of 8)"
         fi
         [[ "${REASONING}" == "off" ]] && echo "  Reasoning:    off (Qwen3.6 mode)"
+        echo "  Preserve:     ${PRESERVE_REASONING:-0} (0 = history thinking dropped; measured -73% prompt tokens)"
         echo "  Binary:      $BINARY"
         echo "  Port:        $PORT"
         [[ "$VERBOSE" == "true" ]] && echo "  Logging:     verbose"
@@ -2426,6 +2448,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         CLI_PRUNE_EXPERTS=""
         CLI_REASONING=""
         CLI_REASONING_BUDGET=""
+        CLI_PRESERVE_REASONING=""
         DETACH=false
         DRY_RUN=false
 
@@ -2459,6 +2482,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
                 --prune-experts) CLI_PRUNE_EXPERTS="$2"; shift 2 ;;
                 --reasoning) CLI_REASONING="$2"; shift 2 ;;
                 --reasoning-budget) CLI_REASONING_BUDGET="$2"; shift 2 ;;
+                --preserve-reasoning) CLI_PRESERVE_REASONING="$2"; shift 2 ;;
                 --detach) DETACH=true; shift ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
                 --dry-run) DRY_RUN=true; shift;;
@@ -2528,6 +2552,11 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # Thinking state resolved BEFORE the fingerprint: rea=/rb= must reflect the CLI, not the config file (2026-11-19).
         REASONING="${CLI_REASONING:-${CFG_REASONING}}"
         REASONING_BUDGET="${CLI_REASONING_BUDGET:-${CFG_REASONING_BUDGET:--1}}"
+        PRESERVE_REASONING="${CLI_PRESERVE_REASONING:-${CFG_PRESERVE_REASONING:-0}}"
+        case "$PRESERVE_REASONING" in
+            0|1) ;;
+            *) echo "VITRIOL: preserve_reasoning must be 0 or 1 (got '$PRESERVE_REASONING')." >&2; exit 2 ;;
+        esac
         kv_sparse_guard
         serve_unit_guard
         FINGERPRINT=$(compute_fingerprint \
@@ -2543,6 +2572,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # the token stream. Absent fields = historical parity (reasoning off, -1).
         [[ "${REASONING:-off}" != "off" ]] && FINGERPRINT="$FINGERPRINT rea=${REASONING}"
         [[ "${REASONING_BUDGET:--1}" != "-1" ]] && FINGERPRINT="$FINGERPRINT rb=${REASONING_BUDGET}"
+        FINGERPRINT="$FINGERPRINT pr=${PRESERVE_REASONING:-0}"
         [[ -n "${CACHE_RAM:-}" ]] && FINGERPRINT="$FINGERPRINT cram=$CACHE_RAM"
         [[ -n "${CACHE_MAX_GB:-}" ]] && FINGERPRINT="$FINGERPRINT cmax=$CACHE_MAX_GB"
         [[ -n "${CACHE_REUSE:-}" && "${CACHE_REUSE}" != "0" ]] && FINGERPRINT="$FINGERPRINT creuse=$CACHE_REUSE"
@@ -2630,6 +2660,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
             echo "  Expert Prune: $PRUNE_EXPERTS (keeping $prune_keep of 8)"
         fi
         [[ "${REASONING}" == "off" ]] && echo "  Reasoning:    off (Qwen3.6 mode)"
+        echo "  Preserve:     ${PRESERVE_REASONING:-0} (0 = history thinking dropped; measured -73% prompt tokens)"
         if [[ "$MEMORY_MODE" == "on" ]]; then
             LLAMA_PORT=$((PORT - 1))
             echo "  Server:      http://${HOST}:${LLAMA_PORT} (vitriol-server, internal)"
@@ -2737,6 +2768,13 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         REASONING_ARGS=""
         [[ "${REASONING}" == "off" ]] && REASONING_ARGS="--reasoning off"
         [[ "${REASONING_BUDGET:--1}" != "-1" ]] && REASONING_ARGS="$REASONING_ARGS --reasoning-budget ${REASONING_BUDGET}"
+        # Always explicit: the engine's own default is to preserve, so relying on
+        # omission would silently restore the expensive behaviour.
+        if [[ "${PRESERVE_REASONING:-0}" == "1" ]]; then
+            REASONING_ARGS="$REASONING_ARGS --reasoning-preserve"
+        else
+            REASONING_ARGS="$REASONING_ARGS --no-reasoning-preserve"
+        fi
 
         if $DETACH; then
             echo "Starting server in background..."

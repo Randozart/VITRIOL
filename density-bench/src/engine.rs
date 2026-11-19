@@ -24,6 +24,13 @@ pub struct Client {
     pub max_tokens: u32,
     /// Whether to also run the streamed pass (TTFT). Off on a shared engine.
     pub stream: bool,
+    /// Extra Jinja template variables, sent as `chat_template_kwargs` (T1).
+    ///
+    /// This is how a *template* variable becomes an experimental arm without
+    /// restarting the engine: `--reasoning-preserve` writes
+    /// `preserve_reasoning`, and a template that tests `preserve_thinking`
+    /// (the live Qwen3.8 one does) ignores it entirely.
+    pub template_kwargs: Option<serde_json::Value>,
 }
 
 /// One SSE chunk's payload, if it carries content.
@@ -90,6 +97,9 @@ impl Client {
                 .to_string();
             body["messages"][0]["content"] =
                 serde_json::Value::String(format!("{system} {suffix}"));
+        }
+        if let Some(kwargs) = &self.template_kwargs {
+            body["chat_template_kwargs"] = kwargs.clone();
         }
         if style == RequestStyle::Grammar {
             if let Some(schema) = &shape.schema {
@@ -257,6 +267,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 64,
             stream: false,
+            template_kwargs: None,
         };
         let shape = &crate::shapes::all(4)[0];
         let body = client.body(shape, RequestStyle::Baseline, false);
@@ -282,6 +293,7 @@ mod tests {
                 model: "m".into(),
                 max_tokens: 64,
                 stream: false,
+            template_kwargs: None,
             };
             let body = client.body(&shape, RequestStyle::Grammar, false);
             match (&shape.schema, body.get("response_format")) {
@@ -306,6 +318,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 64,
             stream: false,
+            template_kwargs: None,
         };
         let all = crate::shapes::all(1);
         let shape = all
@@ -331,6 +344,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 64,
             stream: false,
+            template_kwargs: None,
         };
         let all = crate::shapes::all(1);
         let prose = all
@@ -352,6 +366,7 @@ mod tests {
             model: "m".into(),
             max_tokens: 8,
             stream: false,
+            template_kwargs: None,
         };
         let shape = crate::shapes::all(4)
             .into_iter()

@@ -40,6 +40,8 @@ struct Args {
     shape_filter: Vec<String>,
     repeats: usize,
     max_tokens: u32,
+    /// Raw JSON passed through as `chat_template_kwargs` (T1: template arms).
+    template_kwargs: Option<String>,
     deep_sections: usize,
     json_out: Option<String>,
     /// Sweep mode inputs (engine binary, base args, dimensions).
@@ -74,6 +76,8 @@ OPTIONS:
   --repeats N          samples per arm per shape (default 3)
   --max-tokens N       output cap per request (default 256)
   --deep-sections N    size of the deep-recall prompt (default 40)
+  --template-kwargs J  JSON sent as chat_template_kwargs, e.g. {\"preserve_thinking\": false}
+                       (T1: a template variable becomes an arm without a restart)
   --json PATH          write the raw samples as JSON
   --no-stream          skip the TTFT pass (tokens only; use on a shared engine)
 "
@@ -88,6 +92,7 @@ fn parse_args() -> Result<Args> {
         shape_filter: Vec::new(),
         repeats: 3,
         max_tokens: 256,
+        template_kwargs: None,
         deep_sections: 40,
         json_out: None,
         no_stream: false,
@@ -173,6 +178,10 @@ fn parse_args() -> Result<Args> {
                 args.dry_run = true;
                 i += 1;
             }
+            "--template-kwargs" => {
+                args.template_kwargs = Some(value(i)?.to_string());
+                i += 2;
+            }
             "--wait-health" => {
                 args.wait_health_s = value(i)?.parse()?;
                 i += 2;
@@ -195,6 +204,19 @@ fn parse_args() -> Result<Args> {
         anyhow::bail!("--repeats must be at least 1");
     }
     Ok(args)
+}
+
+impl Args {
+    /// Parse `--template-kwargs` once, at the boundary: a typo in the JSON must
+    /// fail the run, not silently send no kwargs and make two arms identical.
+    fn template_kwargs_json(&self) -> Result<Option<serde_json::Value>> {
+        match &self.template_kwargs {
+            None => Ok(None),
+            Some(raw) => Ok(Some(serde_json::from_str(raw).map_err(|e| {
+                anyhow::anyhow!("--template-kwargs is not valid JSON: {e}")
+            })?)),
+        }
+    }
 }
 
 /// Fingerprint line the engine prints at load, so a result is always attributable.
@@ -272,6 +294,7 @@ fn run_sweep(args: &Args, shapes: &[&Shape]) -> Result<()> {
             base: args.url.clone(),
             model: args.model.clone(),
             max_tokens: args.max_tokens,
+            template_kwargs: args.template_kwargs_json()?,
             stream: !args.no_stream,
         };
         for shape in shapes {
@@ -378,6 +401,7 @@ fn main() -> Result<()> {
         base: args.url.clone(),
         model: args.model.clone(),
         max_tokens: args.max_tokens,
+        template_kwargs: args.template_kwargs_json()?,
         stream: !args.no_stream,
     };
     let all = shapes::all(args.deep_sections);

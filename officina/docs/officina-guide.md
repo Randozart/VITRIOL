@@ -189,7 +189,7 @@ Zero-key free providers:
     vitriol caduceus setup --free
     vitriol caduceus doctor
     vitriol caduceus service install
-    vitriol caduceus use caduceus/ddgw/gpt-5.4-mini       # persist cloud default
+    vitriol caduceus use ddgw/gpt-5.4-mini         # persist cloud default (raw gateway id, no caduceus/ prefix)
     vitriol caduceus accounts free --template    # fill-in free API-key list
     vitriol caduceus accounts free --apply
     vitriol caduceus accounts discover --apply   # reuse OpenCode auth

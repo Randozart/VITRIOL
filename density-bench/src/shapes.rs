@@ -143,6 +143,20 @@ pub fn all(deep_sections: usize) -> Vec<Shape> {
             // that lost its memory cannot contain it.
             expect: Some(RECALL_EXPECT),
         },
+        // E2's consumer: a plan the operator reads through a rendered view, so a
+        // compressed notation costs nothing if it decodes. The guard fact is a
+        // distinctive number stated in the request.
+        Shape {
+            id: "internal-plan",
+            note: "internal plan with a stated constraint (E2 decode target)",
+            system: "You are planning an engine change. Be concrete and short.",
+            user: "Plan how to cut decode latency at 70k filled context on two 12 GB GPUs. \
+                   Hard constraints: no new weights, keep MTP, the mirror budget is \
+                   cache_max_gb = 47. State the budget first, then the steps."
+                .to_string(),
+            schema: None,
+            expect: Some("47"),
+        },
         // Lookup-friendly shape for E3: the answer is largely a copy of the
         // prompt, which is the only condition where an n-gram drafter can pay
         // (it can only propose text it has already seen).
@@ -170,7 +184,7 @@ mod tests {
     #[test]
     fn every_shape_is_present_and_distinct() {
         let shapes = all(4);
-        assert_eq!(shapes.len(), 5);
+        assert_eq!(shapes.len(), 6);
         let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
         assert_eq!(
             ids,
@@ -179,6 +193,7 @@ mod tests {
                 "structured-nested",
                 "code-edit",
                 "deep-recall",
+                "internal-plan",
                 "repeat-echo"
             ]
         );

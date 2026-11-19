@@ -20,6 +20,11 @@ pub enum RequestStyle {
     /// Attach the shape's JSON schema as a `response_format` (E1: helps only when
     /// the schema has structure; a flat schema pays ~13 % more tokens).
     Grammar,
+    /// Ask for terse prose with no legend: the "just be brief" control.
+    Telegraphic,
+    /// Ask for the legend's shorthand (E2). Decoded before any guard is checked,
+    /// so a compression that cannot be read back scores zero.
+    Codebook,
 }
 
 impl RequestStyle {
@@ -29,6 +34,8 @@ impl RequestStyle {
         match name {
             "baseline" => Some(Self::Baseline),
             "grammar" => Some(Self::Grammar),
+            "telegraphic" => Some(Self::Telegraphic),
+            "codebook" => Some(Self::Codebook),
             _ => None,
         }
     }
@@ -38,12 +45,14 @@ impl RequestStyle {
         match self {
             Self::Baseline => "baseline",
             Self::Grammar => "grammar",
+            Self::Telegraphic => "telegraphic",
+            Self::Codebook => "codebook",
         }
     }
 
     /// Names accepted by `--arm`, for error messages and `--help`.
     pub fn names() -> &'static str {
-        "baseline, grammar"
+        "baseline, grammar, telegraphic, codebook"
     }
 }
 
@@ -53,7 +62,7 @@ mod tests {
 
     #[test]
     fn every_accepted_name_round_trips() {
-        for name in ["baseline", "grammar"] {
+        for name in ["baseline", "grammar", "telegraphic", "codebook"] {
             let style = RequestStyle::from_name(name).expect("declared name parses");
             assert_eq!(style.name(), name);
         }
@@ -61,9 +70,16 @@ mod tests {
 
     #[test]
     fn an_unknown_style_is_refused_rather_than_silently_measured_as_baseline() {
-        // This is the regression that started the refactor: "telegraphic" must not
-        // fall through to a plain request and report a meaningless win.
-        assert_eq!(RequestStyle::from_name("telegraphic"), None);
+        // This is the regression that started the refactor: an unimplemented style
+        // must not fall through to a plain request and report a meaningless win.
+        assert_eq!(RequestStyle::from_name("chinese-cot"), None);
         assert_eq!(RequestStyle::from_name(""), None);
+    }
+
+    #[test]
+    fn the_decode_styles_are_distinct_from_the_plain_ones() {
+        assert_eq!(RequestStyle::from_name("telegraphic"), Some(RequestStyle::Telegraphic));
+        assert_eq!(RequestStyle::from_name("codebook"), Some(RequestStyle::Codebook));
+        assert_ne!(RequestStyle::Telegraphic.name(), RequestStyle::Codebook.name());
     }
 }

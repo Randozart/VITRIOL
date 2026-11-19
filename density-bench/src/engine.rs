@@ -12,6 +12,7 @@ use std::io::{BufRead, BufReader};
 use std::time::Instant;
 
 use crate::arms::RequestStyle;
+use crate::codebook;
 use crate::sample::{satisfies, Sample, Timings};
 use crate::shapes::Shape;
 
@@ -36,6 +37,23 @@ pub fn content_of(line: &str) -> Option<String> {
     delta.as_str().map(|s| s.to_string())
 }
 
+/// The instruction a style adds to the system message, if any.
+fn style_instruction(style: RequestStyle) -> Option<&'static str> {
+    match style {
+        RequestStyle::Baseline | RequestStyle::Grammar => None,
+        RequestStyle::Telegraphic => {
+            Some("Answer as tersely as possible: no articles, no filler, one clause per line.")
+        }
+        RequestStyle::Codebook => Some(codebook::LEGEND),
+    }
+}
+
+/// Does this style promise a decodable notation? Used to decide whether the
+/// expansion gate applies.
+pub fn is_codec(style: RequestStyle) -> bool {
+    matches!(style, RequestStyle::Telegraphic | RequestStyle::Codebook)
+}
+
 impl Client {
     /// Request body for one style. `Baseline` is the plain call; a style may only
     /// change instructions or `response_format`, never the shape's schema (I2).
@@ -49,6 +67,12 @@ impl Client {
             "temperature": 0,
             "stream": stream,
         });
+        // A decode style appends its instruction to the system message: the shape
+        // decides the question, the style decides the notation.
+        if let Some(suffix) = style_instruction(style) {
+            let system = body["messages"][0]["content"].as_str().unwrap_or_default().to_string();
+            body["messages"][0]["content"] = serde_json::Value::String(format!("{system} {suffix}"));
+        }
         if style == RequestStyle::Grammar {
             if let Some(schema) = &shape.schema {
                 body["response_format"] = serde_json::json!({
@@ -130,6 +154,14 @@ impl Client {
         } else {
             (f64::NAN, 0.0)
         };
+        // Expand before every guard: a compressed answer must still satisfy the
+        // question it was asked (I4).
+        let (expanded, suspicious): (String, String) = if is_codec(style) {
+            (codebook::expand(&content), codebook::suspicious(&content))
+        } else {
+            (content.clone(), String::new())
+        };
+        let decoded = &expanded;
         let required: Vec<&str> = shape
             .schema
             .as_ref()
@@ -139,10 +171,10 @@ impl Client {
         let valid = shape
             .schema
             .as_ref()
-            .map(|_| satisfies(&content, &required));
+            .map(|_| satisfies(decoded, &required));
         let recall_ok = shape
             .expect
-            .map(|needle| crate::sample::contains(&content, needle));
+            .map(|needle| crate::sample::contains(decoded, needle));
         let answer_head = shape
             .expect
             .map(|_| content.trim().chars().take(200).collect());
@@ -156,6 +188,8 @@ impl Client {
             valid,
             recall_ok,
             answer_head,
+            expanded_chars: is_codec(style).then(|| decoded.chars().count()),
+            invented: (!suspicious.is_empty()).then_some(suspicious),
         })
     }
 }

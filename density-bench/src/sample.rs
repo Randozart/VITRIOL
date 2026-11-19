@@ -73,6 +73,13 @@ pub struct Sample {
     /// cannot tell a model that never read the fact from a guard that looks for
     /// the wrong string. Only recorded when the shape carries a guard.
     pub answer_head: Option<String>,
+    /// Characters after codec expansion (None for styles that promise no notation).
+    ///
+    /// E2's saving is only real if `expanded_chars < baseline_chars`: raw token
+    /// counts alone would reward an answer nobody can read.
+    pub expanded_chars: Option<usize>,
+    /// Symbols the model invented that the legend cannot decode (I4 failure).
+    pub invented: Option<String>,
 }
 
 /// Median of a list, ignoring NaN. Empty input yields NaN rather than panicking.

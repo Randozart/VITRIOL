@@ -1,0 +1,335 @@
+{
+  "deep_sections": 40,
+  "engine": "http://127.0.0.1:8279",
+  "fingerprint": "props model=/home/randozart/Models/Qwen3.8-27B-GSQ-RCO-BuffedMod-IQ3_S_XL-mtp-Q6K.gguf n_ctx=262144",
+  "max_tokens": 500,
+  "model": "unknown",
+  "repeats": 3,
+  "samples": [
+    {
+      "answer_head": "61\nThe engine prunes slot states by last access.",
+      "arm": "baseline",
+      "content_chars": 48,
+      "expanded_chars": null,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 14,
+        "predicted_s": 0.427387,
+        "prompt_n": 1908,
+        "prompt_s": 4.6562730000000006
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nThe engine prunes slot states by last access.",
+      "arm": "baseline",
+      "content_chars": 48,
+      "expanded_chars": null,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 14,
+        "predicted_s": 0.431368,
+        "prompt_n": 4,
+        "prompt_s": 0.15301599999999999
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nThe engine prunes slot states by last access.",
+      "arm": "baseline",
+      "content_chars": 48,
+      "expanded_chars": null,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 14,
+        "predicted_s": 0.422344,
+        "prompt_n": 4,
+        "prompt_s": 0.155118
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nPrunes by last access.",
+      "arm": "telegraphic",
+      "content_chars": 25,
+      "expanded_chars": 25,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 10,
+        "predicted_s": 0.27099900000000005,
+        "prompt_n": 1926,
+        "prompt_s": 4.799627999999999
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nPrunes by last access.",
+      "arm": "telegraphic",
+      "content_chars": 25,
+      "expanded_chars": 25,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 10,
+        "predicted_s": 0.260932,
+        "prompt_n": 4,
+        "prompt_s": 0.214771
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nPrunes by last access.",
+      "arm": "telegraphic",
+      "content_chars": 25,
+      "expanded_chars": 25,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 10,
+        "predicted_s": 0.260604,
+        "prompt_n": 4,
+        "prompt_s": 0.208087
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nThe engine prunes by last access.",
+      "arm": "codebook",
+      "content_chars": 36,
+      "expanded_chars": 36,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 12,
+        "predicted_s": 0.35175,
+        "prompt_n": 1936,
+        "prompt_s": 4.771293
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nThe engine prunes by last access.",
+      "arm": "codebook",
+      "content_chars": 36,
+      "expanded_chars": 36,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 12,
+        "predicted_s": 0.34686700000000004,
+        "prompt_n": 4,
+        "prompt_s": 0.154031
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "61\nThe engine prunes by last access.",
+      "arm": "codebook",
+      "content_chars": 36,
+      "expanded_chars": 36,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "deep-recall",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 12,
+        "predicted_s": 0.343848,
+        "prompt_n": 4,
+        "prompt_s": 0.152365
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "**Budget:** 47 GB\n\n**Steps:**\n1. **Offload KV Cache:** Move static KV cache to CPU RAM (or NVMe if RAM is tight) to free VRAM for active decoding.\n2. **Quantize KV Cache:** Apply FP8 or INT8 quantizat",
+      "arm": "baseline",
+      "content_chars": 828,
+      "expanded_chars": null,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 211,
+        "predicted_s": 8.081268,
+        "prompt_n": 4,
+        "prompt_s": 0.214423
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "**Budget:** 47 GB\n\n**Steps:**\n1. **Offload KV Cache:** Move static KV cache to CPU RAM (pinned memory) to free GPU VRAM for active decoding.\n2. **Quantize KV Cache:** Apply FP8 or INT8 quantization to",
+      "arm": "baseline",
+      "content_chars": 762,
+      "expanded_chars": null,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 190,
+        "predicted_s": 7.074741,
+        "prompt_n": 4,
+        "prompt_s": 0.249058
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "**Budget:** 47 GB\n\n**Steps:**\n1. **Offload KV Cache:** Move static KV cache to CPU RAM (or NVMe if RAM is tight) to free VRAM for active decoding.\n2. **Quantize KV Cache:** Apply FP8 or INT8 quantizat",
+      "arm": "baseline",
+      "content_chars": 828,
+      "expanded_chars": null,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 211,
+        "predicted_s": 8.073081,
+        "prompt_n": 4,
+        "prompt_s": 0.20141599999999998
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "Budget: 47 GB\n\nStep 1: Quantize KV cache to FP8\nStep 2: Split layers across two GPUs\nStep 3: Enable PagedAttention\nStep 4: Set block_size to 16\nStep 5: Allocate 23.5 GB per GPU\nStep 6: Verify MTP head",
+      "arm": "telegraphic",
+      "content_chars": 256,
+      "expanded_chars": 256,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 86,
+        "predicted_s": 3.11508,
+        "prompt_n": 4,
+        "prompt_s": 0.25200100000000003
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "Budget: 47 GB\n\nStep 1: Quantize KV cache to FP8\nStep 2: Split layers across two GPUs\nStep 3: Enable PagedAttention\nStep 4: Set block_size to 16\nStep 5: Allocate 23.5 GB per GPU\nStep 6: Verify MTP head",
+      "arm": "telegraphic",
+      "content_chars": 256,
+      "expanded_chars": 256,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 86,
+        "predicted_s": 3.025115,
+        "prompt_n": 4,
+        "prompt_s": 0.177625
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "Budget: 47 GB\n\nStep 1: Quantize KV cache to FP8\nStep 2: Split layers across two GPUs\nStep 3: Enable PagedAttention\nStep 4: Set block_size to 16\nStep 5: Allocate 23.5 GB per GPU\nStep 6: Verify MTP head",
+      "arm": "telegraphic",
+      "content_chars": 256,
+      "expanded_chars": 256,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 86,
+        "predicted_s": 3.006771,
+        "prompt_n": 4,
+        "prompt_s": 0.163666
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "Budget: 47 GB\n\n1. - remove speculative decoding ⇒ because it doubles memory footprint for draft tokens.\n2. + add KV cache quantization (FP8) ⇒ because it halves cache size per token.\n3. + add sliding ",
+      "arm": "codebook",
+      "content_chars": 517,
+      "expanded_chars": 570,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 125,
+        "predicted_s": 4.900646,
+        "prompt_n": 4,
+        "prompt_s": 0.278462
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "Budget: 47 GB\n\n1. - remove speculative decoding ⇒ because it doubles memory footprint for draft tokens.\n2. + add KV cache quantization (FP8) ⇒ because it halves cache size per token.\n3. + add sliding ",
+      "arm": "codebook",
+      "content_chars": 517,
+      "expanded_chars": 570,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 125,
+        "predicted_s": 4.902048,
+        "prompt_n": 4,
+        "prompt_s": 0.183386
+      },
+      "ttft_s": null,
+      "valid": null
+    },
+    {
+      "answer_head": "Budget: 47 GB\n\n1. - remove speculative decoding ⇒ because it doubles memory footprint for draft tokens.\n2. + add KV cache quantization (FP8) ⇒ because it halves cache size per token.\n3. + add sliding ",
+      "arm": "codebook",
+      "content_chars": 517,
+      "expanded_chars": 570,
+      "invented": null,
+      "recall_ok": true,
+      "shape": "internal-plan",
+      "stream_tps": 0.0,
+      "timings": {
+        "predicted_n": 125,
+        "predicted_s": 4.909697,
+        "prompt_n": 4,
+        "prompt_s": 0.14890299999999998
+      },
+      "ttft_s": null,
+      "valid": null
+    }
+  ],
+  "ts": 1795075103.7649007
+}

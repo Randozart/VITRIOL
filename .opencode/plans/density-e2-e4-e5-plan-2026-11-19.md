@@ -269,3 +269,33 @@ Findings:
   (which captures the engine's stdout) rather than against the live unit.
 
 **Verdict:** no change to `draft_n_max`. The `mtp:2` choice remains valid under structured lanes.
+
+## 10. E2 RESULT (2026-11-19) — terseness wins, the codebook does not
+
+Live engine (`spec=mtp,ngram-simple:2`), `temperature 0`, 3 repeats, recall guard on every run
+(`guard ok 3/3`), artifact `experiments/density-e2-codebook-2026-11-19.json`:
+
+| shape | baseline | telegraphic | codebook |
+|---|---|---|---|
+| internal-plan (tokens) | 828 | **256 (-69.1 %)** | 517 (-37.6 %) |
+| deep-recall (tokens) | - | **-47.9 %** | -25.0 % |
+
+**Verdict: adopt "be terse"; reject the codebook.** The one-line instruction ("no articles, no
+filler, one clause per line") saves 2.7x more than teaching a legend, and it needs no machinery at
+all. The legend costs prompt tokens and steers style without buying extra compression — on both
+shapes the codebook lands between baseline and telegraphic.
+
+The codec stays in the harness, for two reasons that are not about winning:
+1. **it is the guard**. `suspicious()` caught the model copying the legend's own `·` separator —
+   i.e. notation the reader could not decode. That is exactly the I4 failure mode, found on the
+   first run. The legend now uses commas and `·` is an accepted separator.
+2. a future lane with genuinely high-volume internal text may repay a legend; the measurement
+   exists, so nobody has to guess twice.
+
+Also fixed while measuring: the verdict table treated recall-guarded shapes as "no guard" (it only
+looked at schema validity), which would have printed ADOPT for an arm that lost the fact. Recall is
+now a first-class guard, matching E6's lesson.
+
+**Adoption path (shipped next):** a `[[officina-terse]]` marker in the Officina provider hook,
+mirroring E1's marker-driven `response_format`. Default off, per-prompt opt-in, and an explicit
+caller instruction always wins.

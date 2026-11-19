@@ -19,6 +19,7 @@
 //     not a fill); 40 sections ≈ 1.4k prompt tokens, 400 ≈ 14k.
 
 mod arms;
+mod codebook;
 mod engine;
 mod sample;
 mod shapes;
@@ -424,7 +425,7 @@ fn main() -> Result<()> {
                     Ok(s) => {
                         println!(
                             "  {:<12} {:<9} run {} · prompt {:>7.1} tok/s · decode {:>6.2} tok/s · \
-                             ttft {:>6.2}s · {} chars{}{}",
+                             ttft {:>6.2}s · {} chars{}{}{}",
                             shape.id,
                             arm.name(),
                             run + 1,
@@ -441,6 +442,11 @@ fn main() -> Result<()> {
                                 Some(true) => " · recalled",
                                 Some(false) => " · RECALL LOST",
                                 None => "",
+                            },
+                            match (&s.expanded_chars, &s.invented) {
+                                (_, Some(sym)) => format!(" · INVENTED {sym:?}"),
+                                (Some(n), None) => format!(" · decoded {n} chars"),
+                                (None, None) => String::new(),
                             }
                         );
                         samples.push(s);
@@ -561,9 +567,23 @@ fn summarize(samples: &[Sample]) {
                     .map(|s| s.content_chars as f64)
                     .collect::<Vec<_>>(),
             );
-            let checked = group.iter().filter(|s| s.valid.is_some()).count();
-            let valid = group.iter().filter(|s| s.valid == Some(true)).count();
-            Some((chars, valid, checked))
+            // A guard is a guard: schema validity where a schema exists, otherwise
+            // the recall probe. E6's false all-arms failure taught this the hard
+            // way — a run with no schema but with a recall guard is NOT unguarded.
+            let schema_checks = group.iter().filter(|s| s.valid.is_some()).count();
+            let recall_checks = group.iter().filter(|s| s.recall_ok.is_some()).count();
+            let (checked, passed) = if schema_checks > 0 {
+                (
+                    schema_checks,
+                    group.iter().filter(|s| s.valid == Some(true)).count(),
+                )
+            } else {
+                (
+                    recall_checks,
+                    group.iter().filter(|s| s.recall_ok == Some(true)).count(),
+                )
+            };
+            Some((chars, passed, checked))
         };
         let Some((base_chars, _, _)) = get("baseline") else {
             continue;

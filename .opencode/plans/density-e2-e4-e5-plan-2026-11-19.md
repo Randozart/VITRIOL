@@ -239,3 +239,33 @@ Two engine observations, not fixed here:
 
 Also found and fixed while running E3: `sweep` never wrote `--json`, so the corroboration run above
 produced no artifact. `write_artifact` is now shared by both paths.
+
+## 9. E4 RESULT (2026-11-19) — grammar and speculative decoding coexist
+
+Ran on the **live** engine (now `spec=mtp,ngram-simple:2`), `temperature 0`, 2 repeats, artifact
+`experiments/density-e4-mtp-grammar-2026-11-19.json`:
+
+| shape | arm | decode tok/s | out tokens | validity |
+|---|---|---|---|---|
+| structured | baseline | 29.15 | 112 | 2/2 |
+| structured | grammar | 24.91 | 127 | 2/2 |
+| structured-nested | baseline | 32.63 | 533 | 0/2 |
+| structured-nested | grammar | 31.60 | 310 | 2/2 |
+| code-edit | baseline | 29.94 | 328 | - |
+| code-edit | grammar | 29.83 | 328 | - |
+
+Findings:
+- **Spec decoding survives the grammar.** Decode stays at 29-33 tok/s, which is the MTP/ngram range;
+  a grammar that disabled drafting would have collapsed to ~19 tok/s (measured `none` in E3).
+- **E1 reproduces exactly** under the new spec config: -41.8 % on the nested schema with 0/2 -> 2/2
+  validity, +13.4 % on the flat schema. The E1 adoption decision is unchanged by `ngram-simple`.
+- One observation worth keeping: the flat-schema grammar arm decoded ~15 % slower (24.9 vs 29.2)
+  while producing *more* tokens — consistent with constrained-sampling overhead on an
+  already-compliant schema. 2 repeats cannot separate that from noise; it is a reason to keep the
+  feature **opt-in per prompt** (as shipped), not to change it.
+- No `draft acceptance` counters reached the journal for these runs (the per-task timing lines stay
+  in the engine's own log), so "does grammar change acceptance?" is answered indirectly by the decode
+  rate, not by acceptance numbers. If that matters later, run the arms as a `density-bench sweep`
+  (which captures the engine's stdout) rather than against the live unit.
+
+**Verdict:** no change to `draft_n_max`. The `mtp:2` choice remains valid under structured lanes.

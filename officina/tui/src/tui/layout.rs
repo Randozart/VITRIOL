@@ -1628,10 +1628,18 @@ fn render_command_popup(
     sel: usize,
     area: Rect,
 ) {
-    // The menu floats over the transcript. Clear first, then paint every row
-    // on the panel tone — otherwise chat text shows through the gaps where a
-    // row has no span (owner report 2026-11-10).
+    // The menu floats over the transcript. Clear first, then paint the
+    // WHOLE surface panel before the block/rows: Clear only resets cells to
+    // the terminal's default background, so any cell no span later touches
+    // (row tails, wrapped-detail remainder, blank rows under a short
+    // candidate list) leaked the chat's dark through as a second, different
+    // dark (owner report 2026-11-19: "the / menu doesn't fill its entire
+    // background"). The fill guarantees every cell of the popup is PANEL.
     frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(" ".repeat(area.width as usize)).style(Style::new().bg(theme::PANEL())),
+        area,
+    );
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

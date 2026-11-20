@@ -23,7 +23,8 @@ mod tests {
         ("src/tui/state.rs", 9_604),
         // +2 (2026-11-19): reasoning_guard registration and its one-line call in agent_end.
         ("src/tui/mod.rs", 5_784),
-        ("src/tui/layout.rs", 5_617),
+        // +8 (2026-11-19): /-menu full-surface PANEL fill (bg-leak fix).
+        ("src/tui/layout.rs", 5_625),
         ("src/session_guard.rs", 1_324),
         ("src/tui/caduceus.rs", 1_253),
         ("src/markdown.rs", 1_251),

@@ -3,7 +3,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   GATEWAY_BASE_URL,
   ROUTER_BASE_URL,
@@ -27,6 +27,14 @@ function makeHome(withUnit: boolean): string {
 afterEach(() => {
   if (home) rmSync(home, { recursive: true, force: true });
   home = "";
+});
+
+// Hermeticity: a developer shell (or launch env) may export
+// OFFICINA_CADUCEUS_BASE_URL — the oven's shell tier would win over every
+// test expectation. Clear it before each case; the oven tests own the
+// shell-tier coverage.
+beforeEach(() => {
+  delete process.env.OFFICINA_CADUCEUS_BASE_URL;
 });
 
 describe("resolveBaseUrl", () => {

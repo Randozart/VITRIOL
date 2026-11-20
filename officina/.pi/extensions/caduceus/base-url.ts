@@ -1,16 +1,18 @@
 // Where the Caduceus provider points (2026-11-16).
 //
-// The routing proxy (`vitriol caduceus router --install`) reroutes a
-// quota-spent or dead lane to the panel's fallback, but only if the *provider*
-// addresses it. Deciding that here keeps it out of the launch environment: the
-// unit file written by `--install` (and removed by `--remove`) IS the switch.
+// 2026-11-20 (seam-resistance M2): precedence now lives in the OVEN
+// (_shared/resolve-config.ts) — this module is a thin adapter over the
+// resolved snapshot so existing callers keep their API. The env-file
+// demotion rule (a year-old BASE_URL pin must not bypass an installed
+// router — the 049ab57 defect) is enforced in the oven, and its
+// negative-control test is resolve-config.test.ts (I-oven-1).
 //
-// Invariants:
-//   P1 — an explicit OFFICINA_CADUCEUS_BASE_URL always wins (scripted setups).
+// Invariants (enforced by the oven; documented here for callers):
+//   P1 — a SHELL-exported OFFICINA_CADUCEUS_BASE_URL always wins.
 //   P2 — no unit file ⇒ the gateway origin, byte-identical to before.
 //   P3 — OFFICINA_CADUCEUS_ROUTER=0 is a kill switch even when installed.
 
-import { existsSync } from "node:fs";
+import { resetConfigCache, resolveConfig } from "../_shared/resolve-config.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -32,26 +34,52 @@ export function routerUnitPath(env: NodeJS.ProcessEnv = process.env): string {
   );
 }
 
-/** Is the reroute proxy installed? */
+/**
+ * Is the reroute proxy installed? (oven-resolved; env param kept for compat.)
+ * The oven detects the unit via OFFICINA_TEST_HOME (its test seam); callers
+ * that pass env.HOME get the same effect by bridging it here.
+ */
 export function routerInstalled(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (
-    /^(0|false|off|no)$/i.test(
-      String(env.OFFICINA_CADUCEUS_ROUTER ?? "").trim(),
-    )
-  ) {
-    return false;
+  const saved = process.env.OFFICINA_TEST_HOME;
+  const savedKill = process.env.OFFICINA_CADUCEUS_ROUTER;
+  process.env.OFFICINA_TEST_HOME = String(env.HOME ?? saved ?? "");
+  // Bridge the P3 kill switch (callers may pass it as a param).
+  if (env.OFFICINA_CADUCEUS_ROUTER !== undefined) {
+    process.env.OFFICINA_CADUCEUS_ROUTER = env.OFFICINA_CADUCEUS_ROUTER;
   }
   try {
-    return existsSync(routerUnitPath(env));
-  } catch {
-    return false;
+    resetConfigCache(); // HOME differs per call — never serve a stale snapshot
+    return resolveConfig().caduceusRouterInstalled.value;
+  } finally {
+    if (saved === undefined) delete process.env.OFFICINA_TEST_HOME;
+    else process.env.OFFICINA_TEST_HOME = saved;
+    if (savedKill === undefined) delete process.env.OFFICINA_CADUCEUS_ROUTER;
+    else process.env.OFFICINA_CADUCEUS_ROUTER = savedKill;
   }
 }
 
-/** Provider base URL: explicit env, else the proxy when installed, else the gateway. */
+/** Provider base URL: oven-resolved (see module docstring for precedence). */
 export function resolveBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = String(env.OFFICINA_CADUCEUS_BASE_URL ?? "").trim();
-  if (explicit) return explicit.replace(/\/+$/, "");
-  if (routerInstalled(env)) return ROUTER_BASE_URL;
-  return GATEWAY_BASE_URL;
+  const saved = process.env.OFFICINA_TEST_HOME;
+  const savedShell = process.env.OFFICINA_CADUCEUS_BASE_URL;
+  const savedKill = process.env.OFFICINA_CADUCEUS_ROUTER;
+  const shell = env.OFFICINA_CADUCEUS_BASE_URL;
+  process.env.OFFICINA_TEST_HOME = String(env.HOME ?? saved ?? "");
+  // Bridge BOTH seams the tests use: HOME (unit detection) and an explicit
+  // BASE_URL / kill switch passed as params (shell tier in the oven's model).
+  if (shell !== undefined) process.env.OFFICINA_CADUCEUS_BASE_URL = shell;
+  if (env.OFFICINA_CADUCEUS_ROUTER !== undefined) {
+    process.env.OFFICINA_CADUCEUS_ROUTER = env.OFFICINA_CADUCEUS_ROUTER;
+  }
+  try {
+    resetConfigCache();
+    return resolveConfig().caduceusBaseUrl.value;
+  } finally {
+    if (saved === undefined) delete process.env.OFFICINA_TEST_HOME;
+    else process.env.OFFICINA_TEST_HOME = saved;
+    if (savedShell === undefined) delete process.env.OFFICINA_CADUCEUS_BASE_URL;
+    else process.env.OFFICINA_CADUCEUS_BASE_URL = savedShell;
+    if (savedKill === undefined) delete process.env.OFFICINA_CADUCEUS_ROUTER;
+    else process.env.OFFICINA_CADUCEUS_ROUTER = savedKill;
+  }
 }

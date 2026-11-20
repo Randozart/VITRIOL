@@ -7041,7 +7041,12 @@ mod tests {
             ..Default::default()
         };
         let secs = s.watchdog_countdown().expect("countdown armed");
-        assert!((20..=21).contains(&secs), "countdown ~21s, got {secs}");
+        // The window is wide because now_ms is sampled twice — here and inside
+        // watchdog_countdown — and under a loaded test runner (2026-11-20: 398
+        // tests, 190 s wall) the samples drift seconds apart. 18 keeps the
+        // arithmetic honest (next_check − now, floor-div 1000) while absorbing
+        // scheduler jitter; a value outside 18..=21 means the math broke.
+        assert!((18..=21).contains(&secs), "countdown ~21s, got {secs}");
         // facts older than 2 min are ignored
         s.watchdog = Some(WatchdogDoc {
             ts: now.saturating_sub(180_000),

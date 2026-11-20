@@ -45,8 +45,25 @@ export function gateDecision(
 
 /**
  * Once the pipeline is past the gate (plan written, grind running), the
- * GRIND markers govern completion. Re-export the shapes here so the pipeline
- * loop has one import site. (grind/rules.ts owns the grammar.)
+ * GRIND markers govern completion. The grammar is duplicated here rather
+ * than re-exported: _shared must not import extension feature code
+ * (boundary.test.ts inversion rule). grind/rules.ts remains the source of
+ * truth — keep the regexes in lockstep.
  */
-export type { Marker } from "../grind/rules.ts";
-export { parseMarker } from "../grind/rules.ts";
+export type Marker =
+  { kind: "done" } | { kind: "blocked"; reason: string } | { kind: "none" };
+
+export function parseMarker(text: string): Marker {
+  const lines = String(text ?? "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const last = lines[lines.length - 1] ?? "";
+  const blocked = /^GRIND:\s*BLOCKED\b[: ]*(.*)$/i.exec(last);
+  if (blocked) {
+    const reason = (blocked[1] ?? "").trim() || "no reason given";
+    return { kind: "blocked", reason };
+  }
+  if (/^GRIND:\s*DONE\b/i.test(last)) return { kind: "done" };
+  return { kind: "none" };
+}

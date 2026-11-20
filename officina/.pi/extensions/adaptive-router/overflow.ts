@@ -94,6 +94,12 @@ export interface DecideInput {
   localDown: boolean;
   /** Cloud tier was entered because the engine was down (not contention). */
   failoverActive: boolean;
+  /**
+   * Fresh observation that the single local slot is contended (2026-11-20,
+   * lapis slot contention). Absent = pre-change behaviour exactly (I1): the
+   * decision falls back to the stale `load` snapshot alone.
+   */
+  localContended?: boolean;
   // ── P3 multi-session slot arbitration (all optional: absent = pre-P3
   //    behaviour exactly, which keeps single-session decisions identical) ──
   /** This session's identity for seniority ranking. */
@@ -117,6 +123,9 @@ export interface Decision {
   /** True when this decision was a peer-arbitration demotion (the caller
    *  must not charge it against the cache-affinity switch cap). */
   peerDemoted?: boolean;
+  /** True when this decision was a slot-contention demotion (arbitration,
+   *  not cache-affinity churn — I3). */
+  contentionDemoted?: boolean;
 }
 
 export function localBusy(load: LoadSample, cfg: OverflowConfig): boolean {
@@ -161,7 +170,13 @@ export function decideTier(
   cfg: OverflowConfig = configFromEnv({}),
 ): Decision {
   const { state, load, privacy } = input;
-  const busy = localBusy(load, cfg);
+  // Contention is a FRESH busy signal (2026-11-20): the 700 ms /slots
+  // snapshot can say idle while a second session holds the only slot. It is
+  // OR-ed into busy so every downstream arm behaves exactly as if the engine
+  // were busy — but the demotion it causes is arbitration, not cache churn,
+  // so the caller must not charge the switch cap (I3).
+  const contended = input.localContended === true;
+  const busy = localBusy(load, cfg) || contended;
 
   // Privacy beats utilization.
   if (cfg.sensitiveLocal && privacy !== "safe") {
@@ -226,8 +241,17 @@ export function decideTier(
 
   if (state.tier === "local") {
     if (!busy) return { tier: "local", reason: "local idle" };
-    if (input.cloudFits && input.budgetLeft && canSwitch) {
-      return { tier: "cloud", reason: "local busy — spill to cloud" };
+    if (input.cloudFits && input.budgetLeft && (canSwitch || contended)) {
+      // A contention demotion is arbitration — the slot belongs to another
+      // live session, so it must not be charged against the cache-affinity
+      // cap (I3), exactly like a peer demotion.
+      return {
+        tier: "cloud",
+        reason: contended
+          ? "local slot contended — spill to cloud"
+          : "local busy — spill to cloud",
+        ...(contended ? { contentionDemoted: true } : {}),
+      };
     }
     // Same tier as before the 2026-11-11 hardening; the reason now names
     // WHICH gate blocked the spill (the old string blamed the cloud when

@@ -319,3 +319,85 @@ describe("resolveTargetCloud", () => {
     ).toEqual(small);
   });
 });
+
+// ── Slot contention (2026-11-20) ─────────────────────────────────────────
+// The single-slot engine: a second session can hold the only slot while the
+// 700 ms /slots snapshot still says idle. These pin the contention signal the
+// fresh probe feeds into the decision.
+describe("slot contention", () => {
+  /** I1: absent contention input ⇒ decisions identical to pre-change code. */
+  it("contention_parity_matrix", () => {
+    const loads = [
+      load(),
+      load({ processing: 1 }),
+      load({ deferred: 2 }),
+      load({ queueWaitMs: 2000 }),
+      load({ stalled: true }),
+      load({ gpuLoad: 0.95 }),
+    ];
+    const tiers = ["local", "cloud"] as const;
+    const cloudFits = [true, false];
+    const budget = [true, false];
+    for (const l of loads) {
+      for (const tier of tiers) {
+        for (const fits of cloudFits) {
+          for (const budgetLeft of budget) {
+            const base = input({
+              state: state({ tier, switches: 0 }),
+              load: l,
+              cloudFits: fits,
+              budgetLeft,
+            });
+            const withUndef = { ...base, localContended: undefined };
+            const withoutKey: DecideInput = { ...base };
+            expect(decideTier(withUndef, cfg)).toEqual(decideTier(withoutKey, cfg));
+            // And an explicit false must equal absent.
+            expect(decideTier({ ...base, localContended: false }, cfg)).toEqual(
+              decideTier(withoutKey, cfg),
+            );
+          }
+        }
+      }
+    }
+  });
+
+  /** I3: a contention demotion is arbitration — it must not charge the cap. */
+  it("contention_demotes_without_switch_cap", () => {
+    const d = decideTier(
+      input({
+        state: state({ tier: "local", switches: cfg.maxSwitches }),
+        localContended: true,
+      }),
+      cfg,
+    );
+    expect(d.tier).toBe("cloud");
+    expect(d.contentionDemoted).toBe(true);
+    expect(d.reason).toContain("contended");
+  });
+
+  /** I4: contention with no cloud capacity still runs locally. */
+  it("contention_without_cloud_stays_local", () => {
+    const d = decideTier(
+      input({ localContended: true, cloudFits: false }),
+      cfg,
+    );
+    expect(d.tier).toBe("local");
+    expect(d.contentionDemoted).toBeUndefined();
+  });
+
+  it("contention is ignored for a sensitive turn (privacy wins)", () => {
+    const d = decideTier(
+      input({ localContended: true, privacy: "confidential" }),
+      cfg,
+    );
+    expect(d.tier).toBe("local");
+  });
+
+  it("contention on the cloud tier does not force a local return", () => {
+    const d = decideTier(
+      input({ state: state({ tier: "cloud" }), localContended: true }),
+      cfg,
+    );
+    expect(d.tier).toBe("cloud");
+  });
+});

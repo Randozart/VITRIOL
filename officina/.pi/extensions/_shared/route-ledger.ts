@@ -29,7 +29,7 @@ export interface RouteLedgerEntry {
   provider?: string;
   model?: string;
   owner?: string;
-  localState?: "up" | "down" | "busy" | "unknown";
+  localState?: "up" | "down" | "busy" | "contended" | "unknown";
   profile?: string;
   candidatesSkipped?: string[];
   latencyMs?: number;

@@ -19,10 +19,34 @@ vi.mock("../_shared/lane-health.ts", () => ({
   EMPTY_HEALTH: () => ({ hardDown: new Set(), backoff: new Set(), active: new Set(), checkedAt: 0 }),
 }));
 
-const engine = { up: true, busy: false, slots: [] as Array<{ id: number }> };
+const engine = {
+  up: true,
+  busy: false,
+  slots: [] as Array<{ id: number }>,
+  /** Fresh admission probe answer (2026-11-20 slot contention). */
+  probeBusy: false,
+  /** Contention mark observed by the router. */
+  contended: false,
+};
 vi.mock("../_shared/engine.ts", () => ({
   startEnginePolling: () => undefined,
   onEngineUpdate: () => undefined,
+  // 2026-11-20 (slot contention): the probe answers from the same fixture,
+  // and the contention mark is a plain flag so tests can assert BOTH inputs
+  // (fresh probe vs recorded contention) independently.
+  probeAdmission: async () => ({
+    anyBusy: engine.probeBusy,
+    slotCount: 1,
+    ok: true,
+  }),
+  markLocalContended: () => {
+    engine.contended = true;
+  },
+  localContended: () => engine.contended,
+  CONTENTION_TTL_MS: 3000,
+  clearLocalContended: () => {
+    engine.contended = false;
+  },
   getEngineSnapshot: () => ({
     up: engine.up,
     polled: true,
@@ -124,6 +148,8 @@ describe("resilient-default", () => {
     engine.up = true;
     engine.busy = false;
     engine.slots = [];
+    engine.probeBusy = false;
+    engine.contended = false;
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model";
     // Never honour the operator's routing prefs in tests (panel I1).
@@ -532,4 +558,63 @@ afterEach(() => {
   if (originalRegistry === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
   else process.env.OFFICINA_ROUTING_REGISTRY_DIR = originalRegistry;
   rmSync(testRegistry, { recursive: true, force: true });
+});
+
+// ── Slot contention (2026-11-20) ───────────────────────────────────────────
+// The operator's report: Lapis routed to the one-slot local engine while that
+// slot was held by another session. The 700 ms engine snapshot said idle; the
+// FRESH probe says busy. Routing assertions only — the ledger is written at
+// message_end, so it is exercised explicitly where it matters (I5).
+describe("resilient-default slot contention", () => {
+  beforeEach(() => {
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK =
+      "caduceus/test-model,caduceus/second-model";
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
+    process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
+  });
+  afterEach(() => {
+    delete process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK;
+    delete process.env.OFFICINA_FREE_DAILY_TOKENS;
+    delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
+  });
+
+  // Declaration order matters: this case must run with a clean local tier.
+  it("stays local when the probe reports the slot free (parity, I1/I6)", async () => {
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp");
+  });
+
+  it("routes to cloud when the fresh probe sees the slot busy", async () => {
+    engine.probeBusy = true;
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("caduceus");
+  });
+
+  it("records localState 'contended' when the probe observed it (I5)", async () => {
+    engine.probeBusy = true;
+    const h = harness();
+    await h.run("user");
+    // The ledger row is written at message_end, not at route time.
+    await h.fire("message_end", {
+      message: { role: "assistant", stopReason: "end_turn", usage: {} },
+    });
+    expect(lastRouteEntry()?.localState).toBe("contended");
+  });
+
+  it("marks contention on a local 4xx response (was silently ignored)", async () => {
+    // Force a LOCAL route: with no cloud budget the router returns home even
+    // from a cloud tier, so the local failure path is the one under test.
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "0";
+    const h = harness();
+    const route = await h.run("user");
+    expect(route.model.provider).toBe("llamacpp");
+    await h.fire("after_provider_response", { status: 503, headers: {} });
+    expect(engine.contended).toBe(true);
+    expect(h.ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("contended"),
+      "info",
+    );
+  });
 });

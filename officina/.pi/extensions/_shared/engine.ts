@@ -388,9 +388,74 @@ export function getEngineSnapshot(): EngineSnapshot {
   return state.snap;
 }
 
+/** Fresh admission answer — never cached, never thrown. */
+export interface AdmissionProbe {
+  /** True when /slots answered and at least one slot is processing. */
+  anyBusy: boolean;
+  /** Slots reported by this probe (0 when it failed). */
+  slotCount: number;
+  /** Did the probe get a usable answer? False = fail-open decision path. */
+  ok: boolean;
+}
+
+/**
+ * One FRESH `/slots` read, for the pre-send admission check (2026-11-20,
+ * lapis slot contention). The poll loop answers every 700 ms, so a second
+ * session can claim the only slot between the snapshot and the request; this
+ * probe closes that window to one round-trip.
+ *
+ * FAIL-OPEN contract (I2): on timeout, non-200, bad JSON or a down engine the
+ * result is `{ok:false}` and the caller falls back to snapshot logic. A probe
+ * must never block or delay a local request beyond `timeoutMs`.
+ */
+export async function probeAdmission(timeoutMs = 250): Promise<AdmissionProbe> {
+  const base = state.base || process.env.VITRIOL_BASE_URL || DEFAULT_ENDPOINT;
+  const out = await fetchText(`${base.replace(/\/$/, "")}/slots`, timeoutMs);
+  if (out.kind !== "ok") return { anyBusy: false, slotCount: 0, ok: false };
+  const slots = parseSlots(out.text);
+  if (slots.length === 0) return { anyBusy: false, slotCount: 0, ok: false };
+  return {
+    anyBusy: slots.some((s) => s.busy),
+    slotCount: slots.length,
+    ok: true,
+  };
+}
+
 export function onEngineUpdate(fn: Listener): () => void {
   state.listeners.add(fn);
   return () => state.listeners.delete(fn);
+}
+
+/** Shared contention mark TTL — long enough to cover a retry, short enough
+ *  to self-heal when the other session finishes (2026-11-20). */
+export const CONTENTION_TTL_MS = 3_000;
+
+/**
+ * Record that the local slot was busy when we tried to use it. The router
+ * reads this on the NEXT decision so a second session is not routed blind
+ * at the single slot again (I5: only ever set from an observation).
+ * globalThis-backed: module state does not cross jiti instances.
+ */
+export function markLocalContended(
+  nowMs = Date.now(),
+  ttlMs = CONTENTION_TTL_MS,
+): void {
+  (
+    globalThis as { __officinaLocalContended?: number }
+  ).__officinaLocalContended = nowMs + ttlMs;
+}
+
+/** True while a recent contention observation is still fresh. */
+export function localContended(nowMs = Date.now()): boolean {
+  const until = (globalThis as { __officinaLocalContended?: number })
+    .__officinaLocalContended;
+  return typeof until === "number" && until > nowMs;
+}
+
+/** Test hook: clear the contention mark. */
+export function clearLocalContended(): void {
+  delete (globalThis as { __officinaLocalContended?: number })
+    .__officinaLocalContended;
 }
 
 /** Test hook (jiti-isolation guard): true when THIS module instance sees a

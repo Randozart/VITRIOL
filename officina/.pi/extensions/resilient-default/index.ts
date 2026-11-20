@@ -9,7 +9,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   getEngineSnapshot,
+  localContended,
+  markLocalContended,
   onEngineUpdate,
+  probeAdmission,
   startEnginePolling,
 } from "../_shared/engine.ts";
 import {
@@ -129,7 +132,7 @@ interface LastDecision {
   provider: string;
   model: string;
   profile: RoutingProfile;
-  localState: "up" | "down" | "busy" | "unknown";
+  localState: "up" | "down" | "busy" | "contended" | "unknown";
   startedAt: number;
   /** Why other lanes were not chosen (ledger observability, 2026-11-14). */
   skipped: string[];
@@ -604,6 +607,12 @@ export default function (pi: ExtensionAPI) {
         .getAvailable()
         .find((m) => isEngineProvider(m.provider));
     const snap = getEngineSnapshot();
+    // Pre-send admission probe (2026-11-20): one fresh /slots read closes the
+    // 700 ms snapshot window in which a second session claims the only slot.
+    // FAIL-OPEN (I2): a probe error leaves probeBusy false and the decision
+    // falls back to the stale snapshot exactly as before.
+    const probe = await probeAdmission(250);
+    const probeBusy = probe.ok && probe.anyBusy;
     const localDown = cfg.failover && snap.polled && !snap.up;
     const load = {
       processing: snap.polled ? (snap.up ? snap.processing : 1) : 0,
@@ -661,11 +670,16 @@ export default function (pi: ExtensionAPI) {
     const remember = (chosen: Model, chosenTier: Tier): void => {
       const stateKind: LastDecision["localState"] = localDown
         ? "down"
-        : load.processing > 0 ||
-            load.deferred > 0 ||
-            load.queueWaitMs >= cfg.queueWaitMs
-          ? "busy"
-          : "up";
+        : // "contended" only when the probe/mark OBSERVED the busy slot (I5):
+          // a stale snapshot's "busy" and a fresh contention signal are not
+          // the same fact, and the ledger must not blur them.
+          probeBusy || localContended(now)
+          ? "contended"
+          : load.processing > 0 ||
+              load.deferred > 0 ||
+              load.queueWaitMs >= cfg.queueWaitMs
+            ? "busy"
+            : "up";
       lastDecision = {
         sessionId:
           ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ??
@@ -853,13 +867,21 @@ export default function (pi: ExtensionAPI) {
           localDown,
           failoverActive: state.failoverActive,
           complexity: cls ? cls.complexity : undefined,
+          // Fresh contention observation (2026-11-20): true when the last
+          // attempt found the single slot busy, or the pre-send probe sees
+          // it busy right now. Absent-equivalent when false (I1 parity).
+          localContended: localContended(now) || probeBusy,
           ...peerContext,
         },
         cfg,
       );
       tier = decision.tier;
       const emergency = localDown && tier === "cloud";
-      const peerDemoted = decision.peerDemoted === true;
+      // Arbitration demotions (peer seniority, slot contention) are not
+      // cache-affinity churn: the slot was taken by another live session, so
+      // charging the switch cap would strand this session in the cloud (I3).
+      const arbitrated =
+        decision.peerDemoted === true || decision.contentionDemoted === true;
       if (tier !== state.tier) {
         if (tier === "local") {
           // Returning home resets the cap (oscillation debt is settled).
@@ -870,7 +892,7 @@ export default function (pi: ExtensionAPI) {
             // Peer demotions are arbitration, not cache-affinity churn.
             switches:
               state.switches +
-              (emergency || state.failoverActive || peerDemoted ? 0 : 1),
+              (emergency || state.failoverActive || arbitrated ? 0 : 1),
             turnsOnTier: 1,
             failoverActive: emergency ? true : state.failoverActive,
           };
@@ -956,9 +978,22 @@ export default function (pi: ExtensionAPI) {
     );
   };
 
-  pi.on("after_provider_response", (event) => {
-    if (!activeCloud) return;
+  pi.on("after_provider_response", (event, ctx) => {
     const status = event.status;
+    // Local-tier observation (2026-11-20): before this, a local 400/503
+    // recorded NOTHING — no mark, no notice — so the next decision was blind
+    // at the single slot again (the operator's "routed to a busy Lapis").
+    // Admission-shaped local failures now mark short-lived contention.
+    if (!activeCloud) {
+      if (status && status >= 400) {
+        markLocalContended();
+        ctx.ui?.notify?.(
+          `route: local slot contended (HTTP ${status}) — the engine has one slot; next turn prefers cloud`,
+          "info",
+        );
+      }
+      return;
+    }
     const retryAfterMs = recordRetryAfter(
       activeCloud.provider,
       activeCloud.id,

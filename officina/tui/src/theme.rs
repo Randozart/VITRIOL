@@ -85,7 +85,7 @@ pub static VITRIOL: Theme = Theme {
     dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
     mercury: c_rgb(0x55, 0x60, 0x6E),
     silver: c_rgb(0xC0, 0xC7, 0xCF),
-    watermark: c_rgb(0x2A, 0x3A, 0x52),
+    watermark: c_rgb(0x33, 0x46, 0x5E),
     white: c_rgb(0xFF, 0xFF, 0xFF),
     fire: &[
         c_rgb(0x2E, 0x5F, 0xA3),
@@ -122,7 +122,7 @@ pub static AETHERSHIP: Theme = Theme {
     dark_teal: c_rgb(0x22, 0x35, 0x3B), // waveBlue1-ish, dormant
     mercury: c_rgb(0x54, 0x54, 0x6C),
     silver: c_rgb(0x9C, 0xAB, 0xCA), // boatYellow2-adjacent pale blue
-    watermark: c_rgb(0x2A, 0x2A, 0x37),
+    watermark: c_rgb(0x4A, 0x4A, 0x5E),
     white: c_rgb(0xFF, 0xF5, 0xD6),
     fire: &[
         c_rgb(0x2D, 0x4F, 0x67), // waves at rest
@@ -158,7 +158,7 @@ pub static ALKAHEST: Theme = Theme {
     dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
     mercury: c_rgb(0x55, 0x60, 0x6E),
     silver: c_rgb(0xC0, 0xC7, 0xCF),
-    watermark: c_rgb(0x1E, 0x2A, 0x1E),
+    watermark: c_rgb(0x35, 0x47, 0x2F),
     white: c_rgb(0xFF, 0xFF, 0xFF),
     fire: &[
         c_rgb(0x2E, 0x5F, 0xA3),
@@ -194,7 +194,7 @@ pub static MONOKAI: Theme = Theme {
     dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
     mercury: c_rgb(0x55, 0x60, 0x6E),
     silver: c_rgb(0xC0, 0xC7, 0xCF),
-    watermark: c_rgb(0x3E, 0x3D, 0x32),
+    watermark: c_rgb(0x57, 0x55, 0x4A),
     white: c_rgb(0xFF, 0xFF, 0xFF),
     fire: &[
         c_rgb(0x3E, 0x3D, 0x32),
@@ -229,7 +229,7 @@ pub static CATPPUCCIN: Theme = Theme {
     dark_teal: c_rgb(0x1E, 0x3A, 0x4D), // deep teal
     mercury: c_rgb(0x58, 0x5B, 0x70),   // overlay2
     silver: c_rgb(0xBA, 0xC2, 0xDE),    // subtext1
-    watermark: c_rgb(0x45, 0x47, 0x5A),
+    watermark: c_rgb(0x4B, 0x4D, 0x61), // lifted past the 1.8 logo gate
     white: c_rgb(0xA6, 0xE3, 0xA1),
     fire: &[
         c_rgb(0x45, 0x47, 0x5A),
@@ -265,7 +265,7 @@ pub static KOMBAT: Theme = Theme {
     dark_teal: c_rgb(0x11, 0x3B, 0x47), // ice depth
     mercury: c_rgb(0x55, 0x60, 0x6E),
     silver: c_rgb(0xC7, 0xC2, 0xB6),    // Lin Kuei steel
-    watermark: c_rgb(0x3A, 0x2E, 0x1E), // dim dragon gold on obsidian
+    watermark: c_rgb(0x50, 0x3D, 0x26), // dim dragon gold on obsidian
     white: c_rgb(0xFF, 0xF6, 0xE0),
     fire: &[
         c_rgb(0x2D, 0x4F, 0x67), // ice at rest
@@ -757,6 +757,23 @@ mod theme_suite {
         (hi + 0.05) / (lo + 0.05)
     }
 
+    /// The braille logo (watermark art) is faint BY DESIGN, but must stay
+    /// visible: WCAG contrast of watermark-vs-bg >= 1.8:1 for every theme.
+    /// 2026-11-19: aethership measured 1.16 — the owner literally could not
+    /// see the logo on Kanagawa's sumi ink. All watermarks were raised to
+    /// clear this gate while keeping their hue (faint, never loud).
+    #[test]
+    fn logo_watermark_is_visible_on_every_theme() {
+        for t in ALL {
+            let c = contrast(t.watermark, t.bg);
+            assert!(
+                c >= 1.8,
+                "{}: logo contrast {c:.2} < 1.8 — the VITRIOL mark vanishes",
+                t.name
+            );
+        }
+    }
+
     /// A theme that cannot be read is not a theme. Text 7:1, secondary 3.5:1.
     #[test]
     fn every_theme_is_readable() {
@@ -832,6 +849,9 @@ mod theme_suite {
     /// VITRIOL is the original palette and must never drift: these literals are
     /// the pre-2026-11-18 constants, pinned so a future edit to the palette is a
     /// deliberate act rather than a side effect of another change.
+    /// 2026-11-19 EXCEPTION (deliberate, owner-requested): `watermark` moved
+    /// 0x2A3A52 → 0x33465E — the logo was invisible on the ground (1.65:1);
+    /// the logo-visibility gate now governs this field.
     #[test]
     fn vitriol_is_byte_identical_to_the_original_palette() {
         use Color::Rgb;
@@ -854,7 +874,7 @@ mod theme_suite {
         assert_eq!(VITRIOL.dark_teal, Rgb(0x0B, 0x5E, 0x4C));
         assert_eq!(VITRIOL.mercury, Rgb(0x55, 0x60, 0x6E));
         assert_eq!(VITRIOL.silver, Rgb(0xC0, 0xC7, 0xCF));
-        assert_eq!(VITRIOL.watermark, Rgb(0x2A, 0x3A, 0x52));
+        assert_eq!(VITRIOL.watermark, Rgb(0x33, 0x46, 0x5E)); // 2026-11-19 logo gate
         assert_eq!(VITRIOL.white, Rgb(0xFF, 0xFF, 0xFF));
         assert_eq!(VITRIOL.syntax, "base16-ocean.dark");
     }

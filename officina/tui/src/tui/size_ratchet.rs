@@ -30,9 +30,10 @@ mod tests {
         ("src/tui/caduceus.rs", 1_253),
         // +12 (2026-11-19): monokai + catppuccin embedded-theme resolution.
         ("src/markdown.rs", 1_263),
-        // +123 (2026-11-19): three new theme statics (monokai/catppuccin/kombat)
-        // — data rows, not behaviour; splitting a palette table buys nothing.
-        ("src/theme.rs", 1_068),
+        // +143 (2026-11-19): three new theme statics (monokai/catppuccin/kombat)
+        // + the logo-contrast gate test — palette data rows + one gate, not
+        // behaviour; splitting a palette table buys nothing.
+        ("src/theme.rs", 1_088),
         ("src/fire.rs", 1_048),
     ];
 

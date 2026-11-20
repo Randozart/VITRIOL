@@ -22,7 +22,7 @@
       "dark_teal": "#0b5e4c",
       "mercury": "#55606e",
       "silver": "#c0c7cf",
-      "watermark": "#2a3a52",
+      "watermark": "#33465e",
       "white": "#ffffff",
       "fire": ["#2e5fa3", "#00ffff", "#ffd700", "#ffa000", "#f85149"],
       "syntax": "base16-ocean.dark"
@@ -47,7 +47,7 @@
       "dark_teal": "#22353b",
       "mercury": "#54546c",
       "silver": "#9cabca",
-      "watermark": "#2a2a37",
+      "watermark": "#4a4a5e",
       "white": "#fff5d6",
       "fire": ["#2d4f67", "#957fb8", "#d27e99", "#ff9e3b", "#e6c384"],
       "syntax": "kanagawa-wave"
@@ -72,7 +72,7 @@
       "dark_teal": "#0b5e4c",
       "mercury": "#55606e",
       "silver": "#c0c7cf",
-      "watermark": "#1e2a1e",
+      "watermark": "#35472f",
       "white": "#ffffff",
       "fire": ["#2e5fa3", "#44aaff", "#dfff00", "#ffd700", "#ff79c6"],
       "syntax": "alka-neon"
@@ -97,7 +97,7 @@
       "dark_teal": "#0b5e4c",
       "mercury": "#55606e",
       "silver": "#c0c7cf",
-      "watermark": "#3e3d32",
+      "watermark": "#57554a",
       "white": "#ffffff",
       "fire": ["#3e3d32", "#ae81ff", "#66d9ef", "#a6e22e", "#f92672"],
       "syntax": "monokai"
@@ -122,7 +122,7 @@
       "dark_teal": "#1e3a4d",
       "mercury": "#585b70",
       "silver": "#bac2de",
-      "watermark": "#45475a",
+      "watermark": "#4b4d61",
       "white": "#a6e3a1",
       "fire": ["#45475a", "#cba6f7", "#89b4fa", "#89dceb", "#f5c2e7"],
       "syntax": "catppuccin-mocha"
@@ -147,7 +147,7 @@
       "dark_teal": "#113b47",
       "mercury": "#55606e",
       "silver": "#c7c2b6",
-      "watermark": "#3a2e1e",
+      "watermark": "#503d26",
       "white": "#fff6e0",
       "fire": ["#2d4f67", "#7fd1e8", "#e8b32a", "#e86a1f", "#d42b2b"],
       "syntax": "base16-ocean.dark"

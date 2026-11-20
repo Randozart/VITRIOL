@@ -526,7 +526,11 @@ mod tests {
 
         let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
         let mut rx = bridge.start_reader();
-        let first = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        // 20 s, not 5 (2026-11-20): CI compiles the whole workspace beside the
+        // tests; a cold `node` start under CPU starvation overran 5 s twice in
+        // one run while passing locally. The assertion is "the reader gets the
+        // child's first message", not "node starts fast".
+        let first = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
             .await
             .expect("first reader message timed out")
             .expect("reader closed");
@@ -536,7 +540,7 @@ mod tests {
         }
 
         let mut fresh = bridge.respawn(None).await.unwrap();
-        let second = tokio::time::timeout(std::time::Duration::from_secs(5), fresh.recv())
+        let second = tokio::time::timeout(std::time::Duration::from_secs(20), fresh.recv())
             .await
             .expect("respawned reader message timed out")
             .expect("respawned reader closed");
@@ -565,7 +569,8 @@ mod tests {
         .unwrap();
         let mut bridge = RpcBridge::spawn(&script, &dir, &[]).await.unwrap();
         let mut rx = bridge.start_reader();
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        // Same starvation rationale as respawn_restarts_the_child above.
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(20), rx.recv())
             .await
             .expect("grandchild message timed out")
             .expect("reader closed");

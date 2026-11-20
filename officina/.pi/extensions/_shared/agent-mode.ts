@@ -86,6 +86,65 @@ Answer the user's question directly and concisely, and confirm or correct the cu
 Behavior for this mode: investigate before acting — read the relevant code, trace the call paths, check tests and docs. Think about approaches and trade-offs. You may ONLY create or modify Markdown files (*.md) — use them for notes, findings, and the plan itself. Do NOT modify, create, or delete any other files, and do NOT run commands that change system or repository state. When you have enough understanding, present findings and a concrete plan.`,
     blockNonMdWrites: true,
   },
+  {
+    name: "conversation",
+    label: "CONVERSATION",
+    glyph: "◇",
+    color: "#2fa08a", // sea-glass teal: discussion water, not excavation
+    hint: "repo chat & light research · no state changes · TAB / /agent build",
+    directive: `AGENT MODE: CONVERSATION (discuss, do not act).
+This is a discussion turn about the repo, the architecture, or lightweight
+research. Answer concisely and substantively; you may read files and browse
+the web to ground the discussion. Do NOT modify files, run state-changing
+commands, or create task lists. If the discussion crystallises into a change
+request, say so and suggest switching to PLAN (TAB).`,
+  },
+  {
+    name: "research",
+    label: "RESEARCH",
+    glyph: "∿",
+    color: "#3a74d4", // abyss blue, lit past the 3:1 badge gate (distinct from BUILD)'s coldBlue
+    hint: "deep online research · *.md writes only · TAB / /agent plan",
+    directive: `AGENT MODE: RESEARCH (deep research-first, may go online).
+Investigate the question THOROUGHLY: the repo first (code, tests, docs, prior
+plans), then the wider world — best architectural practice, how comparable
+systems solve it, trade-offs and failure modes. Prefer the deep-research
+pipeline (its Scope→Research fan-out with websearch/webfetch/browser and NO
+bash in research children) over ad-hoc browsing when the question is broad.
+Cite what you found (file:line for local, URL for web). You may ONLY create
+or modify Markdown files — research notes in .opencode/plans/. Do NOT modify
+any other files and do NOT run state-changing commands. End by OFFERING the
+formalisation: "switch to PLAN to turn this into a plan, or PIPELINE to run
+research→plan→confirm→grind end-to-end" — then stop and let the owner pick.`,
+    blockNonMdWrites: true,
+  },
+  {
+    name: "pipeline",
+    label: "PIPELINE",
+    glyph: "⟲",
+    color: "#e05adf", // philosopher's ember: between GRIND violet and rubedo red
+    hint: "spec-driven: research → confirm → plan → grind · compacts after",
+    directive: `AGENT MODE: PIPELINE (spec-driven development, end-to-end).
+Run the full chain, in order, with HARD GATES between phases:
+  1. RESEARCH — investigate deeply (repo + online best practice, deep-research
+     pipeline for broad questions). Cite findings.
+  2. CONFIRM GATE — present the findings and the proposed plan to the owner
+     and STOP. Do not proceed on your own. Resume only after the owner
+     confirms; when they do, state the marker line exactly:
+     PIPELINE: PLAN CONFIRMED
+  3. PLAN — write the plan to .opencode/plans/ with an ## Invariants section
+     (numbered properties, each tied to the test that pins it) and named
+     tests that would prove the work correct.
+  4. GRIND — switch mentally to persistent-build rules: create the task list,
+     implement to zero, verify each change with the tests the plan defined,
+     commit per stage. Do not stop at checkpoints; end only with
+     GRIND: DONE or GRIND: BLOCKED: <reason>.
+  5. COMPACT — after GRIND: DONE, the compact-on-finish loop compacts as
+     usual; nothing extra is required.
+If the owner sends any input mid-pipeline, it stands down and follows them
+(same as GRIND). Never skip phase 2: implementing without the owner's
+explicit confirmation is a violation of this mode, not an efficiency.`,
+  },
 ];
 
 let modes: ModeDef[] = DEFAULT_MODES.map((m) => ({ ...m }));
@@ -93,15 +152,18 @@ let current: string = "build";
 
 export function setModes(defs: ModeDef[]): void {
   modes = defs.map((m) => ({ ...m }));
-  if (!modes.some((m) => m.name === current)) current = modes[0]?.name ?? "build";
+  if (!modes.some((m) => m.name === current))
+    current = modes[0]?.name ?? "build";
 }
 
 /** Merge user config over defaults: same name overrides, new names append. */
 export function loadModesFromConfigFile(path: string): boolean {
   try {
     // Lazy require-free JSON read keeps this importable anywhere.
-    const src = (globalThis as { __officinaReadText?: (p: string) => string }).__officinaReadText?.(path)
-      ?? readTextFileSync(path);
+    const src =
+      (
+        globalThis as { __officinaReadText?: (p: string) => string }
+      ).__officinaReadText?.(path) ?? readTextFileSync(path);
     if (!src) return false;
     const parsed = JSON.parse(src);
     const list: ModeDef[] = Array.isArray(parsed?.modes) ? parsed.modes : [];
@@ -129,13 +191,17 @@ function readTextFileSync(path: string): string | null {
 }
 
 export function modesPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.OFFICINA_MODES
-    || join(env.HOME || homedir(), ".vitriol", "officina", "modes.json");
+  return (
+    env.OFFICINA_MODES ||
+    join(env.HOME || homedir(), ".vitriol", "officina", "modes.json")
+  );
 }
 
 /** Facts file the TUI/other extensions read for the CURRENT mode (jiti
  *  isolation: module state does not cross extension boundaries). */
-export function agentModeFactsPath(env: NodeJS.ProcessEnv = process.env): string {
+export function agentModeFactsPath(
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   return join(env.HOME || homedir(), ".vitriol", "officina", "agent-mode.json");
 }
 

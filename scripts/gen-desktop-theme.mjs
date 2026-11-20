@@ -40,8 +40,12 @@ const OPAQUE = !argv.includes("--translucent");
 const PALETTE = argOf("--palette", "vitriol").toLowerCase();
 const THEME_NAMES = {
   vitriol: { title: "VITRIOL", id: "vitriol", dir: "vitriol" },
-  aether: { title: "Aether", id: "aether", dir: "aether" },
+  aether: { title: "Aether", id: "aether", dir: "aether" }, // legacy alias
+  aethership: { title: "Aethership", id: "aethership", dir: "aethership" },
   alkahest: { title: "Alkahest", id: "alkahest", dir: "alkahest" },
+  monokai: { title: "Monokai", id: "monokai", dir: "monokai" },
+  catppuccin: { title: "Catppuccin Mocha", id: "catppuccin", dir: "catppuccin" },
+  kombat: { title: "Kombat", id: "kombat", dir: "kombat" },
 };
 const meta = THEME_NAMES[PALETTE];
 if (!meta) {

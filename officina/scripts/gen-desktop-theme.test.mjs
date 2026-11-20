@@ -38,7 +38,7 @@ describe("gen-desktop-theme", () => {
     // 2026-11-18: the palette assumes a solid background. A terminal at 0.5
     // alpha let the wallpaper through the muted greys (owner report), so the
     // default output pins opacity, and --translucent restores the frosted look.
-    const opaque = generate("aether");
+    const opaque = generate("aethership");
     const kitty = readFileSync(
       join(opaque, "terminal/kitty/aether.conf"),
       "utf-8",
@@ -64,7 +64,7 @@ describe("gen-desktop-theme", () => {
     expect(alacrittyFrosted).not.toContain("opacity");
     // Negative control: colour fidelity is untouched by the flag.
     expect(kittyFrosted).toContain(
-      `background ${String(palette.palettes.aether.bg).toUpperCase()}`,
+      `background ${String(palette.palettes.aethership.bg).toUpperCase()}`,
     );
   });
 
@@ -138,7 +138,7 @@ describe("gen-desktop-theme", () => {
   });
 
   it("uses the same generator for every palette", () => {
-    for (const name of ["vitriol", "aether", "alkahest"]) {
+    for (const name of ["vitriol", "aethership", "alkahest"]) {
       const out = generate(name);
       const kitty = readFileSync(
         join(out, `terminal/kitty/${name}.conf`),

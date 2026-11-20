@@ -1,4 +1,4 @@
-//! Officina themes: **vitriol** (the original), **aether** (Kanagawa Wave) and
+//! Officina themes: **vitriol** (the original), **aethership** (Kanagawa Wave) and
 //! **alkahest** (neon alchemy).
 //!
 //! Palette history: ported from vitriol-tui/src/theme.rs (canonical Vitriolum
@@ -102,7 +102,7 @@ pub static VITRIOL: Theme = Theme {
 /// Values taken from `themes/kanagawa-aetherskiff/vscode/.../kanagawa-wave-color-theme.json`
 /// so the TUI matches the editor and the Plasma theme exactly.
 pub static AETHER: Theme = Theme {
-    name: "aether",
+    name: "aethership",
     bg: c_rgb(0x1F, 0x1F, 0x28),         // sumiInk1
     panel: c_rgb(0x16, 0x16, 0x1D),      // sumiInk0 (statusBar/sideBar)
     user_bg: c_rgb(0x24, 0x24, 0x2E),    // half-step toward sumiInk2
@@ -185,7 +185,7 @@ pub fn current() -> &'static Theme {
 pub fn by_name(name: &str) -> Option<&'static Theme> {
     let n = name.trim().to_lowercase();
     let n = match n.as_str() {
-        "kanagawa" | "aetherskiff" | "kanagawa-wave" => "aether",
+        "kanagawa" | "aetherskiff" | "kanagawa-wave" | "aether" | "aethership" => "aethership",
         "alka" | "alka-officina" | "alkahest" => "alkahest",
         "vitriolum" | "default" => "vitriol",
         other => other,
@@ -661,9 +661,12 @@ mod theme_suite {
     #[test]
     fn names_and_aliases_resolve() {
         assert_eq!(by_name("vitriol").map(|t| t.name), Some("vitriol"));
-        assert_eq!(by_name("AETHER").map(|t| t.name), Some("aether"));
-        assert_eq!(by_name("kanagawa").map(|t| t.name), Some("aether"));
-        assert_eq!(by_name("aetherskiff").map(|t| t.name), Some("aether"));
+        // 2026-11-19 rename: aether → aethership. Every historical spelling
+        // (including the stored-preference value "aether") must resolve.
+        assert_eq!(by_name("AETHERSHIP").map(|t| t.name), Some("aethership"));
+        assert_eq!(by_name("aether").map(|t| t.name), Some("aethership"));
+        assert_eq!(by_name("kanagawa").map(|t| t.name), Some("aethership"));
+        assert_eq!(by_name("aetherskiff").map(|t| t.name), Some("aethership"));
         assert_eq!(by_name("alkahest").map(|t| t.name), Some("alkahest"));
         assert_eq!(by_name("alka-officina").map(|t| t.name), Some("alkahest"));
         assert!(by_name("definitely-not-a-theme").is_none());
@@ -672,6 +675,10 @@ mod theme_suite {
 
     #[test]
     fn persisted_names_parse_leniently() {
+        assert_eq!(
+            parse_theme_name("  Aethership \n"),
+            Some("aethership".into())
+        );
         assert_eq!(parse_theme_name("  Aether \n"), Some("aether".into()));
         assert_eq!(parse_theme_name("\n\t "), None);
     }

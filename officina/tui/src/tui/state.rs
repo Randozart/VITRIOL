@@ -4768,7 +4768,7 @@ impl AppState {
         ("resume", "resume a session", "/resume — session picker; replays the full transcript including tool calls"),
         ("settings", "UI settings", "/settings [glimmer|fire] <args> — bare opens choices"),
         ("stats", "refresh stats", "/stats — refresh session statistics"),
-        ("theme", "colour theme", "/theme [vitriol|aether|alkahest] — bare lists them; the choice is remembered in ~/.vitriol/officina/tui-theme (OFFICINA_TUI_THEME previews one)"),
+        ("theme", "colour theme", "/theme [vitriol|aethership|alkahest] — bare lists them; the choice is remembered in ~/.vitriol/officina/tui-theme (OFFICINA_TUI_THEME previews one)"),
         ("thinking", "thinking level", "/thinking [off..max] — bare opens choices"),
         ("tools", "tool verbosity", "/tools [<tool> <mode>[!+|-] | <tool> clear | default <mode>] — modes: line/block/full; bare opens the picker; ctrl+t too"),
     ];
@@ -9140,8 +9140,10 @@ mod theme_repaint_tests {
             "test setup: rendering should have filled a cache"
         );
 
-        let applied = state.set_theme("aether", false).expect("aether exists");
-        assert_eq!(applied, "aether");
+        let applied = state
+            .set_theme("aethership", false)
+            .expect("aethership exists");
+        assert_eq!(applied, "aethership");
         assert!(
             state.entry_lines_cache.is_empty(),
             "per-entry cache survived a theme switch"

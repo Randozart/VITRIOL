@@ -20,7 +20,8 @@ mod tests {
 
     /// Frozen line counts, 2026-11-18. Lowering these over time is the point.
     const BUDGETS: &[(&str, usize)] = &[
-        ("src/tui/state.rs", 9_604),
+        // +2 (2026-11-19): aethership rename in theme help + repaint test.
+        ("src/tui/state.rs", 9_606),
         // +2 (2026-11-19): reasoning_guard registration and its one-line call in agent_end.
         ("src/tui/mod.rs", 5_784),
         // +8 (2026-11-19): /-menu full-surface PANEL fill (bg-leak fix).

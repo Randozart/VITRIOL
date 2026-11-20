@@ -32,7 +32,8 @@ mod tests {
         ("src/tui/mod.rs", 5_847),
         // +77 (2026-11-19): /-menu fill (+8) and render_mode_popup (+69) —
         // the popup widget; the popup LOGIC lives in mode_popup.rs (new file).
-        ("src/tui/layout.rs", 5_702),
+        // +21 (2026-11-20): per-column ignition_spans (rule gradient).
+        ("src/tui/layout.rs", 5_723),
         ("src/session_guard.rs", 1_324),
         ("src/tui/caduceus.rs", 1_253),
         // +12 (2026-11-19): monokai + catppuccin embedded-theme resolution.
@@ -43,7 +44,9 @@ mod tests {
         ("src/theme.rs", 1_088),
         // +77 (2026-11-19): cell_heat (inward→outward) + glow_bend (hot-core
         // white bend) + their pinning tests.
-        ("src/fire.rs", 1_125),
+        // +63 (2026-11-20): rule_column_color (per-column fire-mass gradient),
+        // edge_t hoist fix, gradient pinning tests.
+        ("src/fire.rs", 1_188),
     ];
 
     /// Files smaller than this are not budgeted: below it, a new file cannot be

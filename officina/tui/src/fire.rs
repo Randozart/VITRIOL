@@ -456,9 +456,29 @@ pub fn line_cells(
 }
 
 /// Colour of the ignition dots — the flame's base heat.
-pub fn ignition_color(phase_ms: u128, level: f64, style: FireStyle) -> ratatui::style::Color {
+/// 2026-11-20 FIX: PER-COLUMN. The rule and the body's bottom row had the
+/// identical (frac=0, edge=0) input, so they rendered as one flat band
+/// (owner: "the bottom layers are the same color"). The rule's heat now
+/// follows the column's FIRE MASS (`column_light` — how much flame lives in
+/// that column, 0 at the centre to 1 at the lit sides): bright where the
+/// fire is tall, dim where it is embers. That is the fire's own inside→out
+/// axis; a naive |edge−TONGUE_CENTER|/half distance clamps to 1.0 across
+/// almost the whole rule width (half is only ~0.41) and stays flat — the
+/// exact defect the first cut had.
+pub fn rule_column_color(
+    x: usize,
+    width: usize,
+    phase_ms: u128,
+    level: f64,
+    style: FireStyle,
+) -> ratatui::style::Color {
     let base_heat = (0.2 + 0.8 * level).clamp(0.0, 1.0);
-    style.color(base_heat, phase_ms)
+    let light = column_light(column_edge(x, width), level);
+    // Map fire mass onto the hot end: a fully-lit column burns at base heat,
+    // a barely-lit one at 35% of it. Never below — the rule is still the
+    // fire's birth row.
+    let heat = (0.35 + 0.65 * light) * base_heat;
+    style.color(heat.clamp(0.0, 1.0), phase_ms)
 }
 
 /// Draw the fire inside `area` (anchored so its bottom row sits on the
@@ -553,10 +573,14 @@ pub fn render(
             let span = (col_h - base_frac(rows)).max(1e-3);
             let frac = ((frac_from_base - base_frac(rows)) / span).clamp(0.0, 1.0);
             // Heat: base hotter, tips cooler; whole arc shifts hot with load.
-            // 2026-11-19: also INWARD→OUTWARD (see cell_heat) — the horizontal
-            // term makes bottom-row cells differ across the width, so the rule
-            // and the first body row can no longer read as one band.
-            let heat = cell_heat(base_heat, frac, 0.0);
+            // 2026-11-19: also INWARD→OUTWARD (see cell_heat). 2026-11-20 FIX:
+            // edge_t must be computed HERE and passed — the first cut called
+            // cell_heat(…, 0.0), which made the inward term a no-op in the
+            // drawn flame (only the text mask showed it) and kept the bottom
+            // band one flat colour (owner report, both defects).
+            let half = 0.5 * taper_scale(rn, taper);
+            let edge_t = ((edge - TONGUE_CENTER).abs() / half.max(1e-6)).clamp(0.0, 1.0);
+            let heat = cell_heat(base_heat, frac, edge_t);
             // Density: dots pile toward the base, thin at the tips, with
             // per-cell flicker keeping the surface alive. The BOTTOM row is
             // capped so it blends into the smouldering rule instead of butting
@@ -577,9 +601,8 @@ pub fn render(
             // Edge softening (2026-11-18): thin the glyph toward the tongue's
             // boundary, then let the outer sliver come and go per flicker step.
             // Only the GLYPH field dithers; the text-tint mask takes the smooth
-            // falloff alone, because text must never flicker.
-            let half = 0.5 * taper_scale(rn, taper);
-            let edge_t = ((edge - TONGUE_CENTER).abs() / half.max(1e-6)).clamp(0.0, 1.0);
+            // falloff alone, because text must never flicker. edge_t is already
+            // computed above (2026-11-20 hoist — the heat term consumes it).
             dens *= edge_falloff(edge_t);
             if edge_dither_culls(x as u32, edge_t, step) {
                 spans.push(Span::raw(" "));
@@ -1120,6 +1143,46 @@ mod rule_fade_tests {
         assert!(
             bent != Color::Rgb(255, 255, 255),
             "bend must stop short of pure white"
+        );
+    }
+
+    /// 2026-11-20 owner report (both defects): "fire isn't working from the
+    /// inside out" and "the bottom layers are the same color". The first cut
+    /// passed edge_t=0 into cell_heat for the BODY (inward term dead) and the
+    /// RULE used one flat ignition_color. These pins fail on that code.
+    #[test]
+    fn body_heat_varies_across_the_width_at_fixed_frac() {
+        // Same frac, edge_t from the real column_edge spread: centre vs edge.
+        let w = 101usize;
+        let centre = column_edge(50, w);
+        let edge = column_edge(2, w);
+        assert!(centre < edge, "column_edge must rise outward");
+        let base = 1.0f64;
+        let heat_core = cell_heat(base, 0.0, centre);
+        let heat_edge = cell_heat(base, 0.0, edge);
+        assert!(
+            heat_core > heat_edge,
+            "inward gradient must be visible: core {heat_core} <= edge {heat_edge}"
+        );
+    }
+
+    #[test]
+    fn rule_row_is_a_gradient_not_a_flat_band() {
+        use ratatui::style::Color;
+        let phase = 0u128;
+        let level = 0.8f64;
+        let w = 101usize;
+        let core = rule_column_color(50, w, phase, level, FireStyle::default());
+        let edge = rule_column_color(2, w, phase, level, FireStyle::default());
+        assert_ne!(core, edge, "rule row must vary across the width");
+        // And it must differ from the old flat value (the single-colour band).
+        let old_flat = {
+            let base_heat = (0.2 + 0.8 * level).clamp(0.0, 1.0);
+            FireStyle::default().color(base_heat, phase)
+        };
+        assert_ne!(
+            edge, old_flat,
+            "edge column must be cooler than the old flat band"
         );
     }
 }

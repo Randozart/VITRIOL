@@ -803,8 +803,13 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
             state.fire_level,
             state.fire_taper,
         );
-        let flame = crate::fire::ignition_color(phase_ms, state.fire_level, state.fire_style);
-        let line = Line::from(ignition_spans(w, &lit, flame));
+        let line = Line::from(ignition_spans(
+            w,
+            &lit,
+            phase_ms,
+            state.fire_level,
+            state.fire_style,
+        ));
         frame.render_widget(
             Paragraph::new(line).style(Style::new().bg(theme::BG())),
             gap,
@@ -1164,22 +1169,38 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
 fn ignition_spans(
     width: usize,
     lit: &[Option<char>],
-    flame: ratatui::style::Color,
+    phase_ms: u128,
+    level: f64,
+    style: crate::fire::FireStyle,
 ) -> Vec<Span<'static>> {
+    // 2026-11-20: PER-COLUMN colours — the rule participates in the inward
+    // gradient (rule_column_color), so the base band is one continuous
+    // gradient instead of a flat strip. Lit cells become per-cell spans
+    // (each may have its own colour); unlit runs still merge into one span.
     let mut out: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
-    let mut run_lit = false;
     for x in 0..width {
         let glyph = lit.get(x).copied().flatten();
-        let is_lit = glyph.is_some();
-        if !run.is_empty() && is_lit != run_lit {
-            out.push(ignition_span(std::mem::take(&mut run), run_lit, flame));
+        match glyph {
+            Some(g) => {
+                if !run.is_empty() {
+                    out.push(ignition_span(
+                        std::mem::take(&mut run),
+                        false,
+                        theme::BORDER_DIM(),
+                    ));
+                }
+                let c = crate::fire::rule_column_color(x, width, phase_ms, level, style);
+                out.push(Span::styled(
+                    g.to_string(),
+                    Style::new().fg(c).bg(theme::BG()),
+                ));
+            }
+            None => run.push('_'),
         }
-        run_lit = is_lit;
-        run.push(glyph.unwrap_or('_'));
     }
     if !run.is_empty() {
-        out.push(ignition_span(run, run_lit, flame));
+        out.push(ignition_span(run, false, theme::BORDER_DIM()));
     }
     out
 }

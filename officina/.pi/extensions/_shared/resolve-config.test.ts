@@ -5,6 +5,9 @@
 // bypassed the reroute proxy (049ab57). Shell exports still win (scripted
 // setups), also pinned.
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parseEnvFile,
@@ -19,9 +22,16 @@ const UNIT_ENV = { OFFICINA_TEST_HOME: "/tmp/definitely-no-unit-home" };
 
 function withEnv(env: Record<string, string>, envFileText = "") {
   const saved: Record<string, string | undefined> = {};
-  for (const [k, v] of Object.entries(env)) {
+  for (const k of [
+    ...Object.keys(env),
+    // Hermeticity: a dev shell (or launch env) may export the bypass key;
+    // unless a test explicitly sets it, scrub it so the oven's lower tiers
+    // are actually exercised.
+    "OFFICINA_CADUCEUS_BASE_URL",
+  ]) {
     saved[k] = process.env[k];
-    process.env[k] = v;
+    if (env[k] !== undefined) process.env[k] = env[k];
+    else delete process.env[k];
   }
   resetConfigCache();
   const cfg = resolveConfig(envFileText);
@@ -42,12 +52,17 @@ describe("resolve-config oven", () => {
   });
 
   it("I-oven-1 NEGATIVE CONTROL: env-file BASE_URL cannot defeat an installed router", () => {
-    // Router unit installed (default detection on this host), env file pins
-    // the gateway — the exact 049ab57 defect shape. The oven must return the
-    // ROUTER and record the env-file value as demoted.
-    const savedUnit = process.env.OFFICINA_CADUCEUS_ROUTER_UNIT;
+    // Router unit installed (synthetic temp HOME with the unit file — CI
+    // hosts have no real unit), env file pins the gateway — the exact
+    // 049ab57 defect shape. The oven must return the ROUTER and record the
+    // env-file value as demoted.
+    const home = mkdtempSync(join(tmpdir(), "oven-unit-"));
+    const dir = join(home, ".config", "systemd", "user");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "vitriol-caduceus-router.service"), "[Unit]\n");
+    const savedHome = process.env.OFFICINA_TEST_HOME;
     const savedBase = process.env.OFFICINA_CADUCEUS_BASE_URL;
-    delete process.env.OFFICINA_CADUCEUS_ROUTER_UNIT;
+    process.env.OFFICINA_TEST_HOME = home;
     delete process.env.OFFICINA_CADUCEUS_BASE_URL;
     resetConfigCache();
     const cfg = resolveConfig(
@@ -56,9 +71,12 @@ describe("resolve-config oven", () => {
     expect(cfg.caduceusBaseUrl.value).toBe("http://127.0.0.1:20129/v1");
     expect(cfg.caduceusBaseUrl.source).toBe("default");
     expect(cfg.caduceusRouterInstalled.value).toBe(true);
-    if (savedUnit !== undefined)
-      process.env.OFFICINA_CADUCEUS_ROUTER_UNIT = savedUnit;
+    if (savedHome !== undefined) process.env.OFFICINA_TEST_HOME = savedHome;
+    else delete process.env.OFFICINA_TEST_HOME;
+    if (savedBase !== undefined)
+      process.env.OFFICINA_CADUCEUS_BASE_URL = savedBase;
     resetConfigCache();
+    rmSync(home, { recursive: true, force: true });
   });
 
   it("I-oven-1 companion: shell export still wins absolutely", () => {
@@ -96,6 +114,8 @@ describe("resolve-config oven", () => {
     expect(why("OFFICINA_CADUCEUS_BASE_URL")).toBe("shell");
     if (saved === undefined) delete process.env.OFFICINA_CADUCEUS_BASE_URL;
     else process.env.OFFICINA_CADUCEUS_BASE_URL = saved;
+    // The dev-shell export must not leak into the "restored" resolution.
+    delete process.env.OFFICINA_CADUCEUS_BASE_URL;
     resetConfigCache();
     // Restore check: after withEnv restored the env, a fresh resolution
     // records the default rule.

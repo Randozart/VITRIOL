@@ -73,7 +73,7 @@ pub static VITRIOL: Theme = Theme {
     dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
     mercury: c_rgb(0x55, 0x60, 0x6E),
     silver: c_rgb(0xC0, 0xC7, 0xCF),
-    watermark: c_rgb(0x2A, 0x3A, 0x52),
+    watermark: c_rgb(0x33, 0x46, 0x5E),
     white: c_rgb(0xFF, 0xFF, 0xFF),
     fire: &[
         c_rgb(0x2E, 0x5F, 0xA3),
@@ -86,8 +86,8 @@ pub static VITRIOL: Theme = Theme {
 };
 
 /// Kanagawa Wave — sumi ink ground, carp-yellow accent.
-pub static AETHER: Theme = Theme {
-    name: "aether",
+pub static AETHERSHIP: Theme = Theme {
+    name: "aethership",
     bg: c_rgb(0x1F, 0x1F, 0x28),
     panel: c_rgb(0x16, 0x16, 0x1D),
     user_bg: c_rgb(0x24, 0x24, 0x2E),
@@ -107,7 +107,7 @@ pub static AETHER: Theme = Theme {
     dark_teal: c_rgb(0x22, 0x35, 0x3B),
     mercury: c_rgb(0x54, 0x54, 0x6C),
     silver: c_rgb(0x9C, 0xAB, 0xCA),
-    watermark: c_rgb(0x2A, 0x2A, 0x37),
+    watermark: c_rgb(0x4A, 0x4A, 0x5E),
     white: c_rgb(0xFF, 0xF5, 0xD6),
     fire: &[
         c_rgb(0x2D, 0x4F, 0x67),
@@ -141,7 +141,7 @@ pub static ALKAHEST: Theme = Theme {
     dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
     mercury: c_rgb(0x55, 0x60, 0x6E),
     silver: c_rgb(0xC0, 0xC7, 0xCF),
-    watermark: c_rgb(0x1E, 0x2A, 0x1E),
+    watermark: c_rgb(0x35, 0x47, 0x2F),
     white: c_rgb(0xFF, 0xFF, 0xFF),
     fire: &[
         c_rgb(0x2E, 0x5F, 0xA3),
@@ -154,7 +154,7 @@ pub static ALKAHEST: Theme = Theme {
 };
 
 /// Every theme, in menu order.
-pub static ALL: [&Theme; 3] = [&VITRIOL, &AETHER, &ALKAHEST];
+pub static ALL: [&Theme; 3] = [&VITRIOL, &AETHERSHIP, &ALKAHEST];
 
 static CURRENT: RwLock<&'static Theme> = RwLock::new(&VITRIOL);
 
@@ -167,7 +167,7 @@ pub fn current() -> &'static Theme {
 pub fn by_name(name: &str) -> Option<&'static Theme> {
     let n = name.trim().to_lowercase();
     let n = match n.as_str() {
-        "kanagawa" | "aetherskiff" | "kanagawa-wave" => "aether",
+        "kanagawa" | "aetherskiff" | "kanagawa-wave" | "aether" | "aethership" => "aethership",
         "alka" | "alka-officina" => "alkahest",
         "vitriolum" | "default" => "vitriol",
         other => other,
@@ -589,8 +589,11 @@ mod tests {
 
     #[test]
     fn names_and_profiles_resolve() {
-        assert_eq!(by_name("aether").map(|t| t.name), Some("aether"));
-        assert_eq!(by_name("KANAGAWA").map(|t| t.name), Some("aether"));
+        // 2026-11-19 rename: aether → aethership; every historical spelling
+        // (incl. the stored "aether") still resolves.
+        assert_eq!(by_name("aethership").map(|t| t.name), Some("aethership"));
+        assert_eq!(by_name("aether").map(|t| t.name), Some("aethership"));
+        assert_eq!(by_name("KANAGAWA").map(|t| t.name), Some("aethership"));
         assert_eq!(by_name("alkahest").map(|t| t.name), Some("alkahest"));
         assert_eq!(by_name("vitriolum").map(|t| t.name), Some("vitriol"));
         assert!(by_name("nope").is_none());

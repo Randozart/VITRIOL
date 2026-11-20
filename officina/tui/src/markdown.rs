@@ -41,6 +41,8 @@ fn syntaxes() -> &'static SyntaxSet {
 fn highlight_theme() -> &'static Theme {
     static KANAGAWA: OnceLock<Theme> = OnceLock::new();
     static ALKA: OnceLock<Theme> = OnceLock::new();
+    static MONOKAI: OnceLock<Theme> = OnceLock::new();
+    static CATPPUCCIN: OnceLock<Theme> = OnceLock::new();
     static DEFAULT: OnceLock<Theme> = OnceLock::new();
 
     /// The built-in theme VITRIOL has always used.
@@ -60,6 +62,16 @@ fn highlight_theme() -> &'static Theme {
         "alka-neon" => ALKA.get_or_init(|| {
             load_embedded(include_str!("../../assets/syntect/alka-neon.tmTheme"))
                 .unwrap_or_else(defaults)
+        }),
+        "monokai" => MONOKAI.get_or_init(|| {
+            load_embedded(include_str!("../../assets/syntect/monokai.tmTheme"))
+                .unwrap_or_else(defaults)
+        }),
+        "catppuccin-mocha" => CATPPUCCIN.get_or_init(|| {
+            load_embedded(include_str!(
+                "../../assets/syntect/catppuccin-mocha.tmTheme"
+            ))
+            .unwrap_or_else(defaults)
         }),
         _ => DEFAULT.get_or_init(defaults),
     }

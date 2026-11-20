@@ -28,7 +28,11 @@ mod tests {
         ("src/tui/layout.rs", 5_625),
         ("src/session_guard.rs", 1_324),
         ("src/tui/caduceus.rs", 1_253),
-        ("src/markdown.rs", 1_251),
+        // +12 (2026-11-19): monokai + catppuccin embedded-theme resolution.
+        ("src/markdown.rs", 1_263),
+        // +123 (2026-11-19): three new theme statics (monokai/catppuccin/kombat)
+        // — data rows, not behaviour; splitting a palette table buys nothing.
+        ("src/theme.rs", 1_068),
         ("src/fire.rs", 1_048),
     ];
 

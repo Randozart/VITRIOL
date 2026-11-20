@@ -8,7 +8,7 @@
 //! fire (healthy); red = substrate (crash).
 //!
 //! 2026-11-18: the palette became DATA. Every colour is a field of `Theme`, three
-//! statics exist (`VITRIOL`, `AETHER`, `ALKAHEST`), and the accessors below keep
+//! statics exist (`VITRIOL`, `AETHERSHIP`, `ALKAHEST`, `MONOKAI`, `CATPPUCCIN`,
 //! the historical constant names — `theme::GOLD()` became `theme::GOLD()` — so the
 //! change is a mechanical rename at 700+ call sites rather than a rewiring of
 //! every render function. `#[allow(non_snake_case)]` is deliberate: the names are
@@ -101,7 +101,7 @@ pub static VITRIOL: Theme = Theme {
 ///
 /// Values taken from `themes/kanagawa-aetherskiff/vscode/.../kanagawa-wave-color-theme.json`
 /// so the TUI matches the editor and the Plasma theme exactly.
-pub static AETHER: Theme = Theme {
+pub static AETHERSHIP: Theme = Theme {
     name: "aethership",
     bg: c_rgb(0x1F, 0x1F, 0x28),         // sumiInk1
     panel: c_rgb(0x16, 0x16, 0x1D),      // sumiInk0 (statusBar/sideBar)
@@ -170,8 +170,122 @@ pub static ALKAHEST: Theme = Theme {
     syntax: "alka-neon",
 };
 
+/// Monokai — the classic SublimeText dark: charcoal ground, hot pink
+/// keywords, lime functions. Embedded as `assets/syntect/monokai.tmTheme`
+/// (syntect's default set has no Monokai).
+pub static MONOKAI: Theme = Theme {
+    name: "monokai",
+    bg: c_rgb(0x27, 0x28, 0x22),
+    panel: c_rgb(0x2F, 0x30, 0x2A),
+    user_bg: c_rgb(0x32, 0x33, 0x2C),
+    border_dim: c_rgb(0x3E, 0x3D, 0x32),
+    green: c_rgb(0xA6, 0xE2, 0x2E),  // lime — functions
+    gold: c_rgb(0xE6, 0xDB, 0x74),   // yellow — strings
+    cyan: c_rgb(0x66, 0xD9, 0xEF),   // blue — types/support
+    orange: c_rgb(0xFD, 0x97, 0x1F), // orange — parameters
+    red: c_rgb(0xF9, 0x26, 0x72),    // pink — keywords
+    text: c_rgb(0xF8, 0xF8, 0xF2),
+    muted: c_rgb(0xA5, 0xA5, 0x9E),
+    faint: c_rgb(0x75, 0x71, 0x5E),  // comments
+    violet: c_rgb(0xAE, 0x81, 0xFF), // purple — constants
+    cold_blue: c_rgb(0x3E, 0x3D, 0x32),
+    light_yellow: c_rgb(0xE6, 0xDB, 0x74),
+    deep_red: c_rgb(0x8A, 0x15, 0x15),
+    dark_teal: c_rgb(0x0B, 0x5E, 0x4C),
+    mercury: c_rgb(0x55, 0x60, 0x6E),
+    silver: c_rgb(0xC0, 0xC7, 0xCF),
+    watermark: c_rgb(0x3E, 0x3D, 0x32),
+    white: c_rgb(0xFF, 0xFF, 0xFF),
+    fire: &[
+        c_rgb(0x3E, 0x3D, 0x32),
+        c_rgb(0xAE, 0x81, 0xFF),
+        c_rgb(0x66, 0xD9, 0xEF),
+        c_rgb(0xA6, 0xE2, 0x2E),
+        c_rgb(0xF9, 0x26, 0x72),
+    ],
+    syntax: "monokai",
+};
+
+/// Catppuccin Mocha — pastel-on-deep-lavender. Embedded as
+/// `assets/syntect/catppuccin-mocha.tmTheme` (not in syntect's defaults).
+pub static CATPPUCCIN: Theme = Theme {
+    name: "catppuccin",
+    bg: c_rgb(0x1E, 0x1E, 0x2E),         // base
+    panel: c_rgb(0x18, 0x18, 0x25),      // crust
+    user_bg: c_rgb(0x31, 0x32, 0x44),    // surface0
+    border_dim: c_rgb(0x41, 0x44, 0x58), // surface1
+    green: c_rgb(0xA6, 0xE3, 0xA1),      // green
+    gold: c_rgb(0xF9, 0xE2, 0xAF),       // yellow
+    cyan: c_rgb(0x89, 0xDC, 0xEB),       // teal/sky
+    orange: c_rgb(0xFA, 0xB3, 0x87),     // peach
+    red: c_rgb(0xF3, 0x8B, 0xA8),        // red
+    text: c_rgb(0xCD, 0xD6, 0xF4),       // text
+    muted: c_rgb(0xA6, 0xAD, 0xCE),      // subtext0
+    faint: c_rgb(0x6C, 0x70, 0x86),      // overlay0
+    violet: c_rgb(0xCB, 0xA6, 0xF7),     // mauve
+    cold_blue: c_rgb(0x45, 0x47, 0x5A),  // surface2
+    light_yellow: c_rgb(0xF9, 0xE2, 0xAF),
+    deep_red: c_rgb(0xBA, 0x30, 0x59),  // maroon
+    dark_teal: c_rgb(0x1E, 0x3A, 0x4D), // deep teal
+    mercury: c_rgb(0x58, 0x5B, 0x70),   // overlay2
+    silver: c_rgb(0xBA, 0xC2, 0xDE),    // subtext1
+    watermark: c_rgb(0x45, 0x47, 0x5A),
+    white: c_rgb(0xA6, 0xE3, 0xA1),
+    fire: &[
+        c_rgb(0x45, 0x47, 0x5A),
+        c_rgb(0xCB, 0xA6, 0xF7),
+        c_rgb(0x89, 0xB4, 0xFA),
+        c_rgb(0x89, 0xDC, 0xEB),
+        c_rgb(0xF5, 0xC2, 0xE7),
+    ],
+    syntax: "catppuccin-mocha",
+};
+
+/// Kombat — Mortal-Kombat-inspired original: obsidian arena ground,
+/// dragon gold, blood red vs ice blue (Scorpion vs Sub-Zero). The fire arc
+/// ends in blood red — the fatality glow.
+pub static KOMBAT: Theme = Theme {
+    name: "kombat",
+    bg: c_rgb(0x0A, 0x0A, 0x0C), // obsidian
+    panel: c_rgb(0x12, 0x12, 0x16),
+    user_bg: c_rgb(0x17, 0x14, 0x14), // blood-warm user turns
+    border_dim: c_rgb(0x26, 0x22, 0x22),
+    green: c_rgb(0x9E, 0xC9, 0x6C),  // jade
+    gold: c_rgb(0xE8, 0xB3, 0x2A),   // dragon gold
+    cyan: c_rgb(0x7F, 0xD1, 0xE8),   // Sub-Zero ice
+    orange: c_rgb(0xE8, 0x6A, 0x1F), // Scorpion fire
+    red: c_rgb(0xD4, 0x2B, 0x2B),    // blood
+    text: c_rgb(0xE3, 0xDE, 0xD3),
+    muted: c_rgb(0x9A, 0x93, 0x86),
+    faint: c_rgb(0x5C, 0x57, 0x4D),
+    violet: c_rgb(0x8A, 0x7F, 0xB8), // Shao Kahn violet
+    cold_blue: c_rgb(0x2D, 0x4F, 0x67),
+    light_yellow: c_rgb(0xF0, 0xD0, 0x60),
+    deep_red: c_rgb(0x7A, 0x10, 0x10),
+    dark_teal: c_rgb(0x11, 0x3B, 0x47), // ice depth
+    mercury: c_rgb(0x55, 0x60, 0x6E),
+    silver: c_rgb(0xC7, 0xC2, 0xB6),    // Lin Kuei steel
+    watermark: c_rgb(0x3A, 0x2E, 0x1E), // dim dragon gold on obsidian
+    white: c_rgb(0xFF, 0xF6, 0xE0),
+    fire: &[
+        c_rgb(0x2D, 0x4F, 0x67), // ice at rest
+        c_rgb(0x7F, 0xD1, 0xE8), // ice rise
+        c_rgb(0xE8, 0xB3, 0x2A), // dragon gold
+        c_rgb(0xE8, 0x6A, 0x1F), // Scorpion fire
+        c_rgb(0xD4, 0x2B, 0x2B), // blood — the hot end
+    ],
+    syntax: "base16-ocean.dark", // no embedded theme; nearest built-in
+};
+
 /// Every theme, in menu order.
-pub static ALL: [&Theme; 3] = [&VITRIOL, &AETHER, &ALKAHEST];
+pub static ALL: [&Theme; 6] = [
+    &VITRIOL,
+    &AETHERSHIP,
+    &ALKAHEST,
+    &MONOKAI,
+    &CATPPUCCIN,
+    &KOMBAT,
+];
 
 static CURRENT: RwLock<&'static Theme> = RwLock::new(&VITRIOL);
 
@@ -187,6 +301,8 @@ pub fn by_name(name: &str) -> Option<&'static Theme> {
     let n = match n.as_str() {
         "kanagawa" | "aetherskiff" | "kanagawa-wave" | "aether" | "aethership" => "aethership",
         "alka" | "alka-officina" | "alkahest" => "alkahest",
+        "mocha" | "catppuccin-mocha" => "catppuccin",
+        "mk" | "mortal-kombat" => "kombat",
         "vitriolum" | "default" => "vitriol",
         other => other,
     };
@@ -890,11 +1006,11 @@ mod theme_suite {
     /// The whole point: the three themes are actually different.
     #[test]
     fn themes_are_distinct() {
-        assert_ne!(VITRIOL.bg, AETHER.bg);
-        assert_ne!(VITRIOL.gold, AETHER.gold); // gold vs carp
+        assert_ne!(VITRIOL.bg, AETHERSHIP.bg);
+        assert_ne!(VITRIOL.gold, AETHERSHIP.gold); // gold vs carp
         assert_ne!(VITRIOL.gold, ALKAHEST.gold); // gold vs swirl
         assert_ne!(VITRIOL.green, ALKAHEST.green); // calm vs neon
-        assert_ne!(AETHER.text, ALKAHEST.text);
+        assert_ne!(AETHERSHIP.text, ALKAHEST.text);
     }
 
     /// No call site may still read a colour as a `const`: the failure mode is a

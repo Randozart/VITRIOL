@@ -104,7 +104,10 @@ const WATCHDOG_EVERY_SECONDS = Math.max(
   15,
   Math.min(600, Number(process.env.CADUCEUS_WATCHDOG_SECONDS) || 60),
 );
-const ROUTER_PORT = Math.max(1024, Number(process.env.CADUCEUS_ROUTER_PORT) || 20129);
+const ROUTER_PORT = Math.max(
+  1024,
+  Number(process.env.CADUCEUS_ROUTER_PORT) || 20129,
+);
 const ROUTER_ORIGIN = `http://127.0.0.1:${ROUTER_PORT}`;
 const ROUTER_UNIT = join(
   HOME,
@@ -119,7 +122,10 @@ const ROUTER_STATE_FILE = join(
   "officina",
   "caduceus-router-state.json",
 );
-const ROUTER_SCRIPT = join(dirname(new URL(import.meta.url).pathname), "caduceus-router.mjs");
+const ROUTER_SCRIPT = join(
+  dirname(new URL(import.meta.url).pathname),
+  "caduceus-router.mjs",
+);
 const DECISION_FILE = join(
   HOME,
   ".vitriol",
@@ -358,7 +364,11 @@ async function probeApiLayer(timeoutMs = 5000) {
       headers: { Authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    return { ok: res.status === 200, status: res.status, ms: Date.now() - started };
+    return {
+      ok: res.status === 200,
+      status: res.status,
+      ms: Date.now() - started,
+    };
   } catch (error) {
     return {
       ok: false,
@@ -1444,7 +1454,9 @@ async function cmdWatchdog(flags) {
 
   const started = Date.now();
   const probe = await probeHealth();
-  const api = probe.ok ? await probeApiLayer() : { ok: false, ms: 0, status: 0 };
+  const api = probe.ok
+    ? await probeApiLayer()
+    : { ok: false, ms: 0, status: 0 };
   // The unit counts as healthy only when BOTH planes answer: a dashboard-only
   // "ok" is how a wedged router hides.
   const healthy = probe.ok && api.ok;
@@ -1499,7 +1511,9 @@ async function cmdWatchdog(flags) {
     reason:
       detail ||
       decision.reason ||
-      (probe.ok && !api.ok ? `inference plane unhealthy (HTTP ${api.status})` : ""),
+      (probe.ok && !api.ok
+        ? `inference plane unhealthy (HTTP ${api.status})`
+        : ""),
   };
   writeJsonAtomic(WATCHDOG_STATE_FILE, state);
 
@@ -1635,9 +1649,12 @@ WantedBy=default.target
       .join(", ");
     log(`  parked:    ${parked || "none"}`);
   }
-  const unitText = existsSync(ROUTER_UNIT) ? readFileSync(ROUTER_UNIT, "utf8") : "";
+  const unitText = existsSync(ROUTER_UNIT)
+    ? readFileSync(ROUTER_UNIT, "utf8")
+    : "";
   const decisionOn = /CADUCEUS_ROUTER_DECISION=1/.test(unitText);
-  const decisionFloor = /CADUCEUS_ROUTER_DECISION_FLOOR=([0-9.]+)/.exec(unitText)?.[1] ?? "0.6";
+  const decisionFloor =
+    /CADUCEUS_ROUTER_DECISION_FLOOR=([0-9.]+)/.exec(unitText)?.[1] ?? "0.6";
   log(
     `  decision:  ${decisionOn ? `on (floor ${decisionFloor}, gemini-decision-1)` : "off — deterministic order"}`,
   );
@@ -1653,7 +1670,13 @@ async function cmdDecision(flags) {
   const read = () => readJsonSafe(DECISION_FILE) ?? { version: 1 };
   const write = (doc) => {
     mkdirSync(dirname(DECISION_FILE), { recursive: true });
-    writeJsonAtomic(DECISION_FILE, { version: 1, url: "", key: "", floor: 0.7, ...doc });
+    writeJsonAtomic(DECISION_FILE, {
+      version: 1,
+      url: "",
+      key: "",
+      floor: 0.7,
+      ...doc,
+    });
     return true;
   };
   const sub = String(flags._[0] ?? "status");
@@ -1664,7 +1687,9 @@ async function cmdDecision(flags) {
     const key = String(flags._[1] ?? "").trim();
     if (!key) fail("usage: vitriol caduceus decision key <token>");
     write({ ...doc, key });
-    log(`decision: key stored (${key.slice(0, 4)}…, ${key.length} chars) in ${DECISION_FILE}`);
+    log(
+      `decision: key stored (${key.slice(0, 4)}…, ${key.length} chars) in ${DECISION_FILE}`,
+    );
     return;
   }
   if (sub === "mode") {
@@ -1692,11 +1717,16 @@ async function cmdDecision(flags) {
     const raw = String(flags._[1] ?? "").trim();
     if (!raw) fail(`usage: vitriol caduceus decision ${name} <value>`);
     const value = cast(raw);
-    if (range && (!Number.isFinite(value) || value < range[0] || value > range[1])) {
+    if (
+      range &&
+      (!Number.isFinite(value) || value < range[0] || value > range[1])
+    ) {
       fail(`${name} must be ${range[0]}..${range[1]}`);
     }
     write({ ...doc, [field]: value });
-    log(`decision: ${field} ${field === "url" ? value : JSON.stringify(value)}`);
+    log(
+      `decision: ${field} ${field === "url" ? value : JSON.stringify(value)}`,
+    );
     return;
   }
 
@@ -1720,7 +1750,8 @@ async function cmdDecision(flags) {
       const k = m[1].toLowerCase();
       const v = m[2].trim().replace(/^["']|["']$/g, "");
       if (!ascKey && (k === "gemini_api_key" || k === "gemini_key")) ascKey = v;
-      if (!ascKey && section === "gemini" && (k === "api_key" || k === "key")) ascKey = v;
+      if (!ascKey && section === "gemini" && (k === "api_key" || k === "key"))
+        ascKey = v;
     }
   } catch {
     /* no secrets file */
@@ -1761,7 +1792,9 @@ async function cmdDecision(flags) {
     log(`  url:    ${report.url || "(unset)"}`);
     log(`  floor:  ${report.floor} (margin ${report.margin})`);
   } else {
-    log("  heuristics only — no network, no cost (`decision mode gemini` to add a judge)");
+    log(
+      "  heuristics only — no network, no cost (`decision mode gemini` to add a judge)",
+    );
   }
   log(`  file:   ${report.file}`);
 }
@@ -1785,7 +1818,9 @@ async function cmdDoctor(flags) {
     add(
       "inference plane",
       api.ok ? "ok" : "fail",
-      api.ok ? `/v1/models ${api.ms}ms` : `HTTP ${api.status} (${api.error ?? "no answer"})`,
+      api.ok
+        ? `/v1/models ${api.ms}ms`
+        : `HTTP ${api.status} (${api.error ?? "no answer"})`,
     );
     add(
       "responsiveness",
@@ -1885,6 +1920,74 @@ async function cmdDoctor(flags) {
       active
         ? `:${ROUTER_PORT} · fallback ${fb.length ? fb.join(", ") : "(none)"}`
         : `installed but stopped — systemctl --user start vitriol-caduceus-router.service`,
+    );
+  }
+
+  // Seam-resistance M4 (2026-11-20): WHICH endpoint is the provider base?
+  // The 049ab57 bypass lived exactly here — router running, gateway
+  // serving, and nobody able to answer "which one am I on?" without an
+  // hour of greps. The resolved base + the oven's winning rule go in the
+  // report; kvtier budget (the other silent-exhaustion surface) follows.
+  // Shell export wins; env-file value is DEMOTED below router detection
+  // (the 049ab57 lesson — resolveBaseUrl's oven semantics, inlined since
+  // caduceus.mjs predates the extension layer and cannot import it).
+  const envDoc = readEnv();
+  const shellBase = process.env.OFFICINA_CADUCEUS_BASE_URL;
+  const fileBase = envDoc["OFFICINA_CADUCEUS_BASE_URL"];
+  const routerUnit = join(
+    HOME, ".config", "systemd", "user", "vitriol-caduceus-router.service",
+  );
+  const routerUp = existsSync(routerUnit) &&
+    !/^(0|false|off|no)$/i.test(process.env.OFFICINA_CADUCEUS_ROUTER ?? "");
+  const resolvedBase = (shellBase?.trim() && !routerUp
+    ? shellBase
+    : routerUp
+      ? `http://127.0.0.1:${ROUTER_PORT}/v1`
+      : (fileBase?.trim() || `http://127.0.0.1:20128/v1`));
+  const onRouter = resolvedBase.includes(`:${ROUTER_PORT}`);
+  add(
+    "provider base URL",
+    onRouter ? "ok" : "warn",
+    onRouter
+      ? `${resolvedBase} (reroute router in path)`
+      : `${resolvedBase} — DIRECT to gateway: reroute fallbacks NOT in path`,
+  );
+  const kvDir =
+    process.env.VITRIOL_KV_DISK_DIR ||
+    (() => {
+      try {
+        const m = readFileSync(join(HOME, ".vitriol", "config"), "utf8").match(
+          /^\s*slot_save_path\s*=\s*(.+)$/m,
+        );
+        return m ? m[1].trim().replace(/^~\//, `${HOME}/`) : null;
+      } catch {
+        return null;
+      }
+    })();
+  if (kvDir) {
+    try {
+      let bytes = 0;
+      let turnBins = 0;
+      for (const f of readdirSync(kvDir)) {
+        const st = statSync(join(kvDir, f));
+        bytes += st.size;
+        if (f.includes("-turn-")) turnBins += 1;
+      }
+      const gib = bytes / 1024 ** 3;
+      add(
+        "kvtier budget",
+        gib > 60 ? "warn" : "ok",
+        `${kvDir}: ${gib.toFixed(1)} GiB, ${turnBins} turn checkpoint(s)` +
+          (gib > 60 ? " — cache_max_gb trim or retention backlog" : ""),
+      );
+    } catch {
+      add("kvtier budget", "warn", `${kvDir} unreadable`);
+    }
+  } else {
+    add(
+      "kvtier budget",
+      "warn",
+      "no slot_save_path found — nothing to measure",
     );
   }
 

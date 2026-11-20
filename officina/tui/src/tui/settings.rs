@@ -7,9 +7,11 @@ use ratatui::{
     layout::Rect,
     style::Style,
     text::Line,
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
+
+use crate::tui::base::ClearBase;
 
 #[derive(Debug)]
 pub struct SettingMenu {
@@ -249,7 +251,7 @@ pub fn render(frame: &mut Frame, menu: &SettingMenu, area: Rect) {
                 if *choice == menu.current { " ✓" } else { "" }
             ))
         });
-    frame.render_widget(Clear, panel);
+    frame.render_widget(ClearBase, panel);
     frame.render_widget(block, panel);
     frame.render_widget(
         Paragraph::new(rows.collect::<Vec<_>>())

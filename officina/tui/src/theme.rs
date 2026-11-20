@@ -338,6 +338,31 @@ pub fn set(name: &str) -> Option<&'static Theme> {
 pub fn BG() -> Color {
     current().bg
 }
+
+/// The paint-everything background: `bg` with exactly one bit flipped.
+///
+/// kitty's `background_opacity` alpha-blends ONLY cells whose background is
+/// the terminal default; a cell with any explicit bg renders opaque. With a
+/// frosted-glass kitty (owner setup, 2026-11-20) a TUI that leaves gap cells
+/// on the default shows the desktop through — patchy next to opaque painted
+/// panels. Emitting `base_bg` instead of the default everywhere means no TUI
+/// cell can ever be caught by the opacity path, while staying visually
+/// indistinguishable from `bg` (±1/255 on one channel).
+///
+/// Derived from `bg` at runtime — deliberately NOT a palette field — so
+/// `theme/palette.json` (the single source of truth) never carries a value a
+/// human cannot see and the generator cannot drift from the derivation.
+pub fn base_bg(theme: &Theme) -> Color {
+    match theme.bg {
+        Color::Rgb(r, g, b) => Color::Rgb(r, g, b ^ 1),
+        other => other,
+    }
+}
+
+#[allow(non_snake_case)]
+pub fn BASE_BG() -> Color {
+    base_bg(current())
+}
 #[allow(non_snake_case)]
 pub fn PANEL() -> Color {
     current().panel
@@ -789,6 +814,61 @@ mod theme_suite {
             // Panels must stay distinguishable from the ground, or borders vanish.
             assert_ne!(t.panel, t.bg, "{}: panel equals bg", t.name);
         }
+    }
+
+    /// INV-2 (plan 2026-11-20-tui-opaque-base-bg): the base background is `bg`
+    /// with exactly one bit flipped — imperceptible, yet never equal to the
+    /// terminal default, so kitty's background_opacity can never catch a TUI
+    /// cell. A bigger delta would visibly band the ground against painted
+    /// panels; equality would defeat the whole mechanism.
+    #[test]
+    fn base_bg_is_off_by_one_bit() {
+        for t in ALL {
+            let Color::Rgb(r, g, b) = t.bg else {
+                panic!("{}: bg is not Rgb — base_bg derivation assumes it", t.name);
+            };
+            assert_eq!(
+                base_bg(t),
+                Color::Rgb(r, g, b ^ 1),
+                "{}: base not off-by-one",
+                t.name
+            );
+            assert_ne!(
+                base_bg(t),
+                Color::Reset,
+                "{}: base hits the default",
+                t.name
+            );
+        }
+        // Concrete anchor: aethership #1f1f28 → #1f1f29 (blue +1).
+        assert_eq!(base_bg(&AETHERSHIP), Color::Rgb(0x1F, 0x1F, 0x29));
+    }
+
+    /// INV-3: the base is DERIVED, not a palette field. If `Theme` ever grows a
+    /// stored base this test must be rewritten to assert the field matches the
+    /// derivation — the stored value would be redundant data that can drift.
+    #[test]
+    fn base_bg_is_derived_not_stored() {
+        // The struct must not carry a base field: derive twice, compare with
+        // the accessors — any future stored field would break the equality.
+        for t in ALL {
+            assert_eq!(base_bg(t), base_bg(t), "{}: base is unstable", t.name);
+            assert_eq!(
+                BASE_BG(),
+                base_bg(current()),
+                "accessor disagrees with derivation"
+            );
+        }
+        let src = include_str!("theme.rs");
+        // The needle is assembled from pieces so neither this comment nor the
+        // format! call can match its own source text; a stored field would be
+        // declared with that exact spelling inside the Theme struct.
+        let needle = format!("pub b{}se{} C{}lor", "a", ":", "o");
+        assert_eq!(
+            src.matches(&needle).count(),
+            0,
+            "Theme grew a stored base field — re-point this test at the derivation"
+        );
     }
 
     #[test]

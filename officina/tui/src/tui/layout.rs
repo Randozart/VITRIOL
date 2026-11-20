@@ -11,7 +11,9 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+
+use crate::tui::base::{BaseFill, ClearBase};
 use ratatui::Frame;
 
 use super::ansi;
@@ -26,6 +28,12 @@ const SIDEBAR_MIN_WIDTH: u16 = 100;
 
 pub fn render(frame: &mut Frame, state: &mut AppState) {
     let area = frame.area();
+
+    // Paint the base background FIRST (2026-11-20): every cell this TUI emits
+    // carries BASE_BG (bg ±1 bit) instead of the terminal default, so kitty's
+    // background_opacity — which alpha-blends only default-bg cells — can
+    // never frosted-glass a gap. Plan: 2026-11-20-tui-opaque-base-bg.
+    frame.render_widget(BaseFill, area);
 
     // A notice gets its OWN row above the keybinding strip (2026-11-16: it used
     // to be appended to the hints line, where a long or multi-line notice
@@ -1231,7 +1239,7 @@ fn render_question_panel(frame: &mut Frame, state: &AppState, area: Rect, input_
         width: panel_w,
         height: panel_h,
     };
-    frame.render_widget(ratatui::widgets::Clear, panel);
+    frame.render_widget(ClearBase, panel);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1287,7 +1295,7 @@ fn render_permissions_modal(frame: &mut Frame, state: &mut AppState, area: Rect)
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1394,7 +1402,7 @@ fn render_dialog_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -1663,7 +1671,7 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
 /// the palette (mode colours would be literal — the palette gate wins; the
 /// glyph+label carry the identity).
 fn render_mode_popup(frame: &mut Frame, popup: &crate::tui::mode_popup::ModePopup, area: Rect) {
-    frame.render_widget(Clear, area);
+    frame.render_widget(ClearBase, area);
     frame.render_widget(
         Paragraph::new(" ".repeat(area.width as usize)).style(Style::new().bg(theme::PANEL())),
         area,
@@ -1733,7 +1741,7 @@ fn render_command_popup(
     // candidate list) leaked the chat's dark through as a second, different
     // dark (owner report 2026-11-19: "the / menu doesn't fill its entire
     // background"). The fill guarantees every cell of the popup is PANEL.
-    frame.render_widget(Clear, area);
+    frame.render_widget(ClearBase, area);
     frame.render_widget(
         Paragraph::new(" ".repeat(area.width as usize)).style(Style::new().bg(theme::PANEL())),
         area,
@@ -2039,7 +2047,7 @@ fn render_models_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -2243,7 +2251,7 @@ fn render_tree_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -2308,7 +2316,7 @@ fn render_fx_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let active = state.liveliness_active();
     let chip = if active {
         format!(" ACTIVE · streaming {}s ", state.stalled_secs())
@@ -2465,7 +2473,7 @@ fn render_answers_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -2542,7 +2550,7 @@ fn render_routes_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let day = state
         .routes
         .as_ref()
@@ -2673,7 +2681,7 @@ fn render_cost_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let day = state
         .cost
         .as_ref()
@@ -2942,7 +2950,7 @@ fn render_review_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let (title_st, title) = match state.review.as_ref() {
         Some(f) => (
             Style::new().fg(theme::GOLD()).bg(theme::PANEL()),
@@ -3107,7 +3115,7 @@ fn render_status_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -3694,7 +3702,7 @@ fn render_cache_modal(frame: &mut Frame, state: &mut AppState, area: Rect) {
         width: w,
         height: h,
     };
-    frame.render_widget(Clear, modal);
+    frame.render_widget(ClearBase, modal);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -4411,6 +4419,57 @@ mod render_smoke {
             "multi-line table\nrow one\nrow two".into(),
         ));
         s
+    }
+
+    /// INV-1 (plan 2026-11-20-tui-opaque-base-bg): no cell in any rendered
+    /// frame may carry the terminal default background. kitty's
+    /// background_opacity alpha-blends exactly those cells; one Reset bg
+    /// anywhere means the frosted desktop bleeds through the TUI. Drives the
+    /// plain screen AND the popup screens (where ClearBase replaced Clear) at
+    /// several sizes, then inspects the backend buffer.
+    #[test]
+    fn rendered_frame_has_no_default_bg_cells() {
+        fn assert_opaque(state: &mut AppState, w: u16, h: u16, label: &str) {
+            let backend = ratatui::backend::TestBackend::new(w, h);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| render(f, state))
+                .expect("draw must not panic");
+            let buf = terminal.backend().buffer();
+            let area = *buf.area();
+            for y in area.top()..area.bottom() {
+                for x in area.left()..area.right() {
+                    let cell = &buf[(x, y)];
+                    assert_ne!(
+                        cell.bg,
+                        ratatui::style::Color::Reset,
+                        "{label}: default-bg (transparency hole) at {x},{y}"
+                    );
+                }
+            }
+        }
+
+        for (w, h) in [(40u16, 12u16), (80, 24), (120, 40)] {
+            assert_opaque(&mut base_state(), w, h, "plain screen");
+
+            // Slash-command menu: the flagship Clear site (blank-then-fill).
+            // Built the same way the TAB keybind opens it (mod.rs:1964).
+            let mut s = base_state();
+            let (modes, current) =
+                crate::tui::mode_popup::load_modes(&crate::tui::mode_popup_facts_path());
+            s.mode_popup = Some(crate::tui::mode_popup::ModePopup::open(modes, current));
+            assert_opaque(&mut s, w, h, "slash menu");
+
+            // Settings overlay: the settings.rs ClearBase site.
+            let mut s = base_state();
+            s.setting_menu = Some(crate::tui::settings::SettingMenu {
+                title: "test".into(),
+                choices: vec!["one".into(), "two".into()],
+                selected: 0,
+                current: "one".into(),
+            });
+            assert_opaque(&mut s, w, h, "settings overlay");
+        }
     }
 
     #[test]

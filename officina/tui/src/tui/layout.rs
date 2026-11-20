@@ -1050,6 +1050,19 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
         render_command_popup(frame, &cands, state.cand_sel, popup_area);
     }
 
+    // TAB mode popup (2026-11-19): floats above the editor like the command
+    // menu, full-surface PANEL fill first (the S1 bg-leak lesson).
+    if let Some(popup) = state.mode_popup.as_ref() {
+        let popup_h = (popup.modes.len() as u16 + 2).min(chat_area.height.max(4));
+        let popup_area = Rect {
+            y: input_area.y.saturating_sub(popup_h),
+            height: popup_h,
+            width: area.width.min(80),
+            ..input_area
+        };
+        render_mode_popup(frame, popup, popup_area);
+    }
+
     // Editor — rounded, PANEL bg; border reflects state (vitriol-tui panel
     // anatomy). Title carries the active agent mode (owner request
     // 2026-09-02); titleless until the widget reports in.
@@ -1621,6 +1634,70 @@ fn render_sidebar(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 // ── Popups / overlays ─────────────────────────────────────────────────────
+
+/// TAB mode popup (2026-11-19): the agent-mode menu. Same surface rules as
+/// the command popup — Clear, then a full-width PANEL fill (S1 bg-leak
+/// lesson), then rows. Selected row is gold+bold; the current mode carries
+/// a bullet. Colour literals are forbidden outside theme.rs, so badges use
+/// the palette (mode colours would be literal — the palette gate wins; the
+/// glyph+label carry the identity).
+fn render_mode_popup(frame: &mut Frame, popup: &crate::tui::mode_popup::ModePopup, area: Rect) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(" ".repeat(area.width as usize)).style(Style::new().bg(theme::PANEL())),
+        area,
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(theme::GOLD()))
+        .style(Style::new().bg(theme::PANEL()))
+        .title(Span::styled(
+            " agent mode · ↑↓ select · enter pick · esc/tab cancel ",
+            Style::new().fg(theme::MUTED()),
+        ));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, m) in popup.modes.iter().enumerate() {
+        let selected = i == popup.selected;
+        let is_current = popup.current.as_deref() == Some(m.name.as_str());
+        let marker = if is_current { "●" } else { " " };
+        let (glyph_style, label_style, hint_style) = if selected {
+            (
+                Style::new()
+                    .fg(theme::GOLD())
+                    .bg(theme::PANEL())
+                    .add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(theme::GOLD())
+                    .bg(theme::PANEL())
+                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
+            )
+        } else {
+            (
+                Style::new().fg(theme::CYAN()).bg(theme::PANEL()),
+                Style::new().fg(theme::TEXT()).bg(theme::PANEL()),
+                Style::new().fg(theme::MUTED()).bg(theme::PANEL()),
+            )
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{} ", marker), glyph_style),
+            Span::styled(format!("{:<3}", m.glyph), glyph_style),
+            Span::styled(format!("{:<13}", m.label), label_style),
+            Span::styled(
+                trunc(&m.hint, (inner.width as usize).saturating_sub(20)),
+                hint_style,
+            ),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::new().bg(theme::PANEL())),
+        inner,
+    );
+}
 
 fn render_command_popup(
     frame: &mut Frame,

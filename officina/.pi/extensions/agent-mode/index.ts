@@ -87,7 +87,7 @@ export default function (pi: ExtensionAPI) {
       const tmp = `${path}.tmp-${process.pid}`;
       writeFileSync(
         tmp,
-        `${JSON.stringify({ version: 1, ts: Date.now(), mode: def.name, label: def.label }, null, 2)}\n`,
+        `${JSON.stringify({ version: 1, ts: Date.now(), mode: def.name, label: def.label, modes: allModes().map((m) => ({ name: m.name, label: m.label, glyph: m.glyph, color: m.color, hint: m.hint })) }, null, 2)}\n`,
       );
       renameSync(tmp, path);
     } catch {

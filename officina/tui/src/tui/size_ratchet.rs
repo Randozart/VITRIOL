@@ -20,12 +20,19 @@ mod tests {
 
     /// Frozen line counts, 2026-11-18. Lowering these over time is the point.
     const BUDGETS: &[(&str, usize)] = &[
+        // +261 (2026-11-19): NEW module — TAB mode-popup logic (load/fallback/
+        // selection/command); render lives in layout.rs. Under the 1000-line
+        // unbudgeted cap today; budget it if it grows.
+        ("src/tui/mode_popup.rs", 261),
         // +2 (2026-11-19): aethership rename in theme help + repaint test.
-        ("src/tui/state.rs", 9_606),
+        // +6 (2026-11-19): mode_popup state field.
+        ("src/tui/state.rs", 9_612),
         // +2 (2026-11-19): reasoning_guard registration and its one-line call in agent_end.
-        ("src/tui/mod.rs", 5_784),
-        // +8 (2026-11-19): /-menu full-surface PANEL fill (bg-leak fix).
-        ("src/tui/layout.rs", 5_625),
+        // +63 (2026-11-19): TAB mode-popup dispatch (open/guard/keys/submit).
+        ("src/tui/mod.rs", 5_847),
+        // +77 (2026-11-19): /-menu fill (+8) and render_mode_popup (+69) —
+        // the popup widget; the popup LOGIC lives in mode_popup.rs (new file).
+        ("src/tui/layout.rs", 5_702),
         ("src/session_guard.rs", 1_324),
         ("src/tui/caduceus.rs", 1_253),
         // +12 (2026-11-19): monokai + catppuccin embedded-theme resolution.

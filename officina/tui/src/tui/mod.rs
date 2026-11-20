@@ -8,6 +8,7 @@ pub mod engine_config;
 pub mod heal;
 pub mod janitor;
 pub mod layout;
+pub mod mode_popup;
 pub mod paste;
 pub mod question;
 pub mod reasoning_guard;
@@ -27,6 +28,7 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
+
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -1187,6 +1189,16 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
     }
 }
 
+/// Resolve the agent-mode facts path (~/.vitriol/officina/agent-mode.json).
+/// Standalone fn (not a closure) so the popup load reads as a statement.
+fn mode_popup_facts_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::PathBuf::from(home)
+        .join(".vitriol")
+        .join("officina")
+        .join("agent-mode.json")
+}
+
 async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
     // Enhanced keyboard protocols report Press AND Release. Only Press/Repeat
     // are actions; a stray Esc key-release used to look like a second abort
@@ -1211,6 +1223,43 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             if let Some(Some(request)) = settings::command(state, &message) {
                 let _ = bridge.request(request).await;
             }
+        }
+        return;
+    }
+
+    // TAB mode popup owns every key while open (2026-11-19): arrows move,
+    // Enter picks and submits `/agent <name>` via the normal prompt path,
+    // Esc/Tab dismiss. It shadows even the composer — that is what a modal
+    // is — but never the dialogs above (they are harder surfaces).
+    if state.mode_popup.is_some() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Tab => state.mode_popup = None,
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(p) = state.mode_popup.as_mut() {
+                    p.move_up();
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(p) = state.mode_popup.as_mut() {
+                    p.move_down();
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(cmd) = state.mode_popup.as_ref().and_then(|p| p.command()) {
+                    state.mode_popup = None;
+                    let _ = bridge
+                        .request(RpcCommand::Prompt {
+                            id: None,
+                            message: cmd,
+                            images: None,
+                            streaming_behavior: None,
+                        })
+                        .await;
+                } else {
+                    state.mode_popup = None;
+                }
+            }
+            _ => state.mode_popup = None, // any typing dismisses (muscle memory)
         }
         return;
     }
@@ -1899,6 +1948,20 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
         //      same target and nothing visibly happened.
         // A missing hint is now reported instead of silently doing nothing.
         KeyCode::Tab if state.input.starts_with('/') => {}
+        // TAB mode popup (2026-11-19): TAB on an EMPTY composer opens the
+        // mode menu (8 modes made blind cycling roulette). TAB with text
+        // keeps the historical cycle (I10 — muscle memory, pinned by tests).
+        KeyCode::Tab if state.mode_popup.is_some() => {
+            // Second TAB dismisses; the next TAB would then cycle as before.
+            state.mode_popup = None;
+        }
+        KeyCode::Tab if state.input.is_empty() && state.prompt_ghost.is_none() => {
+            // Empty composer, no ghost suggestion → open the mode menu.
+            // A visible ghost means TAB means "accept it" — cycle/accept
+            // keeps priority (existing contract tests pin this).
+            let (modes, current) = mode_popup::load_modes(&mode_popup_facts_path());
+            state.mode_popup = Some(mode_popup::ModePopup::open(modes, current));
+        }
         KeyCode::Tab => match state.next_agent_mode() {
             Some(next) if state.mode_switch_in_flight(&next) => {
                 state.notice = Some((format!("agent: switching to {next}…"), "info".to_string()));

@@ -1082,6 +1082,11 @@ pub struct AppState {
     /// Selected index into command_candidates() (↑↓ navigation).
     pub cand_sel: usize,
 
+    /// TAB mode popup (2026-11-19): Some while the popup is open. TAB on an
+    /// empty composer opens it; arrows+Enter pick, Esc or a second TAB on a
+    /// non-empty line keeps the historical cycle (I10).
+    pub mode_popup: Option<crate::tui::mode_popup::ModePopup>,
+
     /// Working directory — session scan root for /resume.
     pub cwd: std::path::PathBuf,
 
@@ -1335,6 +1340,7 @@ impl Default for AppState {
             input: String::new(),
             cursor: 0,
             cand_sel: 0,
+            mode_popup: None,
             cwd: std::path::PathBuf::from("."),
             agent_mode: None,
             agent_mode_pending: None,

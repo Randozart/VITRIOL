@@ -40,25 +40,25 @@ describe("gen-desktop-theme", () => {
     // default output pins opacity, and --translucent restores the frosted look.
     const opaque = generate("aethership");
     const kitty = readFileSync(
-      join(opaque, "terminal/kitty/aether.conf"),
+      join(opaque, "terminal/kitty/aethership.conf"),
       "utf-8",
     );
     expect(kitty).toContain("background_opacity 1.0");
     expect(kitty).toContain("background_blur 0");
     const alacritty = readFileSync(
-      join(opaque, "terminal/alacritty/aether.toml"),
+      join(opaque, "terminal/alacritty/aethership.toml"),
       "utf-8",
     );
     expect(alacritty).toContain("opacity = 1.0");
 
-    const frosted = generate("aether", ["--translucent"]);
+    const frosted = generate("aethership", ["--translucent"]);
     const kittyFrosted = readFileSync(
-      join(frosted, "terminal/kitty/aether.conf"),
+      join(frosted, "terminal/kitty/aethership.conf"),
       "utf-8",
     );
     expect(kittyFrosted).not.toContain("background_opacity");
     const alacrittyFrosted = readFileSync(
-      join(frosted, "terminal/alacritty/aether.toml"),
+      join(frosted, "terminal/alacritty/aethership.toml"),
       "utf-8",
     );
     expect(alacrittyFrosted).not.toContain("opacity");

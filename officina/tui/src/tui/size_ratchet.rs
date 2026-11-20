@@ -34,7 +34,9 @@ mod tests {
         // + the logo-contrast gate test — palette data rows + one gate, not
         // behaviour; splitting a palette table buys nothing.
         ("src/theme.rs", 1_088),
-        ("src/fire.rs", 1_048),
+        // +35 (2026-11-19): cell_heat (inward→outward) + glow_bend (hot-core
+        // white bend). New tests below pin both.
+        ("src/fire.rs", 1_083),
     ];
 
     /// Files smaller than this are not budgeted: below it, a new file cannot be

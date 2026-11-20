@@ -66,9 +66,11 @@ impl FireStyle {
     }
 
     /// Color at `t` in [0,1] — static arcs for Emerald/Alchemy (heat-mapped),
-    /// the drifting palette for Pulse.
+    /// the drifting palette for Pulse. 2026-11-19 GLOW: the hottest tenth of
+    /// the ramp bends toward white — a hot core reads as light emission
+    /// (owner: "make fire look really nice and glowy").
     fn color(self, t: f64, phase_ms: u128) -> ratatui::style::Color {
-        match self {
+        let raw = match self {
             FireStyle::Pulse => {
                 // Slow full-palette drift. `t` offsets the cycle so heat
                 // and height spread hues spatially: the base leads, the
@@ -80,7 +82,8 @@ impl FireStyle {
                 let stops = style.stops();
                 theme::ramp_color(&stops, t)
             }
-        }
+        };
+        glow_bend(raw, t)
     }
 
     /// Gradient stops for this style, in the ACTIVE theme.
@@ -131,6 +134,25 @@ fn pulse_stops() -> [ratatui::style::Color; 7] {
 
 /// Seconds for one full palette loop in Pulse mode.
 const PULSE_PERIOD_S: f64 = 9.0;
+
+/// GLOW (2026-11-19 owner: "make fire look really nice and glowy"): cells at
+/// heat >= 0.9 blend their colour 45% toward white. A terminal has no bloom,
+/// but a near-white core against saturated mid-tone tongues reads as light
+/// emission — the classic CRT-flame trick. Below 0.9 the colour is untouched,
+/// so mid-flame hues keep their identity.
+fn glow_bend(c: ratatui::style::Color, heat: f64) -> ratatui::style::Color {
+    use ratatui::style::Color;
+    let (r, g, b) = match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        other => return other, // indexed/named colours: leave alone
+    };
+    if heat < 0.9 {
+        return c;
+    }
+    let k = ((heat - 0.9) / 0.1 * 0.45).clamp(0.0, 0.45);
+    let mix = |v: u8| (v as f64 + (255.0 - v as f64) * k).round() as u8;
+    Color::Rgb(mix(r), mix(g), mix(b))
+}
 
 /// Default voice (owner request 2026-09-02): prismatic.
 impl Default for FireStyle {
@@ -355,6 +377,19 @@ fn rule_heat(level: f64) -> f64 {
     0.55 + 0.45 * level.clamp(0.0, 1.0)
 }
 
+/// 2026-11-19 (owner): heat distributes INWARD→OUTWARD — the flame's core
+/// is its hottest zone, the edges cool — replacing the purely bottom→top
+/// ramp that made the rule row and the first body row read as one band of
+/// identical colour. `edge_t` is the usual 0-centre→1-edge falloff; the
+/// vertical term keeps its original share so tips still cool upward. The
+/// mix keeps every cell hot ENOUGH at full load (the floor term) so the
+/// hottest colour still reaches the upper core, not just the floor row.
+fn cell_heat(base_heat: f64, frac: f64, edge_t: f64) -> f64 {
+    let vertical = 1.0 - frac * 0.6;
+    let inward = 1.0 - edge_t * 0.55;
+    (base_heat * vertical * inward).clamp(0.0, 1.0)
+}
+
 /// Cells of the DIVIDER row: the fire's own bottom row, drawn on the line
 /// (owner decision 2026-11-16: *"take the current fire, and start it fully on
 /// the underscore row … once the flame gets started, it consumes whatever part
@@ -513,15 +548,15 @@ pub fn render(
             }
             // Position within this column's flame: 0 base → 1 tip.
             //
-            // Remapped so the LOWEST VISIBLE row is the base. Without this the
-            // clamp `col_h >= base_frac` puts the bottom row at frac = 1 — its
-            // own tip — so the flame's sparse end touched the rule and the
-            // dense end floated a row above it: two detached bands (owner
-            // report 2026-11-16).
+            // Remapped so the LOWEST VISIBLE row is the base (2026-11-16:
+            // two-detached-bands fix).
             let span = (col_h - base_frac(rows)).max(1e-3);
             let frac = ((frac_from_base - base_frac(rows)) / span).clamp(0.0, 1.0);
             // Heat: base hotter, tips cooler; whole arc shifts hot with load.
-            let heat = (base_heat * (1.0 - frac * 0.75)).clamp(0.0, 1.0);
+            // 2026-11-19: also INWARD→OUTWARD (see cell_heat) — the horizontal
+            // term makes bottom-row cells differ across the width, so the rule
+            // and the first body row can no longer read as one band.
+            let heat = cell_heat(base_heat, frac, 0.0);
             // Density: dots pile toward the base, thin at the tips, with
             // per-cell flicker keeping the surface alive. The BOTTOM row is
             // capped so it blends into the smouldering rule instead of butting
@@ -1044,5 +1079,47 @@ mod rule_fade_tests {
                 rule_heat(level)
             );
         }
+    }
+
+    /// 2026-11-19 (owner): heat distributes INWARD→OUTWARD. Negative control:
+    /// the pure-vertical pre-fix formula fails this — same frac, hotter at
+    /// the core.
+    #[test]
+    fn heat_is_hotter_at_the_core_than_at_the_edge() {
+        for frac in [0.0, 0.5, 1.0] {
+            let core = cell_heat(1.0, frac, 0.0);
+            let edge = cell_heat(1.0, frac, 1.0);
+            assert!(
+                core > edge,
+                "frac {frac}: core {core} <= edge {edge} — inward gradient lost"
+            );
+        }
+    }
+
+    /// Vertical cooling survives: tips cooler than the base at the same edge.
+    #[test]
+    fn heat_still_cools_upward() {
+        assert!(cell_heat(1.0, 0.0, 0.3) > cell_heat(1.0, 1.0, 0.3));
+    }
+
+    /// GLOW: the hot end bends toward white; cool cells keep their hue.
+    #[test]
+    fn glow_bends_the_hot_core_toward_white() {
+        use ratatui::style::Color;
+        let mid = Color::Rgb(0xA6, 0xE2, 0x2E);
+        assert_eq!(glow_bend(mid, 0.5), mid, "cool cells must stay untouched");
+        let bent = glow_bend(mid, 1.0);
+        let (r, g, b) = match bent {
+            Color::Rgb(r, g, b) => (r, g, b),
+            other => panic!("expected Rgb, got {other:?}"),
+        };
+        assert!(
+            r > 0xA6 && g > 0xE2 && b > 0x2E,
+            "hot cell must whiten: {bent:?}"
+        );
+        assert!(
+            bent != Color::Rgb(255, 255, 255),
+            "bend must stop short of pure white"
+        );
     }
 }

@@ -68,6 +68,12 @@ export const KNOBS: readonly string[] = [
   "OFFICINA_CADUCEUS",
   "OFFICINA_CADUCEUS_API_KEY",
   "OFFICINA_CADUCEUS_BASE_URL",
+  // resolve-config oven (2026-11-20): TEST_HOME is the unit-detection test
+  // seam; ENV_FILE relocates the env file; ROUTER_INSTALLED is a recorded
+  // (not read) knob in the why-map.
+  "OFFICINA_CADUCEUS_ROUTER_INSTALLED",
+  "OFFICINA_ENV_FILE",
+  "OFFICINA_TEST_HOME",
   "OFFICINA_CADUCEUS_PREFS_FILE",
   "OFFICINA_CADUCEUS_ROUTER",
   "OFFICINA_CADUCEUS_URL",

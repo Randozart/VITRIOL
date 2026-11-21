@@ -33,6 +33,7 @@ TRIAL_CTX="${DREAM_TRIAL_CTX:-16384}"
 BASE_URL="${DREAM_TRIAL_BASE_URL:-http://127.0.0.1:8279}"
 EVAL_DIR="${DREAM_TRIAL_EVAL_DIR:-$HOME/.vitriol/officina/dream-eval}"
 UNIT="vitriol-server.service"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DRY="${OFFICINA_DRY_RUN:-0}"
 
 sha256_of() { sha256sum "$1" | awk '{print $1}'; }
@@ -140,96 +141,73 @@ verb_score() {
   if [[ ! -f "$eval_path" ]]; then
     say "no frozen eval set at $eval_path — seeding from the route ledger."
     mkdir -p "$EVAL_DIR"
-    # Seed via the OFFICINA ts loader (same jiti pi uses) so the ledger
-    # parsing + hashing logic lives in ONE place (dream-eval extension).
-    local seed_js="$EVAL_DIR/.seed-eval.mjs"
+    # Seed via the officina ts loader (jiti resolves from officina/node_modules,
+    # the only place it is installed) so the ledger parsing + hashing logic
+    # stays in ONE place (dream-eval extension).
+    local seed_js="$REPO/officina/.seed-eval.mjs"
     cat > "$seed_js" <<'SEED'
-import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const jiti = require("jiti");
-const ext = jiti(join(process.cwd(), ".pi/extensions/dream-eval/index.ts"));
+const createJiti = require("jiti");
+const inst = createJiti(import.meta.url);
+const ext = await inst.import(join(process.cwd(), ".pi/extensions/dream-eval/index.ts"));
+const core = await inst.import(join(process.cwd(), ".pi/extensions/_shared/dream-eval-core.ts"));
 const rows = ext.readLedgerRows(join(homedir(), ".vitriol", "officina"));
 const candidates = ext.seedCandidatesFromLedger(rows);
-if (candidates.length === 0) {
-  console.error("no eval candidates from the ledger");
-  process.exit(1);
-}
-const set = await ext.buildEvalSet(candidates);
+if (candidates.length === 0) { console.error("no eval candidates from the ledger"); process.exit(1); }
+const set = await core.buildEvalSet(candidates);
 writeFileSync(join(process.cwd(), ".vitriol-seed-target.json"), JSON.stringify({ hash: set.hash, items: set.items }, null, 2));
 console.log(`seeded ${set.items.length} items hash=${set.hash.slice(0, 12)}`);
 SEED
-    ( cd "$(dirname "$0")/.." && node "$seed_js" && mv .vitriol-seed-target.json "$EVAL_DIR/eval-set.json" )       || { rm -f "$seed_js"; say "ERROR: could not seed the eval set (jiti/ledger); run /dream-eval once in a session." >&2; return 1; }
+    if ( cd "$REPO/officina" && node "$seed_js" && mv .vitriol-seed-target.json "$eval_path" ); then
+      say "frozen eval set ready: $eval_path"
+    else
+      say "ERROR: could not seed the eval set (jiti/ledger); run /dream-eval once in a session." >&2
+      rm -f "$seed_js"; return 1
+    fi
     rm -f "$seed_js"
-    say "frozen eval set ready: $eval_path"
   fi
   say "scoring $BASE_URL against $eval_path"
   if [[ "$DRY" == "1" ]]; then
     say "DRY: would POST each eval item to $BASE_URL/completion and write a report"
     return 0
   fi
-  local stamp
+  local stamp out
   stamp="$(date -Is | tr -d ':')"
-  local out="$EVAL_DIR/dreamtrial-${stamp}.json"
-  # Drive scoring through the extension's scoreLanes (the local lane id is
-  # the trial alias; a single-element lane list = one model).
-  node - "$BASE_URL" "$TRIAL_ALIAS" "$eval_path" "$out" <<'NODE'
-  const [base, model, evalPath, out] = process.argv.slice(1);
-  // jiti the TS extension (same loader pi uses); fall back to a manual fetch.
-  (async () => {
-    let mod;
-    try {
-      const jiti = require('jiti');
-      mod = jiti(join(process.cwd(), '.pi/extensions/dream-eval/index.ts'));
-    } catch {
-      mod = null;
-    }
-    const fs = require('node:fs');
-    const set = JSON.parse(fs.readFileSync(evalPath, 'utf8'));
-    const items = set.items.filter((i) => i.split === 'eval');
-    const results = [];
-    for (const item of items) {
-      let ok = false, err = '';
-      try {
-        const res = await fetch(`${base.replace(/\/$/, '')}/completion`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ model, prompt: item.question, n_predict: 200, temperature: 0, cache_prompt: false }),
-          signal: AbortSignal.timeout(120000),
-        });
-        const doc = await res.json();
-        const answer = typeof doc.content === 'string' ? doc.content : '';
-        // Re-use the judge from the core (pure) for an honest pass/fail.
-        ok = judgeInline(item, answer);
-      } catch (e) {
-        err = String(e);
-      }
-      results.push({ id: item.id, class: item.class, passed: ok, error: err });
-    }
-    const passed = results.filter((r) => r.passed).length;
-    const report = {
-      model,
-      evalHash: set.hash,
-      total: results.length,
-      passed,
-      passRate: results.length ? passed / results.length : 0,
-      items: results,
-      at: new Date().toISOString(),
-    };
-    fs.writeFileSync(out, JSON.stringify(report, null, 2));
-    console.log(`dream-trial score: ${(report.passRate * 100).toFixed(1)}% (${passed}/${report.total}) -> ${out}`);
-    function judgeInline(item, answer) {
-      if (item.class === 'command' || item.class === 'number') {
-        return item.mustContain.every((s) => answer.includes(s));
-      }
-      const lower = answer.toLowerCase();
-      const hit = item.mustContain.filter((s) => lower.includes(s.toLowerCase())).length;
-      return item.mustContain.length ? hit / item.mustContain.length >= 0.6 : true;
-    }
-  })().catch((e) => { console.error('score failed:', e); process.exit(1); });
-NODE
+  out="$EVAL_DIR/dreamtrial-${stamp}.json"
+  # Drive scoring through the extension's scoreLanes — the judge lives in
+  # dream-eval-core (ONE source of truth), and a single-element lane list
+  # scores the one trial model.
+  local score_js="$REPO/officina/.score-trial.mjs"
+  cat > "$score_js" <<'SCORE'
+import { writeFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+const [base, model, evalPath, out] = process.argv.slice(2);
+const require = createRequire(import.meta.url);
+const createJiti = require("jiti");
+const inst = createJiti(import.meta.url);
+const ext = await inst.import(join(process.cwd(), ".pi/extensions/dream-eval/index.ts"));
+const set = JSON.parse(readFileSync(evalPath, "utf8"));
+const laneResults = await ext.scoreLanes(base, [model], evalPath);
+const r = laneResults[0] ?? { lane: model, error: "no result" };
+const report = {
+  model,
+  evalHash: set.hash,
+  ...(r.error ? { error: r.error } : { passRate: r.passRate }),
+  at: new Date().toISOString(),
+};
+writeFileSync(out, JSON.stringify(report, null, 2));
+if (r.error) { console.error(`dream-trial score: ERROR ${r.error}`); process.exit(1); }
+console.log(`dream-trial score: ${(r.passRate * 100).toFixed(1)}% for ${model} -> ${out}`);
+SCORE
+  local rc=0
+  ( cd "$REPO/officina" && node "$score_js" "$BASE_URL" "$TRIAL_ALIAS" "$eval_path" "$out" ) || rc=$?
+  rm -f "$score_js"
+  return $rc
 }
 
 verb_status() {

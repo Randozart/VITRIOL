@@ -60,13 +60,9 @@ describe("build rules (I-P3, I-E2)", () => {
     const set = await buildEvalSet([
       item(),
       item({ id: "q2", provenance: "" }),
-      item({ id: "q3", provenance: undefined as never }),
+      item({ id: "q3", provenance: "memory:fact-7" }),
     ]);
-    expect(set.items.map((i) => i.id).sort()).toEqual(
-      ["q1", "q3"].sort() === ["q1", "q3"]
-        ? ["q1"]
-        : set.items.map((i) => i.id),
-    );
+    expect(set.items.map((i) => i.id).sort()).toEqual(["q1", "q3"]);
     // stricter: only provenance-carrying items survive
     expect(set.items.every((i) => i.provenance.length > 0)).toBe(true);
   });

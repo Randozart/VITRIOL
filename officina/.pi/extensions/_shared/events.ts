@@ -35,7 +35,8 @@ export type EventSource =
   | "lc-verify"
   | "lc-agents"
   | "lc-probe"
-  | "lc-guard";
+  | "lc-guard"
+  | "lc-sleep";
 
 export interface HarnessEvent {
   ts: number;

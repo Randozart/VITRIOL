@@ -307,8 +307,10 @@ static MODE_COLOURS: OnceLock<Mutex<ModeColourCache>> = OnceLock::new();
 
 #[derive(Default)]
 struct ModeColourCache {
-    /// File mtime the cache was built from.
-    mtime: Option<std::time::SystemTime>,
+    /// Path + mtime the cache was built from. The path is part of the key:
+    /// tests (and any future alternate HOME) ask about different facts files
+    /// in one process, and an mtime-only key would serve another file's data.
+    source: Option<(std::path::PathBuf, std::time::SystemTime)>,
     /// Checked-at instant: the file is stat-ed at most this often, never per
     /// frame (the chip renders every frame).
     checked_at: Option<Instant>,
@@ -349,8 +351,9 @@ pub fn hex_for_label(label: &str, path: &std::path::Path) -> Option<(u8, u8, u8)
     if due {
         guard.checked_at = Some(now);
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
-        if mtime != guard.mtime {
-            guard.mtime = mtime;
+        let key = mtime.map(|m| (path.to_path_buf(), m));
+        if key != guard.source {
+            guard.source = key;
             guard.colours = read_mode_colours(path);
         }
     }

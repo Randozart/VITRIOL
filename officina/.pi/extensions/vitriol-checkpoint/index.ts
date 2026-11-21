@@ -6,6 +6,7 @@ import {
   readFileSync,
   unlinkSync,
   writeFileSync,
+  statSync,
 } from "node:fs";
 import { dirname } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
@@ -17,7 +18,9 @@ import {
   markerMatchesSession,
   markerPath,
   parseSlotOpResponse,
+  overBudgetTurnFiles,
   prunableTurnFiles,
+  isTurnFile,
   restoreIsCompatible,
   safeFilename,
   slotActionUrl,
@@ -62,6 +65,15 @@ export default function (pi: ExtensionAPI) {
   let sessionStem = "session";
   let lastSavedTurn = -1;
   let modelId = process.env.TRIS_CKPT_MODEL ?? "";
+
+  // Trim the accumulated backlog at session start (2026-11-21): a box whose
+  // saves are rare otherwise keeps a dead-session backlog indefinitely
+  // (63 GiB observed). Best effort; the save path re-enforces after each save.
+  try {
+    enforceTurnBudget("");
+  } catch {
+    // budget enforcement must never break session start
+  }
 
   /** One engine call; never throws — the checkpoint layer must not break a run. */
   /**
@@ -145,6 +157,45 @@ export default function (pi: ExtensionAPI) {
         unlinkSync(`${dir}/${name}`);
       } catch {
         // already gone or unwritable — retention is best effort
+      }
+    }
+  }
+
+  /**
+   * Global turn-file budget (2026-11-21): the per-session ring alone let dead
+   * sessions hold 3 × ~2.5 GiB each (63 GiB on disk vs the 40 GiB
+   * cache_max_gb). After the ring prune, sweep the NEWEST-FIRST-EXEMPT set:
+   * delete oldest turn files across all sessions until the total fits
+   * cfg.maxTurnGb, always protecting the file just written. Best effort — a
+   * failure must never fail the save that triggered it.
+   */
+  function enforceTurnBudget(justSaved: string): void {
+    const dir = slotSaveDir();
+    if (!dir) return;
+    let names: string[];
+    try {
+      names = readdirSync(dir);
+    } catch {
+      return;
+    }
+    const stats = names.filter(isTurnFile).map((name) => {
+      try {
+        const st = statSync(`${dir}/${name}`);
+        return { name, size: st.size, mtimeMs: st.mtimeMs };
+      } catch {
+        return { name, size: 0, mtimeMs: 0 };
+      }
+    });
+    for (const name of overBudgetTurnFiles(
+      stats,
+      cfg.maxTurnGb * 1024 ** 3,
+      new Set([justSaved]),
+    )) {
+      if (name.includes("/") || name.includes("\\")) continue;
+      try {
+        unlinkSync(`${dir}/${name}`);
+      } catch {
+        // already gone or unwritable — budget enforcement is best effort
       }
     }
   }
@@ -286,6 +337,7 @@ export default function (pi: ExtensionAPI) {
     lastSavedTurn = turn;
     writeMarker(filename, turn);
     pruneOldTurns(turn);
+    enforceTurnBudget(filename);
     emitHarnessEvent(
       harnessEvent("lc-ckpt", "saved", {
         turn,

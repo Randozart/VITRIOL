@@ -1994,18 +1994,27 @@ async function cmdDoctor(flags) {
   if (kvDir) {
     try {
       let bytes = 0;
+      let turnBytes = 0;
       let turnBins = 0;
       for (const f of readdirSync(kvDir)) {
         const st = statSync(join(kvDir, f));
         bytes += st.size;
-        if (f.includes("-turn-")) turnBins += 1;
+        // Turn checkpoints are the writer's budget, not cache_max_gb's
+        // (2026-11-21): report the split so the fix is unambiguous.
+        if (/-turn-\d+\.bin$/.test(f)) {
+          turnBins += 1;
+          turnBytes += st.size;
+        }
       }
       const gib = bytes / 1024 ** 3;
+      const turnGib = turnBytes / 1024 ** 3;
+      const turnCap = Number(process.env.TRIS_CKPT_MAX_GB) || 8;
+      const over = gib > 40 || turnGib > turnCap;
       add(
         "kvtier budget",
-        gib > 60 ? "warn" : "ok",
-        `${kvDir}: ${gib.toFixed(1)} GiB, ${turnBins} turn checkpoint(s)` +
-          (gib > 60 ? " — cache_max_gb trim or retention backlog" : ""),
+        over ? "warn" : "ok",
+        `${kvDir}: ${gib.toFixed(1)} GiB total, ${turnGib.toFixed(1)} GiB in ${turnBins} turn checkpoint(s) (cap ${turnCap} GiB)` +
+          (over ? " — the writer's ring + global sweep trim on the next save" : ""),
       );
     } catch {
       add("kvtier budget", "warn", `${kvDir} unreadable`);

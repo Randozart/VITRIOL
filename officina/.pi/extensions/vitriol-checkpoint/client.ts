@@ -23,6 +23,7 @@ export interface CkptConfig {
   everyTurns: number; // 0 = autosave off (manual tool still available)
   sessionDir: string; // crash marker dir (workspace-relative)
   keepTurns: number; // retention ring per session (cap-breach fix 2026-11-19)
+  maxTurnGb: number; // global turn-file budget across ALL sessions (2026-11-21)
 }
 
 export function ckptConfig(env: NodeJS.ProcessEnv = process.env): CkptConfig {
@@ -45,6 +46,13 @@ export function ckptConfig(env: NodeJS.ProcessEnv = process.env): CkptConfig {
     // cache_max_gb and a long session wrote hundreds of GiB. Retention ring:
     // keep the newest `keepTurns` per session, prune the rest.
     keepTurns: Number.isFinite(keep) && keep >= 1 ? Math.floor(keep) : 3,
+    // 2026-11-21: the per-session ring is not a BUDGET — dead sessions each
+    // keep 3 × ~2.5 GiB forever (63 GiB observed vs cache_max_gb=40). The
+    // writer now enforces a global turn-file cap across every session.
+    maxTurnGb: (() => {
+      const gb = Number(env.TRIS_CKPT_MAX_GB ?? "8");
+      return Number.isFinite(gb) && gb >= 1 ? gb : 8;
+    })(),
   };
 }
 
@@ -188,6 +196,45 @@ export function prunableTurnFiles(
     if (keepSet.has(o.turn) || seen.has(o.name)) continue;
     seen.add(o.name);
     out.push(o.name);
+  }
+  return out;
+}
+
+/** One candidate for the global budget sweep. */
+export interface TurnFileStat {
+  name: string;
+  size: number;
+  mtimeMs: number;
+}
+
+/** A turn checkpoint filename (any session): `<stem>-turn-<N>.bin`. */
+export function isTurnFile(name: string): boolean {
+  return /-turn-\d+\.bin$/.test(name);
+}
+
+/**
+ * Global turn-file budget (2026-11-21). Pure: returns the names to unlink,
+ * oldest mtime first, until the surviving turn files fit `capBytes`.
+ * Considers turn checkpoints across ALL sessions and nothing else — engine
+ * spills (cache-*.bin, slot*.bin) are the engine's own cache_max_gb budget,
+ * and markers are tiny. Never returns a protected name.
+ */
+export function overBudgetTurnFiles(
+  files: ReadonlyArray<TurnFileStat>,
+  capBytes: number,
+  protect: ReadonlySet<string> = new Set(),
+): string[] {
+  const turns = files
+    .filter((f) => isTurnFile(f.name) && !protect.has(f.name))
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+  let total = files
+    .filter((f) => isTurnFile(f.name))
+    .reduce((sum, f) => sum + f.size, 0);
+  const out: string[] = [];
+  for (const f of turns) {
+    if (total <= capBytes) break;
+    out.push(f.name);
+    total -= f.size;
   }
   return out;
 }

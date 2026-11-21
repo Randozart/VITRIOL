@@ -345,9 +345,18 @@ pub fn hex_for_label(label: &str, path: &std::path::Path) -> Option<(u8, u8, u8)
         return None;
     };
     let now = Instant::now();
-    let due = guard
-        .checked_at
-        .is_none_or(|at| now.duration_since(at) >= MODE_COLOUR_RECHECK);
+    // The 1 s throttle exists for the RENDER path (stat once per second, not
+    // once per frame). A different path is a different question and must be
+    // answered immediately — otherwise a caller asking about another facts
+    // file gets the first file's cache (CI: temp file vs real HOME).
+    let same_path = guard
+        .source
+        .as_ref()
+        .is_some_and(|(p, _)| p.as_path() == path);
+    let due = !same_path
+        || guard
+            .checked_at
+            .is_none_or(|at| now.duration_since(at) >= MODE_COLOUR_RECHECK);
     if due {
         guard.checked_at = Some(now);
         let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();

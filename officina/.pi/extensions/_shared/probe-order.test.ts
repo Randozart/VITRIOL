@@ -1,7 +1,7 @@
 // Probe-order tests (2026-11-21, plan free-inference-probe-routing S1).
 // I1 parity, I2 ok-first, I3 context_limit usability.
 import { describe, expect, it } from "vitest";
-import { orderCandidates } from "./probe-order.ts";
+import { orderCandidates, seedFallbackList } from "./probe-order.ts";
 import type { LaneKeyed } from "./probe-order.ts";
 
 interface TestLane {
@@ -73,5 +73,35 @@ describe("orderCandidates (I3)", () => {
     const out = orderCandidates(input, probes, KEYS);
     // Both failing; stable order preserved.
     expect(out.map((c) => c.id)).toEqual(["unknown/ctx", "dead"]);
+  });
+});
+
+describe("seedFallbackList (S3/I5)", () => {
+  const probes = {
+    "ok/fast": { kind: "ok", latencyMs: 1000, failCount: 0, nextProbeAt: 0 },
+    "ok/slow": { kind: "ok", latencyMs: 9000, failCount: 0, nextProbeAt: 0 },
+    "dead/1": { kind: "probe_error", failCount: 9, nextProbeAt: 0 },
+  };
+
+  it("seeds probe-ok lanes first, excludes failing lanes", () => {
+    const out = seedFallbackList(
+      ["dead/1", "ok/slow", "ok/fast", "fresh/lane"],
+      probes,
+      4,
+    );
+    expect(out).toEqual(["ok/fast", "ok/slow", "fresh/lane"]);
+  });
+
+  it("respects depth", () => {
+    const out = seedFallbackList(
+      ["ok/fast", "ok/slow", "fresh/lane"],
+      probes,
+      2,
+    );
+    expect(out).toEqual(["ok/fast", "ok/slow"]);
+  });
+
+  it("no marks: input order, truncated (I5)", () => {
+    expect(seedFallbackList(["a", "b", "c"], {}, 2)).toEqual(["a", "b"]);
   });
 });

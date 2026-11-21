@@ -110,7 +110,12 @@ export default function (pi: ExtensionAPI) {
   )
     .split(",")
     .map((s) => parseModelSpec(s))
-    .filter((s): s is { provider: string; id: string } => !!s);
+    .filter((s): s is { provider: string; id: string } => !!s)
+    // 2026-11-21 (S3/I5): fallback_depth pref widens the no-catalog walk
+    // (default: full list = today's behaviour). The ROUTER's walk depth is
+    // the other half — the prefs `fallback` list — seeded by the caduceus
+    // extension from probe-ok lanes.
+    .slice(0, readPrefs()?.fallback_depth ?? 5);
   const catalogPath =
     process.env.OFFICINA_OVERFLOW_CATALOG ||
     join(homedir(), ".vitriol", "officina", "caduceus-models.json");

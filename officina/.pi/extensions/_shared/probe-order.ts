@@ -80,3 +80,27 @@ export function orderCandidates<T>(
   });
   return decorated.map((d) => d.candidate);
 }
+
+/**
+ * Seed a proxy fallback list from probe facts (S3): top-N probe-ok lanes
+ * by latency, then unprobed lanes in input order (I5: with no marks the
+ * input order is returned, truncated to depth). Failing lanes never seed.
+ */
+export function seedFallbackList(
+  candidates: ReadonlyArray<string>,
+  probes: Record<string, ProbeFactLite> = {},
+  depth = 4,
+): string[] {
+  const ordered = orderCandidates(
+    candidates.map((id) => ({ id })),
+    probes,
+    { laneId: (item) => item.id },
+  );
+  return ordered
+    .filter((item) => {
+      const fact = probes[item.id];
+      return !fact || fact.kind === "ok" || fact.kind === "context_limit";
+    })
+    .slice(0, Math.max(1, depth))
+    .map((item) => item.id);
+}

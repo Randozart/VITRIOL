@@ -42,6 +42,13 @@ export interface CaduceusPrefs {
    * `f`). Empty/absent = the proxy passes requests straight through (I1).
    */
   fallback?: string[];
+  /**
+   * How many fallback lanes the ROUTER walks before giving up (2026-11-21,
+   * S3/I5). Missing = proxy default (today's behaviour). The caduceus
+   * doctor seeds the proxy's fallback list from probe-ok lanes up to this
+   * depth.
+   */
+  fallback_depth?: number;
 }
 
 export interface PrefCandidate {
@@ -82,6 +89,9 @@ export function normalizePrefs(raw: unknown): CaduceusPrefs | null {
   if (perOwner !== undefined) prefs.per_owner = perOwner;
   const max = clampInt(doc.max_candidates, 1, 256);
   if (max !== undefined) prefs.max_candidates = max;
+  // S3/I5: walk depth for the routing proxy; 1-12 sane band.
+  const depth = clampInt(doc.fallback_depth, 1, 12);
+  if (depth !== undefined) prefs.fallback_depth = depth;
 
   if (doc.providers && typeof doc.providers === "object" && !Array.isArray(doc.providers)) {
     const providers: Record<string, ProviderPrefs> = {};

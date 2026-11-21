@@ -1653,6 +1653,28 @@ WantedBy=default.target
         `  unpark:    curl -X DELETE 'http://127.0.0.1:${ROUTER_PORT}/park?model=<id>'`,
       );
     }
+    // 2026-11-21 (S3): seed the proxy's fallback list from probe-ok lanes
+    // up to fallback_depth — only when the operator has NOT set an explicit
+    // fallback list (env wins, then prefs). Operator intent beats inference.
+    if (!fromEnv.length && !prefsDoc?.fallback?.length) {
+      const probeDoc = readJsonSafe(
+        process.env.OFFICINA_GATEWAY_HEALTH_FILE ||
+          join(HOME, ".vitriol", "officina", "gateway-health.json"),
+      );
+      const probes = probeDoc?.probes ?? {};
+      const depth = Number(prefsDoc?.fallback_depth) || 4;
+      const seed = Object.entries(probes)
+        .filter(([, v]) => v.kind === "ok" && typeof v.latencyMs === "number")
+        .sort((a, b) => a[1].latencyMs - b[1].latencyMs)
+        .slice(0, depth)
+        .map(([k]) => k);
+      if (seed.length > 1) {
+        log(
+          `  seed:      ${seed.length} probe-ok lanes available for the walk — ` +
+            `set prefs.fallback to e.g. ${JSON.stringify(seed)}`,
+        );
+      }
+    }
   }
   const unitText = existsSync(ROUTER_UNIT)
     ? readFileSync(ROUTER_UNIT, "utf8")

@@ -15,7 +15,18 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { cooldownCeilingMs } from "./provider-health.ts";
 
-export type ProbeKind = "ok" | "cooling" | "invalid" | "paused" | "no_fit";
+// 2026-11-21 (S2): "no_fit" split — `context_limit` means the lane WORKS but
+// the request exceeded its learned window (usable when the request fits);
+// `probe_error` is a generic retryable failure. Legacy "no_fit" marks are
+// migrated to "probe_error" on read (degrade to retryable, not dead).
+export type ProbeKind =
+  | "ok"
+  | "cooling"
+  | "invalid"
+  | "paused"
+  | "context_limit"
+  | "probe_error"
+  | "no_fit";
 
 export interface ProbeFact {
   kind: ProbeKind;
@@ -157,7 +168,14 @@ export function readGatewayMarks(
     ),
     offered: { ...(file.offered ?? {}) },
     aliases: { ...(file.aliases ?? {}) },
-    probes: { ...(file.probes ?? {}) },
+    probes: Object.fromEntries(
+      Object.entries(file.probes ?? {}).map(([k, v]) => [
+        k,
+        // 2026-11-21 (S2): legacy "no_fit" marks migrate to "probe_error"
+        // (retryable) — an old mark must not read as permanently dead.
+        v.kind === "no_fit" ? { ...v, kind: "probe_error" as const } : v,
+      ]),
+    ),
     probeLease: file.probeLease,
   };
 }

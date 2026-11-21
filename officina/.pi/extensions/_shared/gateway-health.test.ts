@@ -223,6 +223,30 @@ describe("probe facts + leader lease", () => {
     expect(marks.probes["dahl/MiniMaxAI/MiniMax-M2.7"]?.latencyMs).toBe(120);
   });
 
+  it("migrates legacy no_fit marks to probe_error on read (S2)", () => {
+    const path = process.env.OFFICINA_GATEWAY_HEALTH_FILE!;
+    const fs = require("node:fs") as typeof import("node:fs");
+    fs.writeFileSync(
+      path,
+      JSON.stringify({
+        version: 1,
+        ts: Date.now(),
+        models: {},
+        owners: {},
+        probes: {
+          "old/lane": {
+            kind: "no_fit",
+            failCount: 4,
+            nextProbeAt: Date.now(),
+            failAt: Date.now(),
+          },
+        },
+      }),
+    );
+    const marks = readGatewayMarks();
+    expect(marks.probes["old/lane"]?.kind).toBe("probe_error");
+  });
+
   it("grants one prober and takes over expired leases", () => {
     process.env.OFFICINA_PROBE_TICK_MS = "0";
     expect(acquireProbeLease(1111, 20_000)).toBe(true);

@@ -85,7 +85,18 @@ export function selectProbeCandidate(
     }
     const until = Number(fact.until ?? 0);
     if (until > 0 && until <= now + 30_000) return { priority: 1, why: "cooldown-expired" };
-    if (Number(fact.nextProbeAt) <= now) return { priority: 3, why: "retry" };
+    if (Number(fact.nextProbeAt) <= now) {
+      // 2026-11-21 (S2/I4): repeat failures escalate — nextProbeAt doubles
+      // per consecutive failCount, capped, so a dead lane cannot monopolise
+      // the probe budget (the 727-hammer case). An ok probe resets the
+      // counter (baseFact resets failCount on success downstream).
+      if (fact.kind === "probe_error" && Number(fact.failCount) > 2) {
+        const span = Math.min(8, 2 ** Math.min(6, Number(fact.failCount) - 2));
+        const waited = now - Math.max(Number(fact.failAt ?? 0), 0);
+        if (waited < span * 60_000) return undefined;
+      }
+      return { priority: 3, why: "retry" };
+    }
     return undefined;
   };
   const choices = lanes

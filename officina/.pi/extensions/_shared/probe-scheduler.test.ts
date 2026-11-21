@@ -48,6 +48,49 @@ describe("probeBackoffMs", () => {
   });
 });
 
+describe("probe_error escalation (S2/I4)", () => {
+  it("repeated failures wait longer before the next probe", () => {
+    // failCount 5 → span 8 min: a probe 3 min after the last failure is
+    // deferred (undefined), but one 9 min later is allowed again.
+    const w = world({
+      probes: {
+        "agentrouter/gpt-5.6-sol": fact({
+          kind: "probe_error",
+          failCount: 5,
+          failAt: NOW - 3 * 60_000,
+          nextProbeAt: NOW,
+        }),
+      },
+    });
+    expect(selectProbeCandidate([lanes[2]!], w, NOW)).toBeUndefined();
+    const later = world({
+      probes: {
+        "agentrouter/gpt-5.6-sol": fact({
+          kind: "probe_error",
+          failCount: 5,
+          failAt: NOW - 9 * 60_000,
+          nextProbeAt: NOW,
+        }),
+      },
+    });
+    expect(selectProbeCandidate([lanes[2]!], later, NOW)?.why).toBe("retry");
+  });
+
+  it("a couple of failures (<=2) still retry immediately", () => {
+    const w = world({
+      probes: {
+        "agentrouter/gpt-5.6-sol": fact({
+          kind: "probe_error",
+          failCount: 2,
+          failAt: NOW - 10_000,
+          nextProbeAt: NOW,
+        }),
+      },
+    });
+    expect(selectProbeCandidate([lanes[2]!], w, NOW)?.why).toBe("retry");
+  });
+});
+
 describe("selectProbeCandidate", () => {
   it("prefers unverified lanes, then newly expired, then stale", () => {
     const w = world({
@@ -73,14 +116,14 @@ describe("selectProbeCandidate", () => {
       pausedOwners: new Set(["freeinference"]),
       coolingUntil: { "dahl/MiniMaxAI/MiniMax-M2.7": NOW + 60_000 },
     });
-    expect(selectProbeCandidate(lanes, w, NOW)).toBeUndefined();
+    expect(selectProbeCandidate([lanes[2]!], w, NOW)).toBeUndefined();
   });
 
   it("does not re-probe a freshly verified lane", () => {
     const w = world({
       probes: Object.fromEntries(lanes.map((l) => [l.id, fact({ okAt: NOW - 1_000 })])),
     });
-    expect(selectProbeCandidate(lanes, w, NOW)).toBeUndefined();
+    expect(selectProbeCandidate([lanes[2]!], w, NOW)).toBeUndefined();
     expect(isVerified(lanes[0]!.id, w.probes, NOW)).toBe(true);
   });
 

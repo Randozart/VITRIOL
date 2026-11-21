@@ -21,6 +21,7 @@ import {
   readPrefs,
 } from "../_shared/caduceus-prefs.ts";
 import { canSpendCloud } from "../_shared/budget.ts";
+import { orderCandidates } from "../_shared/probe-order.ts";
 import {
   readLivePeers,
   writeRegistryEntry,
@@ -35,7 +36,10 @@ import {
   recordRetryAfter,
   recordSuccess,
 } from "../_shared/provider-health.ts";
-import { parseCooldownFromError } from "../_shared/gateway-health.ts";
+import {
+  parseCooldownFromError,
+  readGatewayMarks,
+} from "../_shared/gateway-health.ts";
 import { wasProgrammaticSwitch } from "../_shared/model-switch-intent.ts";
 import { applyModel } from "../_shared/routing/apply.ts";
 import {
@@ -256,14 +260,26 @@ export default function (pi: ExtensionAPI) {
         allSpecs.map((s) => ({ ...s, owner: ownerOf(s), free: false })),
         prefs,
       );
-      const specs = [
-        ...policySpecs.filter(
-          (s0) =>
-            !laneHealth.hardDown.has(s0.owner) &&
-            !laneHealth.backoff.has(s0.owner),
-        ),
-        ...policySpecs.filter((s0) => laneHealth.backoff.has(s0.owner)),
-      ];
+      // 2026-11-21 (S1): probe-weighted ordering — the background probe's
+      // knowledge finally votes on spill order (probe-ok first, fastest
+      // first; unprobed keeps catalog order; failing lanes last). With no
+      // probe marks the order is unchanged (I1 parity).
+      const marks = readGatewayMarks();
+      const specs = orderCandidates(
+        [
+          ...policySpecs.filter(
+            (s0) =>
+              !laneHealth.hardDown.has(s0.owner) &&
+              !laneHealth.backoff.has(s0.owner),
+          ),
+          ...policySpecs.filter((s0) => laneHealth.backoff.has(s0.owner)),
+        ],
+        marks.probes,
+        {
+          laneId: (s0) => s0.id,
+          limitTokens: (s0) => marks.limits[s0.id] || undefined,
+        },
+      );
       const envCaps = {
         perOwner: Math.max(
           1,

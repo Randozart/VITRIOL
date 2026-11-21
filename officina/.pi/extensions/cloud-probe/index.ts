@@ -281,10 +281,12 @@ export default function (pi: ExtensionAPI) {
           markOwnerPause(owner, pause, "probe 400 key pause");
           markProbe(lane, baseFact("paused", { failAt: now, until: now + pause.pauseMs }));
         } else if (limit) {
+          // 2026-11-21 (S2): the lane WORKS — the request just exceeded its
+          // learned window. Distinct kind so ordering keeps it eligible.
           markModelLimit(lane, limit);
-          markProbe(lane, baseFact("no_fit", { failAt: now }));
+          markProbe(lane, baseFact("context_limit", { failAt: now }));
         } else {
-          markProbe(lane, baseFact("no_fit", { failAt: now }));
+          markProbe(lane, baseFact("probe_error", { failAt: now }));
         }
       }
 

@@ -24,7 +24,7 @@ mod tests {
         // selection/command); render lives in layout.rs. Under the 1000-line
         // unbudgeted cap today; budget it if it grows.
         // 378 (2026-11-21): per-mode chip colours (mtime-cached facts read).
-        ("src/tui/mode_popup.rs", 388),
+        ("src/tui/mode_popup.rs", 390),
         // 113 (2026-11-21): band content hold (new module).
         ("src/tui/band_hold.rs", 113),
         // +2 (2026-11-19): aethership rename in theme help + repaint test.

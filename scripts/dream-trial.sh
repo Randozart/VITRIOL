@@ -140,17 +140,30 @@ verb_score() {
   if [[ ! -f "$eval_path" ]]; then
     say "no frozen eval set at $eval_path — seeding from the route ledger."
     mkdir -p "$EVAL_DIR"
-    # Reuse the extension's pure seed+build via a tiny node one-liner so we
-    # don't duplicate the ledger-parsing logic.
-    node -e "
-      const { readFileSync, writeFileSync, mkdirSync, existsSync } = require('node:fs');
-      const { homedir } = require('node:os');
-      const { join } = require('node:path');
-      const mod = require('$(cd "$(dirname "$0")/.." && pwd)/officina/.pi/extensions/dream-eval/index.ts');
-    " 2>/dev/null || {
-      say "ERROR: could not seed the eval set; run /dream-eval once in a session." >&2
-      return 1
-    }
+    # Seed via the OFFICINA ts loader (same jiti pi uses) so the ledger
+    # parsing + hashing logic lives in ONE place (dream-eval extension).
+    local seed_js="$EVAL_DIR/.seed-eval.mjs"
+    cat > "$seed_js" <<'SEED'
+import { readFileSync, writeFileSync, readdirSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const jiti = require("jiti");
+const ext = jiti(join(process.cwd(), ".pi/extensions/dream-eval/index.ts"));
+const rows = ext.readLedgerRows(join(homedir(), ".vitriol", "officina"));
+const candidates = ext.seedCandidatesFromLedger(rows);
+if (candidates.length === 0) {
+  console.error("no eval candidates from the ledger");
+  process.exit(1);
+}
+const set = await ext.buildEvalSet(candidates);
+writeFileSync(join(process.cwd(), ".vitriol-seed-target.json"), JSON.stringify({ hash: set.hash, items: set.items }, null, 2));
+console.log(`seeded ${set.items.length} items hash=${set.hash.slice(0, 12)}`);
+SEED
+    ( cd "$(dirname "$0")/.." && node "$seed_js" && mv .vitriol-seed-target.json "$EVAL_DIR/eval-set.json" )       || { rm -f "$seed_js"; say "ERROR: could not seed the eval set (jiti/ledger); run /dream-eval once in a session." >&2; return 1; }
+    rm -f "$seed_js"
+    say "frozen eval set ready: $eval_path"
   fi
   say "scoring $BASE_URL against $eval_path"
   if [[ "$DRY" == "1" ]]; then

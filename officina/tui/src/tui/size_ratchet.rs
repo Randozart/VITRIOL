@@ -23,21 +23,25 @@ mod tests {
         // +261 (2026-11-19): NEW module — TAB mode-popup logic (load/fallback/
         // selection/command); render lives in layout.rs. Under the 1000-line
         // unbudgeted cap today; budget it if it grows.
-        ("src/tui/mode_popup.rs", 261),
+        // 378 (2026-11-21): per-mode chip colours (mtime-cached facts read).
+        ("src/tui/mode_popup.rs", 378),
+        // 113 (2026-11-21): band content hold (new module).
+        ("src/tui/band_hold.rs", 113),
         // +2 (2026-11-19): aethership rename in theme help + repaint test.
         // +6 (2026-11-19): mode_popup state field.
         // +5 (2026-11-20): watchdog countdown test tolerance widened 18..=21
         // (now_ms sampled twice; wall-clock drift under loaded runner).
-        ("src/tui/state.rs", 9_617),
+        ("src/tui/state.rs", 9_625),
         // +2 (2026-11-19): reasoning_guard registration and its one-line call in agent_end.
         // +63 (2026-11-19): TAB mode-popup dispatch (open/guard/keys/submit).
         // +1 (2026-11-20): base module registration (paint-first underlay).
-        ("src/tui/mod.rs", 5_848),
+        ("src/tui/mod.rs", 5_839),
         // +77 (2026-11-19): /-menu fill (+8) and render_mode_popup (+69) —
         // the popup widget; the popup LOGIC lives in mode_popup.rs (new file).
         // +21 (2026-11-20): per-column ignition_spans (rule gradient).
         // +59 (2026-11-20): BaseFill paint-first + 13 Clear→ClearBase + INV-1 gate.
-        ("src/tui/layout.rs", 5_782),
+        // 5802 (2026-11-21): mode_chip consults declared colours first.
+        ("src/tui/layout.rs", 5_805),
         ("src/session_guard.rs", 1_324),
         ("src/tui/caduceus.rs", 1_253),
         // +12 (2026-11-19): monokai + catppuccin embedded-theme resolution.

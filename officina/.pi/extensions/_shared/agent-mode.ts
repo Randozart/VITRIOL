@@ -87,12 +87,14 @@ Behavior for this mode: investigate before acting — read the relevant code, tr
     blockNonMdWrites: true,
   },
   {
+    // Name stays "conversation" (2026-11-21): /agent conversation and any
+    // stored preference keep working; "discuss" is the operator-facing label.
     name: "conversation",
-    label: "CONVERSATION",
+    label: "DISCUSS",
     glyph: "◇",
     color: "#2fa08a", // sea-glass teal: discussion water, not excavation
     hint: "repo chat & light research · no state changes · TAB / /agent build",
-    directive: `AGENT MODE: CONVERSATION (discuss, do not act).
+    directive: `AGENT MODE: DISCUSS (talk it through, do not act).
 This is a discussion turn about the repo, the architecture, or lightweight
 research. Answer concisely and substantively; you may read files and browse
 the web to ground the discussion. Do NOT modify files, run state-changing

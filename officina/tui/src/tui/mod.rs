@@ -1,4 +1,5 @@
 pub mod ansi;
+pub mod band_hold;
 pub mod base;
 pub mod cache;
 pub mod caduceus;
@@ -1190,16 +1191,6 @@ async fn handle_caduceus_key(key: KeyEvent, state: &mut AppState, bridge: &mut R
     }
 }
 
-/// Resolve the agent-mode facts path (~/.vitriol/officina/agent-mode.json).
-/// Standalone fn (not a closure) so the popup load reads as a statement.
-fn mode_popup_facts_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::PathBuf::from(home)
-        .join(".vitriol")
-        .join("officina")
-        .join("agent-mode.json")
-}
-
 async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge) {
     // Enhanced keyboard protocols report Press AND Release. Only Press/Repeat
     // are actions; a stray Esc key-release used to look like a second abort
@@ -1960,7 +1951,7 @@ async fn handle_key(key: KeyEvent, state: &mut AppState, bridge: &mut RpcBridge)
             // Empty composer, no ghost suggestion → open the mode menu.
             // A visible ghost means TAB means "accept it" — cycle/accept
             // keeps priority (existing contract tests pin this).
-            let (modes, current) = mode_popup::load_modes(&mode_popup_facts_path());
+            let (modes, current) = mode_popup::load_modes(&mode_popup::facts_path());
             state.mode_popup = Some(mode_popup::ModePopup::open(modes, current));
         }
         KeyCode::Tab => match state.next_agent_mode() {

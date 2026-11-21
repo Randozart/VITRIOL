@@ -23,6 +23,16 @@ pub struct ModeEntry {
     pub hint: String,
 }
 
+/// The facts file the agent-mode extension publishes (single source for both
+/// the popup list and the chip colours).
+pub fn facts_path() -> std::path::PathBuf {
+    let home = std::env::var("HOME").unwrap_or_default();
+    std::path::PathBuf::from(home)
+        .join(".vitriol")
+        .join("officina")
+        .join("agent-mode.json")
+}
+
 /// Built-in fallback when agent-mode.json is missing/stale. Kept in lockstep
 /// with `_shared/agent-mode.ts` DEFAULT_MODES (I11).
 pub fn fallback_modes() -> Vec<ModeEntry> {
@@ -58,7 +68,7 @@ pub fn fallback_modes() -> Vec<ModeEntry> {
         ("plan", "PLAN", "►", "#ffd700", "research only, *.md writes"),
         (
             "conversation",
-            "CONVERSATION",
+            "DISCUSS",
             "◇",
             "#2fa08a",
             "repo chat & light research · no state changes · TAB / /agent build",
@@ -252,10 +262,117 @@ mod tests {
         assert_eq!(popup.picked().unwrap().name, "grind");
     }
 
+    /// 2026-11-21: the chip must read a mode's DECLARED colour, not fall back
+    /// to BUILD gold for every mode added after the original five.
+    #[test]
+    fn declared_colours_are_parsed_from_the_facts_file() {
+        let dir = std::env::temp_dir().join("officina-mode-popup-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("colours.json");
+        std::fs::write(
+            &path,
+            r##"{"version":1,"ts":1,"mode":"pipeline","modes":[
+              {"name":"pipeline","label":"PIPELINE","color":"#e05adf"},
+              {"name":"research","label":"RESEARCH","color":"#3a74d4"},
+              {"name":"build","label":"BUILD","color":"coldBlue"}]}"##,
+        )
+        .unwrap();
+        assert_eq!(hex_for_label("PIPELINE", &path), Some((0xe0, 0x5a, 0xdf)));
+        assert_eq!(hex_for_label("research", &path), Some((0x3a, 0x74, 0xd4)));
+        // A named Vitriolum colour has no hex — the caller uses theme roles.
+        assert_eq!(hex_for_label("BUILD", &path), None);
+        assert_eq!(parse_hex_colour("#zzzzzz"), None);
+        assert_eq!(parse_hex_colour("e05adf"), None);
+    }
+
     #[test]
     fn command_is_the_existing_prompt_path() {
         let mut popup = ModePopup::open(modes(), Some("grind".to_string()));
         popup.move_down(); // steer
         assert_eq!(popup.command().as_deref(), Some("/agent steer"));
     }
+}
+
+// ── Per-mode chip colour (2026-11-21) ─────────────────────────────────────
+// The composer chip used to know only the five original modes; the three
+// newer ones fell through to the BUILD gold. The facts file already carries
+// each mode's declared colour (the extension writes it), so the chip reads
+// THAT instead of duplicating the table in Rust. Named Vitriolum colours
+// (coldBlue, violet, …) still resolve through the theme table in layout.rs —
+// only hex values are handled here.
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+static MODE_COLOURS: OnceLock<Mutex<ModeColourCache>> = OnceLock::new();
+
+#[derive(Default)]
+struct ModeColourCache {
+    /// File mtime the cache was built from.
+    mtime: Option<std::time::SystemTime>,
+    /// Checked-at instant: the file is stat-ed at most this often, never per
+    /// frame (the chip renders every frame).
+    checked_at: Option<Instant>,
+    /// label (uppercased) → rgb
+    colours: std::collections::HashMap<String, (u8, u8, u8)>,
+}
+
+/// Re-stat cadence for the facts file. A mode switch happens on a human
+/// timescale; 1 s is far below perception and far above frame rate.
+const MODE_COLOUR_RECHECK: Duration = Duration::from_secs(1);
+
+fn parse_hex_colour(s: &str) -> Option<(u8, u8, u8)> {
+    let t = s.trim();
+    let hex = t.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = u32::from_str_radix(hex, 16).ok()?;
+    Some((
+        ((n >> 16) & 0xff) as u8,
+        ((n >> 8) & 0xff) as u8,
+        (n & 0xff) as u8,
+    ))
+}
+
+/// Declared colour for a mode LABEL ("DISCUSS", "PIPELINE", …), from the
+/// agent-mode facts file. `None` when the file is missing, stale-ish, or the
+/// mode declares a named colour (the caller falls back to the theme table).
+pub fn hex_for_label(label: &str, path: &std::path::Path) -> Option<(u8, u8, u8)> {
+    let cache = MODE_COLOURS.get_or_init(|| Mutex::new(ModeColourCache::default()));
+    let Ok(mut guard) = cache.lock() else {
+        return None;
+    };
+    let now = Instant::now();
+    let due = guard
+        .checked_at
+        .is_none_or(|at| now.duration_since(at) >= MODE_COLOUR_RECHECK);
+    if due {
+        guard.checked_at = Some(now);
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if mtime != guard.mtime {
+            guard.mtime = mtime;
+            guard.colours = read_mode_colours(path);
+        }
+    }
+    guard.colours.get(&label.to_ascii_uppercase()).copied()
+}
+
+/// Parse the facts file into label → hex. Tolerant by contract: a broken file
+/// yields an empty map (the chip falls back to the theme table), never an
+/// error the renderer would have to handle.
+fn read_mode_colours(path: &std::path::Path) -> std::collections::HashMap<String, (u8, u8, u8)> {
+    let mut out = std::collections::HashMap::new();
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return out;
+    };
+    let Ok(facts) = serde_json::from_str::<FactsFile>(&text) else {
+        return out;
+    };
+    for m in facts.modes {
+        let label = m.label.clone().unwrap_or_else(|| m.name.clone());
+        if let Some(hex) = m.color.as_deref().and_then(parse_hex_colour) {
+            out.insert(label.to_ascii_uppercase(), hex);
+        }
+    }
+    out
 }

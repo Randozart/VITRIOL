@@ -1087,6 +1087,11 @@ pub struct AppState {
     /// non-empty line keeps the historical cycle (I10).
     pub mode_popup: Option<crate::tui::mode_popup::ModePopup>,
 
+    /// Last non-empty status-band lines (2026-11-21): the band debounces its
+    /// HEIGHT for 900 ms, so a content blip used to leave a blank row. Held
+    /// here so the strip shows the previous line instead of a hole.
+    pub band_text: crate::tui::band_hold::BandText,
+
     /// Working directory — session scan root for /resume.
     pub cwd: std::path::PathBuf,
 
@@ -1341,6 +1346,7 @@ impl Default for AppState {
             cursor: 0,
             cand_sel: 0,
             mode_popup: None,
+            band_text: crate::tui::band_hold::BandText::default(),
             cwd: std::path::PathBuf::from("."),
             agent_mode: None,
             agent_mode_pending: None,
@@ -1761,6 +1767,8 @@ impl AppState {
         self.band_ind.force(0);
         self.band_ctx.force(0);
         self.notice_row.force(0);
+        // The held strip belongs to the old session's layout (2026-11-21).
+        self.band_text.clear();
     }
 
     /// Persisted TUI theme name: `~/.vitriol/officina/tui-theme`.

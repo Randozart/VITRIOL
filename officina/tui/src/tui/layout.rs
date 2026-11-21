@@ -66,6 +66,24 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 /// Canonical mode → (alchemical symbol, color): the moon metal for PLAN,
 /// the sun metal for BUILD (owner request 2026-09-02). Custom modes → None.
 fn mode_chip(label: &str) -> Option<(&'static str, ratatui::style::Color)> {
+    // Declared colour first (2026-11-21): the agent-mode facts file carries
+    // each mode's colour, so a mode added on the extension side is recoloured
+    // without touching this table. Named Vitriolum colours (the five originals)
+    // have no hex and fall through to the theme roles below — parity.
+    let declared =
+        crate::tui::mode_popup::hex_for_label(label, &crate::tui::mode_popup::facts_path())
+            .map(|(r, g, b)| ratatui::style::Color::Rgb(r, g, b));
+    let glyph = match label.to_ascii_uppercase().as_str() {
+        "PLAN" => "☽",
+        "BUILD" => "☉",
+        "INQUIRE" => "?",
+        "STEER" => "↝",
+        "GRIND" => "∞",
+        _ => "▪",
+    };
+    if let Some(color) = declared {
+        return Some((glyph, color));
+    }
     match label.to_ascii_uppercase().as_str() {
         "PLAN" => Some(("☽", theme::SILVER())),
         "BUILD" => Some(("☉", theme::GOLD())),
@@ -835,7 +853,12 @@ fn render_chat_and_editor(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
 
     if ind_h > 0 {
-        let lines: Vec<Line> = indicators.iter().map(|l| ansi::parse_line(l)).collect();
+        // Content hold (2026-11-21): the settled height can outlive its text
+        // by up to BAND_SETTLE; without this the row showed the panel surface
+        // and then the text came back ("flickering text to empty background").
+        // Held lines are painted instead of a hole, capped by settled rows.
+        let held = state.band_text.paint(&indicators, ind_h);
+        let lines: Vec<Line> = held.iter().map(|l| ansi::parse_line(l)).collect();
         // Dedicated status-band surface (owner request 2026-11-10): the
         // three below-editor lines sit on the panel tone, and the flames
         // start at this band's top edge instead of under it.
@@ -4456,7 +4479,7 @@ mod render_smoke {
             // Built the same way the TAB keybind opens it (mod.rs:1964).
             let mut s = base_state();
             let (modes, current) =
-                crate::tui::mode_popup::load_modes(&crate::tui::mode_popup_facts_path());
+                crate::tui::mode_popup::load_modes(&crate::tui::mode_popup::facts_path());
             s.mode_popup = Some(crate::tui::mode_popup::ModePopup::open(modes, current));
             assert_opaque(&mut s, w, h, "slash menu");
 

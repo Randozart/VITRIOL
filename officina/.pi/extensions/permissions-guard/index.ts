@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { emitHarnessEvent, harnessEvent } from "../_shared/events.ts";
 import { parseSnapshot, pathOf, type PermSnapshot } from "./perms.ts";
 import {
@@ -13,12 +14,15 @@ import {
 import { findBwrap, shouldWrap, wrapBwrap } from "./sandbox.ts";
 import {
   addProjectRule,
+  projectStorePath,
   clearProjectRules,
   leadingProgram,
   loadProjectStore,
   matchesProjectRule,
   normalizeCommand,
 } from "./perms-project.ts";
+import { protectedGlobs } from "./policy.ts";
+import { renderReport, loadGlobalRules, resolveMode } from "./perms-report.ts";
 import { traceHooks } from "../_shared/hook-trace.ts";
 import {
   getJobsRoot,
@@ -68,6 +72,35 @@ function currentMode(env: NodeJS.ProcessEnv = process.env): PermMode {
   return parseMode(env.OFFICINA_PERMISSIONS_MODE);
 }
 
+/** Content preview bounds (I3): lines first, chars as the hard stop. */
+export const PREVIEW_LINES = 40;
+export const PREVIEW_CHARS = 2000;
+
+/** `+ `-prefixed bounded preview of the content a write/edit will put on
+ *  disk. Pure; exported for tests. Pure + deterministic by contract. */
+export function contentPreviewOf(
+  content: string | undefined,
+): string | undefined {
+  if (!content || !content.trim()) return undefined;
+  const all = content.split("\n");
+  const shown = all.slice(0, PREVIEW_LINES);
+  const out: string[] = [];
+  let chars = 0;
+  for (const line of shown) {
+    const capped = line.length > 200 ? `${line.slice(0, 200)}…` : line;
+    chars += capped.length + 2;
+    out.push(`+ ${capped}`);
+    if (chars > PREVIEW_CHARS) {
+      out.pop();
+      out.push("+ … (preview truncated at char budget)");
+      break;
+    }
+  }
+  const rest = all.length - out.length;
+  if (rest > 0) out.push(`… (${rest} more lines)`);
+  return out.join("\n");
+}
+
 export default function (pi: ExtensionAPI) {
   if (process.env.TRIS_NO_PERMS === "1") return;
   // Opt-in hook timing (OFFICINA_HOOK_TRACE=1): a tool_call handler that never
@@ -99,6 +132,7 @@ export default function (pi: ExtensionAPI) {
     detail: string,
     ctx: { mode?: string; hasUI?: boolean; ui?: any },
     program = "",
+    contentPreview?: string,
   ): Promise<{ block: true; reason: string } | undefined> {
     const mode = currentMode();
     if (verdict.action === "allow") {
@@ -153,7 +187,7 @@ export default function (pi: ExtensionAPI) {
     // question, offered only after an approval (2026-11-17).
     const yes = await ctx.ui?.confirm(
       `permissions · ${tool}`,
-      buildAskMessage(tool, verdict.reason, detail, mode),
+      buildAskMessage(tool, verdict.reason, detail, mode, contentPreview),
     );
     emitHarnessEvent(
       harnessEvent("lc-perms", yes ? "ask-approved" : "ask-declined", {
@@ -210,18 +244,60 @@ export default function (pi: ExtensionAPI) {
    * paste cannot hang a frame), then the mode. The command used to be collapsed
    * to one line and cut at 120 chars, which made heredocs and && chains
    * unreadable at exactly the wrong moment (2026-11-17).
+   *
+   * 2026-11-21 (I2/I3): write/edit dialogs gain a bounded CONTENT preview —
+   * the operator was approving a path blind. Preview is `+ `-prefixed, capped
+   * at CONTENT_LINES/CONTENT_CHARS with a tail summary (I3: a 1 MB write
+   * must not hang a frame).
    */
   function buildAskMessage(
     tool: string,
     reason: string,
     detail: string,
     mode: string,
+    contentPreview?: string,
   ): string {
     const MAX = 2000;
     const full = detail.length > MAX ? `${detail.slice(0, MAX)}\n… (${detail.length - MAX} more chars)` : detail;
     const shown = tool === "bash" || tool === "powershell" ? `$ ${full.replace(/\n/g, "\n  ")}` : full;
-    return `${reason}\n\n${shown}\n\n(mode: ${mode})`;
+    const preview = contentPreview ? `\n\n${contentPreview}` : "";
+    return `${reason}\n\n${shown}${preview}\n\n(mode: ${mode})`;
   }
+
+
+
+  // /permissions — read-only report of every rule surface (2026-11-21, I4/I5).
+  pi.registerCommand("permissions", {
+    description:
+      "show active mode, global path rules, project allowlist, protected roots (read-only)",
+    handler: async (_args: string, ctx: unknown) => {
+      const c = ctx as { cwd?: string; ui?: any };
+      const cwd = (c.cwd || process.cwd()).replace(/\/+$/, "");
+      const { mode, source } = resolveMode(process.env);
+      const globalPath = join(
+        homedir(),
+        ".config",
+        "trismegistus",
+        "permissions.json",
+      );
+      const lines = renderReport({
+        mode,
+        modeSource: source,
+        globalRules: loadGlobalRules(globalPath),
+        globalPath,
+        projectRules: (() => {
+          const store = loadProjectStore(cwd);
+          return store ? store.rules.map((r) => ({ tool: r.tool, kind: r.kind, pattern: r.pattern })) : null;
+        })(),
+        projectPath: projectStorePath(cwd),
+        protectedRoots: protectedGlobs(process.env.HOME || homedir()),
+      });
+      await c.ui?.select?.(
+        `permissions · ${lines.length} lines (esc to close)`,
+        lines,
+      );
+    },
+  });
 
   pi.on("tool_call", async (event, ctx) => {
     const e = event as { toolName?: string; input?: Record<string, unknown> };
@@ -315,7 +391,17 @@ export default function (pi: ExtensionAPI) {
     const path = pathOf(input);
     if (!path) return undefined;
     const verdict = pathVerdict(tool, path, cwd, home, mode, snap);
-    return decideAndEnforce(tool, verdict, `${tool} ${path}`, ctx as any);
+    // I2: the operator approves content, not a path. (read keeps path-only.)
+    const preview =
+      tool === "read" ? undefined : contentPreviewOf(input.content as string);
+    return decideAndEnforce(
+      tool,
+      verdict,
+      `${tool} ${path}`,
+      ctx as any,
+      undefined,
+      preview,
+    );
   });
 }
 

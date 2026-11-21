@@ -136,7 +136,11 @@ function harness(snapshotText: string | null, env: Record<string, string>, mode 
   process.env.OFFICINA_PERMISSIONS_MODE_FILE = modeFile;
   let handler: ((e: unknown, c: unknown) => Promise<unknown>) | null = null;
   const notices: string[] = [];
-  const pi = { on: (ev: string, h: never) => { if (ev === "tool_call") handler = h; }, registerTool: () => undefined };
+  const pi = {
+    on: (ev: string, h: never) => { if (ev === "tool_call") handler = h; },
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+  };
   register(pi as never);
   let confirms = 0;
   let selectAnswer = "No, just this once";

@@ -30,6 +30,7 @@ import {
   DEFAULT_ROUTER_PORT,
   candidateOrder,
   giveUpMessage,
+  cappedParkMs,
   park,
   parseQuotaHint,
   pruneParked,
@@ -58,6 +59,10 @@ const GATEWAY = argOf(
 const FIRST_BYTE_MS = Math.max(
   5_000,
   Number(process.env.CADUCEUS_ROUTER_FIRST_BYTE_MS) || 45_000,
+);
+const MAX_PARK_MS = Math.max(
+  1_000,
+  Number(process.env.CADUCEUS_ROUTER_MAX_PARK_S || 900) * 1000,
 );
 const DECISION_ON = /^(1|on|true|yes)$/i.test(
   String(argOf("--decision", process.env.CADUCEUS_ROUTER_DECISION || "0")),
@@ -322,6 +327,30 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "DELETE" && req.url.startsWith("/park")) {
+    const target = new URL(req.url, "http://x").searchParams.get("model");
+    if (!target) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "model query param required" }));
+      return;
+    }
+    state = pruneParked(state, Date.now());
+    if (!(target in (state.parked ?? {}))) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: `model not parked: ${target}` }));
+      return;
+    }
+    const next = { parked: { ...state.parked }, reasons: { ...state.reasons } };
+    delete next.parked[target];
+    delete next.reasons[target];
+    state = next;
+    saveState(state);
+    logReroute({ unparked: target });
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, unparked: target }));
+    return;
+  }
+
   const body = await readBody(req);
   const requested = modelOf(body);
   const fallbacks = effectiveFallbacks();
@@ -410,8 +439,12 @@ async function serveRequest(res, meta, body, candidates) {
       // the gateway) or first-byte timeouts park. Transient resets just move
       // to the next candidate.
       const transient = error?.name !== "AbortError" && !error?.status;
-      if (!transient) {
-        state = park(state, model ?? "?", Date.now() + 60_000, reason);
+      // 2026-11-21 (R1): a no-model request (catalog read, stats RPC, probe)
+      // has no LANE to bench — parking it under "?" poisoned the park table
+      // and the give-up message.
+      const parkable = typeof model === "string" && model.length > 0;
+      if (!transient && parkable) {
+        state = park(state, model, Date.now() + 60_000, reason);
         saveState(state);
       }
       logReroute({ model, reason, transient, attempt: sessions });
@@ -431,13 +464,14 @@ async function serveRequest(res, meta, body, candidates) {
       // Nothing has been forwarded yet — safe to read the error and reroute.
       lastText = await upstream.text().catch(() => "");
       const hint = parseQuotaHint(lastText, Date.now());
-      state = park(
-        state,
-        model ?? "?",
-        Date.now() + (hint ?? 60_000),
-        `HTTP ${upstream.status}`,
-      );
-      saveState(state);
+      // 2026-11-21 (R2): cap hint parks — reset_seconds can be hours; one
+      // flaky 429 must not bench a lane past the operator's ceiling.
+      const parkMs = cappedParkMs(hint ?? 60_000, MAX_PARK_MS);
+      const parkable = typeof model === "string" && model.length > 0;
+      if (parkable) {
+        state = park(state, model, Date.now() + parkMs, `HTTP ${upstream.status}`);
+        saveState(state);
+      }
       logReroute({
         model,
         status: upstream.status,

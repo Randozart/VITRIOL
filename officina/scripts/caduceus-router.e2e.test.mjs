@@ -165,4 +165,61 @@ describe("caduceus-router (end to end)", () => {
     expect([200, 429, 502, 503]).toContain(res.status);
     await res.text();
   });
+
+  it("no-model 401 storm leaves lanes servable (I3)", async () => {
+    // A request without a model field (what stats RPCs/catalog reads look
+    // like) that the gateway rejects must NOT poison the park table — the
+    // 2026-11-21 pre-fix behaviour parked the literal "?" key.
+    const bad = await fetch(
+      `http://127.0.0.1:${ROUTER_PORT}/v1/chat/completions`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+      },
+    );
+    await bad.text();
+    const state = JSON.parse(readFileSync(STATE, "utf8"));
+    expect(Object.keys(state.parked ?? {})).not.toContain("?");
+    // The real lane is still walkable: good/lane was parked earlier in this
+    // file, so use a fresh id the stub serves.
+    const res = await chat("good/lane");
+    // Either served directly or rerouted — the point is NOT 503-give-up.
+    expect(res.status).not.toBe(503);
+    await res.text();
+  });
+
+  it("unpark endpoint removes exactly the named entry (I6)", async () => {
+    // Park something deterministically first.
+    await chat("bad/unpark-target");
+    let state = JSON.parse(readFileSync(STATE, "utf8"));
+    expect(Object.keys(state.parked)).toContain("bad/unpark-target");
+
+    const missing = await fetch(
+      `http://127.0.0.1:${ROUTER_PORT}/park?model=never/parked`,
+      { method: "DELETE" },
+    );
+    expect(missing.status).toBe(404);
+    await missing.text();
+
+    const noParam = await fetch(`http://127.0.0.1:${ROUTER_PORT}/park`, {
+      method: "DELETE",
+    });
+    expect(noParam.status).toBe(400);
+    await noParam.text();
+
+    const ok = await fetch(
+      `http://127.0.0.1:${ROUTER_PORT}/park?model=bad/unpark-target`,
+      { method: "DELETE" },
+    );
+    expect(ok.status).toBe(200);
+    await ok.text();
+    state = JSON.parse(readFileSync(STATE, "utf8"));
+    expect(Object.keys(state.parked ?? {})).not.toContain("bad/unpark-target");
+    // After unparking, the lane is walked again (it fails → 200 via fallback
+    // or 429 surfaced; never a stale-park shortcut).
+    const res = await chat("bad/unpark-target");
+    expect([200, 429]).toContain(res.status);
+    await res.text();
+  });
 });

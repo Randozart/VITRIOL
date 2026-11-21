@@ -1,6 +1,8 @@
 // Tests for the routing proxy's pure policy (2026-11-16).
 import { describe, expect, it } from "vitest";
 import {
+  cappedParkMs,
+  PHANTOM_LANE_KEY,
   buildLaneDecision,
   candidateOrder,
   fallbacksFromEnv,
@@ -146,6 +148,50 @@ describe("giveUpMessage", () => {
     expect(giveUpMessage({ tried: 1, parked: {}, nowMs: T0 })).toContain(
       "no lane is parked",
     );
+  });
+});
+
+describe("park cap (2026-11-21 R2)", () => {
+  it("hint parks are capped at the ceiling (I2)", () => {
+    // 5.6h reset_seconds from a flaky 429 must not bench the lane that long.
+    expect(cappedParkMs(20_054_000, 900_000)).toBe(900_000);
+    expect(cappedParkMs(177_000, 900_000)).toBe(177_000); // short hint kept
+    expect(cappedParkMs(60_000)).toBe(60_000); // default ceiling 900s
+    expect(cappedParkMs(20_054_000)).toBe(900_000);
+    expect(cappedParkMs(0)).toBe(1_000); // clamped floor
+    expect(cappedParkMs(undefined)).toBeUndefined();
+  });
+});
+
+describe("phantom lane (2026-11-21 R1)", () => {
+  it("no-model failures do not count as parked lanes (I3)", () => {
+    const now = T0;
+    const parked = { [PHANTOM_LANE_KEY]: now + 60_000 };
+    // "?" may linger in an old state file — it must not block reporting or
+    // pretend a lane will return.
+    expect(giveUpMessage({ tried: 1, parked, nowMs: now })).toContain(
+      "no lane is parked",
+    );
+    // a real lane still reports
+    expect(
+      giveUpMessage({ tried: 2, parked: { "m/a": now + 57_000 }, nowMs: now }),
+    ).toContain("earliest lane returns in 57s");
+  });
+
+  it("pruneParked drops the phantom key entirely (I3)", () => {
+    const pruned = pruneParked(
+      {
+        parked: {
+          [PHANTOM_LANE_KEY]: T0 + 60_000,
+          "m/a": T0 + 60_000,
+          stale: T0 - 1,
+        },
+        reasons: { [PHANTOM_LANE_KEY]: "HTTP 401", "m/a": "HTTP 502" },
+      },
+      T0,
+    );
+    expect(Object.keys(pruned.parked)).toEqual(["m/a"]);
+    expect(pruned.reasons[PHANTOM_LANE_KEY]).toBeUndefined();
   });
 });
 

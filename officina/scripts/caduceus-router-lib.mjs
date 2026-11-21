@@ -7,6 +7,12 @@
 
 /** Default port for the proxy (the gateway keeps 20128). */
 export const DEFAULT_ROUTER_PORT = 20129;
+/** Upper bound on hint-driven parks: one flaky 429 must not bench a lane for
+ *  hours (2026-11-21, router-cascade-fix). Env: CADUCEUS_ROUTER_MAX_PARK_S. */
+export const DEFAULT_MAX_PARK_S = 900;
+/** Placeholder key a no-model request used to park under; never a real lane
+ *  (2026-11-21 R1) — dropped wherever it appears. */
+export const PHANTOM_LANE_KEY = "?";
 /** Below this, don't bother retrying: the request was answered. */
 export const RETRYABLE_STATUSES = new Set([
   401, 403, 404, 408, 410, 429, 500, 502, 503, 504, 529,
@@ -48,10 +54,22 @@ export function park(state, model, untilMs, reason) {
   return next;
 }
 
+/**
+ * Park duration for a hint-driven failure: the hint clamped to the
+ * operator's ceiling (2026-11-21 R2). maxParkMs <= 0 disables the cap.
+ */
+export function cappedParkMs(hintMs, maxParkMs = DEFAULT_MAX_PARK_S * 1000) {
+  if (typeof hintMs !== "number" || !Number.isFinite(hintMs)) return undefined;
+  const floor = Math.max(1_000, Math.floor(hintMs));
+  if (typeof maxParkMs !== "number" || maxParkMs <= 0) return floor;
+  return Math.min(floor, maxParkMs);
+}
+
 /** Drop entries whose time has passed (keeps the state file small). */
 export function pruneParked(state, nowMs = Date.now()) {
   const next = { parked: {}, reasons: {} };
   for (const [model, until] of Object.entries(state?.parked ?? {})) {
+    if (model === PHANTOM_LANE_KEY) continue; // 2026-11-21 R1: never a lane
     if (typeof until === "number" && until > nowMs) {
       next.parked[model] = until;
       next.reasons[model] = state?.reasons?.[model] ?? "";
@@ -98,8 +116,9 @@ export function shouldRetry({ status, forwarded, timedOut }) {
 
 /** One line for the operator when every candidate is parked or failed. */
 export function giveUpMessage({ tried, parked, nowMs = Date.now() }) {
-  const soonest = Object.values(parked ?? {})
-    .filter((t) => typeof t === "number" && t > nowMs)
+  const soonest = Object.entries(parked ?? {})
+    .filter(([model, t]) => model !== PHANTOM_LANE_KEY && typeof t === "number" && t > nowMs)
+    .map(([, t]) => t)
     .sort((a, b) => a - b)[0];
   const when = soonest
     ? `earliest lane returns in ${Math.max(1, Math.round((soonest - nowMs) / 1000))}s`
@@ -171,9 +190,10 @@ export function buildLaneDecision({
   }));
   const criteria = {};
   for (const lane of lanes) {
-    criteria[lane.key] = `${lane.model} (${lane.free ? "free" : "paid"}, ${Math.round(
-      lane.context / 1000,
-    )}k ctx)`;
+    criteria[lane.key] =
+      `${lane.model} (${lane.free ? "free" : "paid"}, ${Math.round(
+        lane.context / 1000,
+      )}k ctx)`;
   }
   return {
     model,
@@ -203,14 +223,18 @@ export function buildLaneDecision({
  *
  * @returns {{lane: string|undefined, p: number, reason: string}}
  */
-export function pickLaneFromReply(replyDoc, { request, lanes, exclude = new Set(), floor = 0.6 }) {
+export function pickLaneFromReply(
+  replyDoc,
+  { request, lanes, exclude = new Set(), floor = 0.6 },
+) {
   const answer = replyDoc?.answers?.lane;
   const probs = {};
   for (const [k, v] of Object.entries(answer?.probabilities ?? {})) {
     if (typeof v === "number" && Number.isFinite(v)) probs[k] = v;
   }
   const ranked = Object.entries(probs).sort((a, b) => b[1] - a[1]);
-  if (ranked.length === 0) return { lane: undefined, p: 0, reason: "no probabilities" };
+  if (ranked.length === 0)
+    return { lane: undefined, p: 0, reason: "no probabilities" };
   for (const [key, p] of ranked) {
     const lane = lanes.find((l) => l.key === key);
     if (!lane) continue;
@@ -233,7 +257,9 @@ export function pickLaneFromReply(replyDoc, { request, lanes, exclude = new Set(
  * key (free-ness). A single candidate, or a clear free/paid split, needs no call.
  */
 export function needsDecisionModel(candidates, parked = new Set()) {
-  const usable = candidates.filter((c) => !parked.has(String(c.model ?? c.id ?? "")));
+  const usable = candidates.filter(
+    (c) => !parked.has(String(c.model ?? c.id ?? "")),
+  );
   if (usable.length < 2) return false;
   const freeness = usable.map((c) => (c.free !== false ? 1 : 0));
   const distinct = new Set(freeness).size;
@@ -264,11 +290,22 @@ export function geminiKeyFromSecrets(text) {
     const key = m[1].toLowerCase();
     const value = m[2].trim().replace(/^["']|["']$/g, "");
     if (!value) continue;
-    if (!named && (key === "gemini_api_key" || key === "gemini_key")) named = value;
-    if (!sectioned && section === "gemini" && (key === "api_key" || key === "key")) {
+    if (!named && (key === "gemini_api_key" || key === "gemini_key"))
+      named = value;
+    if (
+      !sectioned &&
+      section === "gemini" &&
+      (key === "api_key" || key === "key")
+    ) {
       sectioned = value;
     }
-    if (!bare && section === "" && key === "api_key" && value.startsWith("AIza")) bare = value;
+    if (
+      !bare &&
+      section === "" &&
+      key === "api_key" &&
+      value.startsWith("AIza")
+    )
+      bare = value;
   }
   return named || sectioned || bare;
 }

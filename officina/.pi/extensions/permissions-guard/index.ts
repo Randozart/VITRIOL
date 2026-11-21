@@ -267,9 +267,9 @@ export default function (pi: ExtensionAPI) {
 
 
   // /permissions — read-only report of every rule surface (2026-11-21, I4/I5).
-  pi.registerCommand("permissions", {
+  pi.registerCommand("permissions-report", {
     description:
-      "show active mode, global path rules, project allowlist, protected roots (read-only)",
+      "show active mode, global path rules, project allowlist, protected roots (read-only; /permissions switches mode)",
     handler: async (_args: string, ctx: unknown) => {
       const c = ctx as { cwd?: string; ui?: any };
       const cwd = (c.cwd || process.cwd()).replace(/\/+$/, "");

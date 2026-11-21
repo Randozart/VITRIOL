@@ -12,6 +12,7 @@ use crate::rpc::protocol::Model;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Failure {
+    RouterPolicy,
     EngineDown,
     NoPhysicalModel,
     ModelNotFound,
@@ -29,6 +30,12 @@ pub enum Failure {
 /// errors are actionable messages, not engine outages.
 pub fn classify_error(text: &str) -> Failure {
     let s = text.to_ascii_lowercase();
+    // 2026-11-21 (R3/I4): the router's own policy verdicts (all lanes parked,
+    // exhausted) precede the generic 503 match — they are NOT engine outages
+    // and must never trigger engine diagnostics.
+    if s.contains("router_unavailable") || s.contains("router_exhausted") {
+        return Failure::RouterPolicy;
+    }
     if s.contains("no api key")
         || s.contains("invalid api key")
         || s.contains("unauthorized")
@@ -497,6 +504,17 @@ mod tests {
             Failure::NoPhysicalModel
         );
         assert_eq!(classify_error("engine unavailable"), Failure::EngineDown);
+        // R3/I4: router policy verdicts are never engine outages.
+        assert_eq!(
+            classify_error(
+                "503: {\"message\":\"all 2 candidate(s) unavailable — earliest lane returns in 57s\",\"type\":\"router_unavailable\",\"code\":503}"
+            ),
+            Failure::RouterPolicy
+        );
+        assert_eq!(
+            classify_error("router_exhausted: nothing to try"),
+            Failure::RouterPolicy
+        );
         assert_eq!(
             classify_error("No API key found for provider"),
             Failure::Auth

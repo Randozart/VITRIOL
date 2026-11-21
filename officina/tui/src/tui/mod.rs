@@ -719,12 +719,22 @@ async fn run_loop(
                             handle_provider_failure(state, bridge, failure, &detail, &heal_policy)
                                 .await;
                         }
-                        if auto_continue && state.queued_prompts.is_empty() {
+                        if auto_continue
+                            && state.queued_prompts.is_empty()
+                            && !state.is_streaming
+                        {
                             // Guarded auto-continue (owner choice B, plan
                             // officina-compaction-continue-2026-09-03): a
                             // threshold compaction ends the run by design
                             // (pi: "user continues manually") — we pick the
                             // work back up, once per compaction.
+                            // 2026-11-21 (R4/I5): pi CONTINUES the run after
+                            // compaction_end when messages are queued
+                            // (agent-session: hasQueuedMessages), so
+                            // compaction_end does NOT imply idle — the
+                            // unguarded prompt hit "Agent is already
+                            // processing". Same guard as the queued-delivery
+                            // path below.
                             let _ = bridge
                                 .request(RpcCommand::Prompt {
                                     id: None,
@@ -3424,6 +3434,18 @@ async fn handle_provider_failure(
     }
     let replayable = state.last_prompt_replayable();
     match failure {
+        heal::Failure::RouterPolicy => {
+            // 2026-11-21 (R3): the router deliberately parked every lane — this
+            // is policy, not an outage. Engine diagnostics would be nonsense;
+            // surface the park info and let the operator unpark or wait.
+            state.entries.push(state::ChatEntry::Diag(
+            "harness: all Caduceus lanes parked by the router (not an engine outage) — wait for the earliest lane or `curl -X DELETE 'http://127.0.0.1:20129/park?model=<id>'`".to_string(),
+        ));
+            state.notice = Some((
+                "harness: all Caduceus lanes parked — earliest lane may return shortly".to_string(),
+                "warning".to_string(),
+            ));
+        }
         heal::Failure::EngineDown | heal::Failure::NoPhysicalModel => {
             // HARD RULE (operator 2026-11-15): only officina/lapis may
             // auto-start the engine. Every other selection stays manual.

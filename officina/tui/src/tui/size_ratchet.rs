@@ -35,7 +35,8 @@ mod tests {
         // +2 (2026-11-19): reasoning_guard registration and its one-line call in agent_end.
         // +63 (2026-11-19): TAB mode-popup dispatch (open/guard/keys/submit).
         // +1 (2026-11-20): base module registration (paint-first underlay).
-        ("src/tui/mod.rs", 5_839),
+        // +12 (2026-11-21): R3 RouterPolicy recovery arm (notice-only).
+        ("src/tui/mod.rs", 5861),
         // +77 (2026-11-19): /-menu fill (+8) and render_mode_popup (+69) —
         // the popup widget; the popup LOGIC lives in mode_popup.rs (new file).
         // +21 (2026-11-20): per-column ignition_spans (rule gradient).

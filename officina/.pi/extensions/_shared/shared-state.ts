@@ -49,6 +49,10 @@ export const SHARED_STATE: Record<string, SharedStateEntry> = {
     kind: "append-only",
     note: "frozen eval set + timestamped reports; reports are immutable artifacts, the eval set changes only via explicit reseed",
   },
+  dream: {
+    kind: "append-only",
+    note: "dream-gen corpus-<hash>.jsonl; each hash is an immutable frozen corpus, old versions retained for rollback",
+  },
 
   // ── caches: last writer wins, and a lost race costs one refresh ─────────
   "gateway-health.json": {

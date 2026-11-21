@@ -130,6 +130,11 @@ describe("adaptive-router wiring", () => {
       "/tmp/officina-caduceus-prefs-none.json";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE =
       "/tmp/officina-adaptive-health-test.json";
+    // Probe marks must not leak from the operator's live health file into
+    // candidate-order assertions (S1 regression 2026-11-21): point the
+    // gateway-health read at an empty fixture.
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE =
+      "/tmp/officina-adaptive-gw-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
@@ -227,6 +232,11 @@ describe("manual latch", () => {
       "caduceus/opencode-go/deepseek-v4.1-flash";
     process.env.OFFICINA_PROVIDER_HEALTH_FILE =
       "/tmp/officina-adaptive-health-test.json";
+    // Probe marks must not leak from the operator's live health file into
+    // candidate-order assertions (S1 regression 2026-11-21): point the
+    // gateway-health read at an empty fixture.
+    process.env.OFFICINA_GATEWAY_HEALTH_FILE =
+      "/tmp/officina-adaptive-gw-health-test.json";
     process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
     process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";

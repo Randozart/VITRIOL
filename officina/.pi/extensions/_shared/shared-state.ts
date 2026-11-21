@@ -33,7 +33,7 @@ export const SHARED_STATE: Record<string, SharedStateEntry> = {
     kind: "session-keyed",
     note: "one shard per TUI pid; readers glob-merge and TTL-prune",
   },
-  "claims": {
+  claims: {
     kind: "session-keyed",
     note: "one claim shard per pid (2026-11-18); advisory cross-session warnings",
   },
@@ -44,6 +44,10 @@ export const SHARED_STATE: Record<string, SharedStateEntry> = {
   "route-ledger-": {
     kind: "append-only",
     note: "route-ledger-YYYYMMDD.jsonl; every row carries sessionId + tuiPid",
+  },
+  "dream-eval": {
+    kind: "append-only",
+    note: "frozen eval set + timestamped reports; reports are immutable artifacts, the eval set changes only via explicit reseed",
   },
 
   // ── caches: last writer wins, and a lost race costs one refresh ─────────

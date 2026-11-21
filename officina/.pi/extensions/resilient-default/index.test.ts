@@ -567,6 +567,14 @@ afterEach(() => {
 // message_end, so it is exercised explicitly where it matters (I5).
 describe("resilient-default slot contention", () => {
   beforeEach(() => {
+    // These describes sit OUTSIDE the file's main describe, so its fixture
+    // reset does not apply here — reset the shared engine fixture ourselves
+    // (a leaked probeBusy silently changes every decision).
+    engine.up = true;
+    engine.busy = false;
+    engine.slots = [];
+    engine.probeBusy = false;
+    engine.contended = false;
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK =
       "caduceus/test-model,caduceus/second-model";
     process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
@@ -616,5 +624,77 @@ describe("resilient-default slot contention", () => {
       expect.stringContaining("contended"),
       "info",
     );
+  });
+});
+
+// ── Continuation stick (2026-11-21) ────────────────────────────────────────
+// Both lanes used to return the previous physical model on every continuation,
+// so one local turn pinned the whole tool loop to local: Nimbus lost its
+// cloud-first priority and Lapis kept a contended slot. The stick is now
+// conditional on the lane's own policy.
+describe("continuation stick", () => {
+  beforeEach(() => {
+    // These describes sit OUTSIDE the file's main describe, so its fixture
+    // reset does not apply here — reset the shared engine fixture ourselves
+    // (a leaked probeBusy silently changes every decision).
+    engine.up = true;
+    engine.busy = false;
+    engine.slots = [];
+    engine.probeBusy = false;
+    engine.contended = false;
+    process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK =
+      "caduceus/test-model,caduceus/second-model";
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "2000000";
+    process.env.OFFICINA_FREE_MONTHLY_TOKENS = "40000000";
+  });
+  afterEach(() => {
+    delete process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK;
+    delete process.env.OFFICINA_FREE_DAILY_TOKENS;
+    delete process.env.OFFICINA_FREE_MONTHLY_TOKENS;
+  });
+
+  it("lapis keeps an uncontended local leftover (normal tool loop)", async () => {
+    const h = harness();
+    const route = await h.run("continuation", "work", {
+      previous: { model: localPrev, thinkingLevel: "off" },
+    });
+    expect(route.model.provider).toBe("llamacpp");
+  });
+
+  const localPrev = { provider: "llamacpp", id: "Lapis Occultus", api: "llamacpp", contextWindow: 262144 };
+
+  it("nimbus re-decides off a local leftover (cloud-first)", async () => {
+    const h = harness();
+    const route = await h.runLane("nimbus")("continuation", "work", {
+      previous: { model: localPrev, thinkingLevel: "off" },
+    });
+    expect(route.model.provider).toBe("caduceus");
+  });
+
+  it("nimbus keeps a cloud leftover (warm cache, I1)", async () => {
+    const h = harness();
+    const route = await h.runLane("nimbus")("continuation", "work", {
+      previous: { model: cloud, thinkingLevel: "off" },
+    });
+    expect(route.model).toMatchObject({ provider: "caduceus", id: "test-model" });
+  });
+
+  it("lapis leaves a contended local leftover", async () => {
+    engine.probeBusy = true;
+    const h = harness();
+    const route = await h.run("continuation", "work", {
+      previous: { model: localPrev, thinkingLevel: "off" },
+    });
+    expect(route.model.provider).toBe("caduceus");
+  });
+
+  it("lapis stays local when contended and no cloud lane fits", async () => {
+    engine.probeBusy = true;
+    process.env.OFFICINA_FREE_DAILY_TOKENS = "0";
+    const h = harness();
+    const route = await h.run("continuation", "work", {
+      previous: { model: localPrev, thinkingLevel: "off" },
+    });
+    expect(route.model.provider).toBe("llamacpp");
   });
 });

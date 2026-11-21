@@ -90,6 +90,7 @@ import {
   type RoutingProfile,
 } from "../_shared/profiles.ts";
 import { setBandRow, setBandUi } from "../_shared/band.ts";
+import { stickDecision } from "../_shared/lane-stick.ts";
 
 // resilient-default — the always-selectable virtual model `officina/lapis`
 // ("Lapis Occultus"). It is keyless and therefore present in /model even when
@@ -701,17 +702,31 @@ export default function (pi: ExtensionAPI) {
       previous &&
       previous.id !== "lapis"
     ) {
-      // Never leave the current physical model mid tool-loop.
-      const physicalTier = isEngineProvider(previous.provider)
-        ? "local"
-        : "cloud";
-      remember(previous, physicalTier);
-      setRouteWidget(ctx, physicalTier, previous, profile);
-      return {
-        model: previous,
-        thinkingLevel: request.thinkingLevel,
-        state: request.state,
-      };
+      // Never leave the current physical model mid tool-loop — unless the
+      // lane's own policy says the leftover is no longer admissible
+      // (2026-11-21): Lapis leaves a CONTENDED local slot, Nimbus leaves
+      // local because cloud-first is the operator's priority. See
+      // _shared/lane-stick.ts for the table; a stick is a non-switch (I5).
+      const previousIsLocal = isEngineProvider(previous.provider);
+      const stick = stickDecision({
+        lane: "lapis",
+        previousIsLocal,
+        contended: probeBusy || localContended(now),
+        // Capacity is only meaningful when we would leave local.
+        cloudFits: previousIsLocal ? pickCloud(tokens, now) !== undefined : true,
+      });
+      if (stick.stick) {
+        const physicalTier = previousIsLocal ? "local" : "cloud";
+        remember(previous, physicalTier);
+        setRouteWidget(ctx, physicalTier, previous, profile);
+        return {
+          model: previous,
+          thinkingLevel: request.thinkingLevel,
+          state: request.state,
+        };
+      }
+      // Re-decide below with the lane's reason on the record (I4).
+      ctx.ui?.notify?.(`route: ${stick.reason}`, "info");
     }
 
     if (learnedLimit && failed) markModelLimit(failed.id, learnedLimit);
@@ -1170,17 +1185,39 @@ export default function (pi: ExtensionAPI) {
       parseOverflowPromptTokens(failureText) ?? 0,
     );
     const previous = request.previous?.model;
+    // Contention facts for the stick rule (2026-11-21). The probe only runs
+    // when we might LEAVE local, i.e. when previous is the engine — a cloud
+    // previous sticks unconditionally and must not pay an HTTP round-trip.
+    const previousIsLocalTurn = previous
+      ? isEngineProvider(previous.provider)
+      : false;
+    const nimbusProbeBusy =
+      request.reason === "continuation" && previousIsLocalTurn
+        ? (await probeAdmission(250)).anyBusy
+        : false;
     // Mid tool-loop: never swap the physical model under the agent.
     if (
       request.reason === "continuation" &&
       previous &&
       previous.id !== "nimbus"
     ) {
-      return {
-        model: previous,
-        thinkingLevel: request.thinkingLevel,
-        state: request.state,
-      };
+      // Same rule, cloud-first flavour (2026-11-21): a local leftover from
+      // one turn must not outlive the reason it was chosen.
+      const previousIsLocal = previousIsLocalTurn;
+      const stick = stickDecision({
+        lane: "nimbus",
+        previousIsLocal,
+        contended: nimbusProbeBusy || localContended(now),
+        cloudFits: previousIsLocal ? pickCloud(tokens, now) !== undefined : true,
+      });
+      if (stick.stick) {
+        return {
+          model: previous,
+          thinkingLevel: request.thinkingLevel,
+          state: request.state,
+        };
+      }
+      ctx.ui?.notify?.(`route: ${stick.reason}`, "info");
     }
     const cloudRetries =
       request.reason === "user" ? 0 : (request.state?.cloudRetries ?? 0);

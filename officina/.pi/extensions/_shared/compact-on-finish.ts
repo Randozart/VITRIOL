@@ -28,7 +28,10 @@ export interface CompactOnFinishPolicy {
 
 const DEFAULTS: CompactOnFinishPolicy = {
   enabled: true,
-  minTokens: 80_000,
+  // 0 (2026-11-21): the 80k floor made compaction unpredictable ("grind not
+  // consistently compacting"). The cooldown (10 min) still bounds it; an
+  // operator who wants the old floor sets OFFICINA_COMPACT_ON_FINISH_MIN_TOKENS.
+  minTokens: 0,
   cooldownMs: 10 * 60_000,
 };
 

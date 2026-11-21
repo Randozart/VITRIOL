@@ -139,7 +139,11 @@ export function decide(input: DecideInput): Decision {
     next: null,
   });
 
-  if (input.mode !== "grind") return stop("mode-changed", "mode is not grind");
+  // Pipeline is a first-class loop mode (2026-11-21): its grind phase drives
+  // this same loop, so it is admitted alongside grind itself.
+  if (input.mode !== "grind" && input.mode !== "pipeline") {
+    return stop("mode-changed", "mode is not grind");
+  }
 
   const marker = parseMarker(input.assistantText);
 

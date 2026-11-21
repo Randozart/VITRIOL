@@ -123,17 +123,24 @@ function emit(kind: string, detail: string): void {
 }
 
 /** One consolidation run: select → extract → quiz-verify → persist. */
+export async function triggerSleep(reason: string): Promise<void> {
+  await runConsolidation(undefined as never, undefined, reason);
+}
+
 async function runConsolidation(
-  pi: ExtensionAPI,
+  pi: ExtensionAPI | undefined,
   ctx: { ui?: { notify?: (msg: string, level?: string) => void } } | undefined,
+  triggerReason?: string,
 ): Promise<void> {
   const st = state();
   if (st.running) return;
   const cfg = sleepConfig();
   const now = Date.now();
   const gate = shouldRun(getEngineSnapshot() as never, cfg, st.lastRunMs, now);
-  if (!gate.run) return;
-
+  if (!gate.run) {
+    if (triggerReason) emit("skipped", `${gate.reason} (${triggerReason})`);
+    return;
+  }
   st.running = true;
   setBand("sleep · consolidating…");
   try {

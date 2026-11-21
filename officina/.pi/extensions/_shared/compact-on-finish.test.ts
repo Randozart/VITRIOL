@@ -22,10 +22,11 @@ function home(): string {
 }
 
 describe("resolveCompactPolicy", () => {
-  it("defaults to enabled with an 80k floor", () => {
-    const p = resolveCompactPolicy({});
-    expect(p.enabled).toBe(true);
-    expect(p.minTokens).toBe(80_000);
+  it("defaults to enabled with a zero floor (2026-11-21: predictability)", () => {
+    const policy = resolveCompactPolicy({});
+    expect(policy.enabled).toBe(true);
+    expect(policy.minTokens).toBe(0);
+    expect(policy.cooldownMs).toBe(10 * 60_000);
   });
 
   it("honours the kill switch and the numeric overrides", () => {

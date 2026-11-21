@@ -162,7 +162,18 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", async (event, ctx) => {
     const loopCtx = ctx as unknown as LoopCtx;
     const mode = readMode();
-    if (mode !== "grind") {
+    // Suspend/resume (2026-11-21): steer/inquire interlopers no longer stand
+    // the loop down — state (round count, turns, signature) is preserved so
+    // returning to grind resumes the SAME loop. Pipeline is a first-class
+    // loop mode (it drives this very loop in its grind phase).
+    const suspended = mode === "steer" || mode === "inquire";
+    if (suspended) {
+      paint(loopCtx, "↻ grind suspended (steer/inquire)");
+      lastText = "";
+      abortedSeen = false;
+      return;
+    }
+    if (mode !== "grind" && mode !== "pipeline") {
       state = null;
       disarmed = false;
       paint(loopCtx, null);
@@ -257,9 +268,21 @@ export default function (pi: ExtensionAPI) {
     // The loop is over and nothing is in flight: the one moment where a
     // compaction is free of partial tool output and the context is fattest
     // (2026-11-18). Guarded by fill, cooldown and a one-shot stamp.
-    const compact = compactOnFinish(loopCtx as never, `grind ${decision.reason}`);
+    const compact = compactOnFinish(
+      loopCtx as never,
+      `${mode === "pipeline" ? "pipeline" : "grind"} ${decision.reason}`,
+    );
     if (compact.requested) {
       notify(loopCtx, "grind: compacting the finished run", "info");
+      // Sleep lane trigger (2026-11-21): the post-run idle moment is the
+      // paper's natural "sleep" phase — dual-slot makes it free (slot 1).
+      // Fire-and-forget: the sleep gate re-checks everything (idle, interval).
+      try {
+        const mod = await import("../sleep-lane/index.ts");
+        await mod.triggerSleep("post-run compact");
+      } catch {
+        /* the sleep lane is optional; a missing module must not break grind */
+      }
     }
   });
 

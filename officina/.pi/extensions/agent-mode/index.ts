@@ -35,6 +35,7 @@ import {
 } from "../_shared/agent-mode.ts";
 import { VITRIOLUM, fgSeq, hexToRgb } from "../_shared/vitriolum.ts";
 import { injectionResult } from "../_shared/inject.ts";
+import { nextReturnTo } from "../_shared/mode-return.ts";
 
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
@@ -116,16 +117,29 @@ export default function (pi: ExtensionAPI) {
   // inference" bug).
   let enterDirectivePending: string | null = null;
 
+  /** Origin work mode to bounce back to after steer/inquire (2026-11-21). */
+  let returnTo: string | null = null;
+  /** The mode we were in before the current switch (for nextReturnTo). */
+  let prevModeName: string | undefined;
+  const getPreviousModeName = (): string | undefined => prevModeName;
+  const isInterruptLike = (name: string): boolean =>
+    name === "steer" || name === "inquire";
+
   const setMode = (name: string, ctx?: { ui?: any }) => {
     const def = getModeDef(name);
-    if (def.name === getModeDef().name) {
+    const previousName = getModeDef().name;
+    if (def.name === previousName) {
       ctx?.ui?.notify?.(`agent: already ${def.name}`, "info");
       return;
     }
+    prevModeName = previousName;
     if (!setAgentMode(name)) {
       ctx?.ui?.notify?.(`agent: unknown agent "${name}"`, "warning");
       return;
     }
+    // Return-stack bookkeeping (2026-11-21): entering steer/inquire from a
+    // work mode records the origin; picking a work mode clears it (I1/I2).
+    returnTo = nextReturnTo(name, getPreviousModeName(), returnTo);
     if (def.enterDirective) enterDirectivePending = def.enterDirective;
     writeModeFacts();
     // No notify here (owner request 2026-09-02): the mode chip above the
@@ -215,6 +229,18 @@ export default function (pi: ExtensionAPI) {
     applyModeTheme();
     renderIndicator();
     writeModeFacts();
+  });
+
+  // Bounce-back (2026-11-21): after a steer/inquire turn settles, jump back
+  // to the recorded work mode. Never fires without a live returnTo (I1 —
+  // ESC/manual picks clear it in setMode).
+  pi.on("agent_settled", () => {
+    const def = getModeDef();
+    if (!isInterruptLike(def.name)) return;
+    const target = returnTo;
+    if (!target) return;
+    setMode(target);
+    returnTo = null;
   });
 
   // TAB cycles through the registered modes in definition order.

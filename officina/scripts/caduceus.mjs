@@ -1648,6 +1648,11 @@ WantedBy=default.target
       .map((p) => `${p.model} (${p.seconds}s)`)
       .join(", ");
     log(`  parked:    ${parked || "none"}`);
+    if (parked) {
+      log(
+        `  unpark:    curl -X DELETE 'http://127.0.0.1:${ROUTER_PORT}/park?model=<id>'`,
+      );
+    }
   }
   const unitText = existsSync(ROUTER_UNIT)
     ? readFileSync(ROUTER_UNIT, "utf8")

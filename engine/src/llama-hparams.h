@@ -8,16 +8,16 @@
 #include <cmath>
 
 // bump if necessary
-#define LLAMA_MAX_LAYERS  512
-#define LLAMA_MAX_EXPERTS 1024 // Kimi K3
-#define LLAMA_MAX_PLE_NGRAM 8  // qwen4exp
-#define LLAMA_MAX_PLE_HEADS 64 // qwen4exp
+#define LLAMA_MAX_LAYERS    512
+#define LLAMA_MAX_EXPERTS   1024  // Kimi K3
+#define LLAMA_MAX_PLE_NGRAM 8     // qwen4exp
+#define LLAMA_MAX_PLE_HEADS 64    // qwen4exp
 
 enum llama_expert_gating_func_type {
     LLAMA_EXPERT_GATING_FUNC_TYPE_NONE           = 0,
     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX        = 1,
     LLAMA_EXPERT_GATING_FUNC_TYPE_SIGMOID        = 2,
-    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT = 3, // applied to the router weights instead of the logits
+    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX_WEIGHT = 3,  // applied to the router weights instead of the logits
     LLAMA_EXPERT_GATING_FUNC_TYPE_SQRT_SOFTPLUS  = 4,
 };
 
@@ -31,16 +31,17 @@ enum llama_swa_type {
 // how the non-causal mask should be constructed with llama_set_causal_attn(ctx, false)
 // (e.g. mtmd decoding image tokens)
 enum llama_non_causal_type {
-    LLAMA_NON_CAUSAL_TYPE_ALL      = 0, // all layers non-causal, SWA still applied (gemma 3, qwen-vl, ...)
-    LLAMA_NON_CAUSAL_TYPE_SWA_ONLY = 1, // SWA layers non-causal, dense layers stay causal (gemma 4)
-    LLAMA_NON_CAUSAL_TYPE_SWA_FULL = 2, // all layers non-causal, SWA not applied between tokens of the current ubatch (deepseek 4)
+    LLAMA_NON_CAUSAL_TYPE_ALL      = 0,  // all layers non-causal, SWA still applied (gemma 3, qwen-vl, ...)
+    LLAMA_NON_CAUSAL_TYPE_SWA_ONLY = 1,  // SWA layers non-causal, dense layers stay causal (gemma 4)
+    LLAMA_NON_CAUSAL_TYPE_SWA_FULL =
+        2,  // all layers non-causal, SWA not applied between tokens of the current ubatch (deepseek 4)
 };
 
 // M-RoPE: which input position slot feeds each RoPE section
 enum llama_rope_section_order {
     LLAMA_ROPE_SECTION_ORDER_UNSPECIFIED = -1,
-    LLAMA_ROPE_SECTION_ORDER_TYXZ        = 0, // default, slot i feeds section i
-    LLAMA_ROPE_SECTION_ORDER_ZYXT        = 1, // MiniCPM-V 4.7: time last
+    LLAMA_ROPE_SECTION_ORDER_TYXZ        = 0,  // default, slot i feeds section i
+    LLAMA_ROPE_SECTION_ORDER_ZYXT        = 1,  // MiniCPM-V 4.7: time last
 };
 
 // forward declaration; full definition in llama-graph.h
@@ -68,23 +69,24 @@ struct llama_hparams {
     bool norm_before_residual = false;
     bool norm_before_fc       = false;
 
-    uint32_t n_ctx_train; // context size the model was trained on
+    uint32_t n_ctx_train;  // context size the model was trained on
     uint32_t n_embd;
     uint32_t n_layer_all;
     uint32_t n_layer_nextn = 0;
 
     // granite-switch: index of the single-head "router" KV layer that encodes
     // per-token adapter selection. -1 when the model has no such layer.
-    int32_t  router_layer = -1;
-    uint32_t n_expert = 0;
+    int32_t  router_layer    = -1;
+    uint32_t n_expert        = 0;
     uint32_t n_rel_attn_bkts = 0;
 
     // TODO: this needs to be reworked
-    int32_t  n_layer_kv_from_start = -1; // if non-negative, the first n_layer_kv_from_start layers have KV cache
+    int32_t n_layer_kv_from_start = -1;  // if non-negative, the first n_layer_kv_from_start layers have KV cache
 
     // different head size for full_attention and SWA layers
-    uint32_t n_embd_head_k_full; // dimension of keys (d_k). d_q is assumed to be the same, but there are n_head q heads, and only n_head_kv k-v heads
-    uint32_t n_embd_head_v_full; // dimension of values (d_v) aka n_embd_head
+    uint32_t
+        n_embd_head_k_full;  // dimension of keys (d_k). d_q is assumed to be the same, but there are n_head q heads, and only n_head_kv k-v heads
+    uint32_t n_embd_head_v_full;  // dimension of values (d_v) aka n_embd_head
     uint32_t n_embd_head_k_swa;
     uint32_t n_embd_head_v_swa;
 
@@ -100,7 +102,9 @@ struct llama_hparams {
     struct llama_hparams_posnet   posnet;
     struct llama_hparams_convnext convnext;
 
-    uint32_t n_shortconv_l_cache  = 0;
+    uint32_t n_shortconv_l_cache = 0;
+    // Inkling2: convolution state packs K, V, attn and FFN outputs of the widest layer
+    uint32_t n_sconv_channels    = 0;
 
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_arr;
     std::array<uint32_t, LLAMA_MAX_LAYERS> n_head_kv_arr;
@@ -123,16 +127,18 @@ struct llama_hparams {
     uint32_t n_group_experts    = 0;
 
     // MLA + SWA (i.e. dots3note)
-    uint32_t n_lora_kv_swa           = 0;
-    uint32_t n_embd_head_k_mla_swa   = 0;
-    uint32_t n_embd_head_v_mla_swa   = 0;
+    uint32_t n_lora_kv_swa         = 0;
+    uint32_t n_embd_head_k_mla_swa = 0;
+    uint32_t n_embd_head_v_mla_swa = 0;
 
-    float    expert_group_scale   = 0.05f;
-    float    expert_weights_scale = 0.0f;
-    bool     expert_weights_norm  = false;
-    uint32_t expert_gating_func   = LLAMA_EXPERT_GATING_FUNC_TYPE_NONE;
-    uint32_t moe_every_n_layers   = 0;
-    uint32_t moe_latent_size      = 0;
+    float    expert_group_scale      = 0.05f;
+    float    expert_weights_scale    = 0.0f;
+    bool     expert_weights_norm     = false;
+    float    expert_weights_norm_eps = 0.0f;   // > 0: weights / (sum + eps), else the sum is clamped
+    bool     expert_router_f32       = false;  // compute the router logits in F32
+    uint32_t expert_gating_func      = LLAMA_EXPERT_GATING_FUNC_TYPE_NONE;
+    uint32_t moe_every_n_layers      = 0;
+    uint32_t moe_latent_size         = 0;
 
     float f_norm_eps;
     float f_norm_rms_eps;
@@ -153,20 +159,20 @@ struct llama_hparams {
     uint32_t n_lora_value_res_mix   = 0;
     uint32_t n_lora_gate            = 0;
 
-    float    rope_attn_factor = 1.0f;
-    float    rope_freq_base_train;
-    float    rope_freq_base_train_swa  = 10000.0f;
-    float    rope_freq_scale_train;
-    float    rope_freq_scale_train_swa = 1.0f;
-    float    rope_scaling_alpha        = 0.0f;  // NTK-aware alpha for XDRoPE
+    float rope_attn_factor = 1.0f;
+    float rope_freq_base_train;
+    float rope_freq_base_train_swa = 10000.0f;
+    float rope_freq_scale_train;
+    float rope_freq_scale_train_swa = 1.0f;
+    float rope_scaling_alpha        = 0.0f;  // NTK-aware alpha for XDRoPE
 
     uint32_t n_ctx_orig_yarn;
     float    rope_yarn_log_mul = 0.0f;
 
-    float    yarn_ext_factor  = -1.0f;
-    float    yarn_attn_factor =  1.0f;
-    float    yarn_beta_fast   = 32.0f;
-    float    yarn_beta_slow   =  1.0f;
+    float yarn_ext_factor  = -1.0f;
+    float yarn_attn_factor = 1.0f;
+    float yarn_beta_fast   = 32.0f;
+    float yarn_beta_slow   = 1.0f;
 
     std::array<int, 4> rope_sections;
 
@@ -179,7 +185,7 @@ struct llama_hparams {
     // Sliding Window Attention (SWA)
     llama_swa_type swa_type = LLAMA_SWA_TYPE_NONE;
     // the size of the sliding window (0 - no SWA)
-    uint32_t n_swa = 0;
+    uint32_t       n_swa    = 0;
 
     // see llama_non_causal_type
     // note: for SWA_FULL, older tokens (outside the current ubatch) are still window-clipped
@@ -206,14 +212,14 @@ struct llama_hparams {
 
     // for Kimi Linear KDA
     uint32_t n_embd_head_kda = 0;
-    bool     kda_safe_gate = false;
+    bool     kda_safe_gate   = false;
 
     // kimi-k3
-    uint32_t n_expert_latent      = 0;      // routed_expert_hidden_size (0 = experts run at n_embd)
-    uint32_t attn_res_block_size  = 0;      // 0 = no cross-layer attention residuals
+    uint32_t n_expert_latent      = 0;  // routed_expert_hidden_size (0 = experts run at n_embd)
+    uint32_t attn_res_block_size  = 0;  // 0 = no cross-layer attention residuals
     float    kda_gate_lower_bound = -INFINITY;
     float    situ_beta            = 1.0f;
-    float    situ_linear_beta     = 0.0f;   // 0 = no linear-beta transform on the up branch
+    float    situ_linear_beta     = 0.0f;  // 0 = no linear-beta transform on the up branch
 
     bool ssm_dt_b_c_rms = false;
 
@@ -230,7 +236,7 @@ struct llama_hparams {
     float    f_attn_out_scale = 0.0f;
     uint32_t attn_temp_length = 0;
 
-    float    f_attn_value_scale = 0.0f;
+    float f_attn_value_scale = 0.0f;
 
     bool causal_attn   = true;
     bool use_alibi     = false;
@@ -261,11 +267,21 @@ struct llama_hparams {
     uint32_t n_no_rope_layer_step    = 4;
     uint32_t n_attn_temp_floor_scale = 0;
     float    f_attn_temp_scale       = 0.0f;
-    float    f_attn_temp_offset      = 0.0f; // offset position index
+    float    f_attn_temp_offset      = 0.0f;  // offset position index
+
+    // Inkling2: relative-position bias, log-scaled positions, and padded vocabulary
+    uint32_t n_relative        = 0;
+    uint32_t n_relative_extent = 0;
+    uint32_t n_vocab_unpadded  = 0;
+    uint32_t n_vocab_padded    = 0;
+    uint32_t n_log_scale_floor = 0;
+    float    f_log_scale_alpha = 0.0f;
+    float    f_qk_clip         = 0.0f;
+    float    f_relative_clip   = 0.0f;
 
     // gemma3n altup
-    uint32_t n_altup      = 4; // altup_num_inputs
-    uint32_t i_altup_act  = 0; // altup_active_idx
+    uint32_t n_altup      = 4;  // altup_num_inputs
+    uint32_t i_altup_act  = 0;  // altup_active_idx
     uint32_t laurel_rank  = 64;
     uint32_t n_embd_altup = 256;
 
@@ -282,11 +298,11 @@ struct llama_hparams {
     std::array<float, LLAMA_MAX_LAYERS> xielu_eps;
 
     // DSA (deepseek sparse attention)
-    uint32_t indexer_n_head    = 0;
-    uint32_t indexer_head_size = 0;
-    uint32_t indexer_top_k     = 0;
+    uint32_t indexer_n_head       = 0;
+    uint32_t indexer_head_size    = 0;
+    uint32_t indexer_top_k        = 0;
     // MSA
-    uint32_t indexer_block_size  = 0;
+    uint32_t indexer_block_size   = 0;
     uint32_t indexer_local_blocks = 0;
 
     // Indexer is "full" (1) or "shared" (0)
@@ -294,36 +310,36 @@ struct llama_hparams {
     std::array<uint32_t, LLAMA_MAX_LAYERS> is_indexer_full_impl;
 
     // DeepSeek-V4
-    uint32_t dsv4_o_group_count        = 0;
-    uint32_t dsv4_o_lora_rank          = 0;
-    uint32_t dsv4_hc_mult              = 0;
-    uint32_t dsv4_hc_sinkhorn_iters    = 0;
-    uint32_t dsv4_hash_layer_count     = 0;
-    float    dsv4_compress_rope_base   = 0.0f;
-    float    dsv4_hc_eps               = 0.0f;
+    uint32_t                               dsv4_o_group_count      = 0;
+    uint32_t                               dsv4_o_lora_rank        = 0;
+    uint32_t                               dsv4_hc_mult            = 0;
+    uint32_t                               dsv4_hc_sinkhorn_iters  = 0;
+    uint32_t                               dsv4_hash_layer_count   = 0;
+    float                                  dsv4_compress_rope_base = 0.0f;
+    float                                  dsv4_hc_eps             = 0.0f;
     std::array<uint32_t, LLAMA_MAX_LAYERS> dsv4_compress_ratios;
 
     // 0 = full rank (DeepSeek-V4)
     uint32_t hc_low_rank = 0;
 
     // scale of the hyper-connection post gate (DeepSeek-V4 hardcodes 2.0)
-    float    hc_magnitude = 0.0f;
+    float hc_magnitude = 0.0f;
 
-    uint32_t ple_ngram_size      = 0;
-    uint32_t ple_heads_per_ngram = 0;
-    uint32_t ple_conv_kernel     = 0;
-    uint32_t ple_n_heads         = 0;   // (ngram_size - 1) * heads_per_ngram
-    uint32_t ple_head_dim        = 0;
-    uint32_t ple_eos_token_id    = 0;
+    uint32_t                                  ple_ngram_size      = 0;
+    uint32_t                                  ple_heads_per_ngram = 0;
+    uint32_t                                  ple_conv_kernel     = 0;
+    uint32_t                                  ple_n_heads         = 0;  // (ngram_size - 1) * heads_per_ngram
+    uint32_t                                  ple_head_dim        = 0;
+    uint32_t                                  ple_eos_token_id    = 0;
     // the id the PLE hash stands in at image positions; 0 makes the loader fall back to EOS
-    uint32_t ple_image_token_id  = 0;
+    uint32_t                                  ple_image_token_id  = 0;
     // the file lists PLE layer indices, so this is never a per-layer gguf array and can hold one bit per layer
-    std::bitset<LLAMA_MAX_LAYERS> is_ple_impl;
+    std::bitset<LLAMA_MAX_LAYERS>             is_ple_impl;
     // the hash multipliers reach ~2e13 and have to stay 64-bit
-    std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>  ple_layer_multipliers;
+    std::array<uint64_t, LLAMA_MAX_PLE_NGRAM> ple_layer_multipliers;
     // head offsets and vocab sizes are token-space indices; the gather truncates them to int32 anyway
-    std::array<uint32_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
-    std::array<uint32_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
+    std::array<uint32_t, LLAMA_MAX_PLE_HEADS> ple_head_offsets;
+    std::array<uint32_t, LLAMA_MAX_PLE_HEADS> ple_head_vocab_sizes;
 
     bool is_ple(uint32_t il) const;
 
@@ -356,7 +372,6 @@ struct llama_hparams {
     enum llama_rope_type         rope_type               = LLAMA_ROPE_TYPE_NONE;
     enum llama_rope_scaling_type rope_scaling_type_train = LLAMA_ROPE_SCALING_TYPE_NONE;
 
-
     // Resolved FFN gated activation flavor for archs that read
     // `<arch>.hidden_activation` from the GGUF (e.g. ModernBert derivatives).
     // Defaults to LLM_FFN_NONE (sentinel = 0); the mapping from the GGUF
@@ -366,8 +381,8 @@ struct llama_hparams {
     enum llm_ffn_op_type llm_ffn_op;
 
     // Step35: optional per-layer clamps for (Swi)GLU
-    std::array<float, LLAMA_MAX_LAYERS> swiglu_clamp_exp; // clamping for expert FFN
-    std::array<float, LLAMA_MAX_LAYERS> swiglu_clamp_shexp; // shared expert
+    std::array<float, LLAMA_MAX_LAYERS> swiglu_clamp_exp;    // clamping for expert FFN
+    std::array<float, LLAMA_MAX_LAYERS> swiglu_clamp_shexp;  // shared expert
 
     // this value n_pattern means that every nth layer is dense (i.e. non-SWA)
     // dense_first means whether the pattern is start with a dense layer
@@ -478,13 +493,15 @@ struct llama_hparams {
         switch (swa_type) {
             case LLAMA_SWA_TYPE_NONE:
                 {
-                } break;
+                }
+                break;
             case LLAMA_SWA_TYPE_STANDARD:
                 {
                     if (p1 - p0 >= (int32_t) n_swa) {
                         return true;
                     }
-                } break;
+                }
+                break;
             case LLAMA_SWA_TYPE_CHUNKED:
                 {
                     const llama_pos pos_chunk_start = (p1 / n_swa) * n_swa;
@@ -492,22 +509,23 @@ struct llama_hparams {
                     if (p0 < pos_chunk_start) {
                         return true;
                     }
-                } break;
+                }
+                break;
             case LLAMA_SWA_TYPE_SYMMETRIC:
                 {
                     const int32_t half_n_swa = (int32_t) n_swa / 2;
-                    const int32_t pos_diff = p1 - p0;
+                    const int32_t pos_diff   = p1 - p0;
 
                     // Mask if outside the symmetric window
                     if (pos_diff < -half_n_swa || pos_diff > half_n_swa) {
                         return true;
                     }
-                } break;
+                }
+                break;
         }
 
         return false;
     }
-
 
     bool use_mrope() const;
 };

@@ -2229,10 +2229,16 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
             cb(gate_up, "ffn_moe_gate_up_biased", il);
         }
 
+        // PROVENANCE: the gate and up halves are strided views into the fused tensor (row
+        // stride = 2*n_ff). Upstream 8a97fa98 feeds those views straight into the activation
+        // because its (newer) ggml handles non-contiguous SCALE/TANH inputs. This frozen fork
+        // does NOT: ggml-cpu asserts GGML_ASSERT(ggml_is_contiguous(src0)) in
+        // ggml_compute_forward_scale_f32 (ops.cpp:4703) and the CUDA path reads them with the
+        // wrong stride, silently corrupting every expert output. Materialise the two halves.
         const int64_t n_ff = gate_up->ne[0] / 2;
-        cur = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0);
+        cur = ggml_cont(ctx0, ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], 0));
         cb(cur, "ffn_moe_gate", il);
-        up  = ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], n_ff * gate_up->nb[0]);
+        up  = ggml_cont(ctx0, ggml_view_3d(ctx0, gate_up, n_ff, gate_up->ne[1], gate_up->ne[2], gate_up->nb[1], gate_up->nb[2], n_ff * gate_up->nb[0]));
         cb(up, "ffn_moe_up", il);
     } else {
         // separate gate and up path

@@ -1699,6 +1699,8 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // so accept either present rather than requiring exactly one.
     GGML_ASSERT(batch_inp.token || batch_inp.embd);
 
+
+
     // VITRIOL LULL Phase 1: arm the attention probe for single-token decode
     // batches (cadence handled inside the module).
     vitriol_probe::begin_batch(batch_inp.n_tokens == 1);

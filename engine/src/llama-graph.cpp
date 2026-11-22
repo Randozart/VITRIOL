@@ -3273,7 +3273,14 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     ggml_tensor * kq_mask = is_swa ? inp_attn->get_kq_mask_swa() : inp_attn->get_kq_mask();
+    if (kq_mask->type != GGML_TYPE_F32) {
+        kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+    }
     kq_mask = ggml_add(ctx0, kq_b, kq_mask);
+    if (cparams.flash_attn) {
+        // flash attention requires an f16 mask
+        kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F16);
+    }
     cb(kq_mask, "kq_mask_rel_pos", il);
 
     ggml_tensor * k = mctx_cur->get_k(ctx0, il);

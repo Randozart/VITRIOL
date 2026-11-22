@@ -235,3 +235,86 @@ consistent with attention contributing a constant.
 - `llama-cli -st` leaves its embedded `vitriol-server` alive after printing
   "Exiting…" — kill it by PID from `nvidia-smi --query-compute-apps` before the
   next run.
+
+## CORRECTION + new evidence (2026-11-22, later pass)
+
+### The "frozen logits" finding was a MEASUREMENT ARTIFACT — retracted
+
+`process_ubatch` only copies logits into the host buffer when the sampler needs
+raw logits; otherwise sampling happens on-device and `logits.data` keeps the
+previous step's contents. Reading `logits.data` at decode entry therefore
+compared stale buffers. **Do not chase this.**
+
+### What the model actually does (measured, real output)
+
+Sampling, `-fa on -ub 32 -c 1024 --temp 0.8 --top-p 0.95 --top-k 40 --seed 7`,
+prompt `The capital of France is`:
+
+```
+0 . The capital of France is 0 0 .
+### 0
+### 0
+```
+
+Greedy, prompt `1 2 3 4 5`:
+
+```
+0 2 3 0 0 0 1 0
+```
+
+Three conclusions:
+
+1. **Not stateless.** Output is varied under sampling and it *echoes the prompt*,
+   so context does reach the model.
+2. **Not dead.** `1 2 3 4 5` → `0 2 3 …` emits `2` and `3` in the correct
+   positions — there is real structure, not noise.
+3. **Badly corrupted numerics.** The dominant emissions are `0`, `###`,
+   whitespace — filler tokens, i.e. a nearly-flat or badly-scaled distribution
+   over filler.
+
+So the remaining defect is a *numerical* corruption somewhere in the shared
+graph machinery, not a missing state, not a frozen cache, not a prompt-format
+issue.
+
+### Everything checked and cleared in this pass
+
+| candidate | evidence | verdict |
+|---|---|---|
+| conv recurrent state stale | `cache_r_l0 ne=[19968,1]` = exactly `6656·3`; advances every step after warmup | CLEARED |
+| `n_rs_seq` rollback ring | 0 at runtime ⇒ simple `cpy` path; `rs_z=-1` so `build_rs` cannot zero the history | CLEARED |
+| phantom-slot hparams | `is_swa` = 0 at 5,11,17,23,29,35,41,47 (period 6 + loop offset); `n_head_kv=8`, `n_ff=1152` for all 0..47 | CLEARED |
+| KV slots for looped passes | cache sizes by `hparams.n_layer_all` (48) — `llama-kv-cache.cpp:162`; `has_kv=1` for all 48 | CLEARED |
+| KV `share` callback clobbering loop passes | `llama_memory_hybrid_iswa` ctor has **no** `share` parameter | CLEARED |
+| loop graph ctor | full semantic diff vs upstream: identical | CLEARED |
+| flash-attention path | **was unreachable**; fixed (F16 mask cast). `-fa on` now works and is ~40× faster (46.4/14.1 t/s vs 1.2/0.2 at `-fa off -ub 32`) | FIXED |
+| rel bias into mask vs scores | equivalent under softmax; reference says scores | CLEARED |
+| chat template | templated greedy still degenerate | CLEARED |
+| V aliased to K (MLA shortcut) | fixed `dcc67dc`; output changed | FIXED |
+
+### The untested, highest-value experiment
+
+**Run with most layers on the CPU** (`-ngl 10 …`). Every test so far has run
+fully offloaded and split across two devices. Inkling-2's MoE is a fused
+`ffn_gate_up_exps` expert tensor (17.6 GB IQ4_NL), and the fork has its own
+`mul_mat_id` / expert-placement code paths (`vitriol-buffer.cpp`,
+`build_lora_mm_id`) that no other arch in this fork exercises with this tensor
+shape. If the CPU-only-ish run is coherent, the corruption is in the GPU
+expert-matrix path or the layer split, not in the graph. If it is still
+garbage, the corruption is in the graph math itself.
+
+This is one run and it bisects the entire problem space in half.
+
+### Invariants
+
+- I1 parity ✅ (`probe-recommend` 27B unchanged: `qwen35, 65 layers, 11.9 GiB`)
+- I2 restored ✅ (service active, `/health` ok)
+- I3 clean ✅ (no instrumentation in tree)
+- I4 coherent gate ❌
+
+### Operational notes
+
+- `vitriol-server.service` is `Restart=always`: `kill -9` makes systemd respawn
+  it and it silently re-takes both GPUs. Use `systemctl stop`, then kill any
+  leftover `vitriol-server` PID from `nvidia-smi --query-compute-apps`, and read
+  `memory.free` (not `memory.used`).
+- `llama-cli -st` leaves its embedded `vitriol-server` alive after "Exiting…".

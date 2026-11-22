@@ -3230,9 +3230,69 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * sinks,
             float     kq_scale,
             int       il) const {
-    // the model builds the per-head relative-position bias (kq_b) itself from self_rel_pos,
-    // so this forwards to the regular iswa kv attention with that bias.
-    return build_attn(inp->get_attn(), wo, wo_b, wo_s, q_cur, k_cur, v_cur, kq_b, sinks, nullptr, kq_scale, il);
+    // PROVENANCE: re-expressed against upstream 8a97fa98 (build_attn_iswa_impl + the inkling2
+    // rel build_attn). Two deliberate differences from the MLA overload below:
+    //   1. the relative-position bias is folded INTO the causal mask (kq_mask = kq_b + mask),
+    //      as upstream does, rather than added to the raw scores;
+    //   2. V is a REAL tensor here. The MLA overload builds `v` as a view of `k`, which is only
+    //      valid when V shares the K cache (deepseek4 / dflash). Inkling-2 has its own V
+    //      projection, so V must be stored (cpy_v) and read back (get_v). Aliasing it to K made
+    //      attention contribute nothing and pinned the model to a single repeated token.
+    auto * inp_attn = inp->get_attn();
+
+    const bool is_swa = hparams.is_swa(il);
+
+    auto * k_rot = is_swa ? inp_attn->self_k_rot_swa : inp_attn->self_k_rot;
+
+    if (k_rot) {
+        q_cur = llama_mul_mat_hadamard(ctx0, q_cur, k_rot);
+        if (k_cur) {
+            k_cur = llama_mul_mat_hadamard(ctx0, k_cur, k_rot);
+        }
+    }
+
+    ggml_build_forward_expand(gf, q_cur);
+
+    if (k_cur) {
+        ggml_build_forward_expand(gf, k_cur);
+    }
+    if (v_cur) {
+        ggml_build_forward_expand(gf, v_cur);
+    }
+
+    const auto * mctx_iswa = inp_attn->mctx;
+    const auto * mctx_cur  = is_swa ? mctx_iswa->get_swa() : mctx_iswa->get_base();
+
+    if (k_cur) {
+        const auto & k_idxs = is_swa ? inp_attn->get_k_idxs_swa() : inp_attn->get_k_idxs();
+        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
+    }
+    if (v_cur) {
+        const auto & v_idxs = is_swa ? inp_attn->get_v_idxs_swa() : inp_attn->get_v_idxs();
+        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
+    }
+
+    ggml_tensor * kq_mask = is_swa ? inp_attn->get_kq_mask_swa() : inp_attn->get_kq_mask();
+    kq_mask = ggml_add(ctx0, kq_b, kq_mask);
+    cb(kq_mask, "kq_mask_rel_pos", il);
+
+    ggml_tensor * k = mctx_cur->get_k(ctx0, il);
+    ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+
+    ggml_tensor * cur = build_attn_mha(q_cur, k, v, /*kq_b=*/nullptr, kq_mask, sinks, nullptr, 0, kq_scale, il);
+    cb(cur, "kqv_out", il);
+
+    if (k_rot) {
+        cur = llama_mul_mat_hadamard(ctx0, cur, k_rot);
+    }
+    if (wo) {
+        cur = build_lora_mm(wo, cur, wo_s);
+    }
+    if (wo_b) {
+        cur = ggml_add(ctx0, cur, wo_b);
+    }
+
+    return cur;
 }
 
 ggml_tensor * llm_graph_context::build_attn(

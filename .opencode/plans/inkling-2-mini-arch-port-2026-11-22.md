@@ -98,3 +98,27 @@ commits `5c008e00`, `8af68d48`, `a1f42226`, `19bc41db`, `29b52d39` of
   byte-identical `VramEstimate`. Pinned by: a `libvitriol` unit test asserting the 27B
   estimate is unchanged pre/post C5, plus a new `inkling2_loop` case asserting the
   corrected KV figure.
+
+## Status — 2026-11-22 (execution log)
+
+- **C1–C5 code COMPLETE + committed.** `llama-cli` builds EXIT 0. The port surfaced one
+  genuine bug: the looped arch builds `n_passes × n_layer` layers of graph nodes, so the
+  `graph_max_nodes` pool (default `8·n_tensors`) is exhausted in the reservation pass
+  (`ggml_new_object → null → GGML_ASSERT(obj_new)`). Fixed with an arch-gated
+  `64·n_tensors` branch for `inkling2`/`inkling2_loop` (every other arch untouched).
+- **I4 PASS:** `Inkling-2-Mini-IQ4_NL` loads **704/704 tensors, 0 missing** (loader reads
+  all 704; 48 layer `ffn_gate_up_exps`/`ffn_down_exps` offload decisions printed; no
+  "missing" warning). The compute graph **constructs** past the reservation pass.
+- **C5 PASS + I9 PASS:** `libvitriol` 21 tests green. `probe-recommend` on the Inkling-2
+  GGUF reports `inkling2_loop (24 layers, 128 experts)`, **16.4 GiB** weights (the
+  fused-`ffn_gate_up_exps` classification fix now counts the expert bulk), and fits
+  ctx 262144 at 39% of usable VRAM. The 27B (`qwen35`) probe is byte-identical
+  (`arch_kv_factor == 1.0`).
+- **I6 / coherent-text bring-up BLOCKED on this host** (not an arch defect): 39 GB RAM
+  + 2×12 GB VRAM cannot co-locate the 17.6 GB model with the looped-MoE compute buffer —
+  full-CPU OOMs the compute buffer (even `-c 64`), and the VITRIOL CUDA backend has no
+  split-buffer support (`--split-mode row` → "device CUDA0 does not support split
+  buffers"; `none`-mode forces 16.6 GB onto a single 12 GB card). Stages 2 (CUDA
+  fattn rebase, `-fa on`) and 3 (profile + `/dream-eval`) therefore need a larger host;
+  the arch-port and Rust-estimator deliverables are done and committed.
+- Live 27B engine stopped for the bring-up window and **restored via the unit** after.

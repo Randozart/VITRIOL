@@ -261,17 +261,35 @@ struct llama_layer {
     struct ggml_tensor * attn_k_norm_b   = nullptr;
     struct ggml_tensor * attn_out_norm   = nullptr;
     struct ggml_tensor * attn_out_norm_b = nullptr;
-    struct ggml_tensor * attn_q_a_norm   = nullptr;
-    struct ggml_tensor * attn_kv_a_norm  = nullptr;
-    struct ggml_tensor * attn_sub_norm   = nullptr;
-    struct ggml_tensor * attn_post_norm  = nullptr;
-    struct ggml_tensor * ffn_sub_norm    = nullptr;
-    struct ggml_tensor * attn_norm_cross = nullptr;
-    struct ggml_tensor * attn_norm_enc   = nullptr;
-    struct ggml_tensor * ssm_norm        = nullptr;
-    struct ggml_tensor * ssm_dt_norm     = nullptr;
-    struct ggml_tensor * ssm_b_norm      = nullptr;
-    struct ggml_tensor * ssm_c_norm      = nullptr;
+
+    // inkling2: relative-position attention, short convolutions and cross-layer residual mix
+    struct ggml_tensor * attn_rel         = nullptr;
+    struct ggml_tensor * attn_rel_bias    = nullptr;
+    struct ggml_tensor * attn_rel_clip    = nullptr;
+    struct ggml_tensor * attn_q_clip      = nullptr;
+    struct ggml_tensor * attn_sink_proj   = nullptr;
+    struct ggml_tensor * attn_q_inp_norm  = nullptr;
+    struct ggml_tensor * attn_k_inp_norm  = nullptr;
+    struct ggml_tensor * attn_v_inp_norm  = nullptr;
+    struct ggml_tensor * attn_k_conv      = nullptr;
+    struct ggml_tensor * attn_v_conv      = nullptr;
+    struct ggml_tensor * attn_k_conv_proj = nullptr;
+    struct ggml_tensor * attn_v_conv_proj = nullptr;
+    struct ggml_tensor * attn_post_conv   = nullptr;
+    struct ggml_tensor * attn_res_query   = nullptr;
+    struct ggml_tensor * ffn_post_conv    = nullptr;
+    struct ggml_tensor * ffn_res_query    = nullptr;
+    struct ggml_tensor * attn_q_a_norm    = nullptr;
+    struct ggml_tensor * attn_kv_a_norm   = nullptr;
+    struct ggml_tensor * attn_sub_norm    = nullptr;
+    struct ggml_tensor * attn_post_norm   = nullptr;
+    struct ggml_tensor * ffn_sub_norm     = nullptr;
+    struct ggml_tensor * attn_norm_cross  = nullptr;
+    struct ggml_tensor * attn_norm_enc    = nullptr;
+    struct ggml_tensor * ssm_norm         = nullptr;
+    struct ggml_tensor * ssm_dt_norm      = nullptr;
+    struct ggml_tensor * ssm_b_norm       = nullptr;
+    struct ggml_tensor * ssm_c_norm       = nullptr;
 
     // attention
     struct ggml_tensor * wq        = nullptr;

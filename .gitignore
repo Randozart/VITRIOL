@@ -75,7 +75,10 @@ coverage/
 *.bin
 *.pt
 *.pth
-models/
+/models/
+# NOTE: /models/ is anchored to the repo root on purpose. An unscoped `models/`
+# swallows engine/src/models/ (the arch source tree) for any NEW file.
+# New engine arch ports under engine/src/models/*.cpp must stay trackable.
 
 # Alka compiler build artifacts (generated from .alka recipes)
 *.alkas

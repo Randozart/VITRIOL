@@ -109,3 +109,46 @@ the deliverable that proves the arch runs.
 - `i1-no-engine-diff` — `git diff --stat -- engine/` empty for this work.
 - `i2-engine-restored` — `systemctl is-active vitriol-server.service` = active,
   `/health` = ok.
+
+## S2 result — the split works; three real bugs fixed (2026-11-22)
+
+**Yes, Inkling-2 now loads and decodes across both cards.** Getting there required
+finding three engine bugs, not just the launch flags:
+
+| # | Bug | Fix | Evidence |
+|---|---|---|---|
+| 1 | `tensor_split` was inert for looped archs. `inkling2_loop` reports `n_layer_all = 47` cache slots (24 physical + 23 repeat slots). `get_layer_buft_list` divides the split by `n_layer_all`, and the repeat slots hold no bytes, so **every real tensor landed on device 0** (a 15.9 GiB alloc on a 12 GiB card). | new `llama_model_base::n_layer_phys()` virtual (default `hparams.n_layer()`); the loader divides by the **physical** count and clamps phantom slots to the last device. Identity for every non-looped arch. | 15.9 GiB on CUDA0 → **CUDA0 8711 MiB / CUDA1 7149 MiB** |
+| 2 | The model never expanded its output into the graph. The fork's `cb()` only *names* nodes; models must call `ggml_build_forward_expand` (cf. `models/qwen3.cpp:158`). Without it the whole tail (lm_head → logits → out_ids) stayed outside the graph. | both graph ctors now expand `res->t_logits`. | fixed a null-buffer assert in `llm_graph_input_out_ids::set_input` **and** `backend_res == nullptr` in `llama_context` |
+| 3 | `graph_max_nodes` had no looped-arch budget (`8·n_tensors`) → node pool exhausted in reservation. | arch-gated `64·n_tensors` branch. | `GGML_ASSERT(obj_new)` gone |
+
+Runs green:
+
+```
+llama-cli -st -m ~/Models/inkling-2-mini/Inkling-2-Mini-IQ4_NL.gguf \
+  -ngl 99 -ts 27,21 --no-mmap -ub 32 -c 1024 -fa off -n 20 --temp 0 -p '…'
+→ [ Prompt: 24.5 t/s | Generation: 10.3 t/s ]   EXIT 0
+```
+
+Note `-ub 32`: at `-ub 128` the compute buffer plus the split weights exceed a
+12 GiB card (~5.1 GiB compute request on top of 8.7 GiB of weights). Also
+measured: the compute buffer is **context-independent** and scales with ubatch,
+so ubatch is the right knob, not ctx.
+
+### Still open: numerical correctness (one repeated token)
+
+Output depends on the prompt — `Water boils at a temperature of` →
+`temperature temperature …` (semantically right for the first step) while
+`The capital of France is` → `message message …`. So the forward pass is roughly
+right and then latches: this is the **recurrent / shortconv state across steps**
+(KV append + `build_conv_state_store` history), not the graph wiring. Ruled out
+this pass: `kq_b` *is* applied in the non-FA path (`llama-graph.cpp`, `kq = kq +
+kq_b`), the MoE call matches upstream argument-for-argument, and
+`set_input_relative_pos` is line-for-line upstream's.
+
+Next hypotheses, in order: (a) `convolve()` state offsets
+(`2*n_embd_k_gqa`, `+n_embd`) vs the fork's recurrent state layout for
+`n_rs_seq`; (b) the cached `history` view fed to `build_conv_state_store`;
+(c) per-slot `n_head_arr`/`is_swa_arr` for the 23 phantom slots.
+
+Also unchanged: `-fa off` only. The rel-pos bias is materialised densely, so a
+real context needs the CUDA fattn rebase (Stage 2 / S4).

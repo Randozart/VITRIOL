@@ -473,4 +473,10 @@ llama_model_inkling2::graph::graph(const llama_model & model, const llm_graph_pa
     }
 
     build_output(cur, blocks);
+
+    // the fork's cb() only names nodes, it does not expand them: every model must
+    // expand its output into the graph itself (cf. models/qwen3.cpp). Without this
+    // the whole tail (logits, out_ids, lm_head) stays out of the graph and both
+    // set_inputs and get_tensor_backend() fail.
+    ggml_build_forward_expand(gf, res->t_logits);
 }

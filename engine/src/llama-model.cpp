@@ -1729,7 +1729,15 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     }
 
     const int i_gpu_start         = std::max(n_layer_all + 1 - n_gpu_layers, 0);
-    const int act_gpu_layers      = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_all + 1);
+    // looped archs (e.g. inkling2_loop) expose n_layer_all cache slots but only
+    // n_layer_phys() physical layers carry weight tensors: the repeat slots share
+    // the physical weights and allocate nothing. Dividing the split by n_layer_all
+    // therefore pushes every real tensor onto the FIRST device (the phantom slots
+    // occupy the tail of the assignment space) and a tensor_split becomes inert.
+    // n_layer_phys() == n_layer_all for every non-looped arch, so this is an
+    // identity transform there.
+    const int n_layer_real        = std::min(n_layer_all, n_layer_phys()) + 1;
+    const int act_gpu_layers      = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_real);
     auto      get_layer_buft_list = [&](int il) -> llama_model::impl::layer_dev {
         const bool is_swa = il < n_layer_all && hparams.is_swa(il);
         if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {
@@ -1737,9 +1745,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                             ggml_backend_dev_name(cpu_dev), is_swa);
             return { cpu_dev, &pimpl->cpu_buft_list };
         }
-        const int layer_gpu =
-            std::upper_bound(splits.begin(), splits.begin() + n_devices(), float(il - i_gpu_start) / act_gpu_layers) -
-            splits.begin();
+        // clamp to the real slot range so phantom repeat slots cannot index past
+        // the device table; for non-looped archs (il - i_gpu_start) is already
+        // < act_gpu_layers, so this is a no-op.
+        const int rel_layer   = std::min(il - i_gpu_start, act_gpu_layers - 1);
+        const int layer_gpu_i = std::upper_bound(splits.begin(), splits.begin() + n_devices(),
+                                                 float(rel_layer) / act_gpu_layers) - splits.begin();
+        const int layer_gpu   = std::min<int>(layer_gpu_i, (int) n_devices() - 1);
         auto * dev = devices.at(layer_gpu).dev;
         LLAMA_LOG_DEBUG("load_tensors: layer %3d assigned to device %s, is_swa = %d\n", il, ggml_backend_dev_name(dev),
                         is_swa);

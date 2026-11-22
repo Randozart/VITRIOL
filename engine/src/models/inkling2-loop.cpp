@@ -121,4 +121,7 @@ llama_model_inkling2_loop::graph::graph(const llama_model & model, const llm_gra
         cur = build_layer(il, il, cur, blocks);
     }
     build_output(cur, blocks);
+
+    // the fork's cb() does not expand nodes; the model expands its own output
+    ggml_build_forward_expand(gf, res->t_logits);
 }

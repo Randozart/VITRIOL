@@ -2122,7 +2122,7 @@ struct llama_model_inkling2 : public llama_model_base {
     void load_arch_tensors(llama_model_loader & ml) override;
 
     // the layers stored in the file
-    virtual int n_layer_phys() const { return hparams.n_layer(); }
+    int n_layer_phys() const override { return hparams.n_layer(); }
 
     // message controllers of the q, k, v and ffn inputs of a looped layer (inkling2_loop)
     enum { LOOP_CTRL_Q, LOOP_CTRL_K, LOOP_CTRL_V, LOOP_CTRL_FFN, LOOP_CTRL_COUNT };

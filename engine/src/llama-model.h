@@ -799,6 +799,12 @@ llama_model * llama_model_create(llama_model_loader & ml, const llama_model_para
 struct llama_model_base : public llama_model {
     friend struct llama_model;
 
+    // Physical layer count: the layers that actually carry weight tensors.
+    // Looped archs (inkling2_loop) expose extra cache slots via n_layer_all while
+    // the repeat slots share the physical weights and allocate nothing, so weight
+    // placement must divide by the physical count instead.
+    virtual int n_layer_phys() const { return hparams.n_layer(); }
+
     llama_model *        model;
     llama_model_loader * ml = nullptr;
     const LLM_TN         tn;

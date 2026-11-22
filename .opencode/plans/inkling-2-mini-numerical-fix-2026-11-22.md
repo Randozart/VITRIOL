@@ -169,3 +169,80 @@ Regression tests (both committed):
 ## Status
 
 - 2026-11-22: CONFIRMED, writing plan. (owner "confirm")
+
+## GRIND results (2026-11-22)
+
+### S1 — rel-bias fold: REFUTED (as equivalence predicted)
+
+Folded `kq_b` into the causal mask exactly as upstream
+(`kq_mask = kq_b + attn_mask`, `kq_b=nullptr` into `build_attn_mha`). Output
+**byte-identical** to before (`message` × 40, 13.0 t/s gen). Confirms the two
+forms are equivalent under softmax — the hypothesis was wrong, and cheaply
+disproved. The fold is kept because it matches upstream's expression.
+
+### Ruled out by measurement
+
+| hypothesis | test | verdict |
+|---|---|---|
+| rel-bias placement (raw scores vs mask) | S1 fold, run | **equivalent** — output unchanged |
+| prompt format / chat template | extracted the GGUF template (`<\|message_user\|>`/`<\|message_model\|>`, `add_bos=false`, all special tokens present in vocab), ran a fully-templated greedy prompt | **still `message`** → not a formatting issue |
+| fork's own phantom-slot placement | — | already fixed earlier (`n_layer_phys`) |
+| upstream as a bisect reference | built upstream `8a97fa98` (`/scratch/briev-builds/upstream-ik-build`) + patched only the placement | **unusable**: stock upstream OOMs (15 861 MiB lump on CUDA0); patched upstream splits layers (28 on CUDA1) yet still allocates one 15 861 MiB lump on CUDA0 → upstream HEAD cannot run this model on 2×12 GB either |
+
+### S2/F — REAL BUG FOUND AND FIXED: V was aliased to K
+
+The fork's iswa attention overload
+(`llama-graph.cpp:3238`, `build_attn(llm_graph_input_attn_k_iswa*)`) writes only K
+to the KV cache (`cpy_k`) and then builds
+
+```cpp
+ggml_tensor * v = ggml_view_4d(ctx0, k, v_cur->ne[0], k->ne[1], k->ne[2], k->ne[3], ...);
+```
+
+i.e. **V is a view of K** — the MLA trick. That is correct for its only other
+users, `deepseek4.cpp` and `dflash.cpp`, which are MLA models where V shares the
+K cache. **Inkling-2 has its own V projection**, so V was garbage and attention
+contributed nothing. Upstream instead does `cpy_k(k_cur)` **and** `cpy_v(v_cur)`,
+then reads `k = get_k(il)` / `v = get_v(il)`.
+
+This is exactly the observed symptom: the model echoes a word from the prompt
+(`Water boils at a temperature of` → `temperature`) but never integrates context,
+then latches on one token.
+
+Fix (`dcc67dc`): the rel path now owns its KV store/read — `cpy_k` + `cpy_v`,
+`get_k` + `get_v` — and does not delegate to the MLA overload.
+Parity: `build_inp_mem_hybrid_iswa_rel` has exactly one user
+(`models/inkling2.cpp`), so no other arch is touched (I1).
+
+**Measured effect:** output changes — `message message …` → `0. 0. 0. …`.
+V is now contributing, but the text is still degenerate, so at least one more
+graph bug remains.
+
+### Open leads (next session)
+
+1. `hparams.is_mla()` is false for inkling2 (no MLA key/value lengths in the
+   GGUF), so a real V cache exists (`llama-kv-cache.cpp:291 has_v = !is_mla`) —
+   confirmed the fix has a valid target.
+2. Remaining suspects, in order: the shortconv/recurrent state
+   (`convolve()` + `build_conv_state_store` + the `history` view across steps);
+   `v_trans` layout between `cpy_v` and `build_attn_mha`'s transpose branch;
+   the SWA `v_idxs` path; `attn_res`/`mix()` block residuals.
+3. Debug hygiene: the tree is clean of `INKLING_DBG`/`VITRIOL_INKLING_DBG`; no
+   new instrumentation was added this session.
+
+### Invariant status
+
+- **I1 parity:** the change is confined to the rel overload (single user). The
+  live 27B engine is unaffected; rebuilt and running.
+- **I2 restored:** `vitriol-server.service` active, `/health` `{"status":"ok"}`,
+  both GPUs loaded (11032 / 10090 MiB).
+- **I3 no debug:** tree clean.
+- **I4 coherent gate:** NOT MET. Still degenerate.
+
+### Operational note (important)
+
+`vitriol-server.service` has `Restart=always`. `kill -9` on an engine PID makes
+systemd respawn it and it immediately re-takes both GPUs, which silently OOMs
+every subsequent Inkling test. Always use `systemctl stop vitriol-server.service`
+before a model-load window, and check `nvidia-smi --query-gpu=memory.free`
+rather than only the used column.

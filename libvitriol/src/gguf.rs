@@ -283,6 +283,24 @@ fn parse_layer(s: &str) -> Option<(u64, &str)> {
     Some((lidx, &rest[dot + 1..]))
 }
 
+/* True when a lower-cased per-layer tensor suffix is an MoE expert weight.
+ * Recognises both the split form (gate/up/down _exps) and the fused form
+ * (gate_up_exps) used by looped-MoE archs such as Inkling-2 — the fused
+ * tensor is the bulk of those models, so it must count as expert bytes. */
+pub fn is_expert_suffix(suffix: &str) -> bool {
+    let sl = suffix.to_lowercase();
+    sl.contains("ffn_down_exps")
+        || sl.contains("ffn_gate_exps")
+        || sl.contains("ffn_up_exps")
+        || sl.contains("ffn_gate_up_exps")
+}
+
+/* True when a lower-cased per-layer tensor suffix is a dense attention weight. */
+pub fn is_attn_suffix(suffix: &str) -> bool {
+    let sl = suffix.to_lowercase();
+    sl.contains("attn_qkv") || sl.contains("attn_output")
+}
+
 pub fn read_gguf(path: &Path) -> anyhow::Result<ModelInfo> {
     use anyhow::Context;
     let mut f = File::open(path).with_context(|| format!("cannot open: {}", path.display()))?;
@@ -394,13 +412,9 @@ pub fn read_gguf(path: &Path) -> anyhow::Result<ModelInfo> {
             size_bytes: tsize,
         });
         if let Some((lidx, sfx)) = parse_layer(&tname) {
-            let sl = sfx.to_lowercase();
-            if sl.contains("attn_qkv") || sl.contains("attn_output") {
+            if is_attn_suffix(sfx) {
                 *per_attn.entry(lidx).or_insert(0) += tsize;
-            } else if sl.contains("ffn_down_exps")
-                || sl.contains("ffn_gate_exps")
-                || sl.contains("ffn_up_exps")
-            {
+            } else if is_expert_suffix(sfx) {
                 *per_exp.entry(lidx).or_insert(0) += tsize;
             }
         }
@@ -475,5 +489,30 @@ fn read_kv_as_str(f: &mut File, tval: i32) -> String {
             format!("[{} elems]", cnt)
         }
         _ => "?".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_expert_suffix;
+
+    #[test]
+    fn expert_suffix_recognizes_split_and_fused_forms() {
+        // split MoE experts
+        assert!(is_expert_suffix("ffn_down_exps"));
+        assert!(is_expert_suffix("ffn_gate_exps"));
+        assert!(is_expert_suffix("ffn_up_exps"));
+        // fused looped-MoE experts (Inkling-2) — the concrete C5 fix
+        assert!(is_expert_suffix("ffn_gate_up_exps"));
+        assert!(is_expert_suffix("ffn_gate_up_exps.weight"));
+    }
+
+    #[test]
+    fn expert_suffix_rejects_attention_and_ffn_dense() {
+        assert!(!is_expert_suffix("attn_qkv"));
+        assert!(!is_expert_suffix("attn_output"));
+        assert!(!is_expert_suffix("ffn_gate"));
+        assert!(!is_expert_suffix("ffn_down"));
+        assert!(!is_expert_suffix("attn_rel_bias"));
     }
 }

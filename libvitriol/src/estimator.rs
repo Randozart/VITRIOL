@@ -57,6 +57,24 @@ fn gpu_perf_weight(cc: &str) -> u32 {
     }
 }
 
+/* Per-architecture KV correction factor, applied to the generic
+ * kv_mib_per_token heuristic. Default 1.0 keeps every existing arch's
+ * estimate byte-identical (invariant I9). Only looped hybrid-attention
+ * archs (Inkling-2) get a correction: their generic per-token KV formula
+ * assumes every layer is global attention, but a fraction of layers are
+ * sliding-window / recurrent and store O(1) state rather than growing
+ * with context, so the effective per-context KV is lower.
+ * The factor is a documented first-order estimate (pending a measured KV
+ * bytes/token from a successful run); it is arch-gated so no other
+ * model is affected. */
+fn arch_kv_factor(arch: &str) -> f64 {
+    if arch.starts_with("inkling2") {
+        0.5
+    } else {
+        1.0
+    }
+}
+
 pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, OptimalConfig) {
     /* Unified VRAM pool: sum across every device. For a single-GPU system
      * this reduces to the old per-device math, so nothing regresses. */
@@ -69,7 +87,8 @@ pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, Opt
     let layer_mib = model.per_layer_experts_bytes as f64 / 1_048_576.0;
 
     let hd = model.embedding_length as f64 / model.head_count.max(1) as f64;
-    let kvt = hd * model.head_count_kv.max(1) as f64 * 2.5 / 1_048_576.0;
+    let kvf = arch_kv_factor(&model.architecture);
+    let kvt = hd * model.head_count_kv.max(1) as f64 * 2.5 / 1_048_576.0 * kvf;
 
     /* CUDA context overhead is per-device — each GPU pays its own. */
     let oh: f64 = if hw.gpus.is_empty() {
@@ -148,4 +167,96 @@ pub fn estimate_vram(model: &ModelInfo, hw: &HardwareInfo) -> (VramEstimate, Opt
             estimated_vram_pct: ((bv / vram_total * 100.0f64) * 10.0).round() / 10.0,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gguf::ModelInfo;
+    use crate::probe::{GpuInfo, HardwareInfo};
+
+    /* Build a model with the arch swapped; every other field identical so
+     * the only variable is the arch-gated KV correction. */
+    fn model(arch: &str) -> ModelInfo {
+        ModelInfo {
+            architecture: arch.to_string(),
+            context_length: 0,
+            block_count: 24,
+            expert_count: 128,
+            expert_used_count: 8,
+            embedding_length: 5120,
+            head_count: 64,
+            head_count_kv: 8,
+            has_mtp: false,
+            total_size_bytes: 12_000_000_000,
+            tensor_count: 704,
+            per_layer_attn_bytes: 100_000,
+            per_layer_experts_bytes: 200_000,
+            tensors: Vec::new(),
+        }
+    }
+
+    fn hw() -> HardwareInfo {
+        HardwareInfo {
+            probed_at: String::new(),
+            gpus: vec![GpuInfo {
+                index: 0,
+                name: "GPU".to_string(),
+                vram_mib: 12_000,
+                compute_cap: "8.6".to_string(),
+                pcie_gen: 4,
+                pcie_width: 16,
+            }],
+            cpu: String::new(),
+            has_avx2: true,
+            ram_mib: 32_000,
+            gpu_count: 1,
+            has_ipc_lock: true,
+        }
+    }
+
+    #[test]
+    fn arch_factor_defaults_to_one() {
+        assert_eq!(arch_kv_factor("qwen3"), 1.0);
+        assert_eq!(arch_kv_factor("llama"), 1.0);
+        assert_eq!(arch_kv_factor("gpt2"), 1.0);
+    }
+
+    #[test]
+    fn arch_factor_firest_on_inkling2() {
+        assert_eq!(arch_kv_factor("inkling2"), 0.5);
+        assert_eq!(arch_kv_factor("inkling2_loop"), 0.5);
+    }
+
+    /* Invariant I9: a non-inkling arch must be byte-identical to the generic
+     * formula (kvf = 1.0), i.e. the correction touches nothing else. */
+    #[test]
+    fn non_inkling_arch_is_unaffected() {
+        let hw = hw();
+        let (est, _cfg) = estimate_vram(&model("qwen3"), &hw);
+        let hd = 5120.0 / 64.0;
+        let expected_generic = hd * 8.0 * 2.5 / 1_048_576.0; // kvf = 1.0
+        assert!(
+            (est.kv_mib_per_token - expected_generic).abs() < 1e-12,
+            "I9: 27B-class arch must keep the generic KV estimate, got {} want {}",
+            est.kv_mib_per_token,
+            expected_generic
+        );
+    }
+
+    /* The inkling2 correction fires: its per-token KV is exactly half the
+     * generic value for identical geometry. */
+    #[test]
+    fn inkling2_arch_applies_hybrid_kv_correction() {
+        let hw = hw();
+        let (est, _cfg) = estimate_vram(&model("inkling2_loop"), &hw);
+        let hd = 5120.0 / 64.0;
+        let expected = hd * 8.0 * 2.5 / 1_048_576.0 * 0.5;
+        assert!(
+            (est.kv_mib_per_token - expected).abs() < 1e-12,
+            "inkling2 KV correction should halve the generic estimate, got {} want {}",
+            est.kv_mib_per_token,
+            expected
+        );
+    }
 }

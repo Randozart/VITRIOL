@@ -90,6 +90,9 @@ struct llama_context {
 
     float * get_embeddings_layer_inp(uint32_t lid);
 
+    // DSpark draft state rows (see llama_set_dspark_state_rows)
+    void set_dspark_state(const float * rows, int64_t n_rows, int64_t n_embd_state);
+
     llama_token * get_sampled_tokens() const;
     llama_token   get_sampled_token_ith(int32_t idx);
 
@@ -303,6 +306,11 @@ private:
     // host buffers for output layer input embeddings, per layer
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
+
+    // DSpark draft state rows (see llama_set_dspark_state_rows)
+    std::vector<float> dspark_state;
+    int64_t            dspark_state_rows = 0;
+    int64_t            dspark_state_n    = 0;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active

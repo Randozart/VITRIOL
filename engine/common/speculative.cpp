@@ -469,6 +469,7 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
     int32_t n_embd_dec = 0;       // draft hidden size
     int32_t n_embd_enc = 0;       // target_layer_ids_n * target_hidden_size
     int32_t n_embd_tgt = 0;       // target model hidden size
+
     int32_t n_layer_tgt = 0;      // target model layer count
 
     const int32_t * target_layer_ids   = nullptr; // model_dft's extract layer indices
@@ -944,6 +945,40 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 
 // DFlash: block-diffusion drafting with a draft-side KV cache injection
 struct common_speculative_impl_draft_dflash : public common_speculative_impl {
+    // DSpark f_rnn state channel: f_rnn is the mix of the last committed token's target
+    // features, normed; the draft rows carry the per-position draw. Upstream carries these
+    // rows in ubatch.embd_state -- our fork reaches the same place through batch.embd.
+    std::vector<float>              ctx_mix_w;
+    std::vector<float>              ctx_norm_w;
+    std::vector<std::vector<float>> f_rnn_state;       // [n_seq][n_embd_dec]
+    std::vector<float>              block_state;       // the draft batch's state rows
+    bool                            dspark_state_ready = false;
+
+    // f_rnn = rms_norm(sum_k ctx_mix[k] * features_k) * ctx_norm, built on the host from the
+    // tapped target features of the last committed token.
+    void compute_f_rnn(llama_seq_id seq_id, const float * feat) {
+        auto & out = f_rnn_state[seq_id];
+        out.assign(n_embd_dec, 0.0f);
+
+        for (uint32_t k = 0; k < target_layer_ids_n; ++k) {
+            const float * f = feat + (size_t) k * n_embd_tgt;
+            const float   w = ctx_mix_w[k];
+            for (int32_t i = 0; i < n_embd_dec; ++i) {
+                out[i] += w * f[i];
+            }
+        }
+
+        double ss = 0.0;
+        for (int32_t i = 0; i < n_embd_dec; ++i) {
+            ss += (double) out[i] * out[i];
+        }
+        const float inv_rms = 1.0f / std::sqrt((float) (ss / n_embd_dec) + 1e-6f);
+        for (int32_t i = 0; i < n_embd_dec; ++i) {
+            out[i] = out[i] * inv_rms * ctx_norm_w[i];
+        }
+
+    }
+
     common_params_speculative_draft params;
 
     llama_batch batch;        // noise tokens
@@ -1045,6 +1080,26 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         batch        = llama_batch_init(llama_n_batch(ctx_dft), 0,          n_seq);
         batch_inject = llama_batch_init(llama_n_ubatch(ctx_dft), n_embd_enc, n_seq);
+
+        // DSpark f_rnn state channel: the block input is a per-token state row, not a token
+        // embedding (anchor = f_rnn, drafts = [uniform | 1/temp | 0...]). The mix and the norm
+        // that build f_rnn from the tapped target features are small F32 tensors, fetched once.
+        const uint32_t n_mix  = llama_model_get_tensor_f32(model_dft, "markov_ctx_mix.weight",  nullptr);
+        const uint32_t n_norm = llama_model_get_tensor_f32(model_dft, "markov_ctx_norm.weight", nullptr);
+        ctx_mix_w .resize(n_mix  == target_layer_ids_n ? n_mix  : 0);
+        ctx_norm_w.resize(n_norm == (uint32_t) n_embd_dec ? n_norm : 0);
+        if (!ctx_mix_w.empty() && !ctx_norm_w.empty()) {
+            llama_model_get_tensor_f32(model_dft, "markov_ctx_mix.weight",  ctx_mix_w .data());
+            llama_model_get_tensor_f32(model_dft, "markov_ctx_norm.weight", ctx_norm_w.data());
+            dspark_state_ready = true;
+        }
+        LOG_INF("%s: - dspark state weights: mix=%u norm=%u (want %u/%d)\n", __func__, n_mix, n_norm,
+                target_layer_ids_n, n_embd_dec);
+        if (dspark_state_ready && target_layer_ids_n > 0) {
+            f_rnn_state.assign(n_seq, std::vector<float>(n_embd_dec, 0.0f));
+            LOG_INF("%s: - dspark f_rnn state channel enabled (mix=%u, norm=%d)\n",
+                    __func__, target_layer_ids_n, n_embd_dec);
+        }
 
         // embd batches on an M-RoPE draft need 4 position rows per token
         is_mrope = llama_model_rope_type(model_dft) == LLAMA_ROPE_TYPE_MROPE;
@@ -1199,6 +1254,11 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                     batch_inject.seq_id[i][0] = seq_id;
                     batch_inject.logits[i]    = false;
                 }
+                // f_rnn is built from the last committed token's features
+                if (dspark_state_ready && offset + n_chunk == n_rows) {
+                    compute_f_rnn(seq_id, batch_inject.embd + (size_t) (n_chunk - 1) * n_embd_enc);
+                }
+
                 const int32_t rc = llama_decode(ctx_dft, batch_inject);
                 if (rc != 0) {
                     LOG_ERR("%s: llama_decode(ctx_dft) failed rc=%d (n_tokens=%d, offset=%d)\n",
@@ -1221,6 +1281,10 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         std::vector<int32_t> i_block_beg(n_seq, -1);
         std::vector<int32_t> n_block    (n_seq,  0);
 
+        if (dspark_state_ready) {
+            block_state.clear();
+        }
+
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             auto & dp = dparams[seq_id];
             if (!dp.drafting) {
@@ -1238,6 +1302,19 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             n_block    [seq_id] = n_block_tokens;
             for (int32_t i = 0; i < n_block_tokens; ++i) {
                 common_batch_add(batch, i == 0 ? dp.id_last : mask_token_id, n + i, { seq_id }, !is_dflash2);
+
+                if (dspark_state_ready) {
+                    const size_t off = block_state.size();
+                    block_state.resize(off + n_embd_dec, 0.0f);
+                    float * row = block_state.data() + off;
+                    if (i == 0) {
+                        std::memcpy(row, f_rnn_state[seq_id].data(), sizeof(float) * n_embd_dec);
+                    } else {
+                        // [uniform | 1/temp | 0...]; greedy keeps the exact argmax, and this
+                        // path has no temperature plumbed through yet
+                        row[1] = 1.0e30f;
+                    }
+                }
             }
         }
 
@@ -1246,7 +1323,13 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         }
 
         // decode all sequence's noise block in a single batch
+        if (dspark_state_ready) {
+            llama_set_dspark_state_rows(ctx_dft, block_state.data(), block_state.size() / n_embd_dec, n_embd_dec);
+        }
         int ret = llama_decode(ctx_dft, batch);
+        if (dspark_state_ready) {
+            llama_set_dspark_state_rows(ctx_dft, nullptr, 0, 0);
+        }
         if (ret != 0) {
             LOG_WRN("%s: llama_decode returned %d\n", __func__, ret);
             return;
@@ -1351,6 +1434,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             if (result.size() < (size_t) params.n_min) {
                 result.clear();
             }
+
         }
     }
 

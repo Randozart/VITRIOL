@@ -2581,6 +2581,7 @@ llm_graph_params llama_context::graph_params(llm_graph_result *             res,
         /*.n_outputs   =*/n_outputs,
         /*.cb          =*/graph_get_cb(),
         /*.res         =*/res,
+        /*.dspark_state =*/dspark_state.empty() ? nullptr : dspark_state.data(),
     };
 }
 
@@ -4027,6 +4028,37 @@ float * llama_get_embeddings_layer_inp(llama_context * ctx, uint32_t lid) {
     ctx->synchronize();
 
     return ctx->get_embeddings_layer_inp(lid);
+}
+
+void llama_context::set_dspark_state(const float * rows, int64_t n_rows, int64_t n_embd_state) {
+    if (rows == nullptr || n_rows <= 0 || n_embd_state <= 0) {
+        dspark_state.clear();
+        dspark_state_rows = 0;
+        dspark_state_n    = 0;
+        return;
+    }
+
+    dspark_state.assign(rows, rows + n_rows*n_embd_state);
+    dspark_state_rows = n_rows;
+    dspark_state_n    = n_embd_state;
+}
+
+void llama_set_dspark_state_rows(llama_context * ctx, const float * rows, int64_t n_rows, int64_t n_embd_state) {
+    ctx->set_dspark_state(rows, n_rows, n_embd_state);
+}
+
+uint32_t llama_model_get_tensor_f32(const llama_model * model, const char * name, float * out) {
+    const ggml_tensor * t = model->get_tensor(name);
+    if (t == nullptr || t->type != GGML_TYPE_F32) {
+        return 0;
+    }
+
+    const int64_t n = ggml_nelements(t);
+    if (out != nullptr) {
+        ggml_backend_tensor_get(t, out, 0, n*sizeof(float));
+    }
+
+    return (uint32_t) n;
 }
 
 bool llama_set_sampler(llama_context * ctx, llama_seq_id seq_id, llama_sampler * smpl) {

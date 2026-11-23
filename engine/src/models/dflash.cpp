@@ -402,6 +402,7 @@ static void build_dspark_markov_head(llm_graph_context & g,
         return;
     }
 
+
     // anchor (committed last) token of every block: token 0 of each block, i.e. a strided view
     const size_t token_stride = (size_t) block_drafts * tokens->nb[0];
     const size_t base_stride  = (size_t) block_drafts * base->nb[1];
@@ -1101,6 +1102,16 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
     }
 
     cur = build_lora_mm(output, cur, output_s);
+
+    // The lm head is padded to the max vocab (201024) while the vocab exposes the unpadded
+    // size (200058). Trim here: the context copies n_vocab rows per output, so a padded row
+    // width would shift every output after the first by 966 floats -- and a padded token id
+    // (>= n_tokens) would then reach the sampler and be rejected by the next batch.
+    const int64_t n_vocab_unpadded = (int64_t) model.vocab.n_tokens();
+    if (cur->ne[0] > n_vocab_unpadded) {
+        cur = ggml_cont(ctx0, ggml_view_2d(ctx0, cur, n_vocab_unpadded, cur->ne[1], cur->nb[1], 0));
+    }
+
     cb(cur, "result_output", -1);
     res->t_logits = cur;
 
@@ -1124,6 +1135,25 @@ llama_model_dflash::graph_dsv4::graph_dsv4(const llama_model & model, const llm_
 
 // Mix the n_ctx tapped target features into a single n_embd stream with a learned
 // weight vector and an RMS norm. Plays the role fc plays for the older dflash drafts.
+// uploads the DSpark draft state rows as a graph input: the anchor row is f_rnn, the draft
+// rows carry [uniform | 1/temp | 0...]. Upstream reaches this through ubatch.embd_state.
+struct llm_graph_input_dspark_state : public llm_graph_input_i {
+    llm_graph_input_dspark_state(const float * src, int64_t n_embd) : src(src), n_embd(n_embd) {}
+    ~llm_graph_input_dspark_state() override = default;
+
+    void set_input(const llama_ubatch * ubatch) override {
+        GGML_ASSERT(src != nullptr && h != nullptr);
+        GGML_ASSERT(n_embd == h->ne[0]);
+
+
+        ggml_backend_tensor_set(h, src, 0, (size_t) ubatch->n_tokens * n_embd * sizeof(float));
+    }
+
+    ggml_tensor * h      = nullptr; // F32 [n_embd, n_tokens]
+    const float * src    = nullptr;
+    int64_t       n_embd = 0;
+};
+
 static ggml_tensor * build_ctx_mix(llm_graph_context & g,
                                    ggml_tensor *       inp,
                                    ggml_tensor *       mix,
@@ -1292,6 +1322,17 @@ llama_model_dflash::graph_ctx<false>::graph_ctx(const llama_model & model, const
         tok_embd = model_other->tok_embd;
     }
 
+    // Block input: the anchor's token embedding, with mask_embd slot vectors substituted for
+    // the draft rows -- mask_embd is what makes the draft positions distinguishable.
+    //
+    // The f_rnn state channel is NOT the block input. It carries the anchor's f_rnn (the mix
+    // of the last committed token's target features) and the per-position draw; the markov
+    // head reads f_rnn from its anchor row. Feeding it as the block input collapses every
+    // draft row to the same value and the block then predicts one constant token.
+    const bool use_state = hparams.dspark_f_rnn && params.dspark_state != nullptr;
+
+    ggml_tensor * state_h = nullptr;
+
     auto inp = std::make_unique<llm_graph_input_embd>(n_embd);
 
     inp->tokens = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
@@ -1306,9 +1347,17 @@ llama_model_dflash::graph_ctx<false>::graph_ctx(const llama_model & model, const
 
     ggml_tensor * inpL = embd_tok;
 
+    if (use_state) {
+        auto inp_st = std::make_unique<llm_graph_input_dspark_state>(params.dspark_state, n_embd);
+        inp_st->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd, n_tokens);
+        ggml_set_input(inp_st->h);
+
+        state_h = inp_st->h;
+        res->add_input(std::move(inp_st));
+    }
+
     // the drafter's batch is one equal-size block per sequence: row 0 is the anchor, the
-    // rest are masked draft slots. Slot index is derived from the row order, so no batch
-    // state has to be threaded through (upstream uses ubatch.embd_state for this).
+    // rest are masked draft slots, selected by their row index within the block.
     const int64_t n_blocks = std::max<int64_t>(1, ubatch.n_seqs_unq);
     if (n_tokens % n_blocks == 0 && model.dspark_mask_embd != nullptr) {
         const int64_t rows_per_block = n_tokens / n_blocks;
@@ -1385,12 +1434,30 @@ llama_model_dflash::graph_ctx<false>::graph_ctx(const llama_model & model, const
     }
 
     cur = build_lora_mm(output, cur, output_s);
+
+    // The lm head is padded to the max vocab (201024) while the vocab exposes the unpadded
+    // size (200058). Trim here: the context copies n_vocab rows per output, so a padded row
+    // width would shift every output after the first by 966 floats -- and a padded token id
+    // (>= n_tokens) would then reach the sampler and be rejected by the next batch.
+    const int64_t n_vocab_unpadded = (int64_t) model.vocab.n_tokens();
+    if (cur->ne[0] > n_vocab_unpadded) {
+        cur = ggml_cont(ctx0, ggml_view_2d(ctx0, cur, n_vocab_unpadded, cur->ne[1], cur->nb[1], 0));
+    }
+
     cb(cur, "result_output", -1);
     res->t_logits = cur;
 
     ggml_build_forward_expand(gf, cur);
 
     if (model.dspark_markov_w1 != nullptr) {
-        build_dspark_markov_head(*this, model, inp_tokens, hidden, nullptr);
+        // f_rnn = the anchor row of every block (upstream: state_rows(n_embd, 0, 0))
+        ggml_tensor * f_rnn = nullptr;
+        if (state_h != nullptr && n_tokens % n_blocks == 0) {
+            const size_t stride = (size_t) (n_tokens / n_blocks) * state_h->nb[1];
+            f_rnn = ggml_cont(ctx0, ggml_view_2d(ctx0, state_h, n_embd, n_blocks, stride, 0));
+            cb(f_rnn, "f_rnn", -1);
+        }
+
+        build_dspark_markov_head(*this, model, inp_tokens, hidden, f_rnn);
     }
 }

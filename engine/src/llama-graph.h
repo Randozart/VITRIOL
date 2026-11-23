@@ -839,6 +839,10 @@ struct llm_graph_params {
 
     llm_graph_result * res;
 
+    // DSpark draft state rows [n_embd, n_tokens]: anchor row = f_rnn, draft rows carry the
+    // per-position draw. The fork's transport for upstream's ubatch.embd_state.
+    const float * dspark_state = nullptr;
+
     // return true if the "other" params would result in a graph with the same topology as with the current params
     //   having the same topology allows us to reuse the graph in some cases
     bool allow_reuse(const llm_graph_params & other) const {

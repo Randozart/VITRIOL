@@ -93,3 +93,64 @@ chain). This one changes only *plumbing*. That distinction is the review criteri
    `sample_from_anchor=false`) and assert on the general case.
 3. **Device-side weight access.** `ctx_mix`/`ctx_norm` live in the drafter's device
    tensors; computing `f_rnn` in-graph from a features input avoids host copies.
+
+---
+
+## Results — commit `092e098` (2026-11-23)
+
+### What the channel bought
+
+Drafts went from **constant garbage to varying, context-dependent tokens**, and the first
+draft position now lands 30 % of the time. Three defects were found and fixed on the way;
+the third was the one that had been poisoning everything:
+
+1. **The 966-float alignment bug.** The drafter's lm head is padded to 201024 rows, the
+   vocab exposes 200058. The context copies `n_vocab` rows per output, so every output
+   after the first was shifted by exactly 966 floats. The signature was unmistakable once
+   probed: drafted ids stepped 197963 → 198929 → 199895 (+966 each), and a padded id
+   (200136) reached the sampler where the next batch rejected it. Trimming the head to the
+   vocab width in both dflash logits paths fixed both symptoms.
+
+2. **The state rows must not be the block input.** Feeding them as `inp->h` collapsed all
+   draft rows to the same value — four identical logits vectors, one constant token.
+   `mask_embd` is what distinguishes draft positions; the channel supplies `f_rnn` only
+   (the anchor row of each block, upstream's `state_rows(n_embd, 0, 0)`).
+
+3. **`f_rnn` producer.** `rms_norm(Σ_k ctx_mix[k]·features_k) · ctx_norm` from the last
+   committed token's tapped features; weights fetched once via
+   `llama_model_get_tensor_f32` (mix=4, norm=2304).
+
+### Measured (counting prompt; a correct drafter should score near 100 %)
+
+| arm | t/s | accepted |
+|---|---|---|
+| no speculation | 14.2 | — |
+| n_max=1 | 8.6 | 7 / 23 steps |
+| n_max=2 | 7.1 | 7 / 23 steps |
+| n_max=4 | 5.7 | 7 / 23 steps |
+
+Acceptance is **independent of depth**, so only position 1 can ever be accepted (30 %) and
+positions 2+ never are. A draft costs ~46 ms against ~70 ms for a target token, so even
+100 % depth-1 acceptance would barely break even. **I5 fails.**
+
+### Remaining work, in order
+
+1. **`block_uniform` SWA mask** — upstream sets `self_attn_mask_swa.block_uniform = true`
+   so the whole block shares its anchor's mask row. Our fork's
+   `llm_graph_input_attn_kv_iswa` has **no such flag** (verified: zero hits), so this is an
+   arch-gated addition to shared mask code — it must not touch the 27B path (I2).
+2. **Per-position hidden view** for i ≥ 2 (`hidden_i` stride/offset) — next suspect if (1)
+   does not move depth acceptance.
+3. **Numeric diffing** against a reference (transformers/vLLM implementation) on a fixed
+   context, rather than inferring correctness from acceptance. This is the honest way to
+   close the last gap; three rounds of probes got us here but the remaining error is
+   subtle enough that a reference comparison is cheaper than more hypotheses.
+4. **Draft cost.** ~46 ms per draft call is mostly per-decode launch/sync on 3 small
+   blocks; batching drafts across steps or enabling graph reuse (my state input currently
+   forces a rebuild) is where the throughput would come from.
+
+### Invariants
+
+I1 (13.5 t/s no-drafter), I7 (`-md` + `--spec-type none` clean) and I2 (27B healthy,
+answering) re-verified after every change. I5 remains open — stated as measured, not
+inferred.

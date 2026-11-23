@@ -248,3 +248,58 @@ verify bit-exactness afterwards.
 - I3: every number above comes from `/tmp/kd-base.{nsys-rep,sqlite}` with its argv.
 - I4: no instrumentation added (the trace is external, the probe from the last
   round was already stripped).
+
+## Op-count minimality proof (S2 closed by inspection, 2026-11-22)
+
+Every graph-builder avenue was closed by reading the primitives, not by guessing:
+
+1. **`clip()` is already at the op-count floor for existing ggml ops.** Its chain is
+   `sqr → sum_rows → sqrt → scale_bias → fill → div → clamp → mul` = 8. The
+   tempting saving — replace `fill(norm, τ)` + `div` with a broadcast divide — is
+   impossible: `ggml_div(ctx,a,b)` returns `a`'s shape, so the numerator must be
+   materialised at `norm`'s shape; `ggml_repeat` costs the same one kernel as
+   `fill`. Reciprocal variants (`div(fill(1),norm)` then `scale`) cost 3 ops where
+   the current form costs 2. **8 is the minimum.**
+2. **No per-tensor type override.** `llm_tensor_info` is
+   `{llm_tensor_layer layer; ggml_op op;}` (`llama-arch.h:812-815`) — no `type`
+   field — and `llama_model_loader::create_tensor` (`llama-model-loader.h:237-240`)
+   takes no type argument. The auxiliary Q8_0 weights therefore **cannot** be
+   loaded as F32 without loader surgery (read → dequantize → allocate F32).
+   That closes the "360 quantize kernels" idea.
+3. **`rms_norm` cannot be hoisted in `control()`.** With `attn_res_query` present
+   — true for every layer `i > 0` — the Q/K/V inputs are three *different* views
+   of `mixed`, so the three norms are genuinely distinct, not redundant.
+4. **`message()`'s four `ggml_cont` per layer-pass** cannot be dropped without
+   restructuring how the loop ctor builds the packed `messages` tensor into four
+   separate tensors — a refactor of the loop ctor, not a local change.
+
+So the remaining 18 % (`clip`), 15 % (`control`) and 9 % (aux matvecs) all require
+**new ggml primitives**: a fused clip kernel, a fused control-gate kernel, and a
+loader/backend change for the auxiliary weights. Each is days of work with a real
+blast radius across every architecture in the fork.
+
+## The decision I need from you
+
+A fused `clip` kernel computes `x · min(1, τ/(sqrt(Σx²)+ε))` in one pass instead
+of eight. It cannot be **bit-exact**: `ggml_sum_rows` reduces in a specific block
+order, and any hand-written reduction will differ in the last bits. That means:
+
+- logits change slightly (in the 1e-6 range),
+- invariant **I1 (bit-exact logits)** has to be relaxed to "output signature
+  unchanged + still coherent",
+- the change touches `ggml.h` (new op), `ggml.c` (op desc), `ggml-cuda` (kernel +
+  dispatch) and needs a CPU fallback — for every architecture, not just Inkling.
+
+That is a trade of numerical exactness for speed, across the whole engine, and it
+is not mine to make silently. Options:
+
+- **(a)** accept the numerics change and authorise the fused-kernel project;
+- **(b)** keep bit-exactness and stop at the current 15.1–16.0 t/s;
+- **(c)** do the loader surgery instead (aux weights → F32), which *is* bit-exact
+  on the weights but changes accumulation order in those matvecs anyway.
+
+## Status
+
+- Baseline frozen and reproducible (`/tmp/kd-base.*`, sig `03c0150ddd05`).
+- Work list exact: `clip` 18 %, `control` 15 %, `convolve` 13 %, aux matvecs 9 %.
+- No engine change shipped this pass; tree clean, engine healthy.

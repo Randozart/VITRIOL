@@ -195,3 +195,61 @@ it. An invariant is a property, not a test name — it must survive refactors.
    Watch `memory.free` (not `memory.used`) and be ready to shrink draft ngl.
 4. **Prose regression** — the upstream +68 % came with a −17 % prose cell. Report
    both, never the average.
+
+---
+
+## S5 — n-gram speculative decoding: DELIVERED, zero code (2026-11-23)
+
+With the drafter blocked, I re-tested `ngram-simple`, which needs **no drafter at
+all** and is already in the fork. The earlier S5 in
+`inkling-2-overhead-2026-11-22.md` dismissed it as "null" — that test used a
+non-repetitive prompt, which is unsuitable for an n-gram predictor. Re-measured
+properly on code-shaped prompts (`-ngl 99 -ts 27,21 --no-mmap -ub 64 -fa on --temp 0`):
+
+### Variant comparison (128 tokens, code prompt)
+
+| arm | decode t/s | output md5 |
+|---|---|---|
+| no speculation | 15.9 | `d3333c8ab921` |
+| `ngram-map-k` | 16.3 | `d3333c8ab921` |
+| `ngram-map-k4v` | 15.9 | `d3333c8ab921` |
+| `ngram-cache` | 15.3 | `d3333c8ab921` |
+| `ngram-mod` | 17.3 | `d3333c8ab921` |
+| `ngram-simple` n2 | 20.1 | `d3333c8ab921` |
+| `ngram-simple` n4 | 20.0 | `d3333c8ab921` |
+| `ngram-simple` n6 | 19.2 | `d3333c8ab921` |
+| `ngram-simple` n8 | 19.3 | `d3333c8ab921` |
+| **`ngram-simple,ngram-map-k` n4** | **20.3** | `d3333c8ab921` |
+
+**+27.7 % decode, and byte-identical output** across every arm. Prose also
+improves: 16.1 → 20.1 (+24.8 %), so — unlike DSpark — there is no prose penalty.
+
+### The honest caveat: gain is prompt-dependent, and not bit-exact at length
+
+At 256 tokens on a less-repetitive prompt:
+
+| arm | decode | output |
+|---|---|---|
+| no speculation | 14.7 | `c1d0978b493d` |
+| `ngram-simple,ngram-map-k` n4 | **15.7 (+6.8 %)** | `d17d7ba15698` |
+| same, n2 | 15.3 (+4.1 %) | `d17d7ba15698` |
+
+The outputs diverge at one word ("no hidden **trick** here" vs "no **harmful
+content** here"). This is the signature of **batched verification flipping a
+near-tie** — the verify pass batches k draft tokens per forward, changing kernel
+tiling and therefore the last bits of the logits. It is not a broken verify path:
+at 128 tokens every arm was byte-identical.
+
+So the correct claim is: **+25–28 % on short, repetitive outputs; +7 % on long,
+less-repetitive ones; textually lossless at short lengths, near-tie-stable at
+length.** This matches what the live 27B already does (`--spec-type mtp,ngram-simple`).
+
+### Recommended flags for Inkling-2-Mini
+
+```
+--spec-type ngram-simple,ngram-map-k --spec-draft-n-max 4
+```
+
+No config mutation was made (I6): these are documented, not installed. The live
+engine remains the 27B on "Lapis Occultus", verified `active` + `/health ok` +
+live completion after every measurement.

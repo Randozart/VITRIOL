@@ -746,6 +746,16 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_DFLASH_SELECTOR_PREV,     "selector_predecessor"           },
     { LLM_TENSOR_DFLASH_SELECTOR_NEXT,     "selector_successor"             },
     { LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,   "selector_hidden"                },
+    { LLM_TENSOR_DSPARK_JOINT_PROJ,        "joint_proj"                     },
+    { LLM_TENSOR_DSPARK_MASK_EMBD,         "mask_embd"                      },
+    { LLM_TENSOR_DSPARK_MARKOV_CTX_MIX,    "markov_ctx_mix"                 },
+    { LLM_TENSOR_DSPARK_MARKOV_CTX_NORM,   "markov_ctx_norm"                },
+    { LLM_TENSOR_DFLASH_ATTN_K_CTX,        "blk.%d.attn_k_ctx"              },
+    { LLM_TENSOR_DFLASH_ATTN_V_CTX,        "blk.%d.attn_v_ctx"              },
+    { LLM_TENSOR_DFLASH_ATTN_K_CTX_NORM,   "blk.%d.attn_k_ctx_norm"         },
+    { LLM_TENSOR_DFLASH_CTX_MIX,           "blk.%d.ctx_mix"                 },
+    { LLM_TENSOR_DFLASH_CTX_NORM,          "blk.%d.ctx_norm"                },
+    { LLM_TENSOR_DSPARK_TOKEN_EMBD_NORM,   "token_embd_norm"                },
 };
 
 // declare information about the model weight tensors:
@@ -1068,6 +1078,16 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     { LLM_TENSOR_DFLASH_SELECTOR_PREV,     { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_GET_ROWS }      },
     { LLM_TENSOR_DFLASH_SELECTOR_NEXT,     { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_GET_ROWS }      },
     { LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,   { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
+    { LLM_TENSOR_DSPARK_JOINT_PROJ,        { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
+    { LLM_TENSOR_DSPARK_MASK_EMBD,         { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL }           },
+    { LLM_TENSOR_DSPARK_MARKOV_CTX_MIX,    { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL }           },
+    { LLM_TENSOR_DSPARK_MARKOV_CTX_NORM,   { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL }           },
+    { LLM_TENSOR_DFLASH_ATTN_K_CTX,        { LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT }    },
+    { LLM_TENSOR_DFLASH_ATTN_V_CTX,        { LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT }    },
+    { LLM_TENSOR_DFLASH_ATTN_K_CTX_NORM,   { LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL }        },
+    { LLM_TENSOR_DFLASH_CTX_MIX,           { LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL }        },
+    { LLM_TENSOR_DFLASH_CTX_NORM,          { LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL }        },
+    { LLM_TENSOR_DSPARK_TOKEN_EMBD_NORM,   { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL }           },
 };
 
 LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}

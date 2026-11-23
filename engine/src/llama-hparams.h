@@ -262,6 +262,10 @@ struct llama_hparams {
     uint32_t dflash_selector_rank    = 0;
     uint32_t dflash_selector_top_k   = 0;
 
+    // DSpark f_rnn variant (upstream PR #32218): the drafter consumes a mix of the
+    // target features both per block (context K/V) and in the markov head
+    bool dspark_f_rnn = false;
+
     // llama4 smallthinker
     uint32_t n_moe_layer_step        = 0;
     uint32_t n_no_rope_layer_step    = 4;

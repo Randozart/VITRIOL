@@ -751,6 +751,20 @@ enum llm_tensor {
     LLM_TENSOR_DFLASH_SELECTOR_PREV,
     LLM_TENSOR_DFLASH_SELECTOR_NEXT,
     LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,
+
+    // DSpark f_rnn variant (target layers [5,23,41,48]): the rnn head reads a mix of the
+    // last committed token's target features, and each block attends over context K/V
+    // projected from those features (upstream PR #32218)
+    LLM_TENSOR_DSPARK_JOINT_PROJ,
+    LLM_TENSOR_DSPARK_MASK_EMBD,
+    LLM_TENSOR_DSPARK_MARKOV_CTX_MIX,
+    LLM_TENSOR_DSPARK_MARKOV_CTX_NORM,
+    LLM_TENSOR_DFLASH_ATTN_K_CTX,
+    LLM_TENSOR_DFLASH_ATTN_V_CTX,
+    LLM_TENSOR_DFLASH_ATTN_K_CTX_NORM,
+    LLM_TENSOR_DFLASH_CTX_MIX,
+    LLM_TENSOR_DFLASH_CTX_NORM,
+    LLM_TENSOR_DSPARK_TOKEN_EMBD_NORM,
 };
 
 enum llm_tensor_layer {

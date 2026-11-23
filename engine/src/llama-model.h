@@ -519,6 +519,13 @@ struct llama_layer {
     // openai-moe
     struct ggml_tensor * attn_sinks = nullptr;
 
+    // DSpark f_rnn (upstream PR #32218): context K/V projected from the target features
+    struct ggml_tensor * attn_k_ctx      = nullptr;
+    struct ggml_tensor * attn_v_ctx      = nullptr;
+    struct ggml_tensor * attn_k_ctx_norm = nullptr;
+    struct ggml_tensor * ctx_mix         = nullptr;
+    struct ggml_tensor * ctx_norm        = nullptr;
+
     // DeepSeek-V4
     struct ggml_tensor * attn_kv_norm       = nullptr;
     struct ggml_tensor * hc_attn_fn         = nullptr;
@@ -695,8 +702,17 @@ struct llama_model {
     struct ggml_tensor * dspark_markov_w1   = nullptr;
     struct ggml_tensor * dspark_markov_w2   = nullptr;
     struct ggml_tensor * dspark_markov_w2_s = nullptr;
+    struct ggml_tensor * dspark_markov_w2_b = nullptr;
     struct ggml_tensor * dspark_conf_proj   = nullptr;
     struct ggml_tensor * dspark_conf_proj_b = nullptr;
+
+    // dspark f_rnn variant (upstream PR #32218)
+    struct ggml_tensor * dspark_joint_proj      = nullptr;
+    struct ggml_tensor * dspark_joint_proj_b    = nullptr;
+    struct ggml_tensor * dspark_markov_ctx_mix  = nullptr;
+    struct ggml_tensor * dspark_markov_ctx_norm = nullptr;
+    struct ggml_tensor * dspark_mask_embd       = nullptr;
+    struct ggml_tensor * token_embd_norm        = nullptr;
 
     struct ggml_tensor * dflash_selector_prev   = nullptr;
     struct ggml_tensor * dflash_selector_next   = nullptr;

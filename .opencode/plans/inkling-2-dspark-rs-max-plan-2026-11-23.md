@@ -117,3 +117,56 @@ structural choice is wrong. Candidates, in order of likelihood:
 Next step is a measurement loop, not a guess: instrument acceptance per position
 (the impl's `accept()` is currently a noop) so each graph change is scored
 immediately instead of inferred from t/s.
+
+---
+
+## Why acceptance is 0: I read the PR's actual graph (2026-11-23)
+
+Fetched `src/models/dspark.cpp` at PR head `e4b1cb53`. The f_rnn variant is not the
+graph I reconstructed. Its comments state the contract outright:
+
+```cpp
+// rnn_state: [n_embd, n_tokens] per-token state of the Inkling2 rnn head
+//   anchor row: f_rnn, an extra rnn input; draft row i: [uniform | 1/temp | 0...] of its draw
+...
+if (hparams.dspark_f_rnn && ubatch.embd_state) {          // line 433
+    auto inp = std::make_unique<llm_graph_input_embd_h>(n_embd, n_embd);
+    inp->h = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_embd, n_tokens);
+    rnn_state = inp->h;
+}
+ggml_tensor * cur = build_layers(inp_tokens);              // block input comes from the state
+```
+
+So my three structural errors, in order of impact:
+
+1. **The block input is the state channel, not `tok_embd`.** `inp->h` (per-token
+   `n_embd` state) is the block's input; the anchor row carries `f_rnn`. My graph
+   embeds the anchor token instead — different tensor entirely.
+2. **The markov chain is sampled, not greedy.** Upstream's `draw()` does
+   `ggml_top_k → softmax(top_k · inv_temp) → argsort → sample`, packing
+   `[token, n_cand, ids, probs]` per row so the verifier receives the exact q.
+   `inv_temp`/`is_greedy` come from the state rows. My in-graph greedy argmax chain
+   cannot be accepted by the verifier at any temperature.
+3. **The block mask is uniform over the block** (`self_attn_mask_swa.block_uniform`,
+   the whole block shares its anchor's mask row), and `sample_from_anchor` must be
+   false — which our drafter satisfies.
+
+Upstream also asserts `rnn_state->ne[0] == n_embd` and `2 + 2*n_cand <= n_embd`, i.e.
+the state row width is `n_embd` (2304) and the draws live inside it.
+
+### Consequence
+
+My "in-graph f_rnn, no `llama-batch.cpp`" shortcut — which the owner authorised on my
+recommendation — was wrong. The state channel is not an optimisation for the markov
+head; it is **the block's input and the sampling channel**. I should have read the PR's
+graph before proposing to avoid the plumbing. Reverting that decision is the next job:
+
+| work | where | rough size |
+|---|---|---|
+| `n_embd_state` on batch/ubatch, `llama_batch_ext_select_n_embd_state` | `llama-batch.{h,cpp}` | ~40 lines |
+| state rows: f_rnn in the anchor, `[uniform, 1/temp]` in drafts | `common/speculative.cpp` dspark process/draft | ~60 lines |
+| `llm_graph_input_embd_h` + block input from state + `draw()` chain (`top_k`, softmax·inv_temp, argsort, `[token,n_cand,ids,probs]`) + `block_uniform` mask | `src/models/dflash.cpp` (`graph_ctx`) | ~150 lines |
+
+Acceptance measurement is now available as a gate (monotone n_max sweep; counting
+prompt as the ~100 % sanity case), so each step of that port can be scored rather than
+inferred.

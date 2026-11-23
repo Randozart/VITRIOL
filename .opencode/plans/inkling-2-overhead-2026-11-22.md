@@ -235,3 +235,78 @@ deliver at batch 1.
 - S3a: **dead per S2.**
 - S3b/S4/S5': not started (budget). S4 is the one clear, cheap, numerics-preserving
   win left at batch 1 and should be the first task next session.
+
+## S1 addendum — the op histogram (measured, 2026-11-22)
+
+Wired the fork's own per-op counters (`g_perf.op_n[]`, `ggml-cuda.cu:4694`) to dump
+once per run. Distribution for a decode pass:
+
+| op | share |
+|---|---|
+| MUL_MAT | **13.8 %** |
+| CONT | 8.7 % |
+| ADD | 8.1 % |
+| SCALE | 8.1 % |
+| MUL | 8.1 % |
+| CONCAT | 7.9 % |
+| CPY | 6.1 % |
+| FILL | 4.0 % |
+| SSM_CONV | 3.9 % |
+| RMS_NORM | 3.5 % |
+| CLAMP / SUM_ROWS / SQRT / SQR / DIV | 3.1 % each ≈ 15 % combined (`clip()`) |
+| GET_ROWS / SET_ROWS / REPEAT / SOFT_MAX | 2.0 % each |
+| MUL_MAT_ID | 1.9 % |
+| PAD | 1.0 % |
+
+**Only 13.8 % of the ops are matmuls.** The rest is elementwise bookkeeping — and
+the five-op `clip()` chain alone (SQR → SUM_ROWS → SQRT → DIV → CLAMP, plus FILL
+and MUL) is ~15 %.
+
+Caveat, stated plainly: the counter only increments for non-fused nodes
+(`i += nodes_to_skip; continue;` skips fused groups), so the absolute count
+undercounts and I could **not** derive a trustworthy per-op time from it. The
+*relative* distribution is the useful part.
+
+Attributions that follow from it:
+
+- `CONCAT` (7.9 %) is dominated by `convolve()`'s `x = concat(past, cur)`, 4 sites
+  per layer-pass — inherent to the 4-tap shortconv as expressed in ggml.
+- `CONT` (8.7 %) is partly my own correctness fix (gate/up halves, 2 per MoE layer)
+  plus `convolve()`'s `cont(transpose(window))` in the dynamic-tap loop.
+- `FILL` (4.0 %) was the per-layer zero sinks — **now hoisted**, see below.
+- `CPY` (6.1 %) is the KV/conv state stores, inherent.
+
+## What was actually implemented and measured
+
+**Shared zero-sinks vector** (`4a01961`). The sink logit is folded into the
+relative-position bias table, so every attention layer passed an all-zero `sinks`
+vector — but allocated and filled a fresh one per layer: 48 allocations + 48 FILL
+kernels per pass. Now built once in `build_inputs()`.
+
+Result: **15.9 t/s vs 15.7 baseline — within noise.** Output unchanged
+(`[Start thinking] …`). A correct, strictly-less-work cleanup, **not a speedup**.
+Recorded honestly as such.
+
+## Why I stopped here rather than iterating further
+
+The remaining candidates from the histogram are all *real kernel work*, not
+configuration or cleanup:
+
+1. Replace `convolve()`'s concat + cont(transpose) with a ring-buffer write plus a
+   4-wide conv view (what `causal_conv1d_update` does in other engines).
+2. Collapse `clip()`'s five-op chain — but it must stay bit-exact against the
+   reference L2-clip, so this needs care and a numerics test.
+3. A fused MoE kernel for `[2304, 2304, 128]` IQ4_NL top-8 decode.
+
+Each is a kernel change with a real correctness surface, and the box has **no
+profiler** (`nsys`, `ncu`, `perf` all absent), so I cannot prioritise them by
+measured time — only by op share, which is a proxy. Doing them blind is how
+regressions get shipped.
+
+## Invariants
+
+- I1: output unchanged after the sinks hoist (verified: same `[Start thinking]`
+  continuation); no non-Inkling arch touched.
+- I2: service restored, `/health` ok.
+- I3: every number carries its argv.
+- I4: op-histogram probe stripped (`grep VITRIOL_OP_HIST` empty), clean rebuild.

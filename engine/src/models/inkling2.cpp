@@ -283,6 +283,9 @@ ggml_tensor * llama_model_inkling2::graph::build_inputs() {
     tau = ggml_log(ctx0, ggml_clamp(ctx0, ggml_scale(ctx0, tau, 1.0f / hparams.n_log_scale_floor), 1.0f, INFINITY));
     tau = ggml_reshape_3d(ctx0, ggml_scale_bias(ctx0, tau, hparams.f_log_scale_alpha, 1.0f), 1, 1, n_tokens);
 
+    sinks_zero = ggml_fill(ctx0, ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, hparams.n_head()), 0.0f);
+    cb(sinks_zero, "sinks_zero", -1);
+
     ggml_tensor * cur = build_inp_embd(model.tok_embd);
 
     // important: do not normalize raw embeddings input (i.e. encoded image embeddings)
@@ -397,7 +400,10 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int                      
         kq_b               = ggml_cont(ctx0, ggml_permute(ctx0, kq_b, 2, 0, 1, 3));
         cb(kq_b, "kq_b", il);
 
-        sinks = ggml_fill(ctx0, ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head), 0.0f);
+        // the sink logit already lives in the bias table, so attention takes zeros; share one
+        // tensor across all layers instead of allocating a fresh zero vector per layer per pass
+        GGML_ASSERT(sinks_zero != nullptr && (int64_t) sinks_zero->ne[0] == n_head);
+        sinks = sinks_zero;
 
         cur = build_attn(inp, nullptr, nullptr, nullptr, Qcur, Kcur, Vcur, kq_b, sinks, 1.0f / sqrtf(n_embd_head), il);
 

@@ -2124,6 +2124,7 @@ struct llama_model_inkling2 : public llama_model_base {
     // the layers stored in the file
     int n_layer_phys() const override { return hparams.n_layer(); }
 
+
     // message controllers of the q, k, v and ffn inputs of a looped layer (inkling2_loop)
     enum { LOOP_CTRL_Q, LOOP_CTRL_K, LOOP_CTRL_V, LOOP_CTRL_FFN, LOOP_CTRL_COUNT };
 
@@ -2168,6 +2169,9 @@ struct llama_model_inkling2 : public llama_model_base {
 
         ggml_tensor * inp_out_ids = nullptr;
         ggml_tensor * tau         = nullptr; // log-scaled positions
+        // shared all-zero attention-sink vector: the sink logit is folded into the relative-position
+        // bias table, so every layer passes zeros. Built once per graph, not per layer per pass.
+        ggml_tensor * sinks_zero  = nullptr;
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

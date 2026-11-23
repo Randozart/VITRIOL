@@ -311,6 +311,13 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int                      
                                                        const loop_layer *           loop) {
     GGML_ASSERT(!messages == !loop);
 
+    // DSpark target features: the partial block at the layer input (upstream PR #32218)
+    if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
+        res->t_layer_inp[il] = cur;
+        cb(res->t_layer_inp[il], "layer_inp", il);
+        ggml_build_forward_expand(gf, res->t_layer_inp[il]);
+    }
+
     const auto & layer = model.layers[il];
 
     const bool    is_swa       = hparams.is_swa(il);
@@ -453,6 +460,13 @@ ggml_tensor * llama_model_inkling2::graph::build_layer(int                      
 void llama_model_inkling2::graph::build_output(ggml_tensor * cur, const std::vector<ggml_tensor *> & blocks) {
     cur = ggml_reshape_2d(ctx0, mix(blocks, cur, model.output_res_query), n_embd, n_tokens);
     cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);
+
+    // DSpark target features: the last tap is the final norm output of every token
+    if ((size_t) n_layer < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[n_layer]) {
+        res->t_layer_inp[n_layer] = cur;
+        cb(res->t_layer_inp[n_layer], "layer_inp", n_layer);
+        ggml_build_forward_expand(gf, res->t_layer_inp[n_layer]);
+    }
 
     if (inp_out_ids) {
         cur = ggml_get_rows(ctx0, cur, inp_out_ids);

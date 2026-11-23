@@ -1811,7 +1811,11 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         data_size *= ne[i];
     }
 
-    GGML_ASSERT(view_src == NULL || data_size == 0 || data_size + view_offs <= ggml_nbytes(view_src));
+    // A strided view may legitimately overlap itself (e.g. sliding windows of one sequence),
+    // so its dense footprint can exceed the source. Only the offset is knowable here; the
+    // exact bound over the bytes the strides actually reach is enforced by
+    // ggml_view_strided_check() in the ggml_view_*d helpers once their strides are applied.
+    GGML_ASSERT(view_src == NULL || data_size == 0 || view_offs <= ggml_nbytes(view_src));
 
     void * data = view_src != NULL ? view_src->data : NULL;
     if (data != NULL) {
@@ -3753,6 +3757,18 @@ struct ggml_tensor * ggml_reshape_4d(
     return result;
 }
 
+// a view must stay inside its source, over the bytes its strides actually reach: the dense
+// footprint is not the right measure, because overlapping strided views are legal
+static void ggml_view_strided_check(const struct ggml_tensor * result, const struct ggml_tensor * a, size_t offset) {
+    if (a == NULL) {
+        return;
+    }
+
+    const size_t view_size = ggml_nbytes(result);
+
+    GGML_ASSERT(view_size == 0 || view_size + offset <= ggml_nbytes(a));
+}
+
 static struct ggml_tensor * ggml_view_impl(
         struct ggml_context * ctx,
         struct ggml_tensor  * a,
@@ -3799,6 +3815,8 @@ struct ggml_tensor * ggml_view_2d(
     result->nb[2] = result->nb[1]*ne1;
     result->nb[3] = result->nb[2];
 
+    ggml_view_strided_check(result, a, offset);
+
     return result;
 }
 
@@ -3820,6 +3838,8 @@ struct ggml_tensor * ggml_view_3d(
     result->nb[1] = nb1;
     result->nb[2] = nb2;
     result->nb[3] = result->nb[2]*ne2;
+
+    ggml_view_strided_check(result, a, offset);
 
     return result;
 }
@@ -3844,6 +3864,8 @@ struct ggml_tensor * ggml_view_4d(
     result->nb[1] = nb1;
     result->nb[2] = nb2;
     result->nb[3] = nb3;
+
+    ggml_view_strided_check(result, a, offset);
 
     return result;
 }

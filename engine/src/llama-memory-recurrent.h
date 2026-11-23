@@ -15,16 +15,15 @@
 // TODO: extract the cache state used for graph computation into llama_memory_recurrent_context_i
 //       see the implementation of llama_kv_cache_context_i for an example how to do it
 class llama_memory_recurrent : public llama_memory_i {
-public:
-    llama_memory_recurrent(
-            const llama_model & model,
-                    ggml_type   type_r,
-                    ggml_type   type_s,
-                         bool   offload,
-                     uint32_t   mem_size,
-                     uint32_t   n_seq_max,
-                     uint32_t   n_rs_seq,
-        const layer_filter_cb & filter);
+  public:
+    llama_memory_recurrent(const llama_model &     model,
+                           ggml_type               type_r,
+                           ggml_type               type_s,
+                           bool                    offload,
+                           uint32_t                mem_size,
+                           uint32_t                n_seq_max,
+                           uint32_t                n_rs_seq,
+                           const layer_filter_cb & filter);
 
     ~llama_memory_recurrent() = default;
 
@@ -32,10 +31,7 @@ public:
     // llama_memory_i
     //
 
-    llama_memory_context_ptr init_batch(
-            llama_batch_allocr & balloc,
-            uint32_t n_ubatch,
-            bool embd_all) override;
+    llama_memory_context_ptr init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) override;
 
     llama_memory_context_ptr init_full() override;
 
@@ -43,11 +39,11 @@ public:
 
     void clear(bool data) override;
 
-    bool seq_rm  (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1) override;
-    void seq_cp  (llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) override;
-    void seq_keep(llama_seq_id seq_id)                                                          override;
-    void seq_add (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, llama_pos shift) override;
-    void seq_div (llama_seq_id seq_id,                              llama_pos p0, llama_pos p1, int d) override;
+    bool seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) override;
+    void seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) override;
+    void seq_keep(llama_seq_id seq_id) override;
+    void seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos shift) override;
+    void seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) override;
 
     llama_pos seq_pos_min(llama_seq_id seq_id) const override;
     llama_pos seq_pos_max(llama_seq_id seq_id) const override;
@@ -64,11 +60,14 @@ public:
     // state write/load
 
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
-    void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
+    void state_read(llama_io_read_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
-    uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
-    uint32_t size = 0; // total number of cells, shared across all sequences
-    uint32_t used = 0; // used cells (i.e. at least one seq_id)
+    // zero the recurrent state of the cells [cell_head, cell_head + cell_count) after a failed restore
+    void state_clear(llama_seq_id seq_id, uint32_t cell_head, uint32_t cell_count);
+
+    uint32_t head = 0;  // the location where the batch will be placed in the cache (see find_slot())
+    uint32_t size = 0;  // total number of cells, shared across all sequences
+    uint32_t used = 0;  // used cells (i.e. at least one seq_id)
 
     // number of recurrent-state snapshots per seq for rollback; tensors are widened to (1 + n_rs_seq) groups
     uint32_t n_rs_seq = 0;
@@ -87,23 +86,21 @@ public:
     // TODO: optimize for recurrent state needs
     struct mem_cell {
         llama_pos pos  = -1;
-        int32_t   src  = -1; // used to know where states should be copied from
-        int32_t   src0 = -1; // like src, but only used when setting the inputs (allowing to copy once)
+        int32_t   src  = -1;  // used to know where states should be copied from
+        int32_t   src0 = -1;  // like src, but only used when setting the inputs (allowing to copy once)
         int32_t   tail = -1;
+
+        // largest rollback whose snapshot the last ubatch guarantees: a ubatch of n <= n_rs_seq + 1
+        // tokens writes snapshots 0..n-1, a longer one only guarantees the final state
+        uint32_t rs_max = 0;
 
         std::set<llama_seq_id> seq_id;
 
-        bool has_seq_id(const llama_seq_id & id) const {
-            return seq_id.find(id) != seq_id.end();
-        }
+        bool has_seq_id(const llama_seq_id & id) const { return seq_id.find(id) != seq_id.end(); }
 
-        bool is_empty() const {
-            return seq_id.empty();
-        }
+        bool is_empty() const { return seq_id.empty(); }
 
-        bool is_same_seq(const mem_cell & other) const {
-            return seq_id == other.seq_id;
-        }
+        bool is_same_seq(const mem_cell & other) const { return seq_id == other.seq_id; }
     };
 
     std::vector<mem_cell> cells;
@@ -114,7 +111,7 @@ public:
     // a second conv history that must stay replicated across devices, so it cannot share the r row
     std::vector<ggml_tensor *> p_l;
 
-private:
+  private:
     //const llama_model & model;
     const llama_hparams & hparams;
 
@@ -129,7 +126,9 @@ private:
     size_t size_s_bytes() const;
     size_t size_p_bytes() const;
 
-    void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
+    void state_write_meta(llama_io_write_i &                                 io,
+                          const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges,
+                          llama_seq_id                                       seq_id = -1) const;
     void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
 
     bool state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id = -1);
@@ -137,18 +136,15 @@ private:
 };
 
 class llama_memory_recurrent_context : public llama_memory_context_i {
-public:
+  public:
     // used for errors
     llama_memory_recurrent_context(llama_memory_status status);
 
     // used to create a full-cache or update context
-    llama_memory_recurrent_context(
-            llama_memory_recurrent * mem);
+    llama_memory_recurrent_context(llama_memory_recurrent * mem);
 
     // used to create a batch processing context from a batch
-    llama_memory_recurrent_context(
-            llama_memory_recurrent * mem,
-            std::vector<llama_ubatch> ubatches);
+    llama_memory_recurrent_context(llama_memory_recurrent * mem, std::vector<llama_ubatch> ubatches);
 
     virtual ~llama_memory_recurrent_context();
 
@@ -156,7 +152,7 @@ public:
     // llama_memory_context_i
     //
 
-    bool next()  override;
+    bool next() override;
     bool apply() override;
 
     llama_memory_status  get_status() const override;
@@ -177,7 +173,7 @@ public:
 
     int32_t s_copy(int i) const;
 
-private:
+  private:
     const llama_memory_status status;
 
     llama_memory_recurrent * mem;

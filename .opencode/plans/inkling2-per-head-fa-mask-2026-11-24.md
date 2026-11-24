@@ -158,8 +158,38 @@ The pre-patch graph requests *more* than the patched one, so the fold is a
 1551 MiB at ub 32; today the very first reserve asks for 7.2–7.9 GiB, which no
 arrangement of a 17.6 GB model over 2×12 GB can satisfy alongside the weights.
 
-So I4 (and the ub 64/128 target) stays open, blocked on a memory-accounting
-question that is independent of flash attention: **why does graph_reserve ask
-for 5× the pp buffer it asked for on 2026-11-23 at the same ub and ctx**, and
-which tensor in that reserve is O(ctx²) at 200 k. That needs the gallocr node
-dump (`GGML_SCHED_DEBUG=2`) rather than more guessing.
+So I4 stays open, blocked on a memory-accounting question that is independent
+of flash attention.
+
+### The reserve is O(ctx), ub-independent, and FA-independent
+
+Three probes narrow it decisively (c 131072, ts 1,1 unless noted):
+
+| variable | CUDA0 compute buffer |
+|---|---|
+| ub 1 | 4583211648 |
+| ub 8 | 4807338752 |
+| ub 32 | 5587683072 |
+| ub 32, `VITRIOL_FA_BIAS=0` (dense everywhere) | 5587683072 (identical) |
+| ub 32, fold on **all** layers (full-attention too) | 5587683072 (identical) |
+| c 32768, 65536 | no failure (fits) |
+| c 204800 | 8513210112 (pre-patch graph also 8513210112) |
+
+Reading: a **ub-independent floor of ~4.3 GiB** plus ~32 MiB per ubatch token.
+The floor is ~35 KB per kv position and scales linearly with ctx; enabling or
+disabling flash attention on those layers changes it by **zero bytes**.
+
+So the ceiling was never the attention bias. The dense scores cost ~32 MiB per
+ubatch token (which the fold does remove — that is the ub-dependent part), but
+the dominant term is a ctx-proportional buffer that FA cannot touch. Fixing the
+200 k load means finding that tensor, and it deserves its own single-objective
+stage: dump the scheduler/gallocr node list at c 131072 and sort by size. The
+prime suspect is the per-layer input taps added for DSpark
+(`cparams.embeddings_layer_inp[il]` → `t_layer_inp[il]`, `[n_embd, n_tokens]`
+F32): ctx × n_embd × 4 B = 1.2 GB at 131072 for a single tap, and several
+tapped layers of that shape land squarely on the observed floor.
+
+Note this is a *pre-existing* cost, not a regression from this work: the
+2026-11-23 figure of 1551 MiB at c 204800 was measured in a different
+invocation than today's, and today the pre-patch grammar asks for the same
+8513210112 as the patched one.

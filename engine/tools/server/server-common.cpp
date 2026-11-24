@@ -1358,15 +1358,14 @@ json oaicompat_chat_params_parse(
             trigger_marker = "[TOOL_CALLS]";
         }
         const std::string reminder = common_chat_tools_reminder(inputs.tools, trigger_marker);
-        if (!reminder.empty()) {
-            const std::string marker = "<|im_start|>assistant";
-            const size_t pos = chat_params.prompt.rfind(marker);
-            if (pos != std::string::npos) {
-                chat_params.prompt.insert(pos, reminder);
-            } else {
-                // Non-chatml template: fall back to appending before the prompt end
-                chat_params.prompt += reminder;
-            }
+        // The reminder is ChatML BY CONSTRUCTION ("<|im_start|>system ... <|im_end|>"). Splicing
+        // it into a template that does not use ChatML corrupts the prompt: Inkling's channel
+        // template then emits "<|im_start|>system>\n(OpenAI)" instead of a tool call (measured
+        // 2026-11-23). Only inject where the marker that governs it actually exists.
+        const std::string marker = "<|im_start|>assistant";
+        const size_t pos = !reminder.empty() ? chat_params.prompt.rfind(marker) : std::string::npos;
+        if (pos != std::string::npos) {
+            chat_params.prompt.insert(pos, reminder);
             SRV_DBG("VITRIOL tool reminder injected (%zu bytes) before generation marker\n", reminder.size());
         }
     }

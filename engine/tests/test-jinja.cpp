@@ -728,6 +728,44 @@ static void test_filters(testing & t) {
         "\"\\u2713\""
     );
 
+    // sort_keys mirrors json.dumps(sort_keys=True): keys sorted at every level, in
+    // UTF-8 byte order, without touching the source object's order.
+    test_template(t, "tojson sort_keys=true flat",
+        "{{ data|tojson(sort_keys=true) }}",
+        {{"data", {
+            {"b", 1},
+            {"a", 2}
+        }}},
+        "{\"a\": 2, \"b\": 1}"
+    );
+
+    test_template(t, "tojson sort_keys=true nested object",
+        "{{ data|tojson(sort_keys=true) }}",
+        {{"data", {
+            {"b", {{"z", 1}, {"y", 2}}},
+            {"a", 0}
+        }}},
+        "{\"a\": 0, \"b\": {\"y\": 2, \"z\": 1}}"
+    );
+
+    test_template(t, "tojson sort_keys=true array of objects",
+        "{{ data|tojson(sort_keys=true) }}",
+        {{"data", json::array({
+            {{"b", 1}, {"a", 2}}
+        })}},
+        "[{\"a\": 2, \"b\": 1}]"
+    );
+
+    // control: without the flag the object keeps its insertion order (b before a)
+    test_template(t, "tojson insertion order preserved (control)",
+        "{{ data|tojson() }}",
+        {{"data", {
+            {"b", 1},
+            {"a", 2}
+        }}},
+        "{\"b\": 1, \"a\": 2}"
+    );
+
     test_template(t, "tojson ensure_ascii=true nested object",
         "{{ data|tojson(ensure_ascii=true) }}",
         {{"data", {

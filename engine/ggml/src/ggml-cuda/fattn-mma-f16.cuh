@@ -1881,8 +1881,9 @@ static __global__ void flash_attn_ext_f16(
 
         const float2 * Q_f2   = (const float2 *) (Q + nb03*sequence + nb02*zt_Q);
         const half2  * K_h2   = (const half2  *) (K + nb13*sequence + nb12*z_KV);
+        // VITRIOL (2026-11-24): per-head bias slices; ne32 == 1 leaves the offset at 0.
         const half   * mask_h = ncols2 == 1 && !mask ? nullptr :
-            (const half *) (mask + nb33*(sequence % ne33));
+            (const half *) (mask + nb33*(sequence % ne33) + nb32*(zt_Q % (ne32 > 0 ? ne32 : 1)));
         float2       * dstk   = ((float2 *) dst) + (sequence*ne01.z*ne02 + zt_Q) * (DV/2);
 
         const half2 * V_h2 = V_is_K_view ? K_h2 : (const half2 *) (V + nb23*sequence + nb22*z_KV);
@@ -1928,8 +1929,9 @@ static __global__ void flash_attn_ext_f16(
 
     const float2 * Q_f2   = (const float2 *) (Q + nb03*sequence + nb02*zt_Q);
     const half2  * K_h2   = (const half2  *) (K + nb13*sequence + nb12*z_KV);
+    // VITRIOL (2026-11-24): per-head bias slices; ne32 == 1 leaves the offset at 0.
     const half   * mask_h = ncols2 == 1 && !mask ? nullptr :
-        (const half *) (mask + nb33*(sequence % ne33));
+        (const half *) (mask + nb33*(sequence % ne33) + nb32*(zt_Q % (ne32 > 0 ? ne32 : 1)));
     float2       * dstk   = ((float2 *) dst) + (sequence*ne01.z*ne02 + zt_Q) * (DV/2);
 
     const half2 * V_h2 = V_is_K_view ? K_h2 : (const half2 *) (V + nb23*sequence + nb22*z_KV);

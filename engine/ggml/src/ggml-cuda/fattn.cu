@@ -134,6 +134,17 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_con
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
     const ggml_tensor * Q = dst->src[0];
 
+    // VITRIOL (2026-11-24): a per-head mask varies across the heads inside one tile, so it
+    // needs exactly one Q head per tile — the only layout where the mask pointer can be
+    // offset once per tile. Every ncols2 choice funnels through here, so this covers the
+    // whole MMA dispatch.
+    if constexpr (ncols2 != 1 && DKQ == 128 && DV == 128) {
+        if (dst->src[3] != nullptr && dst->src[3]->ne[2] > 1) {
+            ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 1>(ctx, dst);
+            return;
+        }
+    }
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
     if constexpr (ggml_cuda_flash_attn_ext_mma_f16_may_use_sparse(DKQ, DV, 1, ncols2)) {
         if (ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(ctx, dst)) {
@@ -586,7 +597,16 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         return BEST_FATTN_KERNEL_NONE;
     }
 
-    if (mask && mask->ne[2] != 1) {
+    // VITRIOL (2026-11-24): a per-head additive bias (e.g. Inkling 2's relative-position
+    // bias) rides in the mask's head axis instead of a dense F32 tensor that disables
+    // flash attention for the whole graph. ne[2] == 1 keeps the head-broadcast contract
+    // byte-identical; ne[2] == n_head selects a distinct mask slice per query head, which
+    // both kernels already receive as ne32 and the CPU soft_max_ext already indexes.
+    // Scope note: the ncols2 == 1 tile layout is only instantiated (and valid) for
+    // DKQ == DV == 128, so a per-head mask is accepted for that shape only. Every other
+    // shape keeps the head-broadcast contract and falls back as before.
+    const bool mask_per_head = mask != nullptr && mask->ne[2] != 1;
+    if (mask_per_head && (mask->ne[2] != Q->ne[2] || Q->ne[0] != 128 || V->ne[0] != 128)) {
         return BEST_FATTN_KERNEL_NONE;
     }
 

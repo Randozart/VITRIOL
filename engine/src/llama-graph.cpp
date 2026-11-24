@@ -2667,9 +2667,38 @@ ggml_tensor * llm_graph_context::build_attn_mha(
 
     ggml_tensor * cur;
 
-    const bool use_flash_attn = cparams.flash_attn && kq_b == nullptr;
+    // VITRIOL (2026-11-24): fold a per-head additive bias into the softmax mask so flash
+    // attention can run at all. soft_max_ext computes softmax(kq*kq_scale + mask), hence
+    //   softmax((kq + bias)*kq_scale + mask) == softmax(kq*kq_scale + (mask + bias*kq_scale)).
+    // The mask is F16 and the CUDA FA kernels index it per head (ne32), so a per-head mask
+    // carries the bias without a dense [heads, n_kv, n_tokens] F32 score tensor — which is
+    // what disabled FA (and cost 3031 MiB of pp buffer at ub 64 / c 200k).
+    static const bool vitriol_fa_bias = [] {
+        const char * env = getenv("VITRIOL_FA_BIAS");
+        return env == nullptr || atoi(env) != 0;
+    }();
+    // The folded mask is per head, so it is n_head times the causal mask. At the 200k
+    // window that extra copy alone costs ~500 MiB of pp buffer (measured: 2048.81 MiB
+    // requested vs 1551 MiB before), so the fold is confined to the windowed layers,
+    // whose mask is bounded by n_swa (1.6 MiB at 1024 wide). Full-attention layers keep
+    // the dense path until the bias rides in as a small table instead of an expanded mask.
+    const bool fa_bias = cparams.flash_attn && kq_b != nullptr && vitriol_fa_bias &&
+        kq_mask->ne[0] <= 4096;
+
+    ggml_tensor * kq_mask_eff = kq_mask;
+    if (fa_bias) {
+        ggml_tensor * bias = ggml_cast(ctx0, ggml_scale(ctx0, kq_b, kq_scale), GGML_TYPE_F16);
+        ggml_tensor * base = kq_mask->type == GGML_TYPE_F16 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F16);
+        if (base->ne[2] != kq_b->ne[2]) {
+            base = ggml_repeat(ctx0, base, kq_b);
+        }
+        kq_mask_eff = ggml_add(ctx0, base, bias);
+        cb(kq_mask_eff, "kq_mask_with_bias", il);
+    }
+
+    const bool use_flash_attn = cparams.flash_attn && (kq_b == nullptr || fa_bias);
     if (use_flash_attn) {
-        GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
+        GGML_ASSERT(fa_bias || kq_b == nullptr);
 
         if (v_trans) {
             v = ggml_transpose(ctx0, v);
@@ -2684,7 +2713,7 @@ ggml_tensor * llm_graph_context::build_attn_mha(
             v = ggml_cast(ctx0, v, GGML_TYPE_F16);
         }
 
-        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
+        cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask_eff, kq_scale, hparams.f_max_alibi_bias,
                                   hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
         res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, cur, il});
 

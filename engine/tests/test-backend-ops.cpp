@@ -189,6 +189,21 @@ static void init_tensor_kq_mask(ggml_tensor * tensor, float min = -1.0f, float m
     ggml_backend_tensor_set(tensor, data_f16.data(), 0, data_f16.size()*sizeof(ggml_fp16_t));
 }
 
+// VITRIOL (2026-11-24): diagnostic. Fill a per-head mask normally, then replicate head 0
+// into every other head. If the per-head GPU path agrees with the CPU reference for this
+// tensor but not for the per-head-varying one, the strides are right and the kernel is
+// reading a single slice for all heads; if it disagrees here too, the indexing is wrong.
+static void init_tensor_kq_mask_heads_identical(ggml_tensor * tensor) {
+    GGML_ASSERT(tensor->ne[2] > 1);
+    init_tensor_kq_mask(tensor, -1.0f, 1.0f);
+    const size_t head_bytes = (size_t) tensor->ne[0] * tensor->ne[1] * ggml_element_size(tensor);
+    std::vector<char> head0(head_bytes);
+    ggml_backend_tensor_get(tensor, head0.data(), 0, head_bytes);
+    for (int64_t h = 1; h < tensor->ne[2]; ++h) {
+        ggml_backend_tensor_set(tensor, head0.data(), h*tensor->nb[2], head_bytes);
+    }
+}
+
 static void init_tensor_kq_mask_sparse(ggml_tensor * tensor, int64_t n_kv_max) {
     GGML_ASSERT(tensor->type == GGML_TYPE_F16);
     GGML_ASSERT(n_kv_max > 0 && n_kv_max <= tensor->ne[0]);
@@ -461,6 +476,7 @@ static std::string var_to_str(ggml_scale_mode mode) {
 #define VARS_TO_STR15(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o) VAR_TO_STR(a) + "," + VARS_TO_STR14(b, c, d, e, f, g, h, i, j, k, l, m, n, o)
 #define VARS_TO_STR16(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) VAR_TO_STR(a) + "," + VARS_TO_STR15(b, c, d, e, f, g, h, i, j, k, l, m, n, o, p)
 #define VARS_TO_STR17(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q) VAR_TO_STR(a) + "," + VARS_TO_STR16(b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q)
+#define VARS_TO_STR18(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r) VAR_TO_STR(a) + "," + VARS_TO_STR17(b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r)
 
 #ifdef GGML_USE_SYCL
 static bool inline _isinf(float f) {
@@ -7566,6 +7582,11 @@ struct test_flash_attn_ext : public test_case {
 
     const bool mask; // use mask
     const bool sinks; // use sinks
+    // VITRIOL (2026-11-24): mask_heads == 1 is the classic head-broadcast mask
+    // (softmax mask ne[2] == 1); mask_heads == 0 means one mask slice per query head,
+    // which is how a per-head additive bias (Inkling 2 relative position) reaches
+    // flash attention. Both must produce the same result as the dense path.
+    const int64_t mask_heads;
 
     const float max_bias; // ALiBi
     const float logit_softcap; // Gemma 2
@@ -7579,7 +7600,7 @@ struct test_flash_attn_ext : public test_case {
     const int64_t n_kv_max;
 
     std::string vars() override {
-        return VARS_TO_STR17(hsk, hsv, nh, nr23, kv, nb, mask, sinks, max_bias, logit_softcap, prec, type_K, type_V, permute, kv_view, v_is_view_of_k, n_kv_max);
+        return VARS_TO_STR18(hsk, hsv, nh, nr23, kv, nb, mask, sinks, mask_heads, max_bias, logit_softcap, prec, type_K, type_V, permute, kv_view, v_is_view_of_k, n_kv_max);
     }
 
     double max_nmse_err() override {
@@ -7596,8 +7617,10 @@ struct test_flash_attn_ext : public test_case {
     test_flash_attn_ext(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 32, std::array<int64_t, 2> nr23 = {1, 1}, int64_t kv = 96, int64_t nb = 8,
                         bool mask = true, bool sinks = false, float max_bias = 0.0f, float logit_softcap = 0.0f, ggml_prec prec = GGML_PREC_F32,
                         ggml_type type_K = GGML_TYPE_F16, ggml_type type_V = GGML_TYPE_F16, std::array<int32_t, 4> permute = {0, 1, 2, 3},
-                        bool kv_view = true, bool v_is_view_of_k = false, int64_t n_kv_max = 0)
-        : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), max_bias(max_bias), logit_softcap(logit_softcap), prec(prec),
+                        bool kv_view = true, bool v_is_view_of_k = false, int64_t n_kv_max = 0,
+                        int64_t mask_heads = 1)
+        : hsk(hsk), hsv(hsv), nh(nh), nr23(nr23), kv(kv), nb(nb), mask(mask), sinks(sinks), mask_heads(mask_heads),
+          max_bias(max_bias), logit_softcap(logit_softcap), prec(prec),
           type_K(type_K), type_V(type_V), permute(permute), kv_view(kv_view), v_is_view_of_k(v_is_view_of_k), n_kv_max(n_kv_max) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
@@ -7646,7 +7669,9 @@ struct test_flash_attn_ext : public test_case {
 
         ggml_tensor * m = nullptr;
         if (mask) {
-            m = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv, nb, 1, nr23[1]);
+            // mask_heads == 0 -> one slice per query head (per-head bias); otherwise broadcast.
+            const int64_t n_mask_heads = (mask_heads == 0 || mask_heads < 0) ? nh*nr23[0] : 1;
+            m = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv, nb, n_mask_heads, nr23[1]);
             ggml_set_name(m, "m");
         }
 
@@ -7673,6 +7698,8 @@ struct test_flash_attn_ext : public test_case {
             } else if (strcmp(t->name, "m") == 0) {
                 if (n_kv_max > 0) {
                     init_tensor_kq_mask_sparse(t, n_kv_max);
+                } else if (mask_heads < 0) {
+                    init_tensor_kq_mask_heads_identical(t);
                 } else {
                     init_tensor_kq_mask(t);
                 }
@@ -10636,6 +10663,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, 4096,  8, true,  true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {2, 1}, 1024, 32, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(512, 512, 4, {2, 1}, 1024,  4, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
+    // VITRIOL (2026-11-24): per-head softmax mask (mask_heads == 0) vs the broadcast control
+    // (mask_heads == 1). Pins the per-head bias channel added for Inkling 2: the GPU result
+    // must match the CPU dense reference for both layouts. 128-dim heads only — that is the
+    // shape the per-head path supports.
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {1, 1}, 2048, 32, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 0, 1));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {1, 1}, 2048, 32, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 0, 0));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {1, 1}, 2048, 1,  true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 0, 0));
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {3, 1}, 1024, 32, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 0, 0));
+    // diagnostic: per-head layout with identical slices (isolates stride bugs from slice bugs)
+    test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {1, 1}, 2048, 32, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 0, -1));
 
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {   10, 5, 4, 3}));
     test_cases.emplace_back(new test_cross_entropy_loss     (GGML_TYPE_F32, {30000, 1, 1, 1}));
@@ -11086,7 +11123,6 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
-
     for (int kv : { 4096, 8192, 16384,32768, 65536, }) {
         for (int hs : { 64, 128, 256, 576, }) {
             const int  hsv    = hs == 576 ? 512 : hs;

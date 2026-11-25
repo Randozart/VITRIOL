@@ -222,3 +222,38 @@ restart the 27B mid-window, so the next Kintsugi load died with
 Reverted with `git checkout -- engine/`. Rebuild verified: baseline output is sane again
 (`'\n\n<think>\nThe user wants…'`), decode **7.95 t/s**, 27B daily driver restored and healthy
 (10,164/10,106 MiB). The plan and AGENTS note are committed; no engine change ships from this run.
+
+### 8.1 One hypothesis tested and eliminated
+
+Their kernel takes `keep_rs = K > 1` and asserts `raw && !kda && !keep_rs && S_v == neq0` in its
+prefill branch. Our configs can run `K = n_rs_seq + 1 = 4`, so a snapshot-path incompatibility was the
+obvious suspect.
+
+**It is not that.** The failing run had **no drafter**, so `cparams.n_rs_seq = 0` and `K = 1`, i.e.
+`keep_rs = false` — the case raw gates are designed for. The assert did not fire, `raw` engaged, and the
+output was still nonsense. So the defect is in the *values*, not the snapshot layout.
+
+Constraints that were also satisfied (all `GGML_ASSERT`ed, and asserts are always compiled in):
+`src[3]->ne[0] == 1` (scalar gate, not KDA), `dt_bias`/`a` contiguous F32 with `nelements == H`, and
+the algebra is identical on both sides — our graph computes
+`softplus(alpha + ssm_dt) * ssm_a`, their kernel computes `ra[h] * softplus(g + rb[h])` with the same
+three tensors.
+
+What that leaves is the semantics of those tensors as they arrive at the op (sign/scale conventions on
+`ssm_a`, or the layout of `alpha`/`beta` after `ggml_reshape_4d`), which cannot be settled by reading —
+it needs a **unit comparison**: run the CUDA GDN op twice over the same inputs, once with activated
+gates and once with raw gates plus `dt_bias`/`a`, and require bitwise-close outputs. That test is the
+prerequisite for any further port attempt, and it is a new stage this plan did not have.
+
+### 8.2 Where this leaves the work
+
+Two rounds of implementation, two measurement-backed reversions:
+
+| attempt | outcome |
+|---|---|
+| kernel half only | numerically correct (40 cases, 3/3 backends) but **slower** (7.76-7.78 vs 8.07-8.80) |
+| kernel + raw-gate graph half | raw path engages, **wrong values** (`'////////'`), reverted |
+
+Both times the tree was restored and the baseline re-verified (sane output, 7.95 t/s, 27B healthy).
+The generation gap is now fully mapped; what remains is a values-level reconciliation that needs the
+unit test above, not another blind edit.

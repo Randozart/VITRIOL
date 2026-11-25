@@ -183,3 +183,59 @@ placement.
 
 The I5 gate therefore stands as: *131k q4_0 loads and serves (meets)*;
 *≥12 t/s at depth requires the FA work (open)*.
+
+
+## Part B/C results (2026-11-24)
+
+### B1 planner — shipped (`e5c76f8`)
+
+`vitriol serve --plan`: runs the Rust calibrator (`libvitriol probe-recommend`,
+already in-tree — I had started a redundant Python version, deleted it) plus
+a per-card free-space verdict (nvidia-smi + tensor_split shares + weights file
+size + KiB/token from the calibrator + `--plan-pp-kb` O(ctx) floor knob,
+default 0 because the floor is model-specific: 35 KB/pos measured for
+Inkling, ~0 for a model that runs flash attention everywhere).
+Gate results: 27B live config → `fits, no change needed` exit 0 (I3);
+Inkling c 204800 f16 → `SHORT by 9573 MiB` exit 2 with knob suggestions;
+131k q4_0 → SHORT 2.5 GB (conservative — it actually loads; the planner
+must over-warn, not under-warn).
+
+### C Inkling — the achievable point, and why not 200k
+
+| config | result |
+|---|---|
+| c 204800 f16, ts 1,1 | CUDA0 request 8.51 GB (byte-identical pre/post fa-bias fold) — pool-bound |
+| c 204800 q4_0, ts 1,1 | pool-bound (weights 8.8 GB + KV + pp floor > 11.5 GB/card) |
+| **c 131072 q4_0, ts 1,1** | **loads in 18 s; prefill 88.2 t/s @ 21,485 tok; decode 4.35 t/s (thinking on, eats the 96-token budget)** |
+
+I5 redefined (recorded): the *loads-and-serves* half is met at 131k; the
+≥12 t/s-at-depth half needs the full-layer per-head FA mask work
+(C2/C3 of the FA-bias plan) — the 4 full-attention layers still run the
+dense O(ctx) chain at decode, which is exactly the 4.35 t/s.
+
+### D staging — the Escha quant surface (their engine source downloaded)
+
+Their fork (llama.cpp @ 8f12baacf) ships three kernel files that are the
+whole decoder-side surface:
+
+```
+ggml/src/ggml-cuda/escha-gemv.cu  638 lines   (decode GEMV)
+ggml/src/ggml-cuda/escha-moe.cu   1704 lines  (MoE 8-of-128)
+ggml/src/ggml-cuda/mirai-s.cu     1062 lines  (int8 fast prefill read)
++ ~116 lines of new type/enum surface in ggml.h (3092 vs our 2976)
++ type plumbing in ggml.c + qtype registration + load path
+```
+
+3.4 k lines of kernel + type registration. Apache-2.0 compatible (their
+fork is MIT llama.cpp + Apache Escha/drafter assets). The port is
+Inkling-style patch-by-patch with `PROVENANCE:` notes; it is NOT finishable
+in this session — it is the next multi-day stage, and it is what would
+also un-block the dual-card request deadlock (Part A's finding) by giving
+us a scheduler we control.
+
+## Open ends
+
+- Full-layer per-head FA mask (C2/C3): removes the 4.35 t/s depth wall.
+- D execution: Escha types + 3 kernel files into the frozen fork.
+- Kintsugi dual-card deadlock: their engine, single-card only; port = our
+  scheduler, which we can make two-card-correct.

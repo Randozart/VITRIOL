@@ -315,6 +315,44 @@ llama_kv_cache::llama_kv_cache(
             }
         }
 
+        // VITRIOL: tiered KV. Cells [0, N) of this layer's K and V stay in VRAM; cells [N, kv_size)
+        // live in pinned system RAM mapped into the same device address range (CUDA VMM), so the window
+        // can exceed VRAM. Kernels are unchanged and results are identical to an all-VRAM cache; the
+        // host tail is read over PCIe only once a sequence reaches it.
+        // VITRIOL_KV_VRAM_CELLS=N selects the line (0/unset = all in VRAM, the ordinary buffer).
+        // PROVENANCE: kintsugi-engine 8f12baacf (MIT), src/llama-kv-cache.cpp:229-250.
+        if (offload && n_stream == 1 && !is_mla && has_k && has_v &&
+                n_embd_k_gqa == n_embd_v_gqa && layer_type_k == layer_type_v) {
+            static const uint32_t n_vram_cells_env = [] {
+                const char * e = getenv("VITRIOL_KV_VRAM_CELLS");
+                return e != nullptr ? (uint32_t) std::max(0, atoi(e)) : 0u;
+            }();
+            const uint32_t tier_cells = (n_vram_cells_env + 255u) / 256u * 256u;
+            if (tier_cells > 0 && tier_cells < kv_size) {
+                const ggml_backend_dev_t tdev = model.dev_layer(il);
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(tdev);
+                using tier_fn_t = ggml_backend_buffer_type_t (*)(int, double, int, const char *);
+                auto * fn = reg ? (tier_fn_t) ggml_backend_reg_get_proc_address(
+                        reg, "ggml_backend_cuda_tier_buffer_type") : nullptr;
+                const char * dn = ggml_backend_dev_name(tdev);
+                const int dev_idx = (dn && strncmp(dn, "CUDA", 4) == 0) ? atoi(dn + 4) : -1;
+                if (fn != nullptr && dev_idx >= 0) {
+                    char tag[32];
+                    snprintf(tag, sizeof(tag), "_kv_l%u", il);
+                    ggml_backend_buffer_type_t tb = fn(dev_idx, (double) tier_cells / (double) kv_size, 2, tag);
+                    if (tb != nullptr) {
+                        buft = tb;
+                        ctx  = ctx_for_buft(buft);
+                        if (ctx == nullptr) {
+                            throw std::runtime_error("failed to create ggml context for tiered kv cache");
+                        }
+                        LLAMA_LOG_INFO("%s: layer %3d: tiered KV: cells [0, %u) VRAM, [%u, %u) host\n",
+                                __func__, il, tier_cells, tier_cells, kv_size);
+                    }
+                }
+            }
+        }
+
         ggml_tensor * k = has_k ? ggml_new_tensor_3d(ctx, layer_type_k, n_embd_k_gqa, kv_size, n_stream) : nullptr;
         ggml_tensor * v = has_v ? ggml_new_tensor_3d(ctx, layer_type_v, n_embd_v_gqa, kv_size, n_stream) : nullptr;
 
@@ -367,6 +405,12 @@ llama_kv_cache::llama_kv_cache(
                 t->buffer = buf; // set dummy buffer for KV cache so that the backend scheduler won't try to allocate it
             }
         } else {
+            // VITRIOL: a buft can end up with no tensors (the tiered KV moves each layer's K/V to its
+            // own buffer type), and a zero-size allocation fails on CUDA. Nothing to allocate is not an
+            // error: skip the empty context.
+            if (ggml_get_first_tensor(ctx.get()) == nullptr) {
+                continue;
+            }
             buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft); // real buffer
         }
         if (!buf) {

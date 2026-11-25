@@ -444,6 +444,11 @@ enum llm_kv {
     LLM_KV_DENSE_2_FEAT_OUT,
     LLM_KV_DENSE_3_FEAT_IN,
     LLM_KV_DENSE_3_FEAT_OUT,
+
+    // Escha codec version; present only in checkpoints whose weights are
+    // trellis-coded rather than quantised. Absence of this key is what keeps
+    // every non-Escha model on its existing graph (I1/I3).
+    LLM_KV_ESCHA_VERSION,
 };
 
 enum llm_tensor {
@@ -765,6 +770,13 @@ enum llm_tensor {
     LLM_TENSOR_DFLASH_CTX_MIX,
     LLM_TENSOR_DFLASH_CTX_NORM,
     LLM_TENSOR_DSPARK_TOKEN_EMBD_NORM,
+
+    // Shared Escha codec tables (one set for the whole model). The per-projection
+    // code/rin/rout tensors are created as suffixes of their projection, the same
+    // way .weight/.bias are, so they need no enum of their own.
+    LLM_TENSOR_ESCHA_LUT,
+    LLM_TENSOR_ESCHA_DEP_K2,
+    LLM_TENSOR_ESCHA_DEP_K3,
 };
 
 enum llm_tensor_layer {

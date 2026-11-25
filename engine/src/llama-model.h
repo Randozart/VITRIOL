@@ -348,6 +348,23 @@ struct llama_layer {
     struct ggml_tensor * ffn_gate_inp_s     = nullptr;  // gemma4
     struct ggml_tensor * ffn_gate_exps      = nullptr;
     struct ggml_tensor * ffn_down_exps      = nullptr;
+
+    // Escha trellis-coded projections, dense models only: the weights stay in the
+    // 2/3-bit code and replace the plain *_weight tensors for the projection they
+    // name. An inactive entry means that projection is stored conventionally, so a
+    // checkpoint may mix coded and plain projections freely.
+    llm_escha_exps ffn_gate_escha;
+    llm_escha_exps ffn_up_escha;
+    llm_escha_exps ffn_down_escha;
+
+    llm_escha_exps wq_escha;
+    llm_escha_exps wk_escha;
+    llm_escha_exps wv_escha;
+    llm_escha_exps wo_escha;
+    llm_escha_exps wqkv_escha;       // linear-attention in_proj_qkv
+    llm_escha_exps wqkv_gate_escha;  // linear-attention in_proj_z
+    llm_escha_exps attn_gate_escha;
+    llm_escha_exps ssm_out_escha;
     struct ggml_tensor * ffn_up_exps        = nullptr;
     struct ggml_tensor * ffn_gate_up_exps   = nullptr;
     struct ggml_tensor * ffn_gate_inp_b     = nullptr;

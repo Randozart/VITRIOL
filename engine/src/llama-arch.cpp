@@ -390,6 +390,7 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_DENSE_2_FEAT_OUT,                       "%s.dense_2_feat_out"                       },
     { LLM_KV_DENSE_3_FEAT_IN,                        "%s.dense_3_feat_in"                        },
     { LLM_KV_DENSE_3_FEAT_OUT,                       "%s.dense_3_feat_out"                       },
+    { LLM_KV_ESCHA_VERSION,                          "%s.escha.version"                          },
 
     { LLM_KV_TOKENIZER_MODEL,                        "tokenizer.ggml.model"                      },
     { LLM_KV_TOKENIZER_PRE,                          "tokenizer.ggml.pre"                        },
@@ -756,6 +757,10 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_DFLASH_CTX_MIX,           "blk.%d.ctx_mix"                 },
     { LLM_TENSOR_DFLASH_CTX_NORM,          "blk.%d.ctx_norm"                },
     { LLM_TENSOR_DSPARK_TOKEN_EMBD_NORM,   "token_embd_norm"                },
+
+    { LLM_TENSOR_ESCHA_LUT,                "escha_lut"                      },
+    { LLM_TENSOR_ESCHA_DEP_K2,             "escha_dep_k2"                   },
+    { LLM_TENSOR_ESCHA_DEP_K3,             "escha_dep_k3"                   },
 };
 
 // declare information about the model weight tensors:
@@ -777,6 +782,13 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     { LLM_TENSOR_OUTPUT,                   { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
     { LLM_TENSOR_CLS,                      { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
     { LLM_TENSOR_CLS_OUT,                  { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
+
+    // The codec tables are the sources of every Escha op, so they load with the
+    // output layer: under full offload that is the device of the layers, which is
+    // where the op has to run.
+    { LLM_TENSOR_ESCHA_LUT,                { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_ESCHA_MUL_MAT } },
+    { LLM_TENSOR_ESCHA_DEP_K2,             { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_ESCHA_MUL_MAT } },
+    { LLM_TENSOR_ESCHA_DEP_K3,             { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_ESCHA_MUL_MAT } },
     { LLM_TENSOR_CLS_NORM,                 { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL }           },
     { LLM_TENSOR_DENSE_2_OUT,              { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       }, // Dense layer output
     { LLM_TENSOR_DENSE_3_OUT,              { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       }, // Dense layer output

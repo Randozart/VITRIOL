@@ -19,6 +19,47 @@ struct ggml_tensor;
 struct llama_cparams;
 struct llama_layer;
 
+// Escha trellis projections. One struct serves both shapes: the MoE code is 4-D
+// with a trailing expert dim and rin/rout are 2-D, while the dense code is 3-D
+// with 1-D rotations. bias is dense-only -- the dense export carries a
+// quantisation bias-correction term the unquantised model does not have.
+struct llm_escha_exps {
+    struct ggml_tensor * code = nullptr;
+    struct ggml_tensor * rin  = nullptr;
+    struct ggml_tensor * rout = nullptr;
+    struct ggml_tensor * bias = nullptr;
+
+    // A projection is present exactly when its code tensor was found. Every
+    // caller gates on this rather than on an arch flag, so a partially converted
+    // checkpoint degrades to the plain path instead of dereferencing nulls.
+    bool active() const { return code != nullptr; }
+};
+
+// The codec tables, shared by every layer and by both op flavours.
+struct llm_escha_tables {
+    struct ggml_tensor * lut    = nullptr;
+    struct ggml_tensor * dep_k2 = nullptr;
+    struct ggml_tensor * dep_k3 = nullptr;
+
+    // K is the code bit width and picks the dep table; the code tensor's ne[0]
+    // decides it (32 i16 per tile at K=2, 48 at K=3).
+    struct ggml_tensor * dep_for(int K) const { return K == 3 ? dep_k3 : dep_k2; }
+};
+
+// The Escha side of one block: the tables plus the three projections of a block
+// whose MLP or attention is trellis-coded.
+struct llm_escha_moe {
+    struct ggml_tensor * lut    = nullptr;
+    struct ggml_tensor * dep_k2 = nullptr;
+    struct ggml_tensor * dep_k3 = nullptr;
+
+    llm_escha_exps gate;
+    llm_escha_exps up;
+    llm_escha_exps down;
+
+    bool active() const { return down.active(); }
+};
+
 struct llama_memory_context_i;
 
 class llama_kv_cache_context;

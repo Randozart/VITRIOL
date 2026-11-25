@@ -1172,7 +1172,8 @@ struct llm_graph_context {
                   int64_t   n_embd_head_v,
                   int64_t   n_head_v,
                       int   il,
-                     bool   reshape = true) const;
+                     bool   reshape = true,
+    const llm_escha_tables * escha = nullptr) const;
 
     ggml_tensor * build_ffn(
              ggml_tensor * cur,

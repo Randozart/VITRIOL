@@ -1723,11 +1723,22 @@ llm_graph_qkv llm_graph_context::build_qkv(
                   int64_t   n_embd_head_v,
                   int64_t   n_head_v,
                       int   il,
-                     bool   reshape) const {
+                     bool   reshape,
+    const llm_escha_tables * escha) const {
     const int64_t n_embd_q = n_embd_head_q * n_head_q;
     const int64_t n_embd_k = n_embd_head_k * n_head_k;
 
     ggml_tensor * Qcur, * Kcur, * Vcur;
+
+    // A trellis-coded checkpoint carries no dense q/k/v weight at all -- the
+    // projection lives in the code and is decoded by an op. Substituting the matmul
+    // here rather than at the call site keeps bias, clamp and reshape in one place,
+    // so a coded model and a plain one differ only in how the product is formed.
+    // escha is null for every caller that has no codec, which is what keeps a plain
+    // checkpoint byte-identical.
+    const bool coded_q = escha != nullptr && layer.wq_escha.active();
+    const bool coded_k = escha != nullptr && layer.wk_escha.active();
+    const bool coded_v = escha != nullptr && layer.wv_escha.active();
 
     if (layer.wqkv) {
         // fused QKV path
@@ -1769,7 +1780,8 @@ llm_graph_qkv llm_graph_context::build_qkv(
         }
     } else {
         // separate Q/K/V path
-        Qcur = build_lora_mm(layer.wq, cur, layer.wq_s);
+        Qcur = coded_q ? build_escha_mm(*escha, layer.wq_escha, cur)
+                       : build_lora_mm(layer.wq, cur, layer.wq_s);
         if (reshape) {
             cb(Qcur, "Qcur", il);
         }
@@ -1783,7 +1795,8 @@ llm_graph_qkv llm_graph_context::build_qkv(
             Qcur = ggml_clamp(ctx0, Qcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
             cb(Qcur, "Qcur_clamped", il);
         }
-        Kcur = build_lora_mm(layer.wk, cur, layer.wk_s);
+        Kcur = coded_k ? build_escha_mm(*escha, layer.wk_escha, cur)
+                       : build_lora_mm(layer.wk, cur, layer.wk_s);
         if (reshape) {
             cb(Kcur, "Kcur", il);
         }
@@ -1797,7 +1810,8 @@ llm_graph_qkv llm_graph_context::build_qkv(
             Kcur = ggml_clamp(ctx0, Kcur, -hparams.f_clamp_kqv, hparams.f_clamp_kqv);
             cb(Kcur, "Kcur_clamped", il);
         }
-        Vcur = build_lora_mm(layer.wv, cur, layer.wv_s);
+        Vcur = coded_v ? build_escha_mm(*escha, layer.wv_escha, cur)
+                       : build_lora_mm(layer.wv, cur, layer.wv_s);
         if (reshape) {
             cb(Vcur, "Vcur", il);
         }

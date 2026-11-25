@@ -948,6 +948,26 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
         return true;
     }
 
+    // A coded projection's tensors are declared under their arch name -- attn_q.escha_code,
+    // attn_q.escha_rin -- so llama.cpp infers GGML_OP_MUL_MAT from the name and probes a
+    // matmul against an I16 weight. No backend accepts that, the probe answers "no", and
+    // every coded weight lands in CPU_Mapped: 9.8 GB of a 10.5 GB model ran on the CPU
+    // while -ngl 99 reported 66/66 layers offloaded. Reclassify by element type before the
+    // probe so the question asked is the one the graph will actually execute.
+    //
+    // I16 is unambiguous: the dense path never uses it for a matmul weight. The fp16
+    // rotations need a guard because a 1-D fp16 tensor is otherwise possible -- but a 1-D
+    // *matmul* weight whose length is a multiple of the 128-wide Hadamard block, and is
+    // not the 65536-entry codebook, does not occur outside this format.
+    if (op == GGML_OP_MUL_MAT) {
+        const int w_nd = ggml_n_dims(w);
+        const bool coded = w->type == GGML_TYPE_I16
+                        || (w->type == GGML_TYPE_F16 && w_nd == 1 && w->ne[0] % 128 == 0 && w->ne[0] != 65536);
+        if (coded) {
+            op = GGML_OP_ESCHA_MUL_MAT;
+        }
+    }
+
     // Sized for 8 in the upstream probe. The Escha probe builds up to five substitute
     // tensors plus the op result, so it needs more headroom or ggml_new_tensor returns
     // null inside an assert-free path and the load segfaults with no diagnostic.
@@ -1001,15 +1021,18 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
                 const bool is_rot  = w->type == GGML_TYPE_F16 && nd == 1 && w->ne[0] != 65536;
 
                 // A rotation is either [IC] or [OC]; which one is not recoverable from the
-                // shape alone, and does not need to be -- both lengths are multiples of
-                // 128 for every projection in the format, so either reading is valid.
-                const int64_t IC = is_code ? w->ne[2]*16 : (is_rot ? w->ne[0] : (is_dep ? 2048 : 2048));
-                const int64_t OC = is_code ? w->ne[1]*16 : (is_rot ? 128    : (is_dep ?  512 :  512));
+                // shape alone, and does not need to be. Reading it as IC and mirroring the
+                // length into OC keeps the probe shape-valid either way: both lengths are
+                // multiples of 128 for every projection in the format. w cannot stand in for
+                // both rin and rout, because the op asserts each one's element count against
+                // its own dimension and the two are only equal when IC == OC.
+                const int64_t IC = is_code ? w->ne[2]*16 : (is_rot ? w->ne[0] : 2048);
+                const int64_t OC = is_code ? w->ne[1]*16 : (is_rot ? w->ne[0] :  512);
                 const int64_t n_code = is_code ? w->ne[0] : 32;
 
                 ggml_tensor * code = is_code ? w : ggml_new_tensor_3d(ctx, GGML_TYPE_I16, n_code, OC/16, IC/16);
                 ggml_tensor * rin  = is_rot  ? w : ggml_new_tensor_1d(ctx, GGML_TYPE_F16, IC);
-                ggml_tensor * rout = is_rot  ? w : ggml_new_tensor_1d(ctx, GGML_TYPE_F16, OC);
+                ggml_tensor * rout = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, OC);
                 ggml_tensor * lut  = (w->type == GGML_TYPE_F16 && w->ne[0] == 65536) ? w
                                    : ggml_new_tensor_1d(ctx, GGML_TYPE_F16, 65536);
                 ggml_tensor * dep  = is_dep  ? w : ggml_new_tensor_2d(ctx, GGML_TYPE_I16, 16, 256);

@@ -345,11 +345,16 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn(
     // Order: joint QG projection, QG split, Q norm, KV projection, K norm, RoPE, attention
 
     // Qwen3Next uses a single Q projection that outputs query + gate
+    // Full-attention layers in a coded checkpoint have no dense q/k/v, so the matmuls
+    // have to run through the codec. The gate is llm_escha_exps::active() -- the code
+    // tensor's presence -- so a plain checkpoint, whose code tensors are all null, takes
+    // the identical path it always took.
+    const llm_escha_tables escha_tab = escha_tables_of(model);
     auto [Qcur_full, Kcur, Vcur] = build_qkv(model.layers[il], cur,
             n_embd_head * 2, n_head,
             n_embd_head,     n_head_kv,
             n_embd_head,     n_head_kv,
-            il, false);
+            il, false, &escha_tab);
     cb(Qcur_full, "Qcur_full", il);
     cb(Kcur, "Kcur", il);
     cb(Vcur, "Vcur", il);
@@ -661,11 +666,12 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     cur = build_norm(cur, layer.attn_norm, nullptr, LLM_NORM_RMS, il);
     cb(cur, "mtp_attn_norm", il);
 
+    const llm_escha_tables escha_tab = escha_tables_of(model);
     auto [Qcur_full, Kcur, Vcur] = build_qkv(layer, cur,
             n_embd_head * 2, n_head,
             n_embd_head,     n_head_kv,
             n_embd_head,     n_head_kv,
-            il, false);
+            il, false, &escha_tab);
     cb(Qcur_full, "mtp_Qcur_full", il);
 
     ggml_tensor * Qcur = ggml_view_3d(ctx0, Qcur_full,

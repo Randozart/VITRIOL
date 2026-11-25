@@ -233,7 +233,8 @@ static void reference(const raw_tensor &         code,
 
 // Compute the op through the CPU backend, with the tensors copied in, so the test
 // exercises the same dispatch path a model would.
-static bool run_op(const raw_tensor &         code,
+static bool run_op(ggml_backend_t             backend,
+                   const raw_tensor &         code,
                    const raw_tensor &         rin,
                    const raw_tensor &         rout,
                    const raw_tensor &         lut,
@@ -258,17 +259,10 @@ static bool run_op(const raw_tensor &         code,
     ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, y);
 
-    ggml_backend_t backend = ggml_backend_cpu_init();
-    if (!backend) {
-        fail("backend", "cpu backend init failed");
-        ggml_free(ctx);
-        return false;
-    }
 
     ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
     if (!buf) {
         fail("backend", "tensor allocation failed");
-        ggml_backend_free(backend);
         ggml_free(ctx);
         return false;
     }
@@ -290,7 +284,6 @@ static bool run_op(const raw_tensor &         code,
     }
 
     ggml_backend_buffer_free(buf);
-    ggml_backend_free(backend);
     ggml_free(ctx);
     return good;
 }
@@ -445,8 +438,52 @@ int main(int argc, char ** argv) {
     std::vector<double> y_ref;
     reference(code, rin, rout, dep, x, y_ref);
 
+    // Sweep every backend that offers the op, each scored against the SAME double
+    // reference rather than against each other: a bug shared by the CPU and CUDA
+    // paths cannot hide behind agreement between them.
+    ggml_backend_load_all();
+
     std::vector<float> y_op;
-    if (!run_op(code, rin, rout, lut, dep, x, OC, IC, y_op)) {
+    bool have_impl = false;
+
+    for (size_t bi = 0; bi < ggml_backend_dev_count(); ++bi) {
+        ggml_backend_dev_t   dev = ggml_backend_dev_get(bi);
+        const std::string    dn  = ggml_backend_dev_name(dev);
+        const enum ggml_backend_dev_type dt = ggml_backend_dev_type(dev);
+        if (dt != GGML_BACKEND_DEVICE_TYPE_GPU && dt != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            continue;
+        }
+        ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
+        if (!backend) {
+            printf("skip %-22s (init failed)\n", dn.c_str());
+            continue;
+        }
+        std::vector<float> y_dev;
+        if (!run_op(backend, code, rin, rout, lut, dep, x, OC, IC, y_dev)) {
+            fprintf(stderr, "FAIL %s did not compute\n", dn.c_str());
+            ++g_failures;
+        } else {
+            const diff   dd  = compare(y_ref, y_dev);
+            const double rel = dd.rmse / (dd.scale + 1e-30);
+            printf("dev  %-22s rmse %.6g  max_rel %.6g  rmse/|ref|max %.3g\n", dn.c_str(), dd.rmse, dd.max_rel, rel);
+            if (!(rel < 1e-3)) {
+                fprintf(stderr, "FAIL %s vs reference: %.6g (want < 1e-3)\n", dn.c_str(), rel);
+                ++g_failures;
+            } else {
+                char what[160];
+                snprintf(what, sizeof(what), "%s matches the dense reference", dn.c_str());
+                ok(what);
+            }
+            if (!have_impl) {
+                y_op     = y_dev;
+                have_impl = true;
+            }
+        }
+        ggml_backend_free(backend);
+    }
+
+    if (!have_impl) {
+        fail("backend", "no backend produced a result");
         gguf_free(g);
         fclose(f);
         return 1;

@@ -1546,10 +1546,27 @@ void ggml_cuda_op_escha_mul_mat(ggml_backend_cuda_context & ctx, ggml_tensor * d
     GGML_ASSERT(rin->type == GGML_TYPE_F16 && rout->type == GGML_TYPE_F16 && lut->type == GGML_TYPE_F16);
     GGML_ASSERT(x->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
 
+    // Which path actually ran, counted rather than inferred. Turning gemv off costs
+    // only 14 %, which does not fit a whole-model fallback -- so measure the split
+    // instead of reasoning about it. Off unless VITRIOL_ESCHA_DEBUG is set.
+    static std::atomic<uint64_t> dbg_gemv{0};
+    static std::atomic<uint64_t> dbg_other{0};
+    static const bool dbg_on = getenv("VITRIOL_ESCHA_DEBUG") != nullptr;
+    if (dbg_on) {
+        const uint64_t seen = dbg_gemv.load() + dbg_other.load();
+        if (seen != 0 && seen % 400 == 0) {
+            GGML_LOG_INFO("ESCHA-DBG gemv=%llu other=%llu\n",
+                          (unsigned long long) dbg_gemv.load(),
+                          (unsigned long long) dbg_other.load());
+        }
+    }
+
     // rows <= 8 on tensor cores, GGML_ESCHA_GEMV=0 keeps the fp32 kernels below
     if (ggml_cuda_escha_gemv(ctx, dst)) {
+        if (dbg_on) { dbg_gemv++; }
         return;
     }
+    if (dbg_on) { dbg_other++; }
 
     const int K   = code->ne[0]/16;
     const int OC  = code->ne[1]*16;

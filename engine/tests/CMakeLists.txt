@@ -299,6 +299,11 @@ if (NOT LLAMA_SANITIZE_ADDRESS AND NOT GGML_SCHED_NO_REALLOC)
 endif()
 llama_build_and_test(test-backend-ops.cpp)
 
+# Escha codec: real-checkpoint conformance for the dense trellis projection.
+# The test reads a Kintsugi-27B GGUF and SKIPs (exit 0, explicit message) when
+# absent, because `dep` must hold valid bit indices and no synthetic fixture can.
+llama_build_and_test(test-escha-mul-mat.cpp)
+
 # the tensor API kernels come from a separate metallib - check they produce correct results
 # ref: https://github.com/ggml-org/llama.cpp/issues/27473
 if (GGML_METAL AND NOT GGML_METAL_EMBED_LIBRARY)

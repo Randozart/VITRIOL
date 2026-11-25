@@ -405,3 +405,84 @@ which is why the Mirai exclusions are principled rather than convenient.
 **Order of proof:** their own test passing on CPU (D2) is the first moment we
 know we can read the format. Everything before it is scaffolding; everything
 after it is engineering.
+
+---
+
+## 4b. D4e–D5 results — Kintsugi runs on our engine (2026-11-25)
+
+**Outcome: the coded checkpoint loads, serves and generates coherent text on
+`vitriol-server`, on one card.** This is the plan's objective reached.
+
+| measurement | value |
+|---|---|
+| load time (c 8192) | 3.5 s |
+| weights resident | 8.6 GB on one RTX 3060 |
+| profile `kintsugi-27b` (c 131072, tq3_0 KV, one card) | healthy in 8 s, 10.3 GB total |
+| prefill | 65–80 t/s @ short prompt, **106 t/s at 30k depth** |
+| decode | 8.86 t/s @ c 8192 / f16 KV; 7.1–7.5 t/s at 131072 / tq3_0 |
+| coherence | correct arithmetic, correct noun recall at 30k depth |
+
+### Four defects, each named by instrument rather than guessed
+
+1. **Coded q/k/v had no matmul.** `build_qkv` calls `build_lora_mm` on
+   `layer.wq/wk/wv`, and a coded layer has no dense weight → `ggml_mul_mat` on a
+   null operand (the D4d SIGSEGV). `build_qkv` now takes an optional
+   `llm_escha_tables*` and substitutes `build_escha_mm` per tensor. Substituting
+   *there* rather than at the call site keeps bias/clamp/reshape in one place.
+   **The gate is `llm_escha_exps::active()` — the code tensor's presence — not an
+   arch flag**, so a plain checkpoint takes the identical path (I1/I3).
+
+2. **The buft probe asked the wrong question.** Coded tensors are declared under
+   their arch name (`attn_q.escha_code`), so llama.cpp infers `GGML_OP_MUL_MAT`
+   and probes a matmul against an I16 weight. No backend accepts that, so the
+   probe answered "no" and **9,819 MiB of a 10,546 MiB model landed in
+   `CPU_Mapped`** while `-ngl 99` cheerfully reported "offloaded 66/66 layers".
+   It looked like a slow model; it was a model running on the CPU. Fix:
+   reclassify by element type before the probe. I16 is unambiguous; the fp16
+   rotations are guarded by length (multiple of the 128-wide Hadamard block,
+   and not the 65536-entry codebook).
+
+3. **The rotation probe read `w` as both `rin` and `rout`.**
+   `GGML_ASSERT(ggml_nelements(rout) == OC)` fired immediately, because IC == OC
+   only by coincidence. `w` now stands in for `rin` alone and `rout` is mirrored
+   to the same length — shape-valid for every projection in the format.
+
+4. The probe context pinned at eight tensors left `ggml_new_tensor` returning
+   null mid-probe.
+
+### D4f: decode is correct but not yet fast
+
+8.86 t/s against their engine's ~14.06 without a draft model. Measured, not
+assumed:
+
+- **No throttling**: 1747–1867 MHz, 104 W of a 120 W limit, no thermal/power brake.
+- **GPU utilisation 43–75 %** → launch-bound, not bandwidth-bound, but only ~93 GB/s
+  of the 360 GB/s peak is actually being used.
+- `GGML_ESCHA_GEMV` sweep: **default/fused 8.86 > off 7.74 > wide 7.77 ≈ exl3 7.72
+  ≈ narrow 7.71**. The shipped default is already the best of the four.
+- `GGML_CUDA_USE_GRAPHS=1`: 8.64, i.e. no gain — the Escha node is evidently not
+  graph-captured.
+- nsys could not attach on this host (no sudo for `--attach`, and launching under
+  `nsys` lost the agent connection), so there is **no kernel-level breakdown yet**.
+  That is the next instrument needed; the gap is real and unexplained, not dismissed.
+
+### D5: profiles shipped, I7 parity still open
+
+- `kintsugi-27b` — one card, c 131072, `tq3_0/tq3_0` KV, slot dir
+  `/scratch/kvtier-kintsugi`. **Loads and serves.**
+- `kintsugi-27b-262k` — both cards, native c 262144, `q4_0/q4_0` KV, slot dir
+  `/scratch/kvtier-kintsugi-262k`. Written from measured arithmetic
+  (8.6 GB weights + ~4.9 GiB q4_0 KV < 23 GB across two cards) but **not yet
+  load-tested**.
+- **I7 parity is not established.** Their engine (`b10858-8f12baacf`) has never
+  been built or run here, so the 20-prompt token-identical / KL ≤ 0.01 comparison
+  has no reference side yet. What we do have is behavioural coherence at depth
+  (30k prefill, correct recall) — necessary but not sufficient for I7.
+
+### Invariant status
+
+- **I1/I3 (plain models byte-identical)**: preserved by construction — the codec
+  is gated on the code tensor's presence, and the 27B daily driver was restored
+  and verified healthy after every load window this session.
+- **I4 (op enum append-only)**: unchanged by D4e.
+- **I7**: open, as above.

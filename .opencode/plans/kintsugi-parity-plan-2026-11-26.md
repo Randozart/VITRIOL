@@ -75,3 +75,38 @@ acceptance-rate counters unchanged; golden corpus.
 - Their binary for Stage 0/2: `/scratch/kintsugi-ref/Kintsugi-27B/bin/llama-server` port 8298.
 - VRAM discipline: single card at a time; `pkill -9 -x llama-server` between arms and verify
   nvidia-smi is desktop-only before the next load (both engines' leftovers poison the next arm).
+
+---
+
+## Execution addendum (2026-11-26, from port-feasibility research)
+
+Every anchor verified in OUR tree this session — the port is confirmed mechanical:
+
+- `head2.cu` includes only `mmvq.cuh quantize.cuh vecdotq.cuh head2.cuh` — **all present** in our
+  tree (checked). Kernel files: pure copy, already staged as untracked files.
+- Our fork **already has** the tier buft factory with the `const char * tag` parameter
+  (`ggml-cuda.cu:6544`, signature matches theirs `:2121` — the `nostage_head2` tag argument works
+  as-is) and already exports it via proc-address (`:6593`). This is the tiered-KV work paying off.
+- The 19 ggml-cuda.cu hunks concentrate on: `ggml_cuda_mul_mat` head (`:1954` ours / `:3005` theirs —
+  the interception block goes at the top of the body), the reg table (`:6584-6607` ours — insert
+  `ggml_backend_cuda_head2_register` next to the tier export), `g_head2_bypass` + include.
+- Loader hunk anchor: our `src/llama-model-loader.cpp` assigns `tn_tensor = LLM_TENSOR_OUTPUT` at
+  `:1243`; their insertion sits in the buft-selection block after the CPU-dev fallback — same
+  structure exists in ours (verified context match). Needs `llama_head2_candidates()`
+  (`llama-impl.h:61`) and the `llama-impl.h` include (present in ours).
+- `llama-model.cpp` stage-1 build (theirs `:2024-2130`): self-contained — dequant Q8_0 rows,
+  quantize to stage-1 type with 12-scale trial, per-row err2 tail, register pair. Threads via
+  `hardware_concurrency`, no fork-specific calls.
+
+## Preflight/postlaunch gate (non-negotiable after today's launch failures)
+
+A launch window may open ONLY after the preflight script passes, and is closed by the postlaunch gate:
+
+1. preflight: `pgrep -x llama-server` empty (kill leftover PIDs explicitly and re-verify);
+   `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader` exits 0 and shows only
+   desktop residents; per-card free MiB printed against the launch's requirement.
+2. launch with computed-fitting sizing: their launcher + `KINTSUGI_EXTRA="-ub 512 -t 8"` (ub 512
+   halves the pp reserve that OOM'd at 1024 on a 12 GB card).
+3. postlaunch: ready = `/health` ok AND log has a successful compute-buffer line AND no
+   `cudaMalloc failed`/`retrying` lines AND a probe decode shows GPU util > 50 %. CPU-fallback
+   signature = failed launch; kill and report, never measure.

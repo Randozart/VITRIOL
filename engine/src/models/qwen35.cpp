@@ -76,8 +76,12 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
 
     // The code tensor carries its own bit width in ne[0] (16*K), so it is read from
     // the file rather than assumed per projection: a checkpoint may mix K=2 and K=3.
+    // with_bias is false for the q/k/v projections, whose .bias terms are already
+    // created by create_tensor_qkv: creating them here too produced 48 duplicate
+    // tensors (16 full-attention layers x 3), which the loader reports only as a
+    // count mismatch.
     auto load_escha_proj = [&](llm_escha_exps & e, llm_tensor t, int il,
-                               int64_t ic, int64_t oc, int flags) {
+                               int64_t ic, int64_t oc, int flags, bool with_bias) {
         const std::string cname = tn(t, "escha_code", il).str();
 
         const auto * w = ml.get_weight(cname.c_str());
@@ -97,7 +101,7 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         e.code = create_tensor(tn(t, "escha_code", il), { n_code, oc/16, ic/16 }, flags);
         e.rin  = create_tensor(tn(t, "escha_rin",  il), { ic }, flags);
         e.rout = create_tensor(tn(t, "escha_rout", il), { oc }, flags);
-        e.bias = create_tensor(tn(t, "bias",       il), { oc }, TENSOR_NOT_REQUIRED);
+        e.bias = with_bias ? create_tensor(tn(t, "bias", il), { oc }, TENSOR_NOT_REQUIRED) : nullptr;
     };
 
     auto load_block_trunk = [&](int il, int flags) {
@@ -125,10 +129,10 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
             create_tensor_qkv(layer, il, n_embd, n_embd_head_k * n_head * 2, n_embd_k_gqa, n_embd_v_gqa, plain_flags);
             layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", il), { n_embd_head_k * n_head, n_embd }, plain_flags);
             if (escha_version != 0) {
-                load_escha_proj(layer.wq_escha, LLM_TENSOR_ATTN_Q,   il, n_embd, n_embd_head_k * n_head * 2, flags);
-                load_escha_proj(layer.wk_escha, LLM_TENSOR_ATTN_K,   il, n_embd, n_embd_k_gqa,              flags);
-                load_escha_proj(layer.wv_escha, LLM_TENSOR_ATTN_V,   il, n_embd, n_embd_v_gqa,              flags);
-                load_escha_proj(layer.wo_escha, LLM_TENSOR_ATTN_OUT, il, n_embd_head_k * n_head, n_embd,    flags);
+                load_escha_proj(layer.wq_escha, LLM_TENSOR_ATTN_Q,   il, n_embd, n_embd_head_k * n_head * 2, flags, false);
+                load_escha_proj(layer.wk_escha, LLM_TENSOR_ATTN_K,   il, n_embd, n_embd_k_gqa,              flags, false);
+                load_escha_proj(layer.wv_escha, LLM_TENSOR_ATTN_V,   il, n_embd, n_embd_v_gqa,              flags, false);
+                load_escha_proj(layer.wo_escha, LLM_TENSOR_ATTN_OUT, il, n_embd_head_k * n_head, n_embd,    flags, true);
             }
 
             // Q/K normalization for attention layers
@@ -147,9 +151,9 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
             layer.ssm_norm       = create_tensor(tn(LLM_TENSOR_SSM_NORM,       "weight", il), { head_v_dim }, flags);
             layer.ssm_out        = create_tensor(tn(LLM_TENSOR_SSM_OUT,        "weight", il), { value_dim, n_embd }, plain_flags);
             if (escha_version != 0) {
-                load_escha_proj(layer.wqkv_escha,      LLM_TENSOR_ATTN_QKV,  il, n_embd, key_dim * 2 + value_dim, flags);
-                load_escha_proj(layer.wqkv_gate_escha, LLM_TENSOR_ATTN_GATE, il, n_embd, value_dim,               flags);
-                load_escha_proj(layer.ssm_out_escha,   LLM_TENSOR_SSM_OUT,   il, value_dim, n_embd,               flags);
+                load_escha_proj(layer.wqkv_escha,      LLM_TENSOR_ATTN_QKV,  il, n_embd, key_dim * 2 + value_dim, flags, true);
+                load_escha_proj(layer.wqkv_gate_escha, LLM_TENSOR_ATTN_GATE, il, n_embd, value_dim,               flags, true);
+                load_escha_proj(layer.ssm_out_escha,   LLM_TENSOR_SSM_OUT,   il, value_dim, n_embd,               flags, true);
             }
         }
 
@@ -158,9 +162,9 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, plain_flags);
 
         if (escha_version != 0) {
-            load_escha_proj(layer.ffn_gate_escha, LLM_TENSOR_FFN_GATE, il, n_embd, n_ff,   flags);
-            load_escha_proj(layer.ffn_up_escha,   LLM_TENSOR_FFN_UP,   il, n_embd, n_ff,   flags);
-            load_escha_proj(layer.ffn_down_escha, LLM_TENSOR_FFN_DOWN, il, n_ff,   n_embd, flags);
+            load_escha_proj(layer.ffn_gate_escha, LLM_TENSOR_FFN_GATE, il, n_embd, n_ff,   flags, true);
+            load_escha_proj(layer.ffn_up_escha,   LLM_TENSOR_FFN_UP,   il, n_embd, n_ff,   flags, true);
+            load_escha_proj(layer.ffn_down_escha, LLM_TENSOR_FFN_DOWN, il, n_ff,   n_embd, flags, true);
         }
     };
 

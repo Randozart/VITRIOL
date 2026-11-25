@@ -947,8 +947,11 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
         return true;
     }
 
+    // Sized for 8 in the upstream probe. The Escha probe builds up to five substitute
+    // tensors plus the op result, so it needs more headroom or ggml_new_tensor returns
+    // null inside an assert-free path and the load segfaults with no diagnostic.
     ggml_init_params params = {
-        /*.mem_size   =*/ ggml_tensor_overhead()*8,
+        /*.mem_size   =*/ ggml_tensor_overhead()*16,
         /*.mem_buffer =*/ NULL,
         /*.no_alloc   =*/ true,
     };
@@ -1279,6 +1282,17 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         }
 
         ggml_backend_buffer_type_t buft = nullptr;
+
+        // VITRIOL-TDBG: name every tensor we create that the file does not carry.
+        // A coded projection replaces its plain weight outright, so "created but not in
+        // the file" is the exact shape of an Escha wiring mistake, and the generic count
+        // error at the end names none of them. Opt-in via VITRIOL_TENSOR_DEBUG=1.
+        if (getenv("VITRIOL_TENSOR_DEBUG")) {
+            const std::string dbg_name = tn.str();
+            if (weights_map.find(dbg_name) == weights_map.end()) {
+                fprintf(stderr, "VITRIOL-TDBG created-but-absent: %s\n", dbg_name.c_str());
+            }
+        }
 
         // check overrides
         if (tensor_buft_overrides) {

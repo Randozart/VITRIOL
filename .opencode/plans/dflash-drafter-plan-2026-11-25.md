@@ -130,3 +130,48 @@ Two conclusions that change the plan:
    vocab work — a latency-bound kernel chain, not a bandwidth problem.
 
 ### D3 — no evidence-supported cheap fix (see §7)
+
+## 7. D3 verdict: no evidence-supported cheap fix
+
+The plan's branch table said "if `llama_decode(ctx_dft)` really is ~230 ms → the drafter's graph is
+the cost". It is 110 ms, so that branch does not apply, and nothing in D1 or D2 names a defect. What
+they do establish is a *property* of this fork:
+
+| model | layers | per-row cost |
+|---|---|---|
+| Kintsugi target (verify) | 65, 48 of them GDN | ~33-51 ms/row |
+| DFlash2 drafter (decode) | 5, conv-augmented | ~27 ms/row |
+
+A 13x difference in layer count produces a ~1.2x difference in per-row cost. That is the signature
+of a **per-row sequential dependency** — a latency-bound chain of small dependent kernels that both
+architectures share (GDN recurrence, conv taps) — not of weight streaming (which the drafter would
+put at ~12 ms per *batch*, not per row) and not of vocabulary work (which would scale with neither).
+
+Consequences:
+
+1. **A3's original target is void.** "Reduce the drafter's 58 ms/row to its weight floor" rests on a
+   number that was not reproducible (114 ms, not 235) and on an attribution that D2 disproves.
+2. **The ceiling is set by the per-row term, in both directions.** A step is
+   `draft(≈27 ms × rows) + verify(≈33 ms × rows)`, and each row yields ~1 token (acceptance 1.00000),
+   so speculation is structurally near break-even. That is why every configuration lands in the same
+   7-17 t/s band regardless of n_max.
+3. **The real fix is architectural**: make the per-row recurrent/conv path batch across rows. That is
+   a project in the hottest part of a frozen fork, not a stage in this plan, and it would need its own
+   research pass (how the GDN scan is built, whether it is row-unrolled, whether a chunked/tree scan
+   is available in the fork's `ggml` ops).
+
+What I deliberately did **not** do: hack the prefill-reserve allocator (D1's finding) blind at the end
+of a session to make single-card dflash fit. It would touch `llama-context.cpp`'s reserve sizing,
+which every model depends on, and the honest statement is that it needs its own plan with its own
+invariants — not a late-session edit.
+
+## 8. State after D1/D2
+
+- Shipped: the three-way `VITRIOL_SPEC_TIMING` split and the graph-dump evidence (`3b94ba6`).
+- Retracted: "234.69 ms draft / 58 ms per drafter row". Corrected to 114.35 ms / ~27 ms per row.
+- Answered: open task 11 — single-card dflash is blocked by the **target's** block-draft-inflated
+  prefill reserve (~107 live GDN activations), not by the drafter's context.
+- Verified: I4 (fingerprint and argv carry no timer fields with the env unset), I3 (acceptance
+  1.00000, mean len 3.98 reproduced), I2 (no change in load behaviour), I1 (no tokens affected —
+  the timers only read a clock).
+- Daily driver restored and verified after every window: `active`, `/health ok`, 10,164/10,106 MiB.

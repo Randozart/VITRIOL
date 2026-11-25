@@ -475,7 +475,7 @@ kv.score)              CFG_KV_SCORE="$val" ;;
         kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
                 kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
         kv.ctx_checkpoints)      CFG_CKPT_RING="$val" ;;
-                lookup_tokens)         CFG_LOOKUP="$val" ;;
+                lookup.tokens)         CFG_LOOKUP="$val" ;;
                 engine.mode)             CFG_ENGINE_MODE="$val" ;;
                 spec.type)             CFG_SPEC_TYPE="$val" ;;
                 spec.draft_n_max)      CFG_SPEC_DRAFT_N_MAX="$val" ;;
@@ -843,7 +843,7 @@ config_set() {
         kv.ubatch_size)        CFG_UBATCH="$val" ;;
         kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
         kv.ctx_checkpoints)      CFG_CKPT_RING="$val" ;;
-        lookup_tokens)          CFG_LOOKUP="$val" ;;
+        lookup.tokens)          CFG_LOOKUP="$val" ;;
         engine.mode)           CFG_ENGINE_MODE="$val" ;;
         spec.type)             CFG_SPEC_TYPE="$val" ;;
         spec.draft_n_max)      CFG_SPEC_DRAFT_N_MAX="$val" ;;
@@ -2262,6 +2262,10 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
         [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT specak=1"
+        # Prompt lookup is a spec type too (ngram-simple), so it changes the token
+        # stream and belongs in the identity. It has its own field rather than
+        # riding spec= because it composes with a draft type instead of replacing it.
+        [[ "${LOOKUP:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT lk=$LOOKUP"
         [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT ncmoe=${CFG_N_CPU_MOE}"
         [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT dor=1"
         [[ "${CFG_STORE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
@@ -2572,6 +2576,10 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         [[ -n "${RPC_SERVERS:-}" ]] && FINGERPRINT="$FINGERPRINT rpc=$RPC_SERVERS"
         [[ -n "${SPEC_DRAFT_TYPE_K:-}" ]] && FINGERPRINT="$FINGERPRINT dkv=${SPEC_DRAFT_TYPE_K}/${SPEC_DRAFT_TYPE_V:-f16}"
         [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT specak=1"
+        # Prompt lookup is a spec type too (ngram-simple), so it changes the token
+        # stream and belongs in the identity. It has its own field rather than
+        # riding spec= because it composes with a draft type instead of replacing it.
+        [[ "${LOOKUP:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT lk=$LOOKUP"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         # Thinking state is provenance-bearing (2026-11-19): rea=on / rb=N change
@@ -2766,7 +2774,19 @@ PLANPY
         [[ "${CFG_MMAP:-off}" == "on" ]] && MMAP_ARGS="--mmap"
         # Speculative decoding args
         SPEC_ARGS=""
-        [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS="--spec-type $SPEC_TYPE"
+        # [lookup] tokens was inert: it was exported as VITRIOL_LOOKUP, which no
+        # part of the engine reads, so the knob did nothing at all. It is prompt
+        # lookup decoding (n-gram speculation over the existing context), so it
+        # belongs in --spec-type with the draft types rather than in an env var.
+        if [[ "${LOOKUP:-0}" -gt 0 ]]; then
+            if [[ -n "$SPEC_TYPE" ]]; then
+                SPEC_TYPE="$SPEC_TYPE,ngram-simple"
+            else
+                SPEC_TYPE="ngram-simple"
+            fi
+            SPEC_ARGS="--spec-ngram-simple-size-n $LOOKUP"
+        fi
+        [[ -n "$SPEC_TYPE" ]] && SPEC_ARGS="$SPEC_ARGS --spec-type $SPEC_TYPE"
         [[ "${SPEC_DRAFT_N_MAX:-0}" -gt 0 ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-n-max $SPEC_DRAFT_N_MAX"
         [[ "${SPEC_ADAPTIVE_K:-0}" == "1" ]] && SPEC_ARGS="$SPEC_ARGS --spec-adaptive-k"
         [[ -n "$SPEC_DRAFT_MODEL" ]] && SPEC_ARGS="$SPEC_ARGS --spec-draft-model $SPEC_DRAFT_MODEL"

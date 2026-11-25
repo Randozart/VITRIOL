@@ -2939,6 +2939,11 @@ static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
 
 #ifdef USE_CUDA_GRAPH
 static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): the two-stage head's check mode reads counters back
+    // inside the op; a captured graph would replay stale state, so it disables CUDA graphs entirely.
+    if (ggml_cuda_head2_check_enabled()) {
+        return false;
+    }
 
     bool use_cuda_graph = true;
     // Loop over nodes in GGML graph to obtain info needed for CUDA graph
@@ -6606,7 +6611,9 @@ ggml_backend_buffer_type_t ggml_backend_cuda_tier_buffer_type(int device, double
     if (ggml_cuda_tier_host_granularity(ggml_cuda_get_physical_device(device)) == 0) {
         return nullptr;
     }
-    if (!(vram_frac > 0.0 && vram_frac <= 1.0)) {
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): vram_frac == 0 is the reference's "nostage" mode —
+    // every page on the host side of the tier line (the head2 exact rows live there, device-readable).
+    if (!(vram_frac >= 0.0 && vram_frac <= 1.0)) {
         return nullptr;
     }
 

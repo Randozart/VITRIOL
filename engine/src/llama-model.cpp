@@ -1740,7 +1740,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
     // n_layer_phys() == n_layer_all for every non-looped arch, so this is an
     // identity transform there.
     const int n_layer_real        = std::min(n_layer_all, n_layer_phys()) + 1;
-    const int act_gpu_layers      = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_real);
+    // PROVENANCE: kintsugi-engine 8f12baacf (MIT) -- n_layer_all + 1 so the OUTPUT layer (the 1.35 GB
+    // Q8_0 head) is assigned to a GPU device when -ngl covers it; with n_layer_real the head always
+    // fell to CPU_Mapped and every decode paid PCIe for the largest matmul.
+    const int act_gpu_layers      = devices.empty() ? 0 : std::min(n_gpu_layers, n_layer_all + 1);
     auto      get_layer_buft_list = [&](int il) -> llama_model::impl::layer_dev {
         const bool is_swa = il < n_layer_all && hparams.is_swa(il);
         if (il < i_gpu_start || (il - i_gpu_start) >= act_gpu_layers) {

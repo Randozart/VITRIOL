@@ -1389,7 +1389,11 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             auto * fn = reg_h ? (tier_fn_t) ggml_backend_reg_get_proc_address(reg_h, "ggml_backend_cuda_tier_buffer_type") : nullptr;
             auto * fn_reg = reg_h ? ggml_backend_reg_get_proc_address(reg_h, "ggml_backend_cuda_head2_register") : nullptr;
             const char * dn = dev_h ? ggml_backend_dev_name(dev_h) : nullptr;
-            if (fn && fn_reg && dn && strncmp(dn, "CUDA", 4) == 0 && buft == ggml_backend_dev_buffer_type(dev_h)) {
+            // PROVENANCE kintsugi-engine 8f12baacf (MIT), relaxed vs the reference: this forks split
+            // buffer type can back the head when a split list is in play, and its pointer differs from
+            // the plain device buft. Any CUDA-device buft is safe to reroute: the tier factory below
+            // creates the nostage_head2 buffer on the same device the tensor was destined for.
+            if (fn && fn_reg && dn && strncmp(dn, "CUDA", 4) == 0) {
                 ggml_backend_buffer_type_t tb = fn(atoi(dn + 4), 0.0, 1, "nostage_head2");
                 if (tb) {
                     buft = tb;

@@ -471,9 +471,16 @@ assumed:
 - `kintsugi-27b` — one card, c 131072, `tq3_0/tq3_0` KV, slot dir
   `/scratch/kvtier-kintsugi`. **Loads and serves.**
 - `kintsugi-27b-262k` — both cards, native c 262144, `q4_0/q4_0` KV, slot dir
-  `/scratch/kvtier-kintsugi-262k`. Written from measured arithmetic
-  (8.6 GB weights + ~4.9 GiB q4_0 KV < 23 GB across two cards) but **not yet
-  load-tested**.
+  `/scratch/kvtier-kintsugi-262k`. **Load-tested: healthy in 12 s, 7,662 MiB on
+  dev0 + 7,302 MiB on dev1, i.e. the native 262,144 window held across two cards.**
+  This is the configuration their own engine deadlocks on (their launcher computes
+  KV cells from `nvidia-smi | head -1` and clamps to a 3328-cell floor, pushing
+  98.7 % of the KV over PCIe; the layer split then hangs on the first request).
+  Two sequential requests completed normally here — no deadlock — with both cards
+  live (16 % / 29 % utilisation).
+  Decode **5.35 t/s vs 8.86 single-card**: layer split buys *capacity, not speed*,
+  because the cards pipeline rather than compute in parallel. Exactly the I10
+  expectation, now measured rather than predicted.
 - **I7 parity is not established.** Their engine (`b10858-8f12baacf`) has never
   been built or run here, so the 20-prompt token-identical / KL ≤ 0.01 comparison
   has no reference side yet. What we do have is behavioural coherence at depth

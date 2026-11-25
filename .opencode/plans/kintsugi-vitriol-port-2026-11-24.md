@@ -569,8 +569,15 @@ falling to 0.75 (the recon path changes the numerics), so that is not the fix as
   5.7 GB short at c 8192/n_max 7. Their single-card hero mode fits because of tiered
   KV (`--kv-vram-cells`), which we do not have. That is the concrete reason their
   dflash runs on one card and ours does not.
-- Profile `kintsugi-27b-262k` now carries the drafter and loads through the launcher
-  (`spec=draft-dflash:3`).
+- Profile `kintsugi-27b-262k` now carries the drafter and loads through the launcher.
+- Draft depth matters more than the verify cost fix would suggest: at n_max 3 the mean
+  draft length is 3.96 with **100 % acceptance**; at n_max 7 it is 4.73 at 53 %
+  acceptance, and decode goes **11.88 -> 17.52 t/s on repetition** (17.52 repeat /
+  11.27 code, versus 11.88/11.88 at n_max 3). Deeper drafting pays where text is
+  self-similar and is roughly neutral on novel code, so the shipped profile uses 7.
+  It still trails their 72.82/45.11 by ~4x on repetition, which is the small-batch
+  verification cost showing up again: they convert 8 drafted rows into 8 tokens per
+  forward, we convert ~4.7.
 
 ### Features their argv has that we do not
 

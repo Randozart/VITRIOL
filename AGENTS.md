@@ -144,6 +144,39 @@ must stay OUT of the ggml-cuda source GLOB.
   `officina/docs/`; assets the TUI compiles in live in `officina/assets/`
   (nothing under `officina/` may reference paths above the subtree).
 
+## Prior Art Rule (2026-11-25 — read the reference before measuring your own build)
+
+When a reference implementation of the same thing exists on disk or upstream, **diff it before you
+profile your own build**. Measured numbers are not a substitute for reading the other
+implementation, and profiling cannot tell you that you are comparing two different generations of a
+component.
+
+Incident: for three sessions we tried to explain why `vitriol-server` ran Kintsugi-27B at 8.80 t/s
+where `kintsugi-engine` ran the same model on the same host at 14.55 (and 72.8 vs 17.5 with the
+DFlash2 drafter). The reference engine's full source sat in `~/kintsugi/engine-src/`. Instead of
+diffing it, we instrumented our own binary: a per-node GPU op histogram, a speculative-phase timer,
+draft-depth sweeps, per-row cost attribution, a graph dump. Every number was true; four hypotheses
+were refuted in a row; the cause was never found. One `diff` of the file inventories plus one diff
+of the hot file found it in a single pass:
+
+- their fork carries `gated-delta-net-mma.cu`, `head2.cu`, `mirai-s.cu`, `wddm.cu`;
+- `gated_delta_net.cu` differs by **1,425 lines**: their kernel is templated
+  `<S_v, KDA, keep_rs_t, RAW, G_PRECOMPUTED>` where ours stops at `keep_rs_t`, with three
+  precompute kernels (`gdn_precompute_exp`, `gdn_gather_state`, `gdn_activate_raw_gates`) that hoist
+  per-token gate work out of the sequential scan.
+
+Ours was not a buggy copy of theirs; it was **an older generation**, which no amount of profiling of
+our own binary could reveal.
+
+Mandatory order when explaining a difference from a reference implementation:
+
+1. **Inventory diff** — which files exist only there, and which shared files diverge most?
+2. **Hot-file diff** — read the diverged file in the path the difference lives in.
+3. **Measure** — instrument only what the diff cannot explain.
+
+Corollary: if prior art is right there, adopting it beats re-deriving it. Our own re-derivation cost
+three sessions and produced four refuted hypotheses; the port is bounded and provable.
+
 ## Vendor Patch Rule (2026-09-01 incident — do not repeat)
 
 `officina/runtime/patched/*` are GENERATED or vendor-pinned copies. **A patch that exists only in a generated file is a patch waiting to be lost.**

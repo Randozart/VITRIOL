@@ -69,6 +69,8 @@ serve_unit_guard() {
     { [ -f "$unit" ] || [ -f "$sunit" ]; } || return 0
     # --dry-run prints config and launches nothing — always exempt.
     $DRY_RUN && return 0
+    # --plan is advisory too: it prints the placement verdict and exits, launching nothing.
+    [[ "${PLAN:-false}" == "true" ]] && return 0
     grep -qa "vitriol-server.service" /proc/self/cgroup 2>/dev/null && return 0
     if systemctl is-active --quiet vitriol-server.service 2>/dev/null \
         || systemctl --user is-active --quiet vitriol-server.service 2>/dev/null; then
@@ -2449,6 +2451,8 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         CLI_REASONING=""
         CLI_REASONING_BUDGET=""
         CLI_PRESERVE_REASONING=""
+        PLAN=false
+        CLI_PLAN_PP_KB=""
         DETACH=false
         DRY_RUN=false
 
@@ -2485,6 +2489,8 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
                 --preserve-reasoning) CLI_PRESERVE_REASONING="$2"; shift 2 ;;
                 --detach) DETACH=true; shift ;;
                 --verbose) CLI_VERBOSE="true"; shift ;;
+                --plan) PLAN=true; shift ;;
+                --plan-pp-kb) CLI_PLAN_PP_KB="$2"; shift 2 ;;
                 --dry-run) DRY_RUN=true; shift;;
                 -h|--help) usage; exit 0 ;;
                 *) echo "Unknown: $1"; usage; exit 1 ;;
@@ -2675,6 +2681,67 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         echo ""
 
         reasoning_guard "${REASONING:-off}" "${REASONING_BUDGET:--1}"
+
+        # VITRIOL (2026-11-24): --plan = dry-run plus a VRAM placement verdict.
+        # Advisory and launch-free: calibrator (Rust) + per-card free-space check.
+        # Exit 0 fits / 2 short. Never rewrites the config (I3).
+        if [[ "$PLAN" == "true" ]]; then
+            echo "── VRAM placement plan (advisory, --plan never launches) ──"
+            CALIBRATE="${PROJECT_DIR}/libvitriol/target/release/vitriol-calibrate"
+            PLAN_OUT=""
+            if [[ -x "$CALIBRATE" ]]; then
+                PLAN_OUT=$("$CALIBRATE" probe-recommend --model "$MODEL" 2>/dev/null) || PLAN_OUT=""
+                [[ -n "$PLAN_OUT" ]] && printf '%s\n' "$PLAN_OUT" | sed 's/^/PLAN  /'
+            else
+                echo "PLAN  (calibrator not built: cd libvitriol && cargo build --release)"
+            fi
+            # Model-specific KiB/token from the calibrator's own line, else default.
+            KVPT=$(printf '%s\n' "$PLAN_OUT" 2>/dev/null | sed -nE 's/^ *KV\/token +([0-9.]+) KiB.*/\1/p' | head -1)
+            KVPT="${KVPT:-$(python3 -c 'print(8*128*2*17/1024)')}"
+            # --plan-pp-kb KiB/kv-position: the O(ctx) pp floor is model-specific
+            # (Inkling's 4 full-attention layers + 8x256 MiB KV views measured
+            # 35 KB/pos; a flash-attentioned model's is ~0). Default 0 = honest.
+            python3 - "$MODEL" "$CTX" "${UBATCH:-32}" "${TENSOR_SPLIT:-}" "${KV_QUANT:-f16}" "$KVPT" "${CLI_PLAN_PP_KB:-0}" <<'PLANPY' || exit 2
+import os, sys, subprocess
+model, ctx, ub, ts, kvq = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
+kvpt_kib = float(sys.argv[6])
+pp_kib_per_pos = float(sys.argv[7])
+try:
+    free = [int(l.split()[0]) for l in subprocess.run(
+        ["nvidia-smi","--query-gpu=memory.free","--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=15, check=True).stdout.splitlines()]
+except Exception:
+    print("PLAN  (no nvidia-smi data: skipping per-card check)"); sys.exit(0)
+weights_mib = os.path.getsize(model)/1048576
+n_cards = len(free)
+if ts:
+    parts = [int(x) for x in ts.replace(" ","").split(",")]
+    if len(parts) == 1: parts = [parts[0]]*n_cards
+    tot = sum(parts) or 1
+else:
+    parts = [1]*n_cards; tot = n_cards
+q = 2.0 if kvq in ("f16","f32") else (1.0 if kvq == "q8_0" else 0.5)
+# Per-card KV = (KiB/token x ctx x quant_factor) on the layers that card owns.
+kvtok_mib = kvpt_kib * int(ctx) * q / 1024.0
+pp0 = pp_kib_per_pos*int(ctx)/1024.0 + 32*ub/1024.0  # O(ctx) floor + ub term
+worst = 0
+for i in range(n_cards):
+    share = (parts[i]/tot) if i < len(parts) else 0
+    w, k, pp = weights_mib*share, kvtok_mib*share, (pp0 if i==0 else pp0*0.38)
+    need = w + k + pp + 256
+    print(f"PLAN  card {i}: free {free[i]} MiB, needs ~{need:.0f} MiB (w {w:.0f} + kv {k:.0f} + pp {pp:.0f} + 256 margin)")
+    worst = max(worst, need - free[i])
+if worst > 0:
+    print(f"PLAN!  SHORT by {worst:.0f} MiB on the worst card")
+    if kvq in ("f16","f32"): print("PLAN!  try --kv-quant q4_0 (KV term ~halves)")
+    print(f"PLAN!  try ctx {int(ctx)//2} (halves the KV + floor terms)")
+    if n_cards > 1: print("PLAN!  rebalance --tensor-split toward the emptier card")
+    sys.exit(2)
+print("PLAN   verdict: fits, no change needed")
+sys.exit(0)
+PLANPY
+            exit 0
+        fi
         if $DRY_RUN; then
             exit 0
         fi

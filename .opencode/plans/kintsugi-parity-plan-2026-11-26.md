@@ -148,3 +148,31 @@ the h2 layout, `err2` tail factor, then registration. No fork-specific calls any
 
 Execution order stays: preflight gate → copy files → ggml-cuda.cu hunks → llama-impl.h → loader →
 model.cpp → qwen35 (skip if hint missing) → build → test-head2 → existing suites (I5) → parity run.
+
+---
+
+## Executed log (2026-11-26 evening)
+
+**Shipped (`3394a8d`):** HEAD2 port + 3 fixes. Decode A/B (c 8192, ub 128, ts 1,0, dev0):
+- HEAD2 off: 13.56 / 13.77 / 13.86 t/s — **vs 7.95-8.80 baseline before today = +55 % from the act_gpu_layers fix alone** (the output head had been living in CPU_Mapped all along).
+- HEAD2 on: 13.97 / 14.00 / 14.07 / 14.09 / 14.15 t/s (+2-3 % over off).
+- Correctness: `GGML_CUDA_HEAD2_CHECK=1` — "rank of the exact top token in stage 1: <1 = 1", 0 candidate logits with differing bits, over 142 graph replays. The exact top-1 is always inside the stage-1 top-512.
+
+**No-draft parity verdict: reached.** Their reference at the same class: 14.55 (11-24 trial); ours 14.0-14.15 with ub 128 (theirs used ub 256+). Within run noise.
+
+**DFlash2 single-card blocker, root-caused to the last link:**
+1. Our RS snapshot cache at n_rs_seq=7 is 5.02 GB (scales linearly: 2.5 GB at n_max 3).
+2. Their launcher exports `LLAMA_RS_REPLAY=1 GGML_CUDA_SHARED_POOL=1` with every drafter — replay mode collapses S to `mem_size` rows (8× smaller, ~1.5 GB) and R stays at n_rows.
+3. Replay mode requires: GDN raw gates (`raw_ok` gate), every recurrent layer on GPU, n_seq 1, and the `ggml_gated_delta_net_replay` op — **i.e. the GDN raw-gate path is a PREREQUISITE, confirming the plan's Stage-3 ordering.**
+4. Their 73.20 t/s reference captured (292 tok, acceptance 1.000, mean draft len 7.89, dev1, ub 256, thinking off).
+
+**Also built this session:** `VITRIOL_RS_VRAM_FRACTION` tier hook for the recurrent memory (mirrors the KV tier hook; tested at 0.15/0.05 — RS fits, but the drafter's own 1,033 MiB then OOMs because weights 11.2 GB + compute reserve leave <1 GB).
+
+**Their engine caveats recorded:** their own single-card DFlash2 attempts at CTX 8192/ub 1024 also hit the 32 GiB reserve OOM and fall to CPU (0 % GPU) — the 50-73 t/s numbers come only from the CTX 65536 / UB 256 / CELLS 65536 / clean-card shape. Both engines need the launch gate discipline.
+
+## Remaining path to DFlash2 parity (Stage 3, as planned)
+
+1. Port `LLAMA_RS_REPLAY` sizing (S collapse + P plane) — mechanical, lines above.
+2. GDN raw gates — now with complete spec (their replay path is the exact consumer) and a live oracle to diff against. The op-level unit test from `gdn-raw-gate-reconciliation` is step 1 of this.
+3. `GGML_CUDA_SHARED_POOL` — check what it does in their tree before assuming.
+4. Then DFlash2 n7 at ub 256 on one card, gated against their 73.2.

@@ -371,6 +371,9 @@ CFG_KV_SCORE_MIN_FILL="$DEFAULT_KV_SCORE_MIN_FILL"
 CFG_FROZEN_PROMPT="$DEFAULT_FROZEN_PROMPT"
 CFG_SEMANTIC_MODE="$DEFAULT_SEMANTIC_MODE"
 CFG_KV_QUANT="$DEFAULT_KV_QUANT"
+# Tiered KV: cells of each layer's K/V kept in VRAM; the rest live in pinned system RAM
+# mapped into the same CUDA address range. 0 = all in VRAM (the ordinary buffer).
+CFG_KV_VRAM_CELLS=0
 CFG_KV_QUANT_V="$DEFAULT_KV_QUANT_V"
 CFG_LOOKUP="$DEFAULT_LOOKUP"
 CFG_ENGINE_MODE="$DEFAULT_ENGINE_MODE"
@@ -471,6 +474,7 @@ kv.score)              CFG_KV_SCORE="$val" ;;
                 kv.frozen_prompt)      CFG_FROZEN_PROMPT="$val" ;;
                 kv.quant_mode)         CFG_KV_QUANT="$val" ;;
                 kv.quant_mode_v)       CFG_KV_QUANT_V="$val" ;;
+                kv.vram_cells)         CFG_KV_VRAM_CELLS="$val" ;;
                 kv.ubatch_size)        CFG_UBATCH="$val" ;;
         kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
                 kv.checkpoint_every_n_tokens) CFG_CKPT_EVERY="$val" ;;
@@ -2211,6 +2215,14 @@ case "$CMD" in
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
+        # Tiered KV is read by the engine from the environment (llama-kv-cache.cpp). Exporting it
+        # here covers every launch site at once; 0 unsets it so an unset profile stays identical.
+        KV_VRAM_CELLS="${CLI_KV_VRAM_CELLS:-${CFG_KV_VRAM_CELLS:-0}}"
+        if [[ "${KV_VRAM_CELLS}" =~ ^[0-9]+$ ]] && [[ "${KV_VRAM_CELLS}" -gt 0 ]]; then
+            export VITRIOL_KV_VRAM_CELLS="${KV_VRAM_CELLS}"
+        else
+            unset VITRIOL_KV_VRAM_CELLS
+        fi
         LOOKUP="${CLI_LOOKUP:-${CFG_LOOKUP}}"
         ENGINE_MODE="${CLI_ENGINE_MODE:-${CLI_ENGINE_MODE:-${CFG_ENGINE_MODE}}}"
         KV_QUANT_V="${CLI_KV_QUANT_V:-${CFG_KV_QUANT_V}}"
@@ -2266,6 +2278,8 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # stream and belongs in the identity. It has its own field rather than
         # riding spec= because it composes with a draft type instead of replacing it.
         [[ "${LOOKUP:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT lk=$LOOKUP"
+        # Tiered KV changes where the cache lives, so it is provenance-bearing.
+        [[ "${KV_VRAM_CELLS:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT kvc=$KV_VRAM_CELLS"
         [[ "${CFG_N_CPU_MOE:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT ncmoe=${CFG_N_CPU_MOE}"
         [[ "${CFG_DISK_OFFLOAD:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT dor=1"
         [[ "${CFG_STORE:-0}" == "1" ]] && FINGERPRINT="$FINGERPRINT st=1 mlm=${CFG_MAX_LOCKED_MB:-0}"
@@ -2531,6 +2545,14 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         FROZEN_PROMPT="${VITRIOL_FROZEN_PROMPT:-${CLI_FROZEN_PROMPT:-${CFG_FROZEN_PROMPT}}}"
         SEMANTIC_MODE="${VITRIOL_SEMANTIC_MODE:-${CLI_SEMANTIC_MODE:-${CFG_SEMANTIC_MODE}}}"
         KV_QUANT="${CLI_KV_QUANT:-${CFG_KV_QUANT}}"
+        # Tiered KV is read by the engine from the environment (llama-kv-cache.cpp). Exporting it
+        # here covers every launch site at once; 0 unsets it so an unset profile stays identical.
+        KV_VRAM_CELLS="${CLI_KV_VRAM_CELLS:-${CFG_KV_VRAM_CELLS:-0}}"
+        if [[ "${KV_VRAM_CELLS}" =~ ^[0-9]+$ ]] && [[ "${KV_VRAM_CELLS}" -gt 0 ]]; then
+            export VITRIOL_KV_VRAM_CELLS="${KV_VRAM_CELLS}"
+        else
+            unset VITRIOL_KV_VRAM_CELLS
+        fi
         LOOKUP="${CLI_LOOKUP:-${CFG_LOOKUP}}"
         ENGINE_MODE="${CLI_ENGINE_MODE:-${CLI_ENGINE_MODE:-${CFG_ENGINE_MODE}}}"
         KV_QUANT_V="${CLI_KV_QUANT_V:-${CFG_KV_QUANT_V}}"
@@ -2580,6 +2602,8 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
         # stream and belongs in the identity. It has its own field rather than
         # riding spec= because it composes with a draft type instead of replacing it.
         [[ "${LOOKUP:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT lk=$LOOKUP"
+        # Tiered KV changes where the cache lives, so it is provenance-bearing.
+        [[ "${KV_VRAM_CELLS:-0}" -gt 0 ]] && FINGERPRINT="$FINGERPRINT kvc=$KV_VRAM_CELLS"
         [[ -n "${SLOT_CONTEXT:-}" ]] && FINGERPRINT="$FINGERPRINT slots=$SLOT_CONTEXT"
         [[ -n "${SLOT_SAVE_PATH:-}" ]] && FINGERPRINT="$FINGERPRINT ssp=1"
         # Thinking state is provenance-bearing (2026-11-19): rea=on / rb=N change

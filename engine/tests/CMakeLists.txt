@@ -303,6 +303,10 @@ llama_build_and_test(test-backend-ops.cpp)
 # The test reads a Kintsugi-27B GGUF and SKIPs (exit 0, explicit message) when
 # absent, because `dep` must hold valid bit indices and no synthetic fixture can.
 llama_build_and_test(test-escha-mul-mat.cpp)
+# tiered K/V buffer (CUDA VMM): writes and reads past the VRAM line must give the bytes of an
+# ordinary device buffer. SKIPs and passes without a GPU or without VMM.
+llama_build_and_test(test-kv-tier.cpp)
+
 
 # the tensor API kernels come from a separate metallib - check they produce correct results
 # ref: https://github.com/ggml-org/llama.cpp/issues/27473

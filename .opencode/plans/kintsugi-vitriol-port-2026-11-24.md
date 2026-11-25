@@ -467,12 +467,15 @@ assumed:
   streaming, 10.5 GB read per token at ~93 GB/s. That also means KV
   quantisation and sparse eviction cannot help decode on this model; only the
   streaming rate can.
-- The telling oddity: turning gemv **off** costs only 14 % (7.74 vs 8.86). If gemv
-  were serving every projection, the reconstruction fallback should be far worse
-  than that. The likely explanation is that gemv handles only part of the 400
-  projections and the rest already go through reconstruction in *both* arms. A
-  per-path counter (gemv hits vs recon hits per token) is the next cheap
-  instrument, and it is a two-line patch rather than a profile.
+- **RESOLVED by counting** (`VITRIOL_ESCHA_DEBUG=1`, commit `805187d`):
+  `gemv=1600 other=0` — every decode projection goes through gemv, 400 per token
+  in 123 ms. So the reconstruction fallback is *nearly as fast* as the specialised
+  kernel, and both are limited by the same thing: streaming the code tensors.
+  Turning gemv off costs 14 % because the alternative path is not the catastrophe
+  the name suggests, not because gemv serves a subset.
+- Effective read rate ~84–93 GB/s per 26 MB projection against a 360 GB/s card:
+  **roughly 1.8x is on the table, but it is kernel-level work** (block sizing,
+  cp.async pipelining of the code reads), not configuration and not placement.
 - nsys could not attach on this host (no sudo for `--attach`; `nsys profile -p`
   is `--nvtx-capture`, not pid; launching under `nsys` ended with "Connection to
   Agent lost"), so there is **no kernel-level breakdown yet**. The gap is real and

@@ -110,3 +110,41 @@ A launch window may open ONLY after the preflight script passes, and is closed b
 3. postlaunch: ready = `/health` ok AND log has a successful compute-buffer line AND no
    `cudaMalloc failed`/`retrying` lines AND a probe decode shows GPU util > 50 %. CPU-fallback
    signature = failed launch; kill and report, never measure.
+
+---
+
+## Complete hunk map (all 21 ggml-cuda.cu touch points, read this session)
+
+| theirs :line | what | our insertion point |
+|---|---|---|
+| :35 | `#include "ggml-cuda/head2.cuh"` | next to our ggml-cuda includes (near tier include) |
+| :3003 | `static thread_local bool g_head2_bypass` | above our `ggml_cuda_mul_mat` (:1954) |
+| :3013-3044 | the interception block: `ggml_cuda_head2_find` → stage-1 tensor synth → stage-1 kernel dispatch (h2/q2k/other) | top of our `ggml_cuda_mul_mat` body |
+| :3070-3074 | `GGML_HINT_HEAD_DRAFT` early-out (draft graph takes stage-1) | inside the interception block |
+| :3076-3090 | check mode: exact pass with bypass + `ggml_cuda_head2_refine` | end of the interception block |
+| :3862 | CUDA-graphs-off when check mode or op-timing | our CUDA-graph decision point (grep `warmup_complete`) |
+| :7645-7649 | proc-address export `ggml_backend_cuda_head2_register` | our reg table `:6593` (next to tier export) |
+
+Plus `head2.cu`'s exported functions (find/check_enabled/stage1_h2/stage1_q2k/refine/register) come
+from the copied files; `g_head2_bypass` and the `GGML_HINT_HEAD_DRAFT` handling are the only
+ggml-cuda.cu-local additions. Check whether OUR fork has `GGML_HINT_HEAD_DRAFT` (MTP draft head
+hint) — if absent, that early-out is dead code here and the `LLAMA_HEAD2_DRAFT` qwen35 hook stays
+off (default), keeping scope minimal.
+
+`llama-impl.h:61-80` helpers are self-contained (getenv readers, `static inline`); `llama-model.cpp`
+stage-1 builder verified through the quantize loop tail (:2086-2135): per-block 12-scale trial for
+the h2 layout, `err2` tail factor, then registration. No fork-specific calls anywhere.
+
+## Risks called out before grinding
+
+1. `GGML_HINT_HEAD_DRAFT` may not exist in our fork → guard that early-out with the same `#ifdef`/
+   constant check; if missing, skip (no draft-head feature lost: we don't set that hint either).
+2. Their `mul_mat` body may have drifted from ours below the interception point — the interception
+   is prepended, never spliced into diverged code, so drift below is harmless.
+3. The check mode allocates an `exact` copy of dst every call when enabled — only used with
+   `GGML_CUDA_HEAD2_CHECK=1`; default off, no decode cost.
+4. Stage-1 synth creates a fake contiguous Q4 tensor header over the registered copy — requires our
+   `ggml_cuda_mul_mat_q` path to accept arbitrary `src0->data` (it does: plain pointer).
+
+Execution order stays: preflight gate → copy files → ggml-cuda.cu hunks → llama-impl.h → loader →
+model.cpp → qwen35 (skip if hint missing) → build → test-head2 → existing suites (I5) → parity run.

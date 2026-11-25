@@ -462,9 +462,21 @@ assumed:
   ≈ narrow 7.71**. The shipped default is already the best of the four.
 - `GGML_CUDA_USE_GRAPHS=1`: 8.64, i.e. no gain — the Escha node is evidently not
   graph-captured.
-- nsys could not attach on this host (no sudo for `--attach`, and launching under
-  `nsys` lost the agent connection), so there is **no kernel-level breakdown yet**.
-  That is the next instrument needed; the gap is real and unexplained, not dismissed.
+- **Decode is context-independent**: 8.84 t/s at c 512 vs 9.02 t/s at c 8192. So
+  attention and KV traffic are not the limiter at all — it is pure weight
+  streaming, 10.5 GB read per token at ~93 GB/s. That also means KV
+  quantisation and sparse eviction cannot help decode on this model; only the
+  streaming rate can.
+- The telling oddity: turning gemv **off** costs only 14 % (7.74 vs 8.86). If gemv
+  were serving every projection, the reconstruction fallback should be far worse
+  than that. The likely explanation is that gemv handles only part of the 400
+  projections and the rest already go through reconstruction in *both* arms. A
+  per-path counter (gemv hits vs recon hits per token) is the next cheap
+  instrument, and it is a two-line patch rather than a profile.
+- nsys could not attach on this host (no sudo for `--attach`; `nsys profile -p`
+  is `--nvtx-capture`, not pid; launching under `nsys` ended with "Connection to
+  Agent lost"), so there is **no kernel-level breakdown yet**. The gap is real and
+  unexplained, not dismissed.
 
 ### D5: profiles shipped, I7 parity still open
 

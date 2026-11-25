@@ -235,7 +235,17 @@ us a scheduler we control.
 
 ## Open ends
 
+> **Superseded in part (2026-11-24):** Part D is now scoped and sequenced in
+> `kintsugi-native-adoption-2026-11-24.md`, which also carries the adoption
+> ladder for three non-model-specific inventions found in their engine
+> (delta KV saves, `kq_mask_packed`, cell-granular KV tiering). Read that
+> document for the plan; this one stays as the measurement record.
+
 - Full-layer per-head FA mask (C2/C3): removes the 4.35 t/s depth wall.
-- D execution: Escha types + 3 kernel files into the frozen fork.
+  Reframed in the adoption plan as **F2 + C2/C3** — the packed 1-bit mask
+  (`kq_mask_packed`) is the missing half that made the fold uneconomic.
+- D execution: Escha types + kernels into the frozen fork. Scope corrected
+  there: **~5.5–6.5k lines including the vendored `exl3/` tree, and Mirai S
+  is out of scope** (their own release builds `-DGGML_CUDA_MIRAI=OFF`).
 - Kintsugi dual-card deadlock: their engine, single-card only; port = our
   scheduler, which we can make two-card-correct.

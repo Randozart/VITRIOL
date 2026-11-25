@@ -9,6 +9,10 @@
 #include "ggml-cuda/common.cuh"
 #include "ggml-quants.h"
 #include "ggml-cuda/acc.cuh"
+// PROVENANCE: kintsugi-engine 8f12baacf (MIT) -- two-stage output head (LLAMA_HEAD2=N): the exact
+// Q8_0 head lives in pinned system RAM, a Q4_0 copy in VRAM scores every token, and only the top-N
+// candidates per row are re-scored on the exact rows.
+#include "ggml-cuda/head2.cuh"
 #include "ggml-cuda/add-id.cuh"
 #include "ggml-cuda/arange.cuh"
 #include "ggml-cuda/argmax.cuh"
@@ -1951,11 +1955,53 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
     return use_mul_mat_vec_q;
 }
 
+static thread_local bool g_head2_bypass = false; // PROVENANCE kintsugi-engine 8f12baacf (MIT)
+
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
     const int32_t hint = ggml_get_op_params_i32(dst, 1);
     if (hint == GGML_HINT_SRC0_IS_HADAMARD && ggml_cuda_op_fwht(ctx, src1, dst)) {
+        return;
+    }
+
+    // Two-stage output head (head2.cuh, PROVENANCE kintsugi-engine 8f12baacf MIT): all tokens with the
+    // small copy in VRAM, then the exact logits of the best candidates of each row from the Q8_0 rows
+    // in system RAM. Check mode (GGML_CUDA_HEAD2_CHECK=1) also runs the single-pass head for a compare.
+    ggml_cuda_head2_entry h2;
+    if (!g_head2_bypass && ne02 == 1 && ne03 == 1 && ne12 == 1 && ne13 == 1 && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
+            && ggml_cuda_head2_find(src0, &h2)) {
+        ggml_tensor src0_s1 = *src0;
+        const ggml_type type1_g = h2.type1 == GGML_TYPE_COUNT ? GGML_TYPE_Q4_0 : h2.type1;
+        src0_s1.type     = type1_g;
+        src0_s1.data     = (void *) h2.q4;
+        src0_s1.nb[0]    = ggml_type_size(type1_g);
+        src0_s1.nb[1]    = ggml_row_size(type1_g, ne00);
+        src0_s1.nb[2]    = src0_s1.nb[1]*ne01;
+        src0_s1.nb[3]    = src0_s1.nb[2];
+        src0_s1.view_src = nullptr;
+        ggml_tensor dst_s1 = *dst;
+        dst_s1.src[0] = &src0_s1;
+        if (h2.type1 == GGML_TYPE_COUNT) {
+            ggml_cuda_head2_stage1_h2(ctx, h2.q4, src1, dst);
+        } else if (h2.type1 == GGML_TYPE_Q2_K && ne00 % 256 == 0) {
+            ggml_cuda_head2_stage1_q2k(ctx, h2.q4, src1, dst);
+        } else {
+            ggml_cuda_mul_mat(ctx, &src0_s1, src1, &dst_s1);
+        }
+        // NOTE: this fork has no GGML_HINT_HEAD_DRAFT, so the draft early-out of the reference is dead
+        // here; the draft graph (LLAMA_HEAD2_DRAFT) is therefore not enabled in this port.
+
+        ggml_cuda_pool_alloc<float> exact(ctx.pool());
+        if (ggml_cuda_head2_check_enabled()) {
+            exact.alloc(ggml_nelements(dst));
+            ggml_tensor dst_e = *dst;
+            dst_e.data = exact.get();
+            g_head2_bypass = true;
+            ggml_cuda_mul_mat(ctx, src0, src1, &dst_e);
+            g_head2_bypass = false;
+        }
+        ggml_cuda_head2_refine(ctx, h2, src0, src1, dst, exact.get());
         return;
     }
 
@@ -6589,6 +6635,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_comm_allreduce_tensor") == 0) {
         return (void *)ggml_backend_cuda_comm_allreduce_tensor;
+    }
+    if (strcmp(name, "ggml_backend_cuda_head2_register") == 0) { // PROVENANCE kintsugi-engine 8f12baacf (MIT)
+        return (void *) ggml_backend_cuda_head2_register;
     }
     if (strcmp(name, "ggml_backend_cuda_tier_buffer_type") == 0) {
         return (void *) ggml_backend_cuda_tier_buffer_type;

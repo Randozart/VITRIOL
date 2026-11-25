@@ -103,3 +103,40 @@ std::string llama_format_tensor_shape(const std::vector<int64_t> & ne);
 std::string llama_format_tensor_shape(const struct ggml_tensor * t);
 
 std::string gguf_kv_to_str(const struct gguf_context * ctx_gguf, int i);
+
+// PROVENANCE: kintsugi-engine 8f12baacf (MIT) -- two-stage output head env readers.
+// LLAMA_HEAD2=N: two-stage output head with N exact candidates for each row (0 or unset: off). See llama_model::load_tensors.
+static inline int llama_head2_candidates() {
+    static const int n = [] {
+        const char * e = getenv("LLAMA_HEAD2");
+        return e ? std::max(0, atoi(e)) : 0;
+    }();
+    return n;
+}
+
+// LLAMA_HEAD2_TYPE=q4_0 | q3_k | q2_k | ...: the type of the stage-1 head (default q4_0). Unknown names give q4_0.
+static inline ggml_type llama_head2_type() {
+    static const ggml_type t = [] {
+        const char * e = getenv("LLAMA_HEAD2_TYPE");
+        if (e != nullptr && (e[0] == 'h' || e[0] == 'H') && e[1] == '2' && e[2] == 0) {
+            return GGML_TYPE_COUNT;   // "h2": the 2-bit layout of ggml-cuda/head2.cu (not a ggml type)
+        }
+        if (e != nullptr) {
+            for (int i = 0; i < GGML_TYPE_COUNT; ++i) {
+                const char * name = ggml_type_name((ggml_type) i);
+                if (name == nullptr || !ggml_is_quantized((ggml_type) i)) {
+                    continue;
+                }
+                size_t k = 0;
+                while (name[k] && e[k] && tolower((unsigned char) name[k]) == tolower((unsigned char) e[k])) {
+                    ++k;
+                }
+                if (name[k] == 0 && e[k] == 0) {
+                    return (ggml_type) i;
+                }
+            }
+        }
+        return GGML_TYPE_Q4_0;
+    }();
+    return t;
+}

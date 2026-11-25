@@ -1379,6 +1379,24 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             buft = ggml_backend_dev_buffer_type(cpu_dev);
         }
 
+        // LLAMA_HEAD2=N (two-stage output head): the exact Q8_0 head goes to pinned system RAM that the device reads
+        // through its own address space (a tiered buffer with no VRAM part and no staging). llama_model builds the
+        // small stage-1 copy for VRAM after the load. Other devices and other head types are not changed.
+        if (tn_tensor == LLM_TENSOR_OUTPUT && t_meta->type == GGML_TYPE_Q8_0 && ggml_n_dims(t_meta) == 2 && llama_head2_candidates() > 0) {
+            ggml_backend_dev_t dev_h = ggml_backend_buft_get_device(buft);
+            ggml_backend_reg_t reg_h = dev_h ? ggml_backend_dev_backend_reg(dev_h) : nullptr;
+            using tier_fn_t = ggml_backend_buffer_type_t (*)(int, double, int, const char *);
+            auto * fn = reg_h ? (tier_fn_t) ggml_backend_reg_get_proc_address(reg_h, "ggml_backend_cuda_tier_buffer_type") : nullptr;
+            auto * fn_reg = reg_h ? ggml_backend_reg_get_proc_address(reg_h, "ggml_backend_cuda_head2_register") : nullptr;
+            const char * dn = dev_h ? ggml_backend_dev_name(dev_h) : nullptr;
+            if (fn && fn_reg && dn && strncmp(dn, "CUDA", 4) == 0 && buft == ggml_backend_dev_buffer_type(dev_h)) {
+                ggml_backend_buffer_type_t tb = fn(atoi(dn + 4), 0.0, 1, "nostage_head2");
+                if (tb) {
+                    buft = tb;
+                }
+            }
+        }
+
         if (buft != buft_list->front().second) {
             if (n_tensors_moved == 0) {
                 first_tensor_moved_name = t_meta->name;

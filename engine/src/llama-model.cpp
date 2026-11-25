@@ -7,6 +7,9 @@
 #include "llama-ext.h"
 #include "llama-hparams.h"
 #include "llama-impl.h"
+#include <thread>
+#include <algorithm>
+#include <numeric>
 #include "llama-kv-cache-dsa-iswa.h"
 #include "llama-kv-cache-dsa.h"
 #include "llama-kv-cache-dsv4.h"
@@ -2199,6 +2202,149 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             pimpl->mappings.emplace_back(std::move(mapping));
         }
     }
+
+    // LLAMA_HEAD2=N: two-stage output head. The loader put the exact Q8_0 head in system RAM that the device can read
+    // (llama_model_loader::create_tensor). Here: a Q4_0 copy of it for VRAM (stage 1), made from the Q8_0 rows, and the
+    // registration of the pair with the backend. The backend then runs each MUL_MAT with the head as two stages: all
+    // tokens with the small copy, the N best of each row again with the exact rows. The graph does not change.
+    if (llama_head2_candidates() > 0 && output != nullptr && output->type == GGML_TYPE_Q8_0 && output->buffer != nullptr) {
+        ggml_backend_buffer_type_t buft_q8 = ggml_backend_buffer_get_type(output->buffer);
+        ggml_backend_dev_t dev_h = ggml_backend_buft_get_device(buft_q8);
+        ggml_backend_reg_t reg_h = dev_h ? ggml_backend_dev_backend_reg(dev_h) : nullptr;
+        using head2_fn_t = void (*)(const void *, const void *, int, int, const float *, int64_t);
+        auto * fn = reg_h ? (head2_fn_t) ggml_backend_reg_get_proc_address(reg_h, "ggml_backend_cuda_head2_register") : nullptr;
+        if (fn && strstr(ggml_backend_buft_name(buft_q8), "nostage_head2") != nullptr) {
+            const int64_t t_start = ggml_time_us();
+            const int64_t n_in  = output->ne[0];
+            const int64_t n_out = output->ne[1];
+
+            ggml_init_params ip = { ggml_tensor_overhead()*2, nullptr, true };
+            ggml_context_ptr ctx_h { ggml_init(ip) };
+            const ggml_type type1 = llama_head2_type();
+            // GGML_TYPE_COUNT = the 2-bit layout "h2" of ggml-cuda/head2.cu: for each row n/32 fp16 scales, then 8 bytes of
+            // codes for each block of 32 weights (weight 4 i + b of a 16-weight group: byte b, bits 2 i); value = scale x
+            // (code - 1.5). 2.5 bits for a weight. The scale of a block is the one of 12 tried that gives the least error.
+            const bool   own_h2 = type1 == GGML_TYPE_COUNT;
+            const size_t row_h2 = (size_t) n_in/32*10;
+            if (own_h2 && n_in % 512 != 0) {
+                throw std::runtime_error("two-stage head: the h2 layout needs n_embd to be a multiple of 512");
+            }
+            ggml_tensor * s1 = own_h2 ? ggml_new_tensor_2d(ctx_h.get(), GGML_TYPE_I8, (int64_t) row_h2, n_out)
+                                      : ggml_new_tensor_2d(ctx_h.get(), type1, n_in, n_out);
+            ggml_set_name(s1, "output.weight.stage1");
+            ggml_backend_buffer_ptr buf_h { ggml_backend_alloc_ctx_tensors_from_buft(ctx_h.get(), ggml_backend_dev_buffer_type(dev_h)) };
+            if (!buf_h) {
+                throw std::runtime_error("two-stage head: cannot allocate the stage-1 head");
+            }
+            ggml_backend_buffer_set_usage(buf_h.get(), GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+
+            const size_t  row_q8 = ggml_row_size(GGML_TYPE_Q8_0, n_in);
+            const size_t  row_q4 = own_h2 ? row_h2 : ggml_row_size(type1, n_in);
+            const int64_t chunk  = 8192;
+            const int     n_thr  = (int) std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
+            const auto *  traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
+            std::vector<uint8_t> q8((size_t) chunk*row_q8);
+            std::vector<uint8_t> q4((size_t) chunk*row_q4);
+            // LLAMA_HEAD2_TAIL=0: no tail correction (a number: a factor on the term). Else the squared error of each stage-1 row against the exact row goes
+            // to the backend, which takes 0.5 |h|^2 / n times it from the logits of the tokens outside the candidates.
+            const char *  tail_env = getenv("LLAMA_HEAD2_TAIL");
+            const double  tail_k   = tail_env == nullptr ? 1.0 : atof(tail_env);   // a factor on the term (1 = the model above)
+            const bool    tail     = tail_k > 0.0;
+            const auto *  traits1  = own_h2 ? nullptr : ggml_get_type_traits(type1);
+            std::vector<float> err2(tail ? (size_t) n_out : 0);
+            for (int64_t r0 = 0; r0 < n_out; r0 += chunk) {
+                const int64_t n = std::min(chunk, n_out - r0);
+                ggml_backend_tensor_get(output, q8.data(), (size_t) r0*row_q8, (size_t) n*row_q8);
+                std::vector<std::thread> workers;
+                for (int it = 0; it < n_thr; ++it) {
+                    workers.emplace_back([&, it] {
+                        std::vector<float> f((size_t) n_in);
+                        std::vector<float> g((size_t) n_in);
+                        for (int64_t r = it; r < n; r += n_thr) {
+                            traits->to_float(q8.data() + (size_t) r*row_q8, f.data(), n_in);
+                            if (own_h2) {
+                                uint8_t *     row = q4.data() + (size_t) r*row_q4;
+                                ggml_fp16_t * sc  = (ggml_fp16_t *) row;
+                                uint32_t *    cd  = (uint32_t *) (row + (size_t) n_in/32*sizeof(ggml_fp16_t));
+                                double e_row = 0.0;
+                                for (int64_t kb = 0; kb < n_in/32; ++kb) {
+                                    const float * x = f.data() + kb*32;
+                                    double ss = 0.0;
+                                    for (int j = 0; j < 32; ++j) {
+                                        ss += (double) x[j]*x[j];
+                                    }
+                                    const float rms = (float) sqrt(ss/32.0);
+                                    float  best_d = 0.0f;
+                                    double best_e = ss;
+                                    for (int k = 0; k < 12 && rms > 0.0f; ++k) {
+                                        // candidates around the best step of a 4-level code for a normal block (0.996 sigma)
+                                        const float d = ggml_fp16_to_fp32(ggml_fp32_to_fp16(rms*(0.55f + 0.1f*k)));
+                                        if (d <= 0.0f) {
+                                            continue;
+                                        }
+                                        double e = 0.0;
+                                        for (int j = 0; j < 32; ++j) {
+                                            int q = (int) floorf(x[j]/d + 2.0f);
+                                            q = q < 0 ? 0 : q > 3 ? 3 : q;
+                                            const double t = (double) x[j] - (double) d*((double) q - 1.5);
+                                            e += t*t;
+                                        }
+                                        if (e < best_e) {
+                                            best_e = e;
+                                            best_d = d;
+                                        }
+                                    }
+                                    uint32_t v[2] = { 0, 0 };
+                                    for (int j = 0; j < 32 && best_d > 0.0f; ++j) {
+                                        int q = (int) floorf(x[j]/best_d + 2.0f);
+                                        q = q < 0 ? 0 : q > 3 ? 3 : q;
+                                        const int g = j/16, w = j%16;       // group, weight in the group = 4 i + b
+                                        v[g] |= (uint32_t) q << (8*(w%4) + 2*(w/4));
+                                    }
+                                    if (best_d <= 0.0f) {
+                                        // an all-zero block: scale 0 (any codes), error = the block itself
+                                        best_e = ss;
+                                    }
+                                    sc[kb]     = ggml_fp32_to_fp16(best_d);
+                                    cd[2*kb]   = v[0];
+                                    cd[2*kb+1] = v[1];
+                                    e_row += best_e;
+                                }
+                                if (tail) {
+                                    err2[(size_t) (r0 + r)] = (float) (e_row*tail_k);
+                                }
+                                continue;
+                            }
+                            ggml_quantize_chunk(type1, f.data(), q4.data() + (size_t) r*row_q4, 0, 1, n_in, nullptr);
+                            if (tail) {
+                                traits1->to_float(q4.data() + (size_t) r*row_q4, g.data(), n_in);
+                                double e = 0.0;
+                                for (int64_t j = 0; j < n_in; ++j) {
+                                    const double d = (double) g[(size_t) j] - (double) f[(size_t) j];
+                                    e += d*d;
+                                }
+                                err2[(size_t) (r0 + r)] = (float) (e*tail_k);
+                            }
+                        }
+                    });
+                }
+                for (auto & w : workers) {
+                    w.join();
+                }
+                ggml_backend_tensor_set(s1, q4.data(), (size_t) r0*row_q4, (size_t) n*row_q4);
+            }
+
+            fn(output->data, s1->data, llama_head2_candidates(), (int) type1, tail ? err2.data() : nullptr, n_out);
+            LLAMA_LOG_INFO("%s: two-stage head: stage 1 %s %.1f MiB in VRAM, exact %s %.1f MiB in system RAM, %d candidates, tail correction %s (%.1f s)\n",
+                __func__, own_h2 ? "h2 (2-bit)" : ggml_type_name(s1->type), ggml_nbytes(s1)/1048576.0, ggml_type_name(output->type), ggml_nbytes(output)/1048576.0,
+                llama_head2_candidates(), tail ? "on" : "off", (ggml_time_us() - t_start)/1e6);
+
+            std::vector<ggml_backend_buffer_ptr> bufs_h;
+            bufs_h.emplace_back(std::move(buf_h));
+            pimpl->ctxs_bufs.emplace_back(std::move(ctx_h), std::move(bufs_h));
+        }
+    }
+
 
     return true;
 }

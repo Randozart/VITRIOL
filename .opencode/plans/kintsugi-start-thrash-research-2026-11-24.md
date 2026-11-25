@@ -113,6 +113,44 @@ Inkling's `cudaMalloc failed` was a **GPU compute-buffer** reservation
 (see `inkling2-per-head-fa-mask-2026-11-24.md`). Nothing to do with swap or the
 RAM Shot store, which is disabled (`mode=off`, `store=0`).
 
+## Why "I have 24 GB" doesn't help here: allocation is per-card
+
+Two cards × 12 GB = 24 GB *total*, but **a single `cudaMalloc` cannot span
+cards.** The pp/compute buffer and each card's own tier-KV are one
+allocation on one device, so the binding number is the *free space on the
+carrier card*, not the pool.
+
+Measured right now, with the Kintsugi engine up:
+
+```
+  card 0: 12,288 MiB total,  5,558 used,  6,371 free
+  card 1: 12,288 MiB total,  5,442 used,  6,489 free
+```
+
+~6.4 GB free *per card* (the desktop's kwin/electron holds ~120 MB on dev0,
+the rest is the engine's own split weights + per-card KV). Two of those
+6.4 GBs are not one 12.9 GB. A pp buffer of 14 GB has to fit on card 0 alone
+and cannot borrow card 1's free space.
+
+- **Kintsugi**: `cells_for()` reads only `head -1` of `nvidia-smi` (dev0
+  free = 6,344 MiB, and that was *lower* still when a leftover engine
+  occupied it), so it floors to 3,328 cells. It does not add the 6.5 GB free
+  on dev1. To actually use both cards' KV you'd have to raise
+  `KINTSUGI_CELLS` by hand so the tier spans the combined headroom — but the
+  tier allocator here keys cells to the primary card, so the 2nd card's free
+  space is not reclaimed by the cell math.
+- **27B daily driver** (`ts=27,21`): the *weights* are split 27/21 across the
+cards, but the primary card's KV + pp buffer still crowd dev0 — which is
+  exactly why ts and ub had to be tuned for that profile. Splitting weights
+  does not make a single large allocation fit.
+- **Inkling** (17.6 GB at `ts=1,1`): 8.8 GB of weights on dev0, plus its
+  4 full-attention layers' KV and the O(ctx) pp floor, exceed dev0's ~11 GB
+  free → the 7.7–8.5 GB `cudaMalloc` failure.
+
+So "just a little less due to other processes" understates it: it isn't a
+little less of 24 GB, it's *fully* less per card — ~6.4 GB of usable space
+on the card that carries the big allocation.
+
 ## Open questions this note does not answer
 
 - Which phase inside the first silent 5 minutes dominates (weight upload vs

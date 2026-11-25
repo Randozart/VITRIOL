@@ -186,3 +186,30 @@ dequantising path rather than the coded gemv; per-step graph re-reservation; the
 c 8192 being re-read cold each step.
 
 **Acceptance is 1.00000 (149/149)**, so S2's quality half holds while we look at speed.
+
+### 6.1 A3 refined by reading the draft loop
+
+`draft()` (`common/speculative.cpp:1274`) does **not** run one forward per drafted token. It builds a
+single batch holding the whole noise block (`n_draft + 1` masked rows) and issues **one**
+`llama_decode(ctx_dft, batch)`. So the measurement reads as a per-row cost:
+
+| draft rows | `spec_draft` | per row |
+|---|---|---|
+| 2 (n_max 1) | 67.52 ms | **33.8 ms** |
+| 4 (n_max 3) | 234.69 ms | **58.7 ms** |
+
+The drafter holds 1.09 GB of weights, so its weight streaming is ~12 ms; at 4 rows it costs 235 ms,
+i.e. ~46 ms per row of *non-weight* work. The drafter also cannot load standalone — it refuses
+without `ctx_other`, because it is architecturally a two-context model (encoder over target hidden
+states + decoder). The per-row term is therefore almost certainly the sequential per-row encoder /
+`compute_f_rnn` path (`speculative.cpp:959`), not the projections.
+
+**Why this matters more than it looks**: one drafter row costs ~58 ms and yields about one token; the
+target produces a token in ~57 ms. Speculation here is close to break-even by construction, which is
+exactly what the flat throughput shows (n_max 1 → 7.17, 3 → 11.65, 7 → 14.27-17.5 t/s, as against
+8.73 undrafted). Their engine at 72.8 t/s must be running that per-row path far cheaper.
+
+**A3 target, now specific**: reduce the drafter's per-row cost from ~58 ms toward its weight-streaming
+floor. Not a kernel-tuning problem — a per-row sequential depth in the draft context. Next step is to
+time the pieces inside `draft()` (encoder rows, `compute_f_rnn`, the single `llama_decode`, the
+sampler) with the same `VITRIOL_SPEC_TIMING` pattern.

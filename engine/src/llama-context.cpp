@@ -18,12 +18,15 @@
 #include "llama.h"
 #include "vitriol-kv-probe.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 //
 // llama_context
@@ -1699,8 +1702,6 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // so accept either present rather than requiring exactly one.
     GGML_ASSERT(batch_inp.token || batch_inp.embd);
 
-
-
     // VITRIOL LULL Phase 1: arm the attention probe for single-token decode
     // batches (cadence handled inside the module).
     vitriol_probe::begin_batch(batch_inp.n_tokens == 1);
@@ -2542,6 +2543,34 @@ ggml_cgraph * llama_context::graph_reserve(uint32_t                       n_toke
     res->reset();
 
     auto * gf = model.build_graph(gparams);
+
+    // VITRIOL (2026-11-24): opt-in dump of the largest scheduled nodes, to name the
+    // O(ctx)/O(ub) terms that set the pp compute-buffer ceiling instead of guessing.
+    // Set VITRIOL_GRAPH_DUMP=1; the dump goes to stderr once per reserve.
+    if (const char * dump_env = getenv("VITRIOL_GRAPH_DUMP")) {
+        const int n_dump  = atoi(dump_env) > 0 ? atoi(dump_env) : 40;
+        const int n_nodes = ggml_graph_n_nodes(gf);
+        fprintf(stderr, "[VITRIOL_GRAPH_DUMP] pp reserve graph: n_nodes=%d\n", n_nodes);
+        std::vector<ggml_tensor *> nodes(n_nodes);
+        for (int i = 0; i < n_nodes; i++) {
+            nodes[i] = ggml_graph_node(gf, i);
+        }
+        std::sort(nodes.begin(), nodes.end(),
+                  [](ggml_tensor * a, ggml_tensor * b) { return ggml_nbytes(a) > ggml_nbytes(b); });
+        int shown = 0;
+        for (auto t : nodes) {
+            if (shown++ >= n_dump) {
+                break;
+            }
+            if (ggml_nbytes(t) < (1 << 20)) {
+                break;  // skip <1 MiB noise
+            }
+            fprintf(stderr, "  %10.3f MiB  %-18s  %-32s  [%.0f,%.0f,%.0f,%.0f]  src0=%s\n", ggml_nbytes(t) / 1048576.0,
+                    ggml_op_name(t->op), ggml_get_name(t), (double) t->ne[0], (double) t->ne[1], (double) t->ne[2],
+                    (double) t->ne[3], t->src[0] ? ggml_get_name(t->src[0]) : "-");
+        }
+        fflush(stderr);
+    }
 
     this->n_outputs = save_n_outputs;
 
@@ -4038,7 +4067,7 @@ void llama_context::set_dspark_state(const float * rows, int64_t n_rows, int64_t
         return;
     }
 
-    dspark_state.assign(rows, rows + n_rows*n_embd_state);
+    dspark_state.assign(rows, rows + n_rows * n_embd_state);
     dspark_state_rows = n_rows;
     dspark_state_n    = n_embd_state;
 }
@@ -4055,7 +4084,7 @@ uint32_t llama_model_get_tensor_f32(const llama_model * model, const char * name
 
     const int64_t n = ggml_nelements(t);
     if (out != nullptr) {
-        ggml_backend_tensor_get(t, out, 0, n*sizeof(float));
+        ggml_backend_tensor_get(t, out, 0, n * sizeof(float));
     }
 
     return (uint32_t) n;

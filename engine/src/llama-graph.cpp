@@ -2677,13 +2677,14 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         const char * env = getenv("VITRIOL_FA_BIAS");
         return env == nullptr || atoi(env) != 0;
     }();
-    // The folded mask is per head, so it is n_head times the causal mask. At the 200k
-    // window that extra copy alone costs ~500 MiB of pp buffer (measured: 2048.81 MiB
-    // requested vs 1551 MiB before), so the fold is confined to the windowed layers,
-    // whose mask is bounded by n_swa (1.6 MiB at 1024 wide). Full-attention layers keep
-    // the dense path until the bias rides in as a small table instead of an expanded mask.
-    const bool fa_bias = cparams.flash_attn && kq_b != nullptr && vitriol_fa_bias &&
-        kq_mask->ne[0] <= 4096;
+    // VITRIOL (2026-11-24, round 2): the fold is enabled for ALL layers, not just the
+    // windowed ones. At full-attention layers it removes the dense per-head
+    // kq_b ADD (384 MiB each at c 131k / ub 32; 1.5 GB across the 4 layers) - the
+    // dominant O(ub) term of the pp reserve. The fold costs one F16 copy of the causal
+    // mask per head (~150 MiB for a 204k full layer) and leaves the FA path untouched
+    // here (these layers still use the dense soft_max_ext chain; the per-head mask
+    // contract from e0ad53e makes that chain the cheap one).
+    const bool fa_bias = cparams.flash_attn && kq_b != nullptr && vitriol_fa_bias;
 
     ggml_tensor * kq_mask_eff = kq_mask;
     if (fa_bias) {

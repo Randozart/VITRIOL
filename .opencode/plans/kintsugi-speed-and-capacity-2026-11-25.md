@@ -145,3 +145,44 @@ Track-specific invariants live in the tier document (I1–I9). Shared across bot
 
 Items 2 and 4 are the ones that change what Kintsugi *is* for this workstation: at 48–72 t/s it is a
 credible daily driver at 16–25 t/s it competes with the existing 27B and mostly wins on capacity.
+
+---
+
+## 6. A2 EXECUTED: the step is the drafter, not the codec and not verify
+
+Two instruments were built. The first (`GGML_CUDA_OP_TIMING`, ported from their engine) does not
+work well here: it only arms when a drafter is active, and its totals under-report (0.96 ms/graph
+against a 340 ms step, with no `ESCHA_MUL_MAT` in the top 30) because our fork forks work onto
+secondary streams. It is kept as a diagnostic with that limitation documented.
+
+The second is a host-side timer around the two speculative choke points,
+`common_speculative_process()` and `common_speculative_draft()` (`VITRIOL_SPEC_TIMING=1`). It settles
+the question outright:
+
+| n_max | decode | `spec_process` | `spec_draft` | mean draft len |
+|---|---|---|---|---|
+| 3 | 6.16 t/s (timing on) | **2.95 ms** | **234.69 ms** | 3.98, acceptance **1.00000** |
+| 1 | 7.17 t/s | — | **67.52 ms** | 2.00 |
+
+A step at n_max 3 is ~340 ms. Of that, **235 ms is `draft()` and 3 ms is `process()`**. The target's
+own multi-row verification is the small remainder.
+
+And `draft()` is linear in draft depth: one drafted token costs 67.5 ms, ~3.5 drafted tokens cost
+234.7 ms. **A single forward of the 1.09 GB DFlash2 model therefore takes ~67 ms — about 16 GB/s,
+six times worse than the target's own ~90 GB/s streaming rate, and 5.5x worse than its weights
+require (~12 ms).**
+
+This kills the three hypotheses I had been carrying:
+
+- not the Escha projections (both gemv and MMA prefill give the same step time),
+- not the small-batch verify path (that was the earlier guess: it is ~100 ms at most),
+- not the documented `process()` waste (2.95 ms — irrelevant), despite the fork's own TODO.
+
+**A3 is therefore: make one drafter forward cost its weight-streaming time (~12 ms) instead of
+67 ms.** If it did, a 4-token step would be ~48 + ~130 = ~178 ms ≈ 22 t/s, and at n_max 7 with mean
+len 7.95 (already measured at 14.27 t/s with the timer on) the ceiling is higher still. Candidates,
+in order of likelihood, none yet tested: the drafter's shared 200k output head being computed over a
+dequantising path rather than the coded gemv; per-step graph re-reservation; the drafter's KV at
+c 8192 being re-read cold each step.
+
+**Acceptance is 1.00000 (149/149)**, so S2's quality half holds while we look at speed.

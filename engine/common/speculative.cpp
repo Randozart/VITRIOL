@@ -2938,7 +2938,36 @@ bool common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
     return ready;
 }
 
+
+// VITRIOL_SPEC_TIMING=1: host-side wall clock around the two speculative choke points, so the cost of
+// a verify step can be split between "drafter produces drafts" and "drafter processes the verify
+// batch" without a profiler (nsys cannot attach on this host). Both calls sync on their way out
+// because they consume their own output, so the durations are real GPU+launch time.
+// Prints a rolling average every 50 calls.
+#include <chrono>
+namespace vitriol_spec_timing {
+    static const bool on = getenv("VITRIOL_SPEC_TIMING") != nullptr;
+    struct acc {
+        double ms = 0.0;
+        int64_t n = 0;
+        void add(double t) { ms += t; if (++n % 50 == 0 && on) {
+            fprintf(stderr, "VITRIOL_SPEC_TIMING %s: %.2f ms avg over %lld calls\n", name, ms / 50.0, (long long) n);
+            ms = 0.0;
+        } }
+        const char * name = "";
+    };
+    static acc process_acc; static acc draft_acc;
+    struct scope {
+        acc & a; std::chrono::steady_clock::time_point t0;
+        explicit scope(acc & a_) : a(a_), t0(std::chrono::steady_clock::now()) {}
+        ~scope() { if (on) { a.add(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); } }
+    };
+    static void init_names() { process_acc.name = "spec_process"; draft_acc.name = "spec_draft"; }
+}
+
 bool common_speculative_process(common_speculative * spec, const llama_batch & batch) {
+    vitriol_spec_timing::init_names();
+    vitriol_spec_timing::scope vt_scope(vitriol_spec_timing::process_acc);
     bool result = true;
 
     if (spec == nullptr) {
@@ -2953,6 +2982,8 @@ bool common_speculative_process(common_speculative * spec, const llama_batch & b
 }
 
 void common_speculative_draft(common_speculative * spec) {
+    vitriol_spec_timing::init_names();
+    vitriol_spec_timing::scope vt_scope(vitriol_spec_timing::draft_acc);
     if (spec == nullptr) {
         return;
     }

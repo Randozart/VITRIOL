@@ -12079,6 +12079,176 @@ void ggml_compute_forward_fwht(const ggml_compute_params * params, ggml_tensor *
     }
 }
 
+// ggml_compute_forward_escha_mul_mat
+//
+// PROVENANCE: inspiration -- Kintsugi-27B engine (MIT, llama.cpp fork of
+// PrismML-Eng/llama.cpp) and Ajay9o9's llama.cpp-escha (MIT), the base of the op.
+// Learned: the trellis codebook construction, the 16x16 tile layout, the dep-table
+// bit indexing, and the rotated-basis formulation. The code here is a scalar
+// reference written for this tree: it is the CPU arm the CUDA GEMV is checked
+// against, so it is deliberately the slow, obvious version.
+
+// Normalized Sylvester-Hadamard over each block of 128, in place.
+// H_2n = [[H,H],[H,-H]] is exactly the butterfly below, and H is symmetric, so
+// the side it is applied from does not matter.
+static void ggml_escha_hadamard_128(float * v, int64_t n) {
+    const float scale = 1.0f/sqrtf(128.0f);
+
+    for (int64_t off = 0; off < n; off += 128) {
+        float * b = v + off;
+
+        for (int len = 1; len < 128; len <<= 1) {
+            for (int i = 0; i < 128; i += len << 1) {
+                for (int j = 0; j < len; j++) {
+                    const float a0 = b[i + j];
+                    const float a1 = b[i + j + len];
+
+                    b[i + j]       = a0 + a1;
+                    b[i + j + len] = a0 - a1;
+                }
+            }
+        }
+
+        for (int i = 0; i < 128; i++) {
+            b[i] *= scale;
+        }
+    }
+}
+
+// Escha codebook A, computed rather than looked up. Same QTIP-family trick as
+// 3INST but with its own multiplier and no addend. The add is fp16 in the
+// reference, so it has to stay fp16 here: rounding it in fp32 drifts the low bit
+// and the CPU arm stops matching the kernel it exists to verify.
+static float ggml_escha_codebook(uint32_t idx) {
+    const uint32_t x = ((idx*0xcbac1fedu) & 0x8fff8fffu) ^ 0x3b603b60u;
+
+    ggml_fp16_t lo;
+    ggml_fp16_t hi;
+    memcpy(&lo, (const char *) &x,     sizeof(lo));
+    memcpy(&hi, (const char *) &x + 2, sizeof(hi));
+
+    const float v = GGML_CPU_FP16_TO_FP32(lo) + GGML_CPU_FP16_TO_FP32(hi);
+
+    return GGML_CPU_FP16_TO_FP32(GGML_CPU_FP32_TO_FP16(v));
+}
+
+// Decode one 16x16 tile into row-major [r][c]. dep indexes bits of the tile
+// payload, numbered little-endian within the byte stream; that numbering is part
+// of the on-disk format, not an implementation detail.
+static void ggml_escha_decode_tile(const uint8_t * payload, const int16_t * dep, float * tile) {
+    for (int p = 0; p < 256; ++p) {
+        const int16_t * d = dep + p*16;
+
+        uint32_t idx = 0;
+        for (int b = 0; b < 16; ++b) {
+            idx |= (uint32_t) ((payload[d[b] >> 3] >> (d[b] & 7)) & 1) << b;
+        }
+
+        tile[p] = ggml_escha_codebook(idx);
+    }
+}
+
+// The geometry of one Escha projection: enough to walk the tile grid without
+// threading six loose parameters through every helper.
+struct ggml_escha_geom {
+    const int16_t * code;  // [16*K, OC/16, IC/16], contiguous; advanced per input tile
+    const int16_t * dep;   // [16, 256] payload bit index per code bit
+    int64_t nct;           // output tiles (OC/16)
+    int64_t nit;           // input tiles  (IC/16)
+    int64_t tile_stride;   // 16*K int16 per tile
+};
+
+// One 16-row slice of the rotated input against the whole weight matrix,
+// accumulated into acc[OC]. The decoded matrix never exists: exactly one 16x16
+// tile is live at a time, which is the entire point of the format.
+static void ggml_escha_acc_slice(const ggml_escha_geom & g, const float * ub, float * acc, float * tile) {
+    for (int64_t j = 0; j < g.nct; ++j) {
+        ggml_escha_decode_tile((const uint8_t *) (g.code + j*g.tile_stride), g.dep, tile);
+
+        float * ab = acc + j*16;
+        for (int r = 0; r < 16; ++r) {
+            const float ur = ub[r];
+            if (ur == 0.0f) {
+                continue;
+            }
+
+            const float * tr = tile + r*16;
+            for (int c = 0; c < 16; ++c) {
+                ab[c] += ur*tr[c];
+            }
+        }
+    }
+}
+
+// y = T128( (T128(x * rin) @ decode(code)) * rout ), one row at a time.
+void ggml_compute_forward_escha_mul_mat(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * code = dst->src[0];
+    const ggml_tensor * rin  = dst->src[1];
+    const ggml_tensor * rout = dst->src[2];
+    const ggml_tensor * lut  = dst->src[3];
+    const ggml_tensor * dep  = dst->src[4];
+    const ggml_tensor * x    = dst->src[5];
+
+    const int64_t nct = code->ne[1];
+    const int64_t nit = code->ne[2];
+    const int64_t OC  = nct*16;
+    const int64_t IC  = nit*16;
+
+    ggml_escha_geom g = {
+        /*.code        =*/ (const int16_t *) code->data,
+        /*.dep         =*/ (const int16_t *) dep->data,
+        /*.nct         =*/ nct,
+        /*.nit         =*/ nit,
+        /*.tile_stride =*/ code->ne[0],
+    };
+
+    const ggml_fp16_t * rin_d  = (const ggml_fp16_t *) rin->data;
+    const ggml_fp16_t * rout_d = (const ggml_fp16_t *) rout->data;
+
+    // lut stays a src so an existing file still loads and a codebook other than A
+    // can be added without a format change; codebook A is computed, not read.
+    GGML_UNUSED(lut);
+
+    const int64_t nrows = x->ne[1]*x->ne[2];
+
+    const int64_t dr = (nrows + params->nth - 1)/params->nth;
+    const int64_t r0 = dr*params->ith;
+    const int64_t r1 = MIN(r0 + dr, nrows);
+
+    float * wdata = (float *) params->wdata + (IC + OC + 256)*params->ith;
+    float * u     = wdata;
+    float * acc   = u   + IC;
+    float * tile  = acc + OC;
+
+    for (int64_t ir = r0; ir < r1; ++ir) {
+        const int64_t i1 = ir % x->ne[1];
+        const int64_t i2 = ir / x->ne[1];
+
+        const float * xr = (const float *) ((const char *) x->data + i1*x->nb[1] + i2*x->nb[2]);
+
+        for (int64_t i = 0; i < IC; ++i) {
+            u[i] = xr[i]*GGML_CPU_FP16_TO_FP32(rin_d[i]);
+        }
+        ggml_escha_hadamard_128(u, IC);
+
+        memset(acc, 0, OC*sizeof(float));
+
+        for (int64_t i = 0; i < nit; ++i) {
+            g.code = (const int16_t *) code->data + i*nct*g.tile_stride;
+            ggml_escha_acc_slice(g, u + i*16, acc, tile);
+        }
+
+        ggml_escha_hadamard_128(acc, OC);
+
+        float * out = (float *) ((char *) dst->data + i1*dst->nb[1] + i2*dst->nb[2]);
+        for (int64_t c = 0; c < OC; ++c) {
+            out[c] = acc[c]*GGML_CPU_FP16_TO_FP32(rout_d[c]);
+        }
+    }
+}
+
 // ggml_compute_forward_lightning_indexer
 
 void ggml_compute_forward_lightning_indexer(

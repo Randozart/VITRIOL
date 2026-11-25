@@ -597,6 +597,8 @@ extern "C" {
 
         GGML_OP_TURBO_WHT,
 
+        GGML_OP_ESCHA_MUL_MAT,
+
         GGML_OP_COUNT,
     };
 
@@ -2773,6 +2775,45 @@ extern "C" {
     GGML_API struct ggml_tensor * ggml_turbo_wht(
             struct ggml_context * ctx,
             struct ggml_tensor  * a);
+
+    // Escha trellis projection (ESCHAM 2/3-bit code) -- dense, fused decode + matmul.
+    //
+    // PROVENANCE: inspiration -- Kintsugi-27B engine (MIT, llama.cpp fork of
+    // PrismML-Eng/llama.cpp) and Ajay9o9's llama.cpp-escha (MIT), which is the base
+    // of the op. What was learned: the op shape, the on-the-fly 16x16 tile decode,
+    // and the rotated-basis formulation. Not copied code.
+    //
+    // The weights stay in the trellis code and are decoded on the fly, so the
+    // decoded matrix never exists in memory:
+    //
+    //     weight[p] = lut[ sum_j bit(payload, dep[p][j]) << j ]
+    //
+    // The decoded matrix lives in a Hadamard-rotated basis, so the op also applies
+    // the two rotations that act on the activations:
+    //
+    //     y = T128( (T128(x * rin) @ decode(code)) * rout )
+    //
+    // with T128 a normalized Sylvester-Hadamard applied per 128-block along the
+    // rotated axis. rin/rout are what makes this unexpressible as a ggml quant
+    // type: a quant type has no per-tensor activation-domain transform.
+    //
+    //   code : [16*K, OC/16, IC/16]    i16, K = 2 or 3
+    //   rin  : [IC]                    f16
+    //   rout : [OC]                    f16
+    //   lut  : [65536]                 f16  trellis codebook. Kept as a src for
+    //                                  format forward-compatibility: codebook A is
+    //                                  computed, not read.
+    //   dep  : [16, 256]               i16  payload bit index per code bit
+    //   x    : [IC, n_tokens, n_batch] f32
+    //   res  : [OC, n_tokens, n_batch] f32
+    GGML_API struct ggml_tensor * ggml_escha_mul_mat(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * code,
+            struct ggml_tensor  * rin,
+            struct ggml_tensor  * rout,
+            struct ggml_tensor  * lut,
+            struct ggml_tensor  * dep,
+            struct ggml_tensor  * x);
 
     // AdamW optimizer step
     // Paper: https://arxiv.org/pdf/1711.05101v3.pdf

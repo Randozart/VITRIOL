@@ -1124,9 +1124,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
 
     "GLU",
     "TURBO_WHT",
+    "ESCHA_MUL_MAT",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1240,9 +1241,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
 
     "glu(x)",
     "turbo_wht(x)",
+    "escha_mul_mat(code, x)",
 };
 
-static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+static_assert(GGML_OP_COUNT == 103, "GGML_OP_COUNT != 103");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6582,6 +6584,71 @@ struct ggml_tensor * ggml_dsv4_hc_post(
     result->src[1] = residual;
     result->src[2] = post;
     result->src[3] = comb;
+
+    return result;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+// Escha dense projection: y = T128( (T128(x * rin) @ decode(code)) * rout ).
+//
+// PROVENANCE: inspiration -- Kintsugi-27B engine (MIT, llama.cpp fork of
+// PrismML-Eng/llama.cpp) + Ajay9o9's llama.cpp-escha (MIT). Learned the shape
+// assertions and the rotated-basis contract; not copied code. See ggml.h.
+//
+// The assertions ARE the format's contract: a model whose tensors do not match
+// them is not an Escha checkpoint, and failing here is far cheaper than decoding
+// garbage and getting plausible-looking text out of it.
+struct ggml_tensor * ggml_escha_mul_mat(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * code,
+        struct ggml_tensor  * rin,
+        struct ggml_tensor  * rout,
+        struct ggml_tensor  * lut,
+        struct ggml_tensor  * dep,
+        struct ggml_tensor  * x) {
+    GGML_ASSERT(code->type == GGML_TYPE_I16);
+    GGML_ASSERT(rin ->type == GGML_TYPE_F16);
+    GGML_ASSERT(rout->type == GGML_TYPE_F16);
+    GGML_ASSERT(lut ->type == GGML_TYPE_F16);
+    GGML_ASSERT(dep ->type == GGML_TYPE_I16);
+    GGML_ASSERT(x   ->type == GGML_TYPE_F32);
+
+    GGML_ASSERT(ggml_is_contiguous(code));
+    GGML_ASSERT(ggml_is_contiguous(rin));
+    GGML_ASSERT(ggml_is_contiguous(rout));
+    GGML_ASSERT(ggml_is_contiguous(lut));
+    GGML_ASSERT(ggml_is_contiguous(dep));
+    GGML_ASSERT(ggml_is_contiguous_rows(x));
+
+    GGML_ASSERT(code->ne[0] == 32 || code->ne[0] == 48); // 16*K, K = 2 or 3
+    GGML_ASSERT(code->ne[3] == 1);                       // dense: no expert dimension
+
+    const int64_t OC = code->ne[1]*16;
+    const int64_t IC = code->ne[2]*16;
+
+    // the rotations are applied per 128-block, so both axes must be a multiple of 128
+    GGML_ASSERT(IC % 128 == 0);
+    GGML_ASSERT(OC % 128 == 0);
+
+    GGML_ASSERT(ggml_nelements(rin)  == IC);
+    GGML_ASSERT(ggml_nelements(rout) == OC);
+    GGML_ASSERT(lut->ne[0] == 65536 && ggml_nelements(lut) == 65536);
+    GGML_ASSERT(dep->ne[0] == 16 && dep->ne[1] == 256);
+
+    GGML_ASSERT(x->ne[0] == IC);
+    GGML_ASSERT(x->ne[3] == 1);
+
+    const int64_t ne[4] = { OC, x->ne[1], x->ne[2], 1 };
+    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+
+    result->op     = GGML_OP_ESCHA_MUL_MAT;
+    result->src[0] = code;
+    result->src[1] = rin;
+    result->src[2] = rout;
+    result->src[3] = lut;
+    result->src[4] = dep;
+    result->src[5] = x;
 
     return result;
 }

@@ -13,6 +13,7 @@
 #include <cstring>
 #include <future>
 #include <regex>
+#include <set>
 
 bool vitriol_skip_host_read(struct ggml_tensor * cur);
 
@@ -1288,9 +1289,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         // the file" is the exact shape of an Escha wiring mistake, and the generic count
         // error at the end names none of them. Opt-in via VITRIOL_TENSOR_DEBUG=1.
         if (getenv("VITRIOL_TENSOR_DEBUG")) {
+            static std::set<std::string> dbg_seen;
             const std::string dbg_name = tn.str();
             if (weights_map.find(dbg_name) == weights_map.end()) {
                 fprintf(stderr, "VITRIOL-TDBG created-but-absent: %s\n", dbg_name.c_str());
+            }
+            if (!dbg_seen.insert(dbg_name).second) {
+                fprintf(stderr, "VITRIOL-TDBG created-twice: %s\n", dbg_name.c_str());
             }
         }
 

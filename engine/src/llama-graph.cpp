@@ -1629,6 +1629,40 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     return res;
 }
 
+ggml_tensor * llm_graph_context::build_escha_mm(
+        const llm_escha_tables & tab,
+          const llm_escha_exps & w,
+                  ggml_tensor * cur) const {
+    // The bit width is a property of the projection, not of the model: a checkpoint
+    // may store mlp.up/mlp.down at K=3 and everything else at K=2, and each K has
+    // its own bit-dependency table. GGML_ASSERT rather than a fallback because a
+    // missing table means the file is malformed, and decoding with the wrong table
+    // produces confident nonsense instead of an error.
+    const int64_t K = w.code->ne[0]/16;
+    ggml_tensor * dep = tab.dep_for((int) K);
+    GGML_ASSERT(dep != nullptr && "escha_dep table missing for this bit width");
+
+    // LoRA cannot apply here: there is no dense weight for a low-rank update to
+    // attach to, which is exactly why this is an op and not a quant type.
+    ggml_tensor * out = ggml_escha_mul_mat(ctx0, w.code, w.rin, w.rout, tab.lut, dep, cur);
+
+    // Every coded projection ships an fp32 bias-correction vector and the base model
+    // has none, so applying it looks obviously right -- but the reference runtime
+    // does not apply it, and its model card says ignoring them is what reproduces
+    // the published results. Matching the reference wins over a change that is
+    // quality-neutral by the publisher's own measurement. Flip to 1 to A/B it.
+#define ESCHA_APPLY_BIAS 0
+#if ESCHA_APPLY_BIAS
+    if (w.bias != nullptr) {
+        out = ggml_add(ctx0, out, w.bias);
+    }
+#else
+    GGML_UNUSED(w.bias);
+#endif
+
+    return out;
+}
+
 ggml_tensor * llm_graph_context::build_norm(
          ggml_tensor * cur,
          ggml_tensor * mw,

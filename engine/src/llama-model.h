@@ -663,6 +663,13 @@ struct llama_model {
     std::vector<std::string> classifier_labels;
 
     struct ggml_tensor * tok_embd   = nullptr;
+
+    // Escha codec tables: one set for the whole model, shared by every coded
+    // projection in every layer. Null unless the checkpoint carries
+    // qwen35.escha.version, which is also what gates the graph changes (I1/I3).
+    struct ggml_tensor * escha_lut    = nullptr;
+    struct ggml_tensor * escha_dep_k2 = nullptr;
+    struct ggml_tensor * escha_dep_k3 = nullptr;
     struct ggml_tensor * type_embd  = nullptr;
     struct ggml_tensor * pos_embd   = nullptr;
     struct ggml_tensor * tok_norm   = nullptr;

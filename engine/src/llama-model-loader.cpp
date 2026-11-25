@@ -980,6 +980,39 @@ static bool weight_buft_supported(const llama_hparams & hparams, ggml_tensor * w
                 ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_ids_used, 512);
                 op_tensor = ggml_mul_mat_id(ctx, w, b, ids);
             } break;
+        case GGML_OP_ESCHA_MUL_MAT:
+            {
+                // The probe has to see w inside the op, otherwise a repacking buffer
+                // type claims the tensor and then refuses the op at graph time.
+                //
+                // Upstream passes the tensor-name suffix in to tell code/rin/rout apart.
+                // This fork's weight_buft_supported has no suffix parameter, so the role
+                // is inferred from w's own type and rank instead. That is enough for the
+                // probe: all it decides is whether this buffer type can back this tensor
+                // for this op, and a shape-valid instantiation answers that. The real
+                // dimensions arrive when the graph is built.
+                const int  nd      = ggml_n_dims(w);
+                const bool is_code = w->type == GGML_TYPE_I16 && nd == 3;
+                const bool is_dep  = w->type == GGML_TYPE_I16 && nd == 2;
+                const bool is_rot  = w->type == GGML_TYPE_F16 && nd == 1 && w->ne[0] != 65536;
+
+                // A rotation is either [IC] or [OC]; which one is not recoverable from the
+                // shape alone, and does not need to be -- both lengths are multiples of
+                // 128 for every projection in the format, so either reading is valid.
+                const int64_t IC = is_code ? w->ne[2]*16 : (is_rot ? w->ne[0] : (is_dep ? 2048 : 2048));
+                const int64_t OC = is_code ? w->ne[1]*16 : (is_rot ? 128    : (is_dep ?  512 :  512));
+                const int64_t n_code = is_code ? w->ne[0] : 32;
+
+                ggml_tensor * code = is_code ? w : ggml_new_tensor_3d(ctx, GGML_TYPE_I16, n_code, OC/16, IC/16);
+                ggml_tensor * rin  = is_rot  ? w : ggml_new_tensor_1d(ctx, GGML_TYPE_F16, IC);
+                ggml_tensor * rout = is_rot  ? w : ggml_new_tensor_1d(ctx, GGML_TYPE_F16, OC);
+                ggml_tensor * lut  = (w->type == GGML_TYPE_F16 && w->ne[0] == 65536) ? w
+                                   : ggml_new_tensor_1d(ctx, GGML_TYPE_F16, 65536);
+                ggml_tensor * dep  = is_dep  ? w : ggml_new_tensor_2d(ctx, GGML_TYPE_I16, 16, 256);
+
+                ggml_tensor * b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, IC, 512);
+                op_tensor = ggml_escha_mul_mat(ctx, code, rin, rout, lut, dep, b);
+            } break;
         case GGML_OP_ADD:
             {
                 ggml_tensor * a = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, w->ne[0], w->ne[1], w->ne[2], w->ne[3]);

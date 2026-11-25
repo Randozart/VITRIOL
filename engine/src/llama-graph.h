@@ -1136,6 +1136,13 @@ struct llm_graph_context {
               ggml_tensor * ids,
               ggml_tensor * w_s = nullptr) const;
 
+    // Dense matmul for a projection still in the Escha code -- stands in for
+    // build_lora_mm, and is used instead of it, never alongside.
+    ggml_tensor * build_escha_mm(
+        const llm_escha_tables & tab,
+          const llm_escha_exps & w,
+                  ggml_tensor * cur) const;
+
     ggml_tensor * build_norm(
              ggml_tensor * cur,
              ggml_tensor * mw,

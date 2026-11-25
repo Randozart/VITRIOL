@@ -2356,6 +2356,10 @@ struct llama_model_qwen3next : public llama_model_base {
 };
 
 struct llama_model_qwen35 : public llama_model_base {
+    // 0 = conventional weights; 1 = every linear projection is trellis-coded.
+    // Read from qwen35.escha.version and never inferred from tensor presence, so a
+    // partially converted file fails loudly rather than half-building a graph.
+    uint32_t escha_version = 0;
     llama_model_qwen35(const struct llama_model_params & params) : llama_model_base(params) {}
 
     void load_arch_hparams(llama_model_loader & ml) override;

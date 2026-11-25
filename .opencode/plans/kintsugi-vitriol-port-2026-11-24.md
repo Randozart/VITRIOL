@@ -579,6 +579,35 @@ falling to 0.75 (the recon path changes the numerics), so that is not the fix as
   verification cost showing up again: they convert 8 drafted rows into 8 tokens per
   forward, we convert ~4.7.
 
+### D4g decomposed: step cost versus rows verified
+
+Draft depth swept at c 8192, dual card, `-ub 128`, repetition prompt (128 tokens):
+
+| n_max | tok/s | mean len | ms/token | ms/step | rows verified |
+|---|---|---|---|---|---|
+| 1 | 7.60 | 2.00 | 132 | 263 | 3.0 |
+| 2 | 8.28 | 3.00 | 121 | 362 | 4.0 |
+| 3 | 11.65 | 3.97 | 86 | 341 | 5.0 |
+| 5 | 15.23 | 6.00 | 66 | 394 | 7.0 |
+
+Two separate costs, and they are not equal:
+
+- **Marginal cost per verified row: ~33 ms**, against 114 ms for standing alone as a
+  token. So a verified row already costs about a third of a token rather than being
+  free — 7 rows add ~231 ms to every step.
+- **Step base ~165 ms**, higher than the 114 ms single-token decode. That excess is
+  spec plumbing that does not scale with rows: the drafter's own forward (~12 ms for
+  1.1 GB), a second `llama_decode`, and sampling over a 200 k vocabulary per row.
+
+Their engine does ~110 ms for 8 rows, i.e. both roughly flat in rows *and* with no
+inflated base. If our per-row cost went to zero a 7-row step would be ~165 ms = 48 t/s;
+closing the base as well is what reaches their 72.8.
+
+**So D4g is two targets, in this order: (1) flatten the per-row verification cost
+(~33 -> ~0 ms), (2) remove the ~50 ms step base.** Next instrument: CUDA-event timing
+inside `ggml_cuda_op_escha_mul_mat` to split the step between the codec and the spec
+plumbing, since nsys cannot attach on this host.
+
 ### Features their argv has that we do not
 
 `--kv-vram-cells` (tiered VRAM/system-RAM KV), `--kq-mask-packed`, a two-stage output

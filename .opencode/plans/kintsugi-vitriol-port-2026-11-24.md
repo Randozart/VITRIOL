@@ -253,6 +253,53 @@ chassis already in our fork (PR #32218 deltas are in-tree). Strictly after I7.
 
 ---
 
+## 4a. Stage results — D0..D3 shipped (2026-11-24)
+
+| stage | commit | outcome |
+|---|---|---|
+| D0 vendor exl3 | `8504f7f` | 11 files / 2,470 lines verbatim, `LICENSE` + `README.md` (records upstream v1.6.7, commit `8c593e4e`) retained. Header-only, so no build output changed. |
+| D1 register op + CPU ref | `02ba2f9` | `GGML_OP_ESCHA_MUL_MAT` appended (I4: `GGML_OP_COUNT` 102→103, `TURBO_WHT` keeps its value). Build EXIT=0. |
+| D2 conformance on real data | `5225094` | `blk.0.attn_qkv`: CPU vs double reference **rmse/\|ref\|max 1.4e-07**. 3 negative controls fire. |
+| D3 CUDA decode | `791cbc7` | CUDA0/CUDA1 **5.2e-05**, CPU 1.4e-07, all against the same reference. 8 checks, 0 failures. |
+
+### Two scope corrections, measured rather than assumed
+
+**1. "Skip `escha-moe.cu`" was wrong.** The plan's §3 assumed the dense path had
+its own file. It does not: `ggml_cuda_op_escha_mul_mat` is *defined inside*
+`escha-moe.cu` and calls `escha_rotate_in_dense`, `escha_matmul_dense`,
+`escha_reconstruct_dense`, `escha_prefill_for`, `escha_finalize_dense` — all of
+which live there. The two files are one codec. Both are taken **verbatim**; the
+MoE entry point compiles but is unreachable because we never register
+`GGML_OP_ESCHA_MOE`. Net effect on the estimate: +1,704 lines vs the plan, and a
+matching −1 on the "do not port escha-moe" line in §8. Pruning the MoE kernels
+later is a mechanical deletion; pruning them now would mean hand-editing a
+1.7k-line kernel file during a first port.
+
+**2. One newer-upstream symbol is absent from our frozen fork.**
+`ggml_cuda_batch_invariant()` (batch-invariance toggle) does not exist in our
+tree. The dense path uses it for one line — `n_rb_slices = gen &&
+ggml_cuda_batch_invariant() ? 1 : n_rb` — so it is replaced by `n_rb_slices =
+n_rb`, which is exactly the pre-feature behaviour. Marked inline at the call
+site. We make no batch-invariance claim, and none of our outputs depend on it.
+
+### What the data actually says about precision
+
+CUDA is ~370× less precise than CPU (5.2e-05 vs 1.4e-07) because
+`escha_rotate_in_dense<half>` quantises the rotated input to fp16 — by design,
+since the tensor-core prefill path wants it in fp16 to move verbatim through
+`cp.async`. CUDA0 and CUDA1 produce **identical** statistics, so there is no
+per-device divergence to chase. The statistical error is well inside tolerance;
+the binding precision gate is **I7 token parity at D5**, not D2/D3.
+
+### Operational note for anyone touching `engine/` afterwards
+
+The editor's auto-formatter rewrites an entire file when it touches one. On this
+frozen vendored fork that produced a 9k-line formatting diff across five files
+before the build even ran. The engine patches in this stage were therefore
+applied through `scripts`-style exact-match replacements that assert a single
+match per hunk, and the diffstays at **293 insertions / 2 deletions** for D1.
+Do not open engine files in the editor for a one-line change.
+
 ## 5. Invariants
 
 Each is a property, each names its pin.

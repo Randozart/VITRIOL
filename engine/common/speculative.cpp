@@ -20,6 +20,37 @@
 #include <iomanip>
 #include <map>
 #include <cinttypes>
+// VITRIOL_SPEC_TIMING=1: host-side wall clock around the two speculative choke points, so the cost of
+// a verify step can be split between "drafter produces drafts" and "drafter processes the verify
+// batch" without a profiler (nsys cannot attach on this host). Both calls sync on their way out
+// because they consume their own output, so the durations are real GPU+launch time.
+// Prints a rolling average every 50 calls.
+#include <chrono>
+namespace vitriol_spec_timing {
+    static const bool on = getenv("VITRIOL_SPEC_TIMING") != nullptr;
+    struct acc {
+        double ms = 0.0;
+        int64_t n = 0;
+        void add(double t) { ms += t; if (++n % 50 == 0 && on) {
+            fprintf(stderr, "VITRIOL_SPEC_TIMING %s: %.2f ms avg over %lld calls\n", name, ms / 50.0, (long long) n);
+            ms = 0.0;
+        } }
+        const char * name = "";
+    };
+    static acc process_acc; static acc draft_acc;
+    // D2: split of draft() for the block-draft path
+    static acc decode_acc; static acc lattice_acc;
+    struct scope {
+        acc & a; std::chrono::steady_clock::time_point t0;
+        explicit scope(acc & a_) : a(a_), t0(std::chrono::steady_clock::now()) {}
+        ~scope() { if (on) { a.add(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); } }
+    };
+    static void init_names() {
+        process_acc.name = "spec_process"; draft_acc.name = "spec_draft";
+        decode_acc.name  = "draft_decode";   // llama_decode(ctx_dft, batch) alone
+        lattice_acc.name = "draft_lattice";  // llama_get_embeddings_nextn: the sync + host copy
+    }
+}
 
 #define SPC_DBG(fmt, ...) LOG_DBG("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 #define SPC_TRC(fmt, ...) LOG_TRC("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
@@ -1326,7 +1357,11 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         if (dspark_state_ready) {
             llama_set_dspark_state_rows(ctx_dft, block_state.data(), block_state.size() / n_embd_dec, n_embd_dec);
         }
-        int ret = llama_decode(ctx_dft, batch);
+        int ret;
+        {
+            vitriol_spec_timing::scope vt_decode(vitriol_spec_timing::decode_acc);
+            ret = llama_decode(ctx_dft, batch);
+        }
         if (dspark_state_ready) {
             llama_set_dspark_state_rows(ctx_dft, nullptr, 0, 0);
         }
@@ -1349,7 +1384,11 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             auto & result = *dp.result;
 
             if (is_dflash2) {
-                const float * lattice = llama_get_embeddings_nextn(ctx_dft);
+                const float * lattice;
+                {
+                    vitriol_spec_timing::scope vt_lat(vitriol_spec_timing::lattice_acc);
+                    lattice = llama_get_embeddings_nextn(ctx_dft);
+                }
                 GGML_ASSERT(lattice && "DFlash2 selector produced no lattice");
 
                 int32_t predecessor = 0;
@@ -2938,32 +2977,6 @@ bool common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
     return ready;
 }
 
-
-// VITRIOL_SPEC_TIMING=1: host-side wall clock around the two speculative choke points, so the cost of
-// a verify step can be split between "drafter produces drafts" and "drafter processes the verify
-// batch" without a profiler (nsys cannot attach on this host). Both calls sync on their way out
-// because they consume their own output, so the durations are real GPU+launch time.
-// Prints a rolling average every 50 calls.
-#include <chrono>
-namespace vitriol_spec_timing {
-    static const bool on = getenv("VITRIOL_SPEC_TIMING") != nullptr;
-    struct acc {
-        double ms = 0.0;
-        int64_t n = 0;
-        void add(double t) { ms += t; if (++n % 50 == 0 && on) {
-            fprintf(stderr, "VITRIOL_SPEC_TIMING %s: %.2f ms avg over %lld calls\n", name, ms / 50.0, (long long) n);
-            ms = 0.0;
-        } }
-        const char * name = "";
-    };
-    static acc process_acc; static acc draft_acc;
-    struct scope {
-        acc & a; std::chrono::steady_clock::time_point t0;
-        explicit scope(acc & a_) : a(a_), t0(std::chrono::steady_clock::now()) {}
-        ~scope() { if (on) { a.add(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count()); } }
-    };
-    static void init_names() { process_acc.name = "spec_process"; draft_acc.name = "spec_draft"; }
-}
 
 bool common_speculative_process(common_speculative * spec, const llama_batch & batch) {
     vitriol_spec_timing::init_names();

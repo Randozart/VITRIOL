@@ -134,3 +134,91 @@ I stopped before these: the guarded `raw = … && …` pattern makes them safe i
 land in a model hot path and I will not make the first edit of that kind at the end of a long session
 with no budget to verify it. The correct next action is to re-run this plan from G1 with the graph
 half included, then measure — with the expectation that this is where the gain, if any, appears.
+
+---
+
+## 7. Revised staging for the full port (both halves, one commit or none)
+
+The graph half is meaningless without their kernel and vice versa: raw gates only pay off because
+their kernel precomputes them. So the two halves ship together and are judged together.
+
+- **G1b — rebuild the kernel half** (the reverted import): their `gated_delta_net.cu`/`.cuh`,
+  `batch_invariant` + gather-struct backports, gather stubbed to miss, Blackwell MMA disabled with its
+  two entry points returning false. (Verified in the previous run: 40 GDN cases, 3/3 backends passed.)
+- **G2b — the raw-gate plumbing**, four edits, each with a runtime fallback:
+  1. `src/models/models.h` — `gdn_raw_beta/alpha/dt_bias/a` members (their `models.h:90-93`).
+  2. `ggml/include/ggml.h` + `ggml/src/ggml.c` — `ggml_gated_delta_net_set_raw_gates()`: `op_params[1]=1`,
+     `src[7]=dt_bias`, `src[8]=a` (their `ggml.c:6592-6610`). Our `GGML_MAX_SRC` is 10, so `src[8]` fits.
+  3. `src/models/delta-net-base.cpp` — both call sites adopt the guarded form
+     `raw ? gdn_raw_alpha : g, raw ? gdn_raw_beta : b` + `if (raw) set_raw_gates(...)`.
+  4. `src/models/qwen35.cpp` — capture `beta_raw` before `beta = ggml_sigmoid(...)` (our line 451) and
+     set the four members from `alpha` (3-D → 4-D), `ssm_dt`, `ssm_a`.
+- **G3b — parity.** `test-backend-ops -o GATED_DELTA_NET` = 40/40, 3/3 backends; 8-prompt corpus
+  ≥ 6/8; acceptance ≥ 0.99; **and a greedy 96-token reply byte-identical to the pre-port build**
+  (the raw path must compute the same gates, only in a different place).
+- **G4b — measure.** Same three configs as G0. Keep only if decode improves beyond run-to-run
+  variance (baseline spans 8.07–8.80 t/s, so a single run is not enough: two runs per arm, and a
+  result inside the band is "no change", not a win).
+
+**Extra invariant for this half — I6 (CPU fallback safety).** Raw gates change what `src[3]`/`src[4]`
+mean, so a backend that does not implement them would silently compute the wrong thing. The raw path
+is therefore enabled only when every layer runs on an accelerator that implements it; otherwise the
+graph keeps activated gates. *Pinned by*: a run with a partly-offloaded model (or `-ngl 0`) producing
+correct output, and `GGML_GDN_RAW_GATES_DISABLE=1` reproducing the pre-port numbers exactly.
+
+---
+
+## 8. Executed: both halves (G1b/G2b), then reverted on a correctness failure
+
+### What was built
+
+Both halves, as §7 specified, and it **compiles clean**:
+
+- kernel half re-imported (their `gated_delta_net.cu`/`.cuh`, `batch_invariant` + gather backports,
+  gather stubbed to miss, Blackwell MMA disabled with its two entry points returning `false`);
+- raw-gate plumbing: `ggml.h` + `ggml.c` `ggml_gated_delta_net_set_raw_gates` (`op_params[1]=1`,
+  `src[7]=dt_bias`, `src[8]=a`), four `gdn_raw_*` members on `llm_graph_context` (`src/llama-graph.h`),
+  both `delta-net-base.cpp` call sites guarded by
+  `const bool raw = gdn_raw_beta && gdn_raw_alpha && gdn_raw_dt_bias && gdn_raw_a;`, and
+  `qwen35.cpp` capturing `beta_raw` before the sigmoid and publishing the four tensors.
+
+The I6 guard ended up as a **per-layer device check** rather than a layer count —
+`ggml_backend_dev_type(model.dev_layer(il)) == GGML_BACKEND_DEVICE_TYPE_GPU` — because `cparams` has no
+`n_gpu_layers`; raw gates are implemented by the CUDA kernel we imported, not by this fork's CPU
+kernel, so any other placement keeps activated gates.
+
+### It engaged, and produced garbage
+
+```
+baseline   OUTPUT: '\n\n<think>\nThe user wants a Python function that returns the '
+raw gates  OUTPUT: '////////////////////////////////////////////////'
+```
+
+So `raw=1` took effect (the op_params/src[7-8] plumbing works) and the **numerics are wrong**.
+`decode 8.23 t/s` with nonsense output is not a speed result, it is a bug.
+
+### Why, and what it means
+
+The four-tensor handoff is order- and flow-sensitive, and our two participating files are not their
+two files: `delta-net-base.cpp` is 606 lines here against their 688 (1,294 diff lines), and their
+version carries a device-support probe (`gdn_raw_gates_dev_ok`, their `models.h:2271`) that gates the
+whole feature at model level. Spot-patching two call sites into an older flow — where the layer that
+publishes `gdn_raw_*` and the layer that consumes them may not be the same one at the same time —
+produces exactly this class of failure: plausible plumbing, wrong values.
+
+**Conclusion: this is not a 5-point edit.** The correct unit of port is `delta-net-base.cpp` **and**
+`qwen35.cpp` **together**, taken from their tree, which keeps their publish/consume ordering. That is
+the next step, and it is bigger than what this plan sized.
+
+### Process error worth recording
+
+Killing the engine with `pkill -9` while `vitriol-server.service` is `Restart=always` made systemd
+restart the 27B mid-window, so the next Kintsugi load died with
+`cudaMalloc failed: out of memory` on a 3,588 MiB allocation. The project rules already say to use
+`systemctl stop` first; I did not, and lost a cycle to it.
+
+### State
+
+Reverted with `git checkout -- engine/`. Rebuild verified: baseline output is sane again
+(`'\n\n<think>\nThe user wants…'`), decode **7.95 t/s**, 27B daily driver restored and healthy
+(10,164/10,106 MiB). The plan and AGENTS note are committed; no engine change ships from this run.

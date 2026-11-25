@@ -508,3 +508,73 @@ assumed:
   and verified healthy after every load window this session.
 - **I4 (op enum append-only)**: unchanged by D4e.
 - **I7**: open, as above.
+
+---
+
+## 4c. I7 parity and the speed gap, measured against their release engine (2026-11-25)
+
+Their engine never had to be built: `kintsugi-v1.1.6-linux.tar.gz` ships prebuilt
+`bin/` (libggml-cuda.so + `llama-server`) and `start-server.sh`, extracted to
+`/scratch/kintsugi-ref/`. So the reference is their actual release, not a
+reconstruction.
+
+### I7: 6 of 8 prompts byte-identical, greedy, 48 tokens
+
+Same model file, c 8192, `-fa on`, no draft, temperature 0, `/completion`:
+
+| prompt | longest common prefix | verdict |
+|---|---|---|
+| repeat, code, math, capital, list, prose | full length | **identical** |
+| sort | 2 chars (diverges at token 3) | near-tie flip |
+| unit | 6 chars (diverges at token 7) | near-tie flip |
+
+Two flips out of eight, both at low-margin positions ("\n\n" then ```` ``` ```` vs
+` thinking`; and an EOS call after "3500"). Nothing suggests a systematic numeric
+error — and D2/D3 already pinned the op to 1.4e-07 against a double-precision
+reference. **I7's stated bar (token-identical or KL <= 0.01) is met on the
+identical six; the two flips still want a logprob comparison to close formally.**
+
+### Speed, same host, same model, same context, same drafter
+
+| | theirs | ours |
+|---|---|---|
+| no draft, single card | **14.55 t/s** (repeat) / 14.46 (code) | 8.80 / 8.74 |
+| DFlash2 draft 3 (ours) / 7 (theirs) | **72.82** (repeat) / 45.11 (code), single card | 11.88, dual card |
+
+**The 1.66x no-draft gap is not the gemv kernel** — theirs runs the same vendored
+`exl3` kernels. It is also not draft quality: our acceptance is **1.00000 with mean
+length 3.96**, i.e. every drafted token lands.
+
+The difference is the **cost of verifying a small batch**. Ours emits ~4 tokens per
+step at 11.88 t/s = ~296 ms/step, against 114 ms for a single-row token: verifying 4
+rows costs **2.6x one row**. Theirs emits ~8 tokens per forward at 72.8 t/s, i.e. a
+multi-row verification costs them **about one row**. Since decode is weight-streaming
+bound, multi-row verification *should* be near-flat — the weights are read once for
+the whole batch. Ours is not, and that is the whole gap.
+
+Cause is localised to the `m = 2..8` path: `escha-moe.cu` sends `n_rows <=
+ESCHA_GEN_MAX_ROWS (16)` to `ggml_cuda_escha_gemv`, which runs `mmode=1` with
+`ROWS = EXL3_GEMV_MAX_M (8)` per chunk. Prefill (large m) is efficient — 270 t/s at
+2048 rows — so the MMA tile is fine; it is the small-m chunk that is not.
+Forcing the MMA path globally (`GGML_ESCHA_GEMV=0`) gave 10.03 t/s with acceptance
+falling to 0.75 (the recon path changes the numerics), so that is not the fix as-is:
+**D4g is now "make m = 2..8 verification cost about one row", not "improve the gemv".**
+
+### DFlash2 on our engine: works, dual card only
+
+- Dual card, c 8192, `--spec-type draft-dflash --spec-draft-n-max 3`: **11.88 t/s**
+  (from 8.80 no-draft), and at 262k with q4_0 KV it is 6.76 vs 5.35 (+26 %).
+- **Single card does not fit**: model 8.6 GB + draft 1.1 GB + recurrent state and
+  compute buffers exceed 12 GB — consistently ~1.3 GB short at c 4096/`-ub 32`, and
+  5.7 GB short at c 8192/n_max 7. Their single-card hero mode fits because of tiered
+  KV (`--kv-vram-cells`), which we do not have. That is the concrete reason their
+  dflash runs on one card and ours does not.
+- Profile `kintsugi-27b-262k` now carries the drafter and loads through the launcher
+  (`spec=draft-dflash:3`).
+
+### Features their argv has that we do not
+
+`--kv-vram-cells` (tiered VRAM/system-RAM KV), `--kq-mask-packed`, a two-stage output
+head (`KINTSUGI_HEAD2`), and an int8 long-prompt read (`KINTSUGI_READ=fast`). The
+first is what unblocks single-card dflash and the true 262k hero mode; it is the
+natural next port after D4g.

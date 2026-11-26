@@ -1,11 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
-## Kintsugi 224K startup — 2026-11-26 19:36
+## Kintsugi 224K GPU1 qualification — 2026-11-26 20:15
 
-A standalone VITRIOL Kintsugi process advertised 229,376 tokens on GPU0
-with the drafter disabled. The desktop VRAM reserve stopped the test at
-416 filled tokens. GPU1 stayed on the existing 65,536-token profile.
-Quiet-card qualification needs operator sudo.
+VITRIOL advertised 229,376 tokens on GPU1 and recalled the marker at
+96,000 filled tokens, decoding at 0.57 tok/s without a drafter. The
+reference MTP binary reached 31.77 tok/s at 4,096 filled tokens. Its terminal
+session ended during the 96K prefill. No 200K filled result or profile
+promotion. Restoring the 65,536-token system service requires operator sudo.
 [Plan](.opencode/plans/2026-11-26-192713-kintsugi-200k-daily.md).
 
 ## Lapis local admission — 2026-11-26 19:20

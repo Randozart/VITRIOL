@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## README theme screenshots — 2026-11-26 16:39
+
+The README shows the VITRIOL dashboard in Aethership, the Caduceus pane
+in Vitriolum, and Officina in Monokai and Aethership. The release binaries
+rendered fixture telemetry and a demo workspace. Officina's images also
+resolve from its standalone README source.
+[Plan](.opencode/plans/2026-11-26-163533-readme-theme-screenshots.md).
+
 ## Caduceus catalog — 2026-11-26 16:03
 
 The Dashboard pane merges the shared Caduceus catalog with live router

@@ -24,6 +24,19 @@ Point it at a backend:
 | Caduceus gateway (optional) | external [OmniRoute](https://github.com/diegosouzapw/OmniRoute) install (MIT), see `THIRD_PARTY_NOTICES.md` | free-lane routing (`officina/nimbus`), overflow, health marking, `/nimbus` |
 | full VITRIOL stack | the [VITRIOL repo](https://github.com/Randozart/VITRIOL) | everything: sparse-KV telemetry, governor resize, launcher-wired flags, depth certification |
 
+## Screenshots
+
+Officina reviewing a cache key in a demo workspace. Use `/theme` to switch themes.
+
+![Officina in Monokai showing a Rust cache review, highlighted code, and the session sidebar](assets/screenshots/officina-monokai.png)
+
+<details>
+<summary>Officina in Aethership</summary>
+
+![Officina's cache review and session sidebar in the Aethership theme](assets/screenshots/officina-aethership.png)
+
+</details>
+
 ## What changes without VITRIOL
 
 - `vitriol-decode` telemetry: VITRIOL-specific gauges (sparse-KV

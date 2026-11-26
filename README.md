@@ -29,9 +29,31 @@ Use a model that fits in your available VRAM with room for the KV cache. With a 
 
 The launcher reads `~/.vitriol/config`. See the [configuration reference](docs/CONFIG_REFERENCE.md) and [example profiles](profiles/examples/README.md) for multi-GPU setups and longer contexts. For systemd and checkpointing, see the [operations guide](docs/OPERATIONS.md).
 
+## Terminal dashboard
+
+Run `vitriol tui` to see model throughput, slot usage, and GPU placement. The screenshots use demo telemetry and a sample coding session.
+
+![VITRIOL dashboard in Aethership showing Kintsugi decode speed, context fill, and VRAM usage across two GPUs](assets/screenshots/vitriol-aethership.png)
+
+<details>
+<summary>Caduceus catalog in Vitriolum</summary>
+
+![VITRIOL in Vitriolum with the Caduceus pane showing model IDs, a parked route, and its cooldown](assets/screenshots/vitriol-vitriolum.png)
+
+</details>
+
 ## Officina
 
 Officina is the terminal coding agent developed in this repo. It works with upstream llama.cpp as well as VITRIOL. With VITRIOL it can display live inference speed and context usage. [Officina setup and docs](officina/README.md).
+
+![Officina in Monokai showing a Rust cache review, highlighted code, and the session sidebar](officina/assets/screenshots/officina-monokai.png)
+
+<details>
+<summary>Officina in Aethership</summary>
+
+![Officina's cache review and session sidebar in the Aethership theme](officina/assets/screenshots/officina-aethership.png)
+
+</details>
 
 ## Further reading
 

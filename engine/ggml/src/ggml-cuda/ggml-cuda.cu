@@ -3156,6 +3156,11 @@ static int ggml_cuda_try_gdn_cache_fusion(
     const int64_t       n_seqs    = src_v->ne[3];
     const int64_t       D         = S_v * S_v * H;
     const int64_t       K         = ggml_get_op_params_i32(gdn, 0); // snapshot slot count
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): replay ops (n_pend = op_params[2] > 0) write the
+    // pending plane through their own path -- the snapshot fusion must not touch them.
+    if (ggml_get_op_params_i32(gdn, 2) != 0) {
+        return 0;
+    }
     const int64_t       n_written = std::min<int64_t>(n_tokens, K); // newest n_written slots are written
 
     // snapshot tail starts right after the attention scores

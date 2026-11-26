@@ -195,3 +195,25 @@ Verdict: **DFlash2 single-card is functional on vitriol-server at 40.7 t/s** —
 4k-context trial number, below their replay-enabled 73.2. The remaining lever is the replay op
 (stage 3b part 2: ggml.c constructor + server spec_is_replay loop + delta-net-base replay branch),
 which removes partial-rejection re-forward and is what carries their acceptance to 1.0.
+
+## Continuation plan for stage 3b part 2 (replay op) — precise, for the next session
+
+Status: constructor ported (ggml.h/ggml.c, compiles); remaining surface measured:
+
+1. `llama-memory-recurrent`: `pend_l` plane write path (capture the drafter's last-token inputs
+   during decode — their :993/:1218 show the p_tok layout: `pend_k + pend_v + 2*pend_h` floats per
+   token + valid count), accessors `get_p_l`/`get_n_pend`/`pend_tok` on the context class (their
+   :1389/:1397), and the seq_rm/pending-consumption path (:223-225).
+2. `llama-graph.h:381`: `s_pinfo` input (I32 [3*n_seqs]) wired through `build_input` in
+   llama-context (theirs constructs it per ubatch).
+3. `delta-net-base.cpp`: the replay branch (their :560-600, already read) — gated on
+   `mctx_cur->get_n_pend()`; publishes `ggml_gated_delta_net_replay` + `set_raw_gates`.
+4. `server-context.cpp`: the `spec_is_replay` draft loop — set pending inputs from the drafter at
+   :4162, consume `n_accepted` at :4196-4199, checkpoint partial-restore interplay.
+5. Enable with `VITRIOL_RS_REPLAY_OP=1` (the stage gate in 38301ae) + `LLAMA_RS_REPLAY=1`.
+
+Operator profiles saved: `~/.vitriol/profiles/kintsugi-h2` (14.1 t/s no-draft) and
+`kintsugi-h2-df7` (40.7 t/s DFlash2) — both with required env in meta.
+
+Engine state: stopped, per I1 — the DFlash2 parity gate (73.2) is not met; no-draft parity (14.0+
+vs 14.55) IS met and the profiles above are safe to use today.

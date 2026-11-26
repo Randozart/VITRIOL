@@ -26,7 +26,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     render_footer(frame, rows[2], app);
     if let Some(menu) = &app.menu {
-        render_menu(frame, area, menu);
+        if let Menu::Caduceus(selected) = menu {
+            render_caduceus(frame, rows[1], app, selected.as_deref());
+        } else {
+            render_menu(frame, area, menu);
+        }
     }
 }
 
@@ -63,6 +67,16 @@ fn render_header(frame: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn render_dashboard_view(frame: &mut Frame, area: Rect, app: &mut App) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+    app.caduceus_hit = rows[0];
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" [c] Caduceus  ", theme::gold_muted()),
+            Span::styled(app.snapshot.caduceus.summary(), theme::text()),
+        ])),
+        rows[0],
+    );
+    let area = rows[1];
     if !app.log_sidebar {
         render_dashboard(frame, area, app);
         return;
@@ -87,11 +101,14 @@ fn render_dashboard_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let keys = match app.tab {
+        Tab::Dashboard if matches!(app.menu, Some(Menu::Caduceus(_))) => {
+            "[↑↓] route  [u] unpark selected  [l] route logs  [Esc] close"
+        }
         Tab::Dashboard if app.log_sidebar => {
-            "[l] close logs  [1–5] source  [ ] slot  [/] search  [Space] pause"
+            "[l] close logs  [1–6] source  [ ] slot  [/] search  [Space] pause"
         }
         Tab::Dashboard => "[a] actions  [l] log sidebar  [Tab] logs  [r] refresh  [q] quit",
-        Tab::Logs => "[1–5] source  [ ] slot  [Space] pause  [/] search  [v] detail",
+        Tab::Logs => "[1–6] source  [ ] slot  [Space] pause  [/] search  [v] detail",
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -518,6 +535,88 @@ fn render_metric_row(frame: &mut Frame, area: Rect, metric: MetricRow) {
     );
 }
 
+fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, selected: Option<&str>) {
+    let lanes = app.snapshot.caduceus.lanes();
+    let width = area.width.min(88);
+    let height = area.height.min((lanes.len() + 5).clamp(7, 20) as u16);
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = panel(" Caduceus · Router ");
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .split(block.inner(rect));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            app.snapshot.caduceus.summary(),
+            theme::title(),
+        )),
+        rows[0],
+    );
+    let capacity = rows[1].height as usize;
+    let index = lanes
+        .iter()
+        .position(|lane| Some(lane.model.as_str()) == selected)
+        .unwrap_or(0);
+    let start = index.saturating_add(1).saturating_sub(capacity);
+    let entries: Vec<Line<'_>> = lanes
+        .iter()
+        .skip(start)
+        .take(capacity)
+        .map(|lane| {
+            let highlighted = Some(lane.model.as_str()) == selected;
+            let prefix = if highlighted { " › " } else { "   " };
+            let scope = if lane.in_route { "" } else { " · other route" };
+            let state = lane.remaining.map_or_else(
+                || "Eligible".into(),
+                |seconds| {
+                    let reason = lane.reason.as_deref().unwrap_or("reason unavailable");
+                    format!("Parked {seconds}s · {reason}")
+                },
+            );
+            let model_style = if highlighted {
+                theme::title().bg(theme::current().user_bg)
+            } else {
+                theme::text()
+            };
+            let state_style = if lane.remaining.is_some() {
+                theme::warn()
+            } else {
+                theme::muted()
+            };
+            Line::from(vec![
+                Span::styled(format!("{prefix}{}", lane.model), model_style),
+                Span::styled(format!("  {state}{scope}"), state_style),
+            ])
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(entries), rows[1]);
+    let action = if app.action_running {
+        Some((true, "Working…"))
+    } else {
+        app.action_status
+            .as_ref()
+            .map(|(ok, message)| (*ok, message.as_str()))
+    };
+    if let Some((ok, message)) = action {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                message,
+                if ok { theme::info() } else { theme::warn() },
+            )),
+            rows[2],
+        );
+    }
+}
+
 fn render_menu(frame: &mut Frame, area: Rect, menu: &Menu) {
     let (title, index, choices) = match menu {
         Menu::Actions(index) => (
@@ -544,6 +643,7 @@ fn render_menu(frame: &mut Frame, area: Rect, menu: &Menu) {
                 })
                 .collect(),
         ),
+        Menu::Caduceus(_) => return,
     };
     let width = area.width.min(72);
     let height = area.height.min((choices.len() + 3).clamp(5, 17) as u16);
@@ -630,7 +730,7 @@ fn log_source_chips(app: &App, compact: bool) -> Line<'static> {
         })
         .collect::<Vec<_>>();
     if compact {
-        chips = vec![Span::styled(" 1–5 source   [ ] slot", theme::muted())];
+        chips = vec![Span::styled(" 1–6 source   [ ] slot", theme::muted())];
     }
     if app.paused_log.is_some() {
         chips.push(Span::styled("   Paused", theme::warn()));
@@ -650,6 +750,8 @@ fn render_log_entries(frame: &mut Frame, area: Rect, app: &mut App, compact: boo
         .map(|line| {
             let short = if compact && !app.logs_verbose && app.log_source == LogSource::Slots {
                 crate::logs::compact_slot(line)
+            } else if !app.logs_verbose && app.log_source == LogSource::Caduceus {
+                crate::caduceus::compact_event(line)
             } else {
                 None
             };
@@ -672,6 +774,8 @@ fn render_log_entries(frame: &mut Frame, area: Rect, app: &mut App, compact: boo
                 "No matching entries"
             } else if app.log_source == LogSource::Slots {
                 "No slot-tagged engine output yet"
+            } else if app.log_source == LogSource::Caduceus {
+                "No Caduceus router events yet"
             } else {
                 "No entries yet"
             },
@@ -733,6 +837,63 @@ mod tests {
     use crate::config::Config;
     use crate::model::{DraftSnapshot, GpuProcess, GpuSnapshot, SlotSnapshot};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn caduceus_dashboard_row_opens_route_details_and_filtered_logs() {
+        use crate::caduceus::{Lane, Status};
+
+        let mut app = App::new(Config::from_env());
+        app.snapshot.caduceus = Status::Online {
+            requested: Some("a/glm".into()),
+            lanes: vec![
+                Lane {
+                    model: "a/glm".into(),
+                    in_route: true,
+                    remaining: Some(30),
+                    reason: Some("HTTP 429".into()),
+                },
+                Lane {
+                    model: "b/glm".into(),
+                    in_route: true,
+                    remaining: None,
+                    reason: None,
+                },
+            ],
+        };
+        app.snapshot.logs.caduceus = vec![
+            r#"{"model":"a/glm","status":429}"#.into(),
+            r#"{"model":"b/glm","served":true}"#.into(),
+        ];
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        let mut rendered = |app: &mut App| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(90)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(rendered(&mut app).contains("a/glm · 1/2 eligible · next cooldown ends in 30s"));
+        assert!(!app.caduceus_hit.is_empty());
+        app.open_caduceus();
+        let pane = rendered(&mut app);
+        assert!(pane.contains("a/glm  Parked 30s · HTTP 429"));
+        assert!(pane.contains("b/glm  Eligible"));
+        app.cycle_caduceus(1);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.unpark_selected(&tx);
+        assert!(!app.action_running);
+        assert!(rx.try_recv().is_err());
+        app.open_caduceus_logs();
+        assert_eq!(app.tab, Tab::Logs);
+        assert_eq!(app.log_query, "b/glm");
+        let logs = rendered(&mut app);
+        assert!(logs.contains("b/glm · served after reroute"));
+        assert!(!logs.contains("a/glm"));
+    }
 
     #[test]
     fn aether_paints_panel_and_full_track_and_shows_live_engine_identity() {

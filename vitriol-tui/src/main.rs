@@ -2,6 +2,7 @@
 
 mod app;
 mod braille;
+mod caduceus;
 mod config;
 mod control;
 mod intel;
@@ -60,6 +61,13 @@ fn main() -> io::Result<()> {
                     MouseEventKind::Down(MouseButton::Left) => {
                         if let Some(tab) = app.tab_click(mouse.column, mouse.row) {
                             app.set_tab(tab);
+                        } else if app.tab == Tab::Dashboard
+                            && app.menu.is_none()
+                            && app
+                                .caduceus_hit
+                                .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                        {
+                            app.open_caduceus();
                         }
                     }
                     MouseEventKind::ScrollUp if app.logs_visible() => {
@@ -113,6 +121,7 @@ fn handle_key(
         }
         KeyCode::Char('r') => refresh.store(true, Ordering::Relaxed),
         _ if app.menu.is_some() => menu_key(app, key.code, tx),
+        KeyCode::Char('c') if app.tab == Tab::Dashboard => app.open_caduceus(),
         KeyCode::Char('l') if app.tab == Tab::Dashboard => app.toggle_log_sidebar(),
         KeyCode::Char('a') if app.tab == Tab::Dashboard && !app.action_running => {
             app.menu = Some(Menu::Actions(0));
@@ -125,7 +134,7 @@ fn handle_key(
 
 fn log_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char(c @ '1'..='5') => {
+        KeyCode::Char(c @ '1'..='6') => {
             app.set_log_source(LogSource::ALL[c as usize - '1' as usize])
         }
         KeyCode::Char('[') => app.cycle_log_slot(-1),
@@ -155,6 +164,17 @@ fn menu_key(app: &mut App, key: KeyCode, tx: &mpsc::Sender<control::Event>) {
     let (index, len) = match menu {
         Menu::Actions(index) => (index, 4),
         Menu::Profiles(index, profiles) => (index, profiles.len()),
+        Menu::Caduceus(_) => {
+            match key {
+                KeyCode::Esc | KeyCode::Char('c') => app.menu = None,
+                KeyCode::Up => app.cycle_caduceus(-1),
+                KeyCode::Down => app.cycle_caduceus(1),
+                KeyCode::Char('l') => app.open_caduceus_logs(),
+                KeyCode::Char('u') => app.unpark_selected(tx),
+                _ => {}
+            }
+            return;
+        }
     };
     match key {
         KeyCode::Esc => app.menu = None,
@@ -182,6 +202,7 @@ fn menu_key(app: &mut App, key: KeyCode, tx: &mpsc::Sender<control::Event>) {
                     app.run_action(Action::Load(name), tx);
                 }
             }
+            Menu::Caduceus(_) => {}
         },
         _ => {}
     }

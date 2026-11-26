@@ -26,13 +26,14 @@ use crate::intel;
 use crate::model::{
     DraftSnapshot, GenSnapshot, LogsSnapshot, MetricsTotals, PerfSnapshot, SlotSnapshot, Snapshot,
 };
-use crate::{nvidia, profile};
+use crate::{caduceus, nvidia, profile};
 
 const LOG_TAIL_CAP: usize = 200;
 
 struct Poller {
     cfg: Config,
     gen_tail: LogTail,
+    caduceus_tail: LogTail,
     decode_beat_offset: Option<u64>,
     last_live_t_s: f64,
 }
@@ -44,14 +45,16 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
         .name("vitriol-tui-poller".into())
         .spawn(move || {
             let agent = http_agent(Duration::from_secs(3));
+            let router = caduceus::agent();
             let mut poller = Poller {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
+                caduceus_tail: LogTail::new(LOG_TAIL_CAP),
                 decode_beat_offset: None,
                 last_live_t_s: 0.0,
                 cfg,
             };
             loop {
-                if !poller.poll_once(&agent, &tx) {
+                if !poller.poll_once(&agent, &router, &tx) {
                     break;
                 }
                 if refresh_flag.swap(false, Ordering::Relaxed) {
@@ -65,8 +68,10 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
 
 impl Poller {
     /// Run one full poll cycle and publish the snapshot.
-    fn poll_once(&mut self, agent: &Agent, tx: &Sender<Snapshot>) -> bool {
+    fn poll_once(&mut self, agent: &Agent, router: &Agent, tx: &Sender<Snapshot>) -> bool {
         self.gen_tail.poll(&self.cfg.gen_log());
+        self.caduceus_tail
+            .poll(&caduceus::log_path(&self.cfg.home_dir));
         let mut gpus = nvidia::query_gpus();
         if gpus.is_empty() {
             gpus = intel::query_gpus();
@@ -109,6 +114,7 @@ impl Poller {
             gpus,
             gpu_processes,
             logs: self.log_snapshot(),
+            caduceus: caduceus::poll(router),
         })
         .is_ok()
     }
@@ -125,6 +131,7 @@ impl Poller {
                 .collect(),
             journal: journal(ENGINE_UNIT),
             autosave: journal(AUTOSAVE_UNIT),
+            caduceus: self.caduceus_tail.snapshot(),
         }
     }
 

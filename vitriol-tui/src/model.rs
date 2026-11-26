@@ -214,6 +214,7 @@ pub struct LogsSnapshot {
     pub slot_tails: std::collections::BTreeMap<u64, Vec<String>>,
     pub journal: Vec<String>,
     pub autosave: Vec<String>,
+    pub caduceus: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -225,4 +226,5 @@ pub struct Snapshot {
     pub gpus: Vec<GpuSnapshot>,
     pub gpu_processes: Vec<GpuProcess>,
     pub logs: LogsSnapshot,
+    pub caduceus: crate::caduceus::Status,
 }

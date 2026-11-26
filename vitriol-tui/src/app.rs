@@ -35,15 +35,17 @@ pub enum LogSource {
     Autosave,
     Slots,
     Events,
+    Caduceus,
 }
 
 impl LogSource {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Engine,
         Self::Service,
         Self::Autosave,
         Self::Slots,
         Self::Events,
+        Self::Caduceus,
     ];
 
     pub fn is_slot_scoped(self) -> bool {
@@ -57,6 +59,7 @@ impl LogSource {
             Self::Autosave => "Autosave",
             Self::Slots => "Slots",
             Self::Events => "Events",
+            Self::Caduceus => "Caduceus",
         }
     }
 }
@@ -64,6 +67,7 @@ impl LogSource {
 pub enum Menu {
     Actions(usize),
     Profiles(usize, Vec<Profile>),
+    Caduceus(Option<String>),
 }
 
 pub struct App {
@@ -71,6 +75,7 @@ pub struct App {
     pub snapshot: Snapshot,
     pub tab: Tab,
     pub tab_hits: Vec<(Rect, Tab)>,
+    pub caduceus_hit: Rect,
     pub decode_history: VecDeque<f64>,
     pub log_source: LogSource,
     pub log_sidebar: bool,
@@ -95,6 +100,7 @@ impl App {
             snapshot: Snapshot::default(),
             tab: Tab::Dashboard,
             tab_hits: Vec::new(),
+            caduceus_hit: Rect::default(),
             decode_history: VecDeque::new(),
             log_source: LogSource::Engine,
             log_sidebar: false,
@@ -135,6 +141,57 @@ impl App {
 
     pub fn logs_visible(&self) -> bool {
         self.tab == Tab::Logs || self.log_sidebar
+    }
+
+    pub fn open_caduceus(&mut self) {
+        let lanes = self.snapshot.caduceus.lanes();
+        let selected = lanes
+            .iter()
+            .find(|lane| lane.remaining.is_some())
+            .or(lanes.first());
+        self.menu = Some(Menu::Caduceus(selected.map(|lane| lane.model.clone())));
+    }
+
+    pub fn cycle_caduceus(&mut self, step: isize) {
+        let Some(Menu::Caduceus(selected)) = self.menu.as_mut() else {
+            return;
+        };
+        let lanes = self.snapshot.caduceus.lanes();
+        let Some(first) = lanes.first() else { return };
+        let next = lanes
+            .iter()
+            .position(|lane| Some(&lane.model) == selected.as_ref())
+            .map_or(first, |index| {
+                &lanes[(index as isize + step).rem_euclid(lanes.len() as isize) as usize]
+            });
+        *selected = Some(next.model.clone());
+    }
+
+    pub fn open_caduceus_logs(&mut self) {
+        let query = match &self.menu {
+            Some(Menu::Caduceus(model)) => model.clone().unwrap_or_default(),
+            _ => return,
+        };
+        self.set_tab(Tab::Logs);
+        self.set_log_source(LogSource::Caduceus);
+        self.log_query = query;
+        self.paused_log = None;
+        self.log_offset = 0;
+    }
+
+    pub fn unpark_selected(&mut self, tx: &Sender<Event>) {
+        let Some(Menu::Caduceus(Some(selected))) = &self.menu else {
+            return;
+        };
+        if self
+            .snapshot
+            .caduceus
+            .lanes()
+            .iter()
+            .any(|lane| &lane.model == selected && lane.remaining.is_some())
+        {
+            self.run_action(Action::Unpark(selected.clone()), tx);
+        }
     }
 
     pub fn toggle_log_sidebar(&mut self) {
@@ -204,6 +261,7 @@ impl App {
             ),
             LogSource::Service => Cow::Borrowed(&self.snapshot.logs.journal),
             LogSource::Autosave => Cow::Borrowed(&self.snapshot.logs.autosave),
+            LogSource::Caduceus => Cow::Borrowed(&self.snapshot.logs.caduceus),
             LogSource::Slots => Cow::Borrowed(self.log_slot.map_or_else(
                 || self.snapshot.logs.slot_entries.as_slice(),
                 |id| {
@@ -234,6 +292,13 @@ impl App {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
+        if let Some(Menu::Caduceus(selected @ None)) = self.menu.as_mut() {
+            *selected = snapshot
+                .caduceus
+                .lanes()
+                .first()
+                .map(|lane| lane.model.clone());
+        }
         if !snapshot.gen.up || snapshot.gen.model_pid != self.snapshot.gen.model_pid {
             self.decode_history.clear();
             self.prev_slots.clear();
@@ -272,7 +337,9 @@ impl App {
 
     pub fn run_action(&mut self, action: Action, tx: &Sender<Event>) {
         if !self.action_running {
-            self.menu = None;
+            if !matches!(action, Action::Unpark(_)) {
+                self.menu = None;
+            }
             self.action_running = true;
             self.action_status = None;
             control::spawn(action, &self.cfg, tx.clone());

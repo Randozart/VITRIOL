@@ -29,6 +29,7 @@ impl ServiceAction {
 pub enum Action {
     Load(String),
     Service(ServiceAction),
+    Unpark(String),
 }
 
 impl Action {
@@ -36,6 +37,7 @@ impl Action {
         match self {
             Self::Load(name) => vec!["config", "load", name],
             Self::Service(action) => vec!["service", action.verb()],
+            Self::Unpark(_) => unreachable!("router actions use the router API"),
         }
     }
 }
@@ -48,6 +50,14 @@ pub struct Event {
 pub fn spawn(action: Action, cfg: &Config, tx: Sender<Event>) {
     let cli = cfg.vitriol_cli();
     thread::spawn(move || {
+        if let Action::Unpark(model) = action {
+            let result = crate::caduceus::unpark(&model);
+            let _ = tx.send(Event {
+                ok: result.is_ok(),
+                lines: vec![result.err().unwrap_or_else(|| format!("Unparked {model}"))],
+            });
+            return;
+        }
         let args = action.args();
         let mut lines = vec![format!("vitriol {}", args.join(" "))];
         let ok = match Command::new(cli).args(args).stdin(Stdio::null()).output() {

@@ -1,5 +1,15 @@
 # VITRIOL AI Agent Guidelines
 
+## Z440 Kintsugi and Inkling experiments — 2026-11-26 11:02
+
+Fixed n7 led the local Kintsugi coding sweep at 39.45 tok/s median. Private
+full draft-cache retention recovered a 33112-token checkpoint follow-up from
+8.99 to 31.28 tok/s at a 332 MiB checkpoint. Separate GPU0 drafting worked with
+a local projection and trailed the single-card control. GPU0 served a separate
+small model alongside Kintsugi. Current Inkling IQ4_NL runs on both cards with
+split 1,3, ctx 32768 and ubatch 32, including 2335 filled-token recall.
+[Experiments and Inkling launch command](.opencode/plans/2026-11-26-104921-z440-kintsugi-inkling-experiments.md).
+
 ## Kintsugi readiness update — 2026-11-26 10:33
 
 Run Kintsugi on the quiet RTX 3060 with `scripts/serve-kintsugi.sh`. The 65536-token

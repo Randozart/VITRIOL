@@ -176,3 +176,22 @@ model.cpp → qwen35 (skip if hint missing) → build → test-head2 → existin
 2. GDN raw gates — now with complete spec (their replay path is the exact consumer) and a live oracle to diff against. The op-level unit test from `gdn-raw-gate-reconciliation` is step 1 of this.
 3. `GGML_CUDA_SHARED_POOL` — check what it does in their tree before assuming.
 4. Then DFlash2 n7 at ub 256 on one card, gated against their 73.2.
+
+---
+
+## Executed: DFlash2 n7 single-card WORKS (2026-11-26 late)
+
+Full stack loaded and measured on one card (HEAD2 + raw gates + shared pool + RS tier 0.05 + KV tier + dflash n7):
+
+| config | decode (repeat, 3 runs) |
+|---|---|
+| ub 128, KV 16384 cells VRAM | **39.41 / 40.68 / 40.67 t/s**, acceptance 0.955, mean len 7.68 |
+| ub 256, KV 8192 cells VRAM | 38.98 t/s (deeper KV tier costs more than ub gains) |
+
+vs their reference on this box: 73.2 t/s (ub 256 + LLAMA_RS_REPLAY + acceptance 1.000), their 11-24
+trial: 37.65 t/s at 4k / 50.6 at 60k with ub 256.
+
+Verdict: **DFlash2 single-card is functional on vitriol-server at 40.7 t/s** — above their own
+4k-context trial number, below their replay-enabled 73.2. The remaining lever is the replay op
+(stage 3b part 2: ggml.c constructor + server spec_is_replay loop + delta-net-base replay branch),
+which removes partial-rejection re-forward and is what carries their acceptance to 1.0.

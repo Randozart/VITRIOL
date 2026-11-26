@@ -46,3 +46,7 @@ Record actual outcomes, affected contracts/docs, commits and evidence links as w
 - 2026-11-26T14:56:44+01:00 — Plan created before implementation.
 
 - 2026-11-26T15:09:34+01:00 — Implemented background registry/catalog refresh, both menu orders, recent route IDs, strict local Caduceus selections and same-model virtual routing. Pi RPC verified registration, chooser order, recents and Auto-route selection without live inference or provider mutations. Typecheck, 175 targeted tests and focused Praetor --warn passed. The scoped evidence runner and integration fixtures use /tmp/officina-model-catalog/.
+
+- 2026-11-26T15:10:44+01:00 — The full test run flagged a new cross-extension import. Move the pure Caduceus model catalog helpers into _shared, retaining the old feature import path for existing callers. Rerun the boundary test and model picker coverage.
+
+- 2026-11-26T15:12:50+01:00 — Shared helpers retain their existing import path. Typecheck, 44 focused tests including the extension boundary, focused Praetor, and the Pi RPC picker smoke passed after the move. Seven unrelated theme, dream-gen and permissions assertions also fail at the baseline. The sandbox prevents localhost listeners used by the full suite. Final source evidence is recorded under /tmp/officina-model-catalog/verification/.

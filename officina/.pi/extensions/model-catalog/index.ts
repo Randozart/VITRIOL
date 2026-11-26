@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { EXACT_PROVIDER } from "../caduceus/catalog.ts";
+import { EXACT_PROVIDER } from "../_shared/caduceus-catalog.ts";
 import { applyModel } from "../_shared/routing/apply.ts";
 import { readRouteEntries, recordRoute } from "../_shared/route-ledger.ts";
 import {

@@ -1,5 +1,5 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { EXACT_PROVIDER } from "../caduceus/catalog.ts";
+import { EXACT_PROVIDER } from "../_shared/caduceus-catalog.ts";
 
 export const AUTO_PROVIDER = "officina-auto";
 export const LOCAL_PROVIDERS = new Set(["llamacpp", "llama.cpp", "vitriol"]);

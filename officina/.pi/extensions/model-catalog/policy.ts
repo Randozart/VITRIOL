@@ -1,4 +1,4 @@
-import { EXACT_PROVIDER, toolCandidates } from "../caduceus/catalog.ts";
+import { EXACT_PROVIDER, toolCandidates } from "../_shared/caduceus-catalog.ts";
 import { applyPrefs, allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
 import { budgetStatus } from "../_shared/budget.ts";
 import { readGatewayMarks } from "../_shared/gateway-health.ts";

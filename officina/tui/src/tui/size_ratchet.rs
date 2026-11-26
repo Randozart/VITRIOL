@@ -36,7 +36,7 @@ mod tests {
         // +63 (2026-11-19): TAB mode-popup dispatch (open/guard/keys/submit).
         // +1 (2026-11-20): base module registration (paint-first underlay).
         // +12 (2026-11-21): R3 RouterPolicy recovery arm (notice-only).
-        ("src/tui/mod.rs", 5861),
+        ("src/tui/mod.rs", 5859),
         // +77 (2026-11-19): /-menu fill (+8) and render_mode_popup (+69) —
         // the popup widget; the popup LOGIC lives in mode_popup.rs (new file).
         // +21 (2026-11-20): per-column ignition_spans (rule gradient).

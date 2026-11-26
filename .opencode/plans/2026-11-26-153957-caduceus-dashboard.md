@@ -46,3 +46,5 @@ Record actual outcomes, affected contracts/docs, commits and evidence links as w
 - 2026-11-26T15:39:57+01:00 — Plan created before implementation.
 
 - 2026-11-26T15:44:43+01:00 — Router stage 6eb47c9 passed 44 fixture tests. VITRIOL dashboard stage passed 56 Rust tests, cargo fmt and its release build. A terminal smoke against a loopback stub verified Aether rendering, a targeted unpark with a reserved query character, unchanged secondary cooldown, and route-filtered logs.
+
+- 2026-11-26T15:47:23+01:00 — Officina summarizes cooldown, exhausted lanes and exact-route policy failures inline without selecting a different model or invoking engine recovery. All 406 native tests passed after documenting the existing server.launcher config key and ratcheting the shorter dispatcher. Praetor baseline comparison prompted a final dashboard rendering review.

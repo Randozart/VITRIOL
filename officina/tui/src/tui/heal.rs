@@ -33,7 +33,14 @@ pub fn classify_error(text: &str) -> Failure {
     // 2026-11-21 (R3/I4): the router's own policy verdicts (all lanes parked,
     // exhausted) precede the generic 503 match — they are NOT engine outages
     // and must never trigger engine diagnostics.
-    if s.contains("router_unavailable") || s.contains("router_exhausted") {
+    if [
+        "router_unavailable",
+        "router_exhausted",
+        "no eligible provider for ",
+    ]
+    .iter()
+    .any(|marker| s.contains(marker))
+    {
         return Failure::RouterPolicy;
     }
     if s.contains("no api key")
@@ -89,6 +96,36 @@ pub fn classify_error(text: &str) -> Failure {
         return Failure::EngineDown;
     }
     Failure::Unknown
+}
+
+pub fn router_notice(detail: &str, model: Option<&str>) -> String {
+    let lower = detail.to_ascii_lowercase();
+    let subject = model.unwrap_or("Selected model");
+    let verdict = if lower.contains("router_exhausted") {
+        "all attempted routes failed"
+    } else if lower.contains("router_unavailable") {
+        "all Caduceus routes are cooling down"
+    } else {
+        "no eligible provider"
+    };
+    let wait = [
+        "earliest lane returns in ",
+        "earliest known cooldown ends in ",
+    ]
+    .into_iter()
+    .find_map(|phrase| {
+        let (_, tail) = lower.split_once(phrase)?;
+        let (seconds, _) = tail.split_once('s')?;
+        seconds.parse::<u64>().ok()
+    });
+    let mut notice = format!("{subject} · {verdict}");
+    if let Some(seconds) = wait {
+        notice.push_str(&format!(" · next cooldown ends in {seconds}s"));
+    }
+    if !lower.contains("no eligible provider for ") {
+        notice.push_str(" · details in VITRIOL › Caduceus");
+    }
+    notice
 }
 
 /// Days since the Unix epoch for a civil date (Hinnant's algorithm). Used by
@@ -529,6 +566,34 @@ mod tests {
             Failure::ModelNotFound
         );
         assert_eq!(classify_error("something else"), Failure::Unknown);
+    }
+
+    #[test]
+    fn router_notices_distinguish_parked_exhausted_and_exact_routes() {
+        let parked = r#"503: {"message":"all 2 candidate(s) unavailable — earliest lane returns in 57s","type":"router_unavailable","code":503}"#;
+        assert_eq!(
+            router_notice(parked, Some("GLM 5.3 Flash")),
+            "GLM 5.3 Flash · all Caduceus routes are cooling down · next cooldown ends in 57s · details in VITRIOL › Caduceus"
+        );
+        let exhausted =
+            r#"503: {"type":"router_exhausted","message":"gateway rejected the requests"}"#;
+        assert_eq!(
+            router_notice(exhausted, None),
+            "Selected model · all attempted routes failed · details in VITRIOL › Caduceus"
+        );
+        for auto in [
+            "No eligible provider for glm-5.3-flash.",
+            "No eligible provider for glm-5.3-flash. Earliest known cooldown ends in 23s.",
+        ] {
+            assert_eq!(classify_error(auto), Failure::RouterPolicy);
+        }
+        assert_eq!(
+            router_notice(
+                "No eligible provider for glm-5.3-flash. Earliest known cooldown ends in 23s.",
+                Some("GLM 5.3 Flash")
+            ),
+            "GLM 5.3 Flash · no eligible provider · next cooldown ends in 23s"
+        );
     }
 
     #[test]

@@ -174,6 +174,11 @@ pub const DICTIONARY: &[(&str, &str, bool)] = &[
         true,
     ),
     (
+        "server.launcher",
+        "engine launcher: empty uses vitriol-server, kintsugi uses the Kintsugi launcher",
+        true,
+    ),
+    (
         "server.parallel",
         "slots; 1 per the single-session doctrine (concurrency rides overflow lanes)",
         false,

@@ -187,6 +187,10 @@ can choose another eligible provider for the same ID. The picker offers
 strict Caduceus routes for catalogs served by the standard local gateway.
 Custom endpoints remain selectable through `/model`.
 
+If the Caduceus router runs out of eligible routes, Officina reports whether
+they are cooling down or the attempted routes failed. The Caduceus pane in
+`vitriol tui` shows the active cooldowns and the router event log.
+
 ## Subscriptions via Caduceus
 
 Caduceus is Officina’s name for its local gateway integration; the upstream

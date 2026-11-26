@@ -3425,7 +3425,7 @@ async fn handle_provider_failure(
     detail: &str,
     policy: &heal::Policy,
 ) {
-    if !heal::self_heal_enabled() {
+    if failure != heal::Failure::RouterPolicy && !heal::self_heal_enabled() {
         return;
     }
     let now = std::time::Instant::now();
@@ -3435,16 +3435,9 @@ async fn handle_provider_failure(
     let replayable = state.last_prompt_replayable();
     match failure {
         heal::Failure::RouterPolicy => {
-            // 2026-11-21 (R3): the router deliberately parked every lane — this
-            // is policy, not an outage. Engine diagnostics would be nonsense;
-            // surface the park info and let the operator unpark or wait.
-            state.entries.push(state::ChatEntry::Diag(
-            "harness: all Caduceus lanes parked by the router (not an engine outage) — wait for the earliest lane or `curl -X DELETE 'http://127.0.0.1:20129/park?model=<id>'`".to_string(),
-        ));
-            state.notice = Some((
-                "harness: all Caduceus lanes parked — earliest lane may return shortly".to_string(),
-                "warning".to_string(),
-            ));
+            let model = state.model.as_ref().map(AppState::model_label);
+            let notice = heal::router_notice(detail, model.as_deref());
+            state.notice = Some((notice, "warning".to_string()));
         }
         heal::Failure::EngineDown | heal::Failure::NoPhysicalModel => {
             // HARD RULE (operator 2026-11-15): only officina/lapis may
@@ -4379,15 +4372,20 @@ fn handle_event(state: &mut AppState, event_type: &str, fields: &serde_json::Val
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or("model call failed (no errorMessage)");
-                let entry = format!("model error: {detail}");
+                let failure = heal::classify_error(detail);
+                let entry = if failure == heal::Failure::RouterPolicy {
+                    let model = state.model.as_ref().map(AppState::model_label);
+                    heal::router_notice(detail, model.as_deref())
+                } else {
+                    format!("model error: {detail}")
+                };
                 let dup =
                     matches!(state.entries.last(), Some(state::ChatEntry::Error(t)) if *t == entry);
                 if !dup {
                     state.entries.push(state::ChatEntry::Error(entry));
                 }
                 state.note_prompt_failed();
-                state.recovery.pending_failure =
-                    Some((heal::classify_error(detail), detail.to_string()));
+                state.recovery.pending_failure = Some((failure, detail.to_string()));
             }
             if role == "assistant" {
                 if let Some(content) = msg.and_then(|m| m.get("content")) {

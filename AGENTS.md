@@ -1,5 +1,14 @@
 # VITRIOL AI Agent Guidelines
 
+## Kintsugi readiness update — 2026-11-26 10:33
+
+Run Kintsugi on the quiet RTX 3060 with `scripts/serve-kintsugi.sh`. The 65536-token
+window uses DFlash2 n7, resident recurrent state, a 32768-cell GPU KV tier and
+full draft cache retention. Measured 68.5 tok/s repeat, 42.3 code and 46.1 after a
+fresh 33116-token prefill. A suffix-replacing follow-up restored a checkpoint
+and fell back to 9.0 tok/s with target prefix reuse. Replay stays gated off after
+a post-rejection checkpoint save hit a bounds failure. [Plan and placement evidence](.opencode/plans/2026-11-26-101857-kintsugi-replay-z440.md).
+
 ## CPU buffer research update — 2026-11-19 09:26
 
 Private no-host/none selects CPU+CPU_REPACK weights,12.43GBanonymous/Swap0 survives

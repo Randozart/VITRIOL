@@ -1,5 +1,14 @@
 # VITRIOL AI Agent Guidelines
 
+## Kintsugi 200K Rust coding session — 2026-11-26 21:23
+
+The reference engine made a structured tool call above 200K, wrote a Rust
+Lapis routing prototype, and revised it after a failing protected-local
+test. The complete revision passed seven cases and ran at 39.64 tok/s
+with 203,288 prompt tokens. Restart restored 203,976 tokens and the next
+turn evaluated 64 new tokens. The crate is a separate scratch artifact.
+[Plan](.opencode/plans/2026-11-26-210332-kintsugi-rust-control-plane-session.md).
+
 ## Kintsugi 224K GPU1 qualification — 2026-11-26 20:59
 
 The reference MTP build on GPU1 recalled the marker at 202,000 filled

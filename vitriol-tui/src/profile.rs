@@ -12,14 +12,6 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 
 /// Where a profile was found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileSource {
-    /// Repo-bundled under `profiles/<name>`.
-    Bundled,
-    /// User-installed under `~/.vitriol/profiles/<name>`.
-    Installed,
-}
-
 /// A launch profile: model knobs extracted from its config INI.
 #[derive(Debug, Clone)]
 pub struct Profile {
@@ -27,24 +19,13 @@ pub struct Profile {
     pub name: String,
     /// Human description from `meta`.
     pub description: String,
-    /// Where the profile was found.
-    pub source: ProfileSource,
-    /// `model.path`.
-    pub model: Option<String>,
-    /// `model.ngl`.
-    pub ngl: Option<u32>,
-    /// `model.context`.
-    pub ctx: Option<u32>,
-    /// `model.threads`.
-    pub threads: Option<u32>,
-    /// `server.parallel`.
-    pub parallel: Option<u32>,
+    pub config_text: String,
 }
 
 /// Discover all profiles (bundled + installed, installed shadowing bundled).
 pub fn discover(cfg: &Config) -> Vec<Profile> {
-    let mut bundled = read_dir_profiles(&cfg.bundled_profiles_dir(), ProfileSource::Bundled);
-    let installed = read_dir_profiles(&cfg.installed_profiles_dir(), ProfileSource::Installed);
+    let mut bundled = read_dir_profiles(&cfg.bundled_profiles_dir());
+    let installed = read_dir_profiles(&cfg.installed_profiles_dir());
     for inst in installed {
         if let Some(existing) = bundled.iter_mut().find(|p| p.name == inst.name) {
             *existing = inst;
@@ -56,44 +37,55 @@ pub fn discover(cfg: &Config) -> Vec<Profile> {
     bundled
 }
 
+/// Resolve the on-disk selection, including CLI changes made outside this TUI.
+pub fn active_name(config_text: &str, profiles: &[Profile]) -> Option<String> {
+    if config_text.trim().is_empty() {
+        return None;
+    }
+    let active = parse_ini(config_text);
+    let mut matching = profiles
+        .iter()
+        .filter(|profile| parse_ini(&profile.config_text) == active);
+    let first = matching.next()?;
+    if matching.next().is_none() {
+        Some(first.name.clone())
+    } else {
+        None
+    }
+}
+
 /// Load profiles from every subdirectory of `dir` that has a `config` file.
-fn read_dir_profiles(dir: &Path, source: ProfileSource) -> Vec<Profile> {
+fn read_dir_profiles(dir: &Path) -> Vec<Profile> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
     entries
         .flatten()
         .filter(|e| e.path().join("config").is_file())
-        .filter_map(|e| Profile::load(source, e.path()))
+        .filter_map(|e| Profile::load(e.path()))
         .collect()
 }
 
 impl Profile {
     /// Load a profile from its directory (which must contain `config`).
-    fn load(source: ProfileSource, dir: PathBuf) -> Option<Profile> {
+    fn load(dir: PathBuf) -> Option<Profile> {
         let name = dir.file_name()?.to_string_lossy().into_owned();
         let config_text = fs::read_to_string(dir.join("config")).ok()?;
         let description = fs::read_to_string(dir.join("meta"))
             .ok()
             .and_then(|m| meta_value(&m, "description"))
             .unwrap_or_default();
-        let kv = parse_ini(&config_text);
         Some(Profile {
             name,
             description,
-            source,
-            model: kv.get("model.path").cloned(),
-            ngl: kv.get("model.ngl").and_then(|v| v.parse().ok()),
-            ctx: kv.get("model.context").and_then(|v| v.parse().ok()),
-            threads: kv.get("model.threads").and_then(|v| v.parse().ok()),
-            parallel: kv.get("server.parallel").and_then(|v| v.parse().ok()),
+            config_text,
         })
     }
 }
 
 /// Parse an INI-ish config into a `section.key -> value` map. Comments and
 /// blank lines are ignored; a `[section]` header prefixes subsequent keys.
-fn parse_ini(text: &str) -> std::collections::HashMap<String, String> {
+pub fn parse_ini(text: &str) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     let mut section = "";
     for line in text.lines() {

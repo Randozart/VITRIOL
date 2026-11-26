@@ -11,6 +11,8 @@ pub struct GenSnapshot {
     pub up: bool,
     /// Model id reported by `/v1/models`.
     pub model: Option<String>,
+    pub model_path: Option<String>,
+    pub model_pid: Option<u32>,
     /// Model context length, when the server reports it.
     pub n_ctx: Option<u64>,
     /// Number of parallel slots, when the server reports it.
@@ -51,6 +53,8 @@ pub struct SlotSnapshot {
     /// dropped by the parser). Lets the UI show filled-vs-window per slot —
     /// the AGENTS.md "window ≠ depth" distinction.
     pub n_ctx: Option<u64>,
+    /// Current filled positions from the server's prompt state.
+    pub filled: Option<u64>,
 }
 
 impl SlotSnapshot {
@@ -162,39 +166,6 @@ pub struct PerfSnapshot {
     pub top_ops: Vec<(String, u64)>,
 }
 
-/// One recent episode row from `/hermetis/recent`.
-#[derive(Debug, Clone, Default)]
-pub struct RecentStore {
-    /// Episode id.
-    pub id: i64,
-    /// Speaker role (user/assistant/tool).
-    pub role: String,
-    /// Truncated content snippet for display.
-    pub snippet: String,
-}
-
-/// Live Hermetis memory-server state.
-#[derive(Debug, Clone, Default)]
-pub struct HermetisSnapshot {
-    /// Whether `/health` answered.
-    pub up: bool,
-    /// Episode count for the configured project, when reported.
-    pub episodes: Option<u64>,
-    /// Knowledge-node count for the configured project, when reported.
-    pub nodes: Option<u64>,
-    /// Session count for the configured project, when reported.
-    pub sessions: Option<u64>,
-    /// Most recent episodes for the configured project, newest first.
-    pub recent: Vec<RecentStore>,
-}
-
-/// Live embed-server state.
-#[derive(Debug, Clone, Default)]
-pub struct EmbedSnapshot {
-    /// Whether `/health` answered.
-    pub up: bool,
-}
-
 /// One row of `nvidia-smi --query-compute-apps`.
 #[derive(Debug, Clone)]
 pub struct GpuProcess {
@@ -235,109 +206,21 @@ pub struct GpuSnapshot {
     pub uuid: String,
 }
 
-/// One captured REBIS gateway/shim event (from the distill store).
-#[derive(Debug, Clone, Default)]
-pub struct RebisEvent {
-    /// ISO timestamp of the event.
-    pub ts: String,
-    /// Event kind: gateway_turn / pipeline_audited / steer_correct /
-    /// compaction / shim_judged ...
-    pub kind: String,
-    /// Session key it belonged to.
-    pub session: String,
-    /// One-line human summary.
-    pub detail: String,
-}
-
-/// Aggregated REBIS layer state for the dashboard tab.
-#[derive(Debug, Clone, Default)]
-pub struct RebisSnapshot {
-    /// Mercury gateway answering on its port.
-    pub mercury_up: bool,
-    /// Sol head answering.
-    pub sol_up: bool,
-    /// Luna head answering.
-    pub luna_up: bool,
-    /// Luna model id when reported.
-    pub luna_model: Option<String>,
-    /// Luna live decode tok/s from her heartbeat log.
-    pub luna_decode_t_s: f64,
-    /// Route counters: [reason, draft, pipeline].
-    pub routes: [u32; 3],
-    /// Audited turns that passed.
-    pub audits_pass: u32,
-    /// Audited turns that failed (corrected or escalated).
-    pub audits_fail: u32,
-    /// Compaction events.
-    pub compactions: u32,
-    /// Newest events, capped, oldest first.
-    pub recent: Vec<RebisEvent>,
-    /// Health-check round-trip in ms (lower = responsive).
-    pub mercury_latency_ms: u32,
-    pub sol_latency_ms: u32,
-    pub luna_latency_ms: u32,
-    /// Cumulative predicted tokens since server start (from /metrics).
-    pub sol_tokens_total: u64,
-    pub luna_tokens_total: u64,
-    /// GPU utilisation of each head's card.
-    pub sol_util_pct: u8,
-    pub luna_util_pct: u8,
-    /// Host MemAvailable in MiB (freeze guardrail).
-    pub host_avail_mib: u32,
-}
-
-/// Live tail of a service log, newest last, capped at [`LOG_TAIL_CAP`] lines.
+/// Bounded log views. Journal access errors are displayed in the corresponding source.
 #[derive(Debug, Clone, Default)]
 pub struct LogsSnapshot {
-    /// Tail of the gen (`vitriol_gen.log`) log.
     pub gen: Vec<String>,
-    /// Tail of the Hermetis (`copula_hermetis.log`) log.
-    pub hermetis: Vec<String>,
-    /// Tail of the embed (`copula_embed.log`) log.
-    pub embed: Vec<String>,
-    /// Tail of the Luna (Mellum2) log.
-    pub luna: Vec<String>,
-    /// Tail of the Mercury gateway log.
-    pub mercury: Vec<String>,
-    /// Tail of the supervisor log.
-    pub supervise: Vec<String>,
-    /// Tail of the inter-model traffic capture.
-    pub traffic: Vec<String>,
+    pub journal: Vec<String>,
+    pub autosave: Vec<String>,
 }
 
-/// One full poll result. All services are optional; a down service simply
-/// leaves its flags false and its values `None`.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
-    /// Gen server state.
     pub gen: GenSnapshot,
-    /// Hermetis state.
-    pub hermetis: HermetisSnapshot,
-    /// Embed state.
-    pub embed: EmbedSnapshot,
-    /// GPU state, one entry per physical GPU; empty when `nvidia-smi` is
-    /// unavailable.
+    pub service_state: String,
+    pub configured_profile: Option<String>,
+    pub mismatch: bool,
     pub gpus: Vec<GpuSnapshot>,
-    /// Compute processes across all GPUs (uuid-attributed).
     pub gpu_processes: Vec<GpuProcess>,
-    /// REBIS gateway/head state + event stream aggregates.
-    pub rebis: RebisSnapshot,
-    /// Live log tails for each service.
     pub logs: LogsSnapshot,
-}
-
-impl Snapshot {
-    /// Summed VRAM across all GPUs: (used MiB, total MiB).
-    pub fn vram_totals(&self) -> (u64, u64) {
-        (
-            self.gpus.iter().map(|g| g.vram_used_mib).sum(),
-            self.gpus.iter().map(|g| g.vram_total_mib).sum(),
-        )
-    }
-
-    /// Whether at least one service or the GPU reported anything. Used by the
-    /// UI to hint that the stack is not reachable.
-    pub fn is_empty(&self) -> bool {
-        !self.gen.up && !self.hermetis.up && !self.embed.up && self.gpus.is_empty()
-    }
 }

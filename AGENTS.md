@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Operations TUI — 2026-11-26 13:30
+
+`vitriol tui` now has Dashboard and Logs. Service actions go through the
+system-scope CLI and the profile picker saves through config load. Live
+model, GPU placement, and slot fill come from server and process telemetry.
+Aether terminal captures verified dark gauge surfaces.
+[Plan and evidence](.opencode/plans/2026-11-26-131628-vitriol-tui-two-tabs.md).
+
 ## Selectable Kintsugi daily driver — 2026-11-26 12:40
 
 `kintsugi-gpu1` loads through `vitriol config` and uses the existing

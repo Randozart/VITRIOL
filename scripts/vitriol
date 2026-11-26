@@ -1798,7 +1798,6 @@ usage() {
   vitriol serve [options]    persistent HTTP API server
   vitriol stop               stop running server
   vitriol bench [options]    quick throughput benchmark (uses llama-bench)
-  vitriol tui                live dashboard (requires textual Python lib)
   vitriol config             interactive configuration TUI
   vitriol config show        print current configuration
   vitriol config init        create config file with defaults
@@ -1807,7 +1806,7 @@ usage() {
   vitriol config set <key> <val>  set a config value
   vitriol calibrate [--quick] [--model <path>]  auto-tune config for this hardware+model
   vitriol setup              set CAP_IPC_LOCK capability + engine-service polkit rule (root)
-  vitriol tui                terminal ops dashboard (Ratatui, auto-builds first run)
+  vitriol tui                engine dashboard and service logs (Ratatui)
   vitriol install [--prefix DIR] [--no-build]  symlink vitriol onto your PATH
   vitriol uninstall          remove the install-script symlinks
   vitriol pymander list     list Pymander reference-mind domains

@@ -87,9 +87,26 @@ Server-side memory knobs that matter here:
 ```bash
 trismegistus            # fish function: ontic profile → restart → wait → hermes
 vitriol stop            # sticky stop (no auto-restart)
-vitriol serve --detach  # manual start (systemd wraps this)
-journalctl --user -u vitriol-autosave.service -f     # watch the watchdogs
+vitriol service start   # start the system-managed engine
+journalctl --system -u vitriol-autosave.service -f  # watch the watchdogs
 ```
+
+## Terminal dashboard
+
+Run `vitriol tui` to see the running engine, selected config, slot fill,
+throughput, draft acceptance, and GPU placement. Press `a` on Dashboard to
+switch profiles or manage the system service. Switching profiles saves the
+selection. Use Restart to apply it to a running engine. Service actions use
+the same permissions as `vitriol service`.
+
+Logs has four sources. Engine tails the generation file, Service and
+Autosave read the corresponding systemd journals, and Slots records observed
+transitions. Use `1`–`4` to switch, Space to pause, `/` to filter, and `v` to
+toggle detail. The saved theme can be cycled with `T`. To preview Aether,
+run `VITRIOL_TUI_THEME=aether vitriol tui`.
+
+Use [the configuration reference](CONFIG_REFERENCE.md) for profile editing.
+Placement sweeps remain available through [the sweep CLI](../libvitriol/sweep_controller.py).
 
 ## Pymander semantic recall stack (2026-08-26)
 

@@ -1,501 +1,91 @@
-//! Control actions: start/stop/restart the stack, run doctor, load a profile.
-//!
-//! Each action expands into one or more sequential shell steps that run the
-//! existing tested scripts (`scripts/launch_vitriol_full.sh` for process
-//! control, `scripts/vitriol config load` for profile management). Steps run
-//! on a background thread, streaming output lines back to the UI through an
-//! mpsc channel. The UI can abort the current child via the shared abort flag.
+//! Dashboard actions use the same profile and service commands as the CLI.
 
-use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 use std::thread;
 
 use crate::config::Config;
-use crate::profile::Profile;
 
-/// A user-visible control action in the CONTROLS tab.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
-    /// Launch the full stack; `selected` is a profile whose knobs are applied
-    /// as CLI overrides (flags-only — the active config file is left as-is).
-    Start { selected: Option<String> },
-    /// Stop the full stack.
+pub const ENGINE_UNIT: &str = "vitriol-server.service";
+pub const AUTOSAVE_UNIT: &str = "vitriol-autosave.service";
+
+#[derive(Debug, Clone, Copy)]
+pub enum ServiceAction {
+    Start,
+    Restart,
     Stop,
-    /// Stop then start the full stack; `selected` mirrors Start's profile.
-    Restart { selected: Option<String> },
-    /// Run the launch script's pre-flight checks.
-    Doctor,
-    /// Run `vitriol setup` — set CAP_IPC_LOCK for page-locked stream mode.
-    Setup,
-    /// Boot the whole REBIS trenchcoat: Sol + Luna + Mercury, supervised.
-    LaunchRebis,
-    /// Tear down the entire REBIS stack.
-    StopRebis,
-    /// Run a placement sweep (pin/mtp/ts grid) via sweep_controller for an
-    /// explicit model + device target, benchmarking tok/s per config.
-    RunSweepConfig {
-        model: String,
-        devices: String,
-        ts: Option<String>,
-        ctx: u32,
-    },
+}
+
+impl ServiceAction {
+    pub fn verb(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+        }
+    }
+}
+
+pub enum Action {
+    Load(String),
+    Service(ServiceAction),
 }
 
 impl Action {
-    /// RETIRED 2026-09-01: the REBIS trenchcoat actions (Sol+Luna+Mercury via
-    /// scripts/rebis-servers.sh) come back when VITRIOL_TUI_ENABLE_REBIS=1.
-    /// Variants, labels and steps are retained — see poller.rs rebis_enabled().
-    pub fn rebis_enabled() -> bool {
-        std::env::var("VITRIOL_TUI_ENABLE_REBIS").as_deref() == Ok("1")
-    }
-
-    /// Short label for the action list.
-    pub fn label(&self) -> String {
+    fn args(&self) -> Vec<&str> {
         match self {
-            Action::Start {
-                selected: Some(name),
-            } => format!("start stack ({name})"),
-            Action::Start { selected: None } => "start stack".into(),
-            Action::Stop => "stop stack".into(),
-            Action::Restart {
-                selected: Some(name),
-            } => format!("restart stack ({name})"),
-            Action::Restart { selected: None } => "restart stack".into(),
-            Action::Doctor => "run doctor".into(),
-            Action::Setup => "vitriol setup (CAP_IPC_LOCK)".into(),
-            Action::LaunchRebis => "launch rebis (Sol+Luna+Mercury)".into(),
-            Action::StopRebis => "stop rebis (tear down all)".into(),
-            Action::RunSweepConfig {
-                model,
-                devices,
-                ctx,
-                ..
-            } => {
-                let file = std::path::Path::new(model)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| model.clone());
-                format!("sweep {file} @ {devices}, ctx {ctx}")
+            Self::Load(name) => vec!["config", "load", name],
+            Self::Service(action) => vec!["service", action.verb()],
+        }
+    }
+}
+
+pub struct Event {
+    pub ok: bool,
+    pub lines: Vec<String>,
+}
+
+pub fn spawn(action: Action, cfg: &Config, tx: Sender<Event>) {
+    let cli = cfg.vitriol_cli();
+    thread::spawn(move || {
+        let args = action.args();
+        let mut lines = vec![format!("vitriol {}", args.join(" "))];
+        let ok = match Command::new(cli).args(args).stdin(Stdio::null()).output() {
+            Ok(output) => {
+                for stream in [&output.stdout, &output.stderr] {
+                    lines.extend(String::from_utf8_lossy(stream).lines().map(str::to_owned));
+                }
+                output.status.success()
             }
-        }
-    }
-
-    /// The action list: fixed process actions first, then a sweep row per profile.
-    /// `selected` is the profile Start/Restart will apply as CLI overrides.
-    pub fn all(profiles: &[Profile], selected: Option<&str>) -> Vec<Action> {
-        let mut actions = vec![
-            Action::Start {
-                selected: selected.map(str::to_owned),
-            },
-            Action::Stop,
-            Action::Restart {
-                selected: selected.map(str::to_owned),
-            },
-            Action::Doctor,
-            Action::Setup,
-        ];
-        // RETIRED 2026-09-01: REBIS launch/teardown hidden unless re-enabled.
-        if Self::rebis_enabled() {
-            actions.push(Action::LaunchRebis);
-            actions.push(Action::StopRebis);
-        }
-        // Sweeps moved to the dedicated SWEEP tab (profile-independent).
-        let _ = profiles;
-        actions
-    }
-}
-
-/// One sequential shell step of an action.
-pub struct Step {
-    /// Label shown while the step runs.
-    pub label: String,
-    /// Program to execute.
-    pub program: String,
-    /// Arguments to the program.
-    pub args: Vec<String>,
-}
-
-/// Control-thread events, drained by the UI event loop.
-#[derive(Debug, Clone)]
-pub enum Event {
-    /// The whole action started.
-    Started(String),
-    /// A step began.
-    StepStarted(String),
-    /// One output line (stdout or stderr) from the current step.
-    Line(String),
-    /// The action finished; the bool is whether every step succeeded.
-    Done(bool),
-}
-
-/// Expand an action into its ordered steps.
-fn steps_for(action: &Action, cfg: &Config) -> Vec<Step> {
-    let launch = cfg.launch_script().to_string_lossy().into_owned();
-    // 2026-09-01 spring cleaning: the live server is managed by the systemd
-    // user unit `vitriol-server.service` (ExecStart = `scripts/vitriol serve
-    // --detach`; see the unit file). The old Tria-Prima path
-    // (scripts/launch_vitriol_full.sh, gen+hermetis+embed) is retired, so
-    // Start/Stop/Restart/Doctor now drive the unit. A selected profile is
-    // applied via `vitriol config load` BEFORE the (re)start — the unit's
-    // ExecStart reads the active config at launch.
-    let unit = "vitriol-server.service";
-    let systemctl = |label: &str, args: &[&str]| Step {
-        label: label.to_string(),
-        program: "systemctl".into(),
-        args: args.iter().map(|a| a.to_string()).collect(),
-    };
-    let load_profile = |selected: &Option<String>| -> Vec<Step> {
-        match selected {
-            Some(name) => vec![Step {
-                label: format!("config load {name}"),
-                program: cfg.vitriol_cli().to_string_lossy().into_owned(),
-                args: vec!["config".into(), "load".into(), name.clone()],
-            }],
-            None => Vec::new(),
-        }
-    };
-    match action {
-        Action::Start { selected } => {
-            let mut steps = load_profile(selected);
-            steps.push(systemctl(
-                "start vitriol-server.service",
-                &["--user", "start", unit],
-            ));
-            steps
-        }
-        Action::Stop => vec![systemctl(
-            "stop vitriol-server.service",
-            &["--user", "stop", unit],
-        )],
-        Action::Restart { selected } => {
-            let mut steps = load_profile(selected);
-            steps.push(systemctl(
-                "restart vitriol-server.service",
-                &["--user", "restart", unit],
-            ));
-            steps
-        }
-        Action::Doctor => vec![
-            systemctl(
-                "unit status",
-                &["--user", "status", unit, "--no-pager", "-l"],
-            ),
-            // The launcher's own doctor (flags/env pre-flight) stays useful.
-            Step {
-                label: "launcher doctor".into(),
-                program: launch,
-                args: vec!["doctor".into()],
-            },
-        ],
-        Action::LaunchRebis => vec![Step {
-            label: action.label(),
-            program: cfg
-                .repo_root
-                .join("scripts/rebis-servers.sh")
-                .to_string_lossy()
-                .into_owned(),
-            args: vec!["rebis".into()],
-        }],
-        Action::StopRebis => vec![Step {
-            label: action.label(),
-            program: cfg
-                .repo_root
-                .join("scripts/rebis-servers.sh")
-                .to_string_lossy()
-                .into_owned(),
-            args: vec!["stop".into()],
-        }],
-        Action::Setup => {
-            // 2026-08-07: `sudo -n` keeps the no-tty control thread honest — a
-            // cached/passwordless sudo succeeds, otherwise it fails cleanly with
-            // a log line instead of hanging on a password prompt.
-            let cli = cfg.vitriol_cli().to_string_lossy().into_owned();
-            vec![Step {
-                label: "set CAP_IPC_LOCK (page-locked stream)".into(),
-                program: "sudo".into(),
-                args: vec!["-n".into(), cli, "setup".into()],
-            }]
-        }
-        Action::RunSweepConfig {
-            model,
-            devices,
-            ts,
-            ctx,
-        } => {
-            let mut args = vec![
-                "libvitriol/sweep_controller.py".to_string(),
-                "-m".to_string(),
-                model.clone(),
-                "--ctx".to_string(),
-                ctx.to_string(),
-                "-o".to_string(),
-                "/tmp/vitriol-sweep.csv".to_string(),
-            ];
-            if devices == "split" {
-                if let Some(ratio) = ts {
-                    args.push("--ts".to_string());
-                    args.push(ratio.clone());
-                }
-            } else {
-                args.push("--devices".to_string());
-                args.push(devices.clone());
+            Err(error) => {
+                lines.push(error.to_string());
+                false
             }
-            vec![Step {
-                label: action.label(),
-                program: "python3".to_string(),
-                args,
-            }]
+        };
+        if ok && matches!(action, Action::Load(_)) {
+            lines.push("Profile saved. Restart to apply it to a running engine.".into());
         }
-    }
-}
-
-/// Launch args: `--no-setup` plus, when a profile is selected, its knob flags
-/// as CLI overrides (flags-only — the active config stays untouched). 2026-08-08:
-/// Start/Restart now honour the PROFILES-tab selected profile.
-// RETIRED 2026-09-01: Start/Restart moved to the systemd unit path (config
-// load + `systemctl --user start`), so this flags-only override machinery is
-// currently unreached. Kept for the profiles-as-CLI-flags experiment; the
-// REBIS actions (rebis_enabled) could reuse it.
-#[allow(dead_code)]
-fn launch_args(cfg: &Config, selected: Option<&str>) -> Vec<String> {
-    let mut args = vec!["--no-setup".into()];
-    if let Some(name) = selected {
-        if let Some(p) = find_profile(cfg, name) {
-            let flags = launch_flags(&p);
-            if !flags.is_empty() {
-                args.extend(flags);
-            }
-        }
-    }
-    args
-}
-
-/// Sweep steps for a profile: run `spagyric_sweep.py`; when `save` is set, also
-/// pass `--build-profile <name>` so the per-knob winner is written as a profile.
-/// A no-op step that just reports a message and exits cleanly.
-fn noop(message: String) -> Step {
-    Step {
-        label: message.clone(),
-        program: "echo".into(),
-        args: vec![message],
-    }
-}
-
-/// Find a profile by name (installed shadowing bundled).
-fn find_profile(cfg: &Config, name: &str) -> Option<Profile> {
-    crate::profile::discover(cfg)
-        .into_iter()
-        .find(|p| p.name == name)
-}
-
-/// The launch-flag set for a profile's knobs.
-fn launch_flags(p: &Profile) -> Vec<String> {
-    let mut flags = Vec::new();
-    if let Some(m) = &p.model {
-        flags.push(format!("--model={m}"));
-    }
-    if let Some(n) = p.ngl {
-        flags.push(format!("--ngl={n}"));
-    }
-    if let Some(c) = p.ctx {
-        flags.push(format!("--ctx={c}"));
-    }
-    if let Some(t) = p.threads {
-        flags.push(format!("--threads={t}"));
-    }
-    if let Some(k) = p.parallel {
-        flags.push(format!("--parallel={k}"));
-    }
-    flags
-}
-
-/// Spawn a control executor thread running `action`, streaming events on `tx`.
-/// The executor honours `abort`: while a child runs it is killed, and no
-/// further steps execute after an abort.
-pub fn spawn(action: Action, cfg: &Config, tx: Sender<Event>, abort: Arc<AtomicBool>) {
-    let cfg = cfg.clone();
-    thread::Builder::new()
-        .name("vitriol-tui-control".into())
-        .spawn(move || {
-            let _ = tx.send(Event::Started(action.label()));
-            let steps = steps_for(&action, &cfg);
-            let mut ok = true;
-            for step in steps {
-                if abort.swap(false, Ordering::Relaxed) {
-                    ok = false;
-                    break;
-                }
-                let _ = tx.send(Event::StepStarted(step.label));
-                let mut child = match Command::new(&step.program)
-                    .args(&step.args)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()
-                {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = tx.send(Event::Line(format!("spawn failed: {e}")));
-                        ok = false;
-                        break;
-                    }
-                };
-                if let Some(stdout) = child.stdout.take() {
-                    stream_lines(BufReader::new(stdout), &tx, &abort);
-                }
-                if let Some(stderr) = child.stderr.take() {
-                    stream_lines(BufReader::new(stderr), &tx, &abort);
-                }
-                if abort.load(Ordering::Relaxed) {
-                    let _ = child.kill();
-                    ok = false;
-                    break;
-                }
-                match child.wait() {
-                    Ok(status) if status.success() => {}
-                    Ok(status) => {
-                        let _ = tx.send(Event::Line(format!("step failed: {status}")));
-                        ok = false;
-                        break;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(Event::Line(format!("wait failed: {e}")));
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            let _ = tx.send(Event::Done(ok));
-        })
-        .expect("spawn vitriol-tui control thread");
-}
-
-/// Stream a pipe's lines to the UI, stopping early when abort is raised.
-fn stream_lines(mut reader: impl BufRead, tx: &Sender<Event>, abort: &AtomicBool) {
-    let mut line = String::new();
-    loop {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {
-                let _ = tx.send(Event::Line(line.trim_end().to_string()));
-            }
-        }
-        if abort.load(Ordering::Relaxed) {
-            break;
-        }
-    }
+        let _ = tx.send(Event { ok, lines });
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::ProfileSource;
 
     #[test]
-    fn start_with_selected_profile_applies_config_load_then_unit_start() {
-        // 2026-09-01 spring cleaning: Start moved from the retired Tria-Prima
-        // launch script (which took --no-setup + flag overrides) to the live
-        // management path: `vitriol config load <name>` then the systemd
-        // user unit start (ExecStart reads the active config).
-        let mut cfg = Config::from_env();
-        cfg.repo_root = std::env::temp_dir();
-        let started = steps_for(
-            &Action::Start {
-                selected: Some("anything".into()),
-            },
-            &cfg,
-        );
-        assert_eq!(started.len(), 2);
-        assert_eq!(started[0].args, vec!["config", "load", "anything"]);
-        assert_eq!(started[1].program, "systemctl");
+    fn profile_and_system_service_are_separate_commands() {
         assert_eq!(
-            started[1].args,
-            vec!["--user", "start", "vitriol-server.service"]
+            Action::Load("kintsugi-gpu1".into()).args(),
+            ["config", "load", "kintsugi-gpu1"]
         );
-    }
-
-    #[test]
-    fn action_list_has_fixed_plus_sweeps_per_profile() {
-        let p = Profile {
-            name: "mellum2".into(),
-            description: String::new(),
-            source: ProfileSource::Bundled,
-            model: None,
-            ngl: None,
-            ctx: None,
-            threads: None,
-            parallel: None,
-        };
-        let actions = Action::all(&[p], None);
-        // 2026-09-01 spring cleaning: LaunchRebis/StopRebis are env-gated
-        // (VITRIOL_TUI_ENABLE_REBIS=1 restores them), so the default list is
-        // the five fixed actions. The gated path is not asserted here to
-        // avoid mutating process-global env in parallel tests.
-        assert_eq!(actions.len(), 5);
-        assert_eq!(actions[0], Action::Start { selected: None });
-        assert_eq!(actions[1], Action::Stop);
-        assert_eq!(actions[2], Action::Restart { selected: None });
-        assert_eq!(actions[3], Action::Doctor);
-        assert_eq!(actions[4], Action::Setup);
-        assert!(!actions
-            .iter()
-            .any(|a| matches!(a, Action::LaunchRebis | Action::StopRebis)));
-        assert!(!actions
-            .iter()
-            .any(|a| matches!(a, Action::RunSweepConfig { .. })));
-        let with_sel = Action::all(&[], Some("qwen"));
         assert_eq!(
-            with_sel[0],
-            Action::Start {
-                selected: Some("qwen".into()),
-            }
+            Action::Service(ServiceAction::Restart).args(),
+            ["service", "restart"]
         );
-    }
-
-    #[test]
-    fn setup_runs_sudo_noninteractive() {
-        let mut cfg = Config::from_env();
-        cfg.repo_root = std::env::temp_dir();
-        let steps = steps_for(&Action::Setup, &cfg);
-        assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].program, "sudo");
-        let binding = std::env::temp_dir().join("scripts/vitriol");
-        let cli = binding.to_string_lossy();
-        assert_eq!(steps[0].args, vec!["-n", &cli, "setup"]);
-    }
-
-    #[test]
-    fn sweep_config_builds_controller_invocation() {
-        let mut cfg = Config::from_env();
-        cfg.repo_root = std::env::temp_dir().join("rebis-test-root");
-        let steps = steps_for(
-            &Action::RunSweepConfig {
-                model: "test.gguf".into(),
-                devices: "1".into(),
-                ts: None,
-                ctx: 32768,
-            },
-            &cfg,
+        assert_eq!(
+            Action::Service(ServiceAction::Stop).args(),
+            ["service", "stop"]
         );
-        assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].program, "python3");
-        assert!(steps[0].args.contains(&"--devices".to_string()));
-        assert!(steps[0].args.contains(&"1".to_string()));
-
-        // split target routes through --ts instead
-        let steps2 = steps_for(
-            &Action::RunSweepConfig {
-                model: "test.gguf".into(),
-                devices: "split".into(),
-                ts: Some("3,1".into()),
-                ctx: 16384,
-            },
-            &cfg,
-        );
-        assert!(steps2[0].args.contains(&"--ts".to_string()));
-        assert!(steps2[0].args.contains(&"3,1".to_string()));
     }
 }

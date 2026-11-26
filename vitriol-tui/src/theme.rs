@@ -339,65 +339,49 @@ pub fn WHITE() -> Color {
 
 /// Neutral style for body text.
 pub fn text() -> Style {
-    Style::new().fg(TEXT()).bg(BG())
+    Style::new().fg(TEXT())
 }
 
 /// Style for muted / secondary text.
 pub fn muted() -> Style {
-    Style::new().fg(MUTED()).bg(BG())
+    Style::new().fg(MUTED())
 }
 
 /// Style for a panel title: green on the background.
 pub fn title() -> Style {
-    Style::new()
-        .fg(GREEN())
-        .bg(BG())
-        .add_modifier(Modifier::BOLD)
+    Style::new().fg(GREEN()).add_modifier(Modifier::BOLD)
 }
 
 /// Style for the top-level VITRIOL banner: gold, bold.
 pub fn banner() -> Style {
-    Style::new()
-        .fg(GOLD())
-        .bg(BG())
-        .add_modifier(Modifier::BOLD)
+    Style::new().fg(GOLD()).add_modifier(Modifier::BOLD)
 }
 
 /// Muted gold for non-port (logical-layer) glyphs.
 pub fn gold_muted() -> Style {
-    Style::new().fg(GOLD()).bg(BG())
-}
-
-/// Border style for a service panel, coloured by liveness: green when up, red
-/// when down, dim when unknown.
-pub fn panel_border(up: bool) -> Style {
-    let c = if up { GREEN() } else { RED() };
-    Style::new().fg(c)
+    Style::new().fg(GOLD())
 }
 
 /// Live/streaming emphasis (the solvent cyan).
 pub fn live() -> Style {
-    Style::new().fg(CYAN()).bg(BG())
+    Style::new().fg(CYAN())
 }
 
 /// Informational emphasis.
 pub fn info() -> Style {
-    Style::new().fg(LIGHT_YELLOW()).bg(BG())
+    Style::new().fg(LIGHT_YELLOW())
 }
 
 /// Warning emphasis (the antidote amber).
 pub fn warn() -> Style {
-    Style::new().fg(ORANGE()).bg(BG())
+    Style::new().fg(ORANGE())
 }
 
 /// Gauge value text: bold amber past the warn threshold unless the ramp already
 /// signals danger at its high end, else the live cyan.
 pub fn gauge_value_style(ramp: BrailleRamp, ratio: f64) -> Style {
     if ratio > 0.8 && !ramp.signals_danger() {
-        Style::new()
-            .fg(ORANGE())
-            .bg(BG())
-            .add_modifier(Modifier::BOLD)
+        Style::new().fg(ORANGE()).add_modifier(Modifier::BOLD)
     } else {
         live()
     }
@@ -406,25 +390,11 @@ pub fn gauge_value_style(ramp: BrailleRamp, ratio: f64) -> Style {
 /// Gauge label text: same threshold, muted otherwise.
 pub fn gauge_label_style(ramp: BrailleRamp, ratio: f64) -> Style {
     if ratio > 0.8 && !ramp.signals_danger() {
-        Style::new()
-            .fg(ORANGE())
-            .bg(BG())
-            .add_modifier(Modifier::BOLD)
+        Style::new().fg(ORANGE()).add_modifier(Modifier::BOLD)
     } else {
         muted()
     }
 }
-
-// ── Glyphs (identity, not colour: they do not change with the palette) ───
-
-/// Generation glyph — fire.
-pub const GLYPH_GEN: &str = "🜂";
-/// Memory glyph — water.
-pub const GLYPH_HERM: &str = "🜄";
-/// Embed glyph — air, spirit.
-pub const GLYPH_EMBED: &str = "🜁";
-/// GPU glyph — earth, silicon matter.
-pub const GLYPH_GPU: &str = "🜃";
 
 // ── Braille ramps ────────────────────────────────────────────────────────
 

@@ -20,62 +20,20 @@ use serde_json::Value;
 use ureq::Agent;
 
 use crate::config::Config;
+use crate::control::{AUTOSAVE_UNIT, ENGINE_UNIT};
 use crate::intel;
 use crate::model::{
-    DraftSnapshot, EmbedSnapshot, GenSnapshot, HermetisSnapshot, LogsSnapshot, MetricsTotals,
-    PerfSnapshot, RebisEvent, RebisSnapshot, RecentStore, SlotSnapshot, Snapshot,
+    DraftSnapshot, GenSnapshot, LogsSnapshot, MetricsTotals, PerfSnapshot, SlotSnapshot, Snapshot,
 };
-use crate::nvidia;
+use crate::{nvidia, profile};
 
-/// Number of trailing lines kept per service log.
 const LOG_TAIL_CAP: usize = 200;
 
-/// RETIRED 2026-09-01: the REBIS dual-model gateway (Sol/Luna/Mercury) was
-/// retired with the hermes-era stack (docs/DEPRECATION-AUDIT-2026-09-01.md).
-/// The poller still probes its three ports + reads the shim event stream
-/// every cycle — dead weight now. Gated behind this env flag; set it to 1
-/// to restore REBIS telemetry wholesale (tab stays reachable via Tab::ALL).
-fn rebis_enabled() -> bool {
-    std::env::var("VITRIOL_TUI_ENABLE_REBIS").as_deref() == Ok("1")
-}
-
-/// RETIRED 2026-09-01: Hermetis was removed by the owner (and the embed
-/// server with the Tria Prima stack). Their `/health` probes cost two HTTP
-/// timeouts per cycle against dead ports. Gated behind this env flag.
-fn hermetis_enabled() -> bool {
-    std::env::var("VITRIOL_TUI_ENABLE_HERMETIS").as_deref() == Ok("1")
-}
-
-/// Per-poll mutable state: config plus the three incremental log tails.
 struct Poller {
-    /// Endpoint/log config.
     cfg: Config,
-    /// Tail of the gen log.
     gen_tail: LogTail,
-    luna_beat_offset: Option<u64>,
-    last_gpus: Vec<crate::model::GpuSnapshot>,
-    /// Tail of the Hermetis log.
-    hermetis_tail: LogTail,
-    /// Tail of the embed log.
-    embed_tail: LogTail,
-    luna_tail: LogTail,
-    mercury_tail: LogTail,
-    supervise_tail: LogTail,
-    traffic_tail: LogTail,
-    /// Byte offset of the newest `decode heartbeat` line seen last poll, or
-    /// None before the first sighting. Lets the poller tell "still generating"
-    /// (offset advanced) from "went idle" (offset unchanged since the previous
-    /// poll).
     decode_beat_offset: Option<u64>,
-    /// Last sane live-decode rate seen in a heartbeat. Replayed while
-    /// `/slots` reports a busy slot but the log has gone quiet — the server's
-    /// stdout is block-buffered under nohup, so heartbeat lines arrive in
-    /// multi-second bursts even at ~1 Hz emission.
     last_live_t_s: f64,
-    /// Gen port adopted via `/proc` discovery after the configured port failed
-    /// (`vitriol serve` on a non-default port). Cleared when it stops answering
-    /// so discovery can re-run.
-    gen_port_override: Option<u16>,
 }
 
 /// Spawn the poller thread. `refresh_flag` is raised by the UI to force an
@@ -87,21 +45,14 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
             let agent = http_agent(Duration::from_secs(3));
             let mut poller = Poller {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
-                luna_beat_offset: None,
-                last_gpus: Vec::new(),
-                hermetis_tail: LogTail::new(LOG_TAIL_CAP),
-                embed_tail: LogTail::new(LOG_TAIL_CAP),
-                luna_tail: LogTail::new(LOG_TAIL_CAP),
-                mercury_tail: LogTail::new(LOG_TAIL_CAP),
-                supervise_tail: LogTail::new(LOG_TAIL_CAP),
-                traffic_tail: LogTail::new(LOG_TAIL_CAP),
                 decode_beat_offset: None,
                 last_live_t_s: 0.0,
-                gen_port_override: None,
                 cfg,
             };
             loop {
-                poller.poll_once(&agent, &tx);
+                if !poller.poll_once(&agent, &tx) {
+                    break;
+                }
                 if refresh_flag.swap(false, Ordering::Relaxed) {
                     continue;
                 }
@@ -113,340 +64,212 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
 
 impl Poller {
     /// Run one full poll cycle and publish the snapshot.
-    fn poll_once(&mut self, agent: &Agent, tx: &Sender<Snapshot>) {
+    fn poll_once(&mut self, agent: &Agent, tx: &Sender<Snapshot>) -> bool {
         self.gen_tail.poll(&self.cfg.gen_log());
-        self.hermetis_tail.poll(&self.cfg.hermetis_log());
-        self.embed_tail.poll(&self.cfg.embed_log());
-        self.luna_tail.poll(&self.cfg.luna_log);
-        self.mercury_tail.poll(&self.cfg.mercury_log);
-        self.supervise_tail.poll(&self.cfg.supervise_log);
-        self.traffic_tail.poll(&self.cfg.traffic_log);
-        let gpus = {
-            let mut g = nvidia::query_gpus();
-            if g.is_empty() {
-                g = intel::query_gpus();
-            }
-            g
-        };
-        self.last_gpus = gpus.clone();
-        let gpu_processes = if !gpus.is_empty() && gpus[0].uuid.is_empty() {
-            // Intel sysfs snapshot (no uuid) — no process table to join.
+        let mut gpus = nvidia::query_gpus();
+        if gpus.is_empty() {
+            gpus = intel::query_gpus();
+        }
+        let gpu_processes = if gpus.first().is_some_and(|gpu| gpu.uuid.is_empty()) {
             intel::query_processes(&gpus)
         } else {
             nvidia::query_processes(&gpus)
         };
-        // RETIRED 2026-09-01 (see rebis_enabled): REBIS probes skipped
-        // unless explicitly re-enabled.
-        let rebis = if rebis_enabled() {
-            self.poll_rebis(agent)
+        let config = fs::read_to_string(self.cfg.active_config()).unwrap_or_default();
+        let settings = profile::parse_ini(&config);
+        let configured_port = self
+            .cfg
+            .gen_port
+            .or_else(|| settings.get("server.port")?.parse().ok())
+            .unwrap_or(8279);
+        let (service_state, service_pid) = poll_service();
+        let gen = self.poll_gen(agent, configured_port, service_pid);
+        let selected_model = if settings
+            .get("server.launcher")
+            .is_some_and(|v| v == "kintsugi")
+        {
+            Some("Kintsugi-27B-12G.gguf")
         } else {
-            RebisSnapshot::default()
+            settings
+                .get("model.path")
+                .and_then(|path| std::path::Path::new(path).file_name()?.to_str())
         };
-        // RETIRED 2026-09-01 (see hermetis_enabled): Hermetis/embed probes
-        // skipped unless explicitly re-enabled.
-        let (hermetis, embed) = if hermetis_enabled() {
-            (
-                poll_hermetis(agent, &self.cfg),
-                poll_embed(agent, &self.cfg),
-            )
-        } else {
-            (HermetisSnapshot::default(), EmbedSnapshot::default())
-        };
-        let snap = Snapshot {
-            gen: self.poll_gen(agent),
-            hermetis,
-            embed,
+        let mismatch = gen.up
+            && selected_model
+                .zip(gen.model_path.as_deref())
+                .is_some_and(|(selected, live)| selected != live);
+        let configured_profile = profile::active_name(&config, &profile::discover(&self.cfg))
+            .or_else(|| (!config.is_empty()).then(|| "Custom config".into()));
+        tx.send(Snapshot {
+            gen,
+            service_state,
+            configured_profile,
+            mismatch,
             gpus,
             gpu_processes,
-            rebis,
             logs: LogsSnapshot {
                 gen: self.gen_tail.snapshot(),
-                hermetis: self.hermetis_tail.snapshot(),
-                embed: self.embed_tail.snapshot(),
-                luna: self.luna_tail.snapshot(),
-                mercury: self.mercury_tail.snapshot(),
-                supervise: self.supervise_tail.snapshot(),
-                traffic: self.traffic_tail.snapshot(),
+                journal: journal(ENGINE_UNIT),
+                autosave: journal(AUTOSAVE_UNIT),
             },
-        };
-        let _ = tx.send(snap);
+        })
+        .is_ok()
     }
 
-    /// Poll the REBIS layer: Mercury gateway + Sol/Luna head health,
-    /// Luna velocity, and the shim event stream from the distill store.
-    fn poll_rebis(&mut self, agent: &Agent) -> RebisSnapshot {
-        let mut snap = RebisSnapshot::default();
-        let mut latency = |port: u16| -> (bool, u32) {
-            let t0 = std::time::Instant::now();
-            let up = health_up(agent, port);
-            (up, t0.elapsed().as_millis() as u32)
-        };
-        (snap.sol_up, snap.sol_latency_ms) = latency(self.cfg.gen_port);
-        (snap.luna_up, snap.luna_latency_ms) = latency(self.cfg.luna_port);
-        (snap.mercury_up, snap.mercury_latency_ms) = latency(self.cfg.gateway_port);
-
-        // cumulative predicted tokens from /metrics on both heads
-        for (port, slot) in [(self.cfg.gen_port, 0u8), (self.cfg.luna_port, 1u8)] {
-            if let Some(text) = req_text(agent, &format!("http://127.0.0.1:{port}/metrics")) {
-                for line in text.lines() {
-                    if let Some(v) = line.strip_prefix("llamacpp:tokens_predicted_total ") {
-                        let n: u64 = v.trim().parse().unwrap_or(0);
-                        if slot == 0 {
-                            snap.sol_tokens_total = n;
-                        } else {
-                            snap.luna_tokens_total = n;
-                        }
-                    }
-                }
-            }
-        }
-
-        snap.host_avail_mib = read_mem_available_mib();
-
-        // map head -> its GPU utilisation (Sol=GPU0, Luna=GPU1)
-        if let Some(g0) = self.last_gpus.iter().find(|g| g.index == 0) {
-            snap.sol_util_pct = g0.util_pct;
-        }
-        if let Some(g1) = self.last_gpus.iter().find(|g| g.index == 1) {
-            snap.luna_util_pct = g1.util_pct;
-        }
-
-        if snap.luna_up {
-            if let Some(models) = get_json(
-                agent,
-                &format!("http://127.0.0.1:{}/v1/models", self.cfg.luna_port),
-            ) {
-                snap.luna_model = models["models"]
-                    .as_array()
-                    .and_then(|a| a.first())
-                    .and_then(|m| m.get("model"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        models["data"]
-                            .as_array()
-                            .and_then(|a| a.first())
-                            .and_then(|m| m.get("id"))
-                            .and_then(|v| v.as_str())
-                            .map(str::to_owned)
-                    });
-            }
-        }
-        // Luna heartbeat lives in her log (same format as Sol's).
-        snap.luna_decode_t_s = parse_decode_speed(
-            &std::path::PathBuf::from("/tmp/mellum.log"),
-            &mut self.luna_beat_offset,
-        );
-
-        // Shim/distill event stream: aggregate + recent tail.
-        const MAX_LINES: usize = 400;
-        let path = self.cfg.distill_dir.join("shim-events.jsonl");
-        let Ok(content) = std::fs::read_to_string(&path) else {
-            return snap;
-        };
-        let lines: Vec<&str> = content.lines().collect();
-        for line in lines.iter().rev().take(MAX_LINES).rev() {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
-            let kind = v
-                .get("type")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            let session = v
-                .get("session")
-                .and_then(|x| x.as_str())
-                .unwrap_or("")
-                .to_string();
-            let session_c = session.clone();
-            match kind.as_str() {
-                "gateway_turn" => {
-                    let route = v.get("route").and_then(|x| x.as_str()).unwrap_or("");
-                    match route {
-                        "reason" => snap.routes[0] += 1,
-                        "draft" => snap.routes[1] += 1,
-                        "pipeline" => snap.routes[2] += 1,
-                        _ => {}
-                    }
-                    snap.recent.push(RebisEvent {
-                        ts: v.get("ts").cloned().unwrap_or_default().to_string(),
-                        kind: kind.clone(),
-                        session: session.clone(),
-                        detail: format!("route {route}"),
-                    });
-                }
-                "pipeline_audited" => {
-                    let complete = v.get("complete").and_then(|x| x.as_bool()).unwrap_or(false);
-                    if complete {
-                        snap.audits_pass += 1
-                    } else {
-                        snap.audits_fail += 1
-                    }
-                    snap.recent.push(RebisEvent {
-                        ts: v.get("ts").cloned().unwrap_or_default().to_string(),
-                        kind: kind.clone(),
-                        session: session.clone(),
-                        detail: format!("audit {}", if complete { "PASS" } else { "FAIL" }),
-                    });
-                }
-                _ => {}
-            }
-            // other kinds folded into recent below via generic push
-            if matches!(kind.as_str(), "steer_correct" | "compaction") {
-                snap.recent.push(RebisEvent {
-                    ts: v.get("ts").cloned().unwrap_or_default().to_string(),
-                    kind: kind.clone(),
-                    session,
-                    detail: match kind.as_str() {
-                        "steer_correct" => format!(
-                            "corrected: {}",
-                            v.get("missing_actions")
-                                .and_then(|x| x.as_array())
-                                .map(|a| a.len())
-                                .unwrap_or(0)
-                        ),
-                        "compaction" => format!(
-                            "digested {} turns",
-                            v.get("summarized_turns")
-                                .and_then(|x| x.as_u64())
-                                .unwrap_or(0)
-                        ),
-                        _ => String::new(),
-                    },
-                });
-                if kind == "compaction" {
-                    snap.compactions += 1;
-                }
-            }
-        }
-        // de-dup: pipeline_audited pushed once above already handled; trim
-        for ev in snap.recent.iter_mut() {
-            if ev.ts.is_empty() {
-                ev.ts = "-".into();
-            }
-        }
-        if snap.recent.len() > 60 {
-            let cut = snap.recent.len() - 60;
-            snap.recent.drain(0..cut);
-        }
-        snap
-    }
-
-    /// Poll the gen server: `/health`, `/v1/models`, `/slots`, `/props`,
-    /// `/metrics`, and the log-derived decode state (sticky last-completion
-    /// throughput plus the live heartbeat rate).
-    ///
-    /// When `/health` fails on the configured port, llama-server processes are
-    /// discovered via `/proc` and their `--port` adopted (covers
-    /// `vitriol serve` on a non-default port and the memory-mode internal
-    /// server on PORT−1).
-    fn poll_gen(&mut self, agent: &Agent) -> GenSnapshot {
-        let mut effective_port = self.gen_port_override.unwrap_or(self.cfg.gen_port);
-        let mut up = health_up(agent, effective_port);
+    fn poll_gen(&mut self, agent: &Agent, port: u16, service_pid: Option<u32>) -> GenSnapshot {
+        let (port, pid, up) = endpoint(agent, port, service_pid, self.cfg.gen_port.is_some());
         if !up {
-            // Configured/override port dead: re-discover.
-            for port in discover_llama_ports() {
-                if port == self.cfg.gen_port {
-                    continue;
-                }
-                if health_up(agent, port) {
-                    effective_port = port;
-                    up = true;
-                    break;
-                }
-            }
-        }
-        self.gen_port_override = if up && effective_port != self.cfg.gen_port {
-            Some(effective_port)
-        } else {
-            None
-        };
-        let base = format!("http://127.0.0.1:{effective_port}");
-        let mut model = None;
-        let mut n_ctx = None;
-        if up {
-            if let Some(models) = get_json(agent, &format!("{base}/v1/models")) {
-                let first = models
-                    .get("data")
-                    .and_then(|d| d.as_array())
-                    .and_then(|a| a.first());
-                model = first
-                    .and_then(|m| m.get("id"))
-                    .and_then(|v| v.as_str())
-                    .map(str::to_owned);
-                n_ctx = first.and_then(first_model_size);
-            }
-        }
-        let slots = poll_slots(agent, &base);
-        let busy = slots.iter().any(|s| s.is_processing);
-        // 2026-09-01: n_parallel was hardcoded None even though the GEN card
-        // renders it — derive it from the /slots length instead.
-        let n_parallel = if slots.is_empty() {
-            None
-        } else {
-            Some(slots.len() as u64)
-        };
-        // Heartbeat rate, replayed while a slot is busy but the block-buffered
-        // log has not flushed a fresh beat yet.
-        let mut live = parse_decode_speed(&self.cfg.gen_log(), &mut self.decode_beat_offset);
-        if live > 0.0 {
-            self.last_live_t_s = live;
-        } else if busy {
-            live = self.last_live_t_s;
-        } else {
             self.last_live_t_s = 0.0;
+            return GenSnapshot {
+                effective_port: Some(port),
+                ..GenSnapshot::default()
+            };
         }
+        let base = format!("http://127.0.0.1:{port}");
+        let models = get_json(agent, &format!("{base}/v1/models"));
+        let model_entry = models
+            .as_ref()
+            .and_then(|body| body["data"].as_array()?.first());
+        let props = get_json(agent, &format!("{base}/props"));
+        let model_path = props.as_ref().and_then(model_filename);
+        let slots = poll_slots(agent, &base);
         let totals = poll_metrics_totals(agent, &base);
-        // 2026-10-12: this engine's `/props` carries no `draft` object —
-        // derive the acceptance snapshot from the /metrics spec counters when
-        // the props path is silent (keeps working where it is served).
-        let draft = poll_draft(agent, &base).or_else(|| {
-            (totals.spec_draft_total > 0).then(|| DraftSnapshot {
+        let draft = props.and_then(parse_draft).or_else(|| {
+            (totals.spec_draft_total > 0).then_some(DraftSnapshot {
                 n_total: totals.spec_draft_total,
                 n_accepted: totals.spec_accepted_total,
             })
         });
+        let log_path = self.cfg.gen_log();
         GenSnapshot {
             up,
-            model,
-            n_ctx,
-            n_parallel,
-            decode_t_s: parse_decode_t_s(&self.cfg.gen_log()),
-            decode_speed: live,
-            perf: parse_perf(&self.cfg.gen_log()),
+            model: model_entry
+                .and_then(|entry| entry["id"].as_str())
+                .map(str::to_owned),
+            model_path,
+            model_pid: pid,
+            n_ctx: model_entry.and_then(first_model_size),
+            n_parallel: (!slots.is_empty()).then_some(slots.len() as u64),
+            decode_t_s: parse_decode_t_s(&log_path),
+            decode_speed: self.live_decode(&log_path, slots.iter().any(|slot| slot.is_processing)),
+            perf: parse_perf(&log_path),
             slots,
             draft,
             totals,
-            effective_port: if effective_port != self.cfg.gen_port {
-                Some(effective_port)
-            } else {
-                None
-            },
+            effective_port: Some(port),
         }
+    }
+
+    fn live_decode(&mut self, log: &std::path::Path, busy: bool) -> f64 {
+        let next = parse_decode_speed(log, &mut self.decode_beat_offset);
+        if !busy {
+            self.last_live_t_s = 0.0;
+        } else if next > 0.0 {
+            self.last_live_t_s = next;
+        }
+        self.last_live_t_s
     }
 }
 
-/// Whether `/health` answers on `port`.
-/// Host MemAvailable in MiB from /proc/meminfo.
-fn read_mem_available_mib() -> u32 {
-    for line in std::fs::read_to_string("/proc/meminfo")
-        .unwrap_or_default()
+fn endpoint(
+    agent: &Agent,
+    port: u16,
+    service_pid: Option<u32>,
+    forced: bool,
+) -> (u16, Option<u32>, bool) {
+    let engines = discover_engines();
+    let service = engines.iter().find(|(pid, _)| Some(*pid) == service_pid);
+    let preferred = service.filter(|_| !forced).map_or(port, |(_, port)| *port);
+    if health_up(agent, preferred) {
+        let mut candidates = engines.iter().filter(|(_, port)| *port == preferred);
+        let first = candidates.next();
+        let owner = service
+            .filter(|(_, port)| *port == preferred)
+            .or_else(|| first.filter(|_| candidates.next().is_none()));
+        return (preferred, owner.map(|(pid, _)| *pid), true);
+    }
+    if !forced && service.is_none() {
+        if let [(pid, port)] = engines.as_slice() {
+            if *port != preferred && health_up(agent, *port) {
+                return (*port, Some(*pid), true);
+            }
+        }
+    }
+    (preferred, None, false)
+}
+
+fn model_filename(props: &Value) -> Option<String> {
+    let path = props.get("model_path")?.as_str()?;
+    std::path::Path::new(path)
+        .file_name()?
+        .to_str()
+        .map(str::to_owned)
+}
+
+fn poll_service() -> (String, Option<u32>) {
+    let output = std::process::Command::new("systemctl")
+        .args([
+            "--system",
+            "show",
+            "-p",
+            "ActiveState",
+            "-p",
+            "MainPID",
+            ENGINE_UNIT,
+        ])
+        .output();
+    let Ok(output) = output else {
+        return ("unknown".into(), None);
+    };
+    if !output.status.success() {
+        return ("unknown".into(), None);
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let state = body
         .lines()
-    {
-        if let Some(v) = line.strip_prefix("MemAvailable:") {
-            let kib = v
-                .split_whitespace()
-                .next()
-                .and_then(|t| t.parse::<u64>().ok())
-                .unwrap_or(0);
-            return (kib / 1024) as u32;
-        }
-    }
-    0
+        .find_map(|line| line.strip_prefix("ActiveState="))
+        .unwrap_or("unknown");
+    let pid = body
+        .lines()
+        .find_map(|line| line.strip_prefix("MainPID="))
+        .and_then(|value| value.parse().ok());
+    (state.into(), pid.filter(|pid| *pid > 0))
 }
 
-/// Build a ureq 3 agent with a global timeout.
+fn journal(unit: &str) -> Vec<String> {
+    match std::process::Command::new("journalctl")
+        .args([
+            "--system",
+            "--no-pager",
+            "-b",
+            "-n",
+            "200",
+            "-o",
+            "short-iso",
+            "-u",
+            unit,
+        ])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let mut lines = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let note = String::from_utf8_lossy(&output.stderr);
+            if !note.trim().is_empty() {
+                lines.push(format!("Journal: {}", note.trim().replace('\n', " ")));
+            }
+            lines
+        }
+        Ok(output) => vec![format!(
+            "Journal unavailable: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )],
+        Err(error) => vec![format!("Journal unavailable: {error}")],
+    }
+}
+
 pub fn http_agent(timeout: Duration) -> Agent {
     Agent::config_builder()
         .timeout_global(Some(timeout))
@@ -462,54 +285,43 @@ pub fn read_response_text(
 }
 
 /// Plain GET returning the body as String (for /metrics text endpoints).
-fn req_text(agent: &Agent, url: &str) -> Option<String> {
-    match agent.get(url).call() {
-        Ok(mut resp) => read_response_text(&mut resp).ok(),
-        Err(_) => None,
-    }
-}
-
 fn health_up(agent: &Agent, port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/health");
     get_json(agent, &url)
-        .map(|v| v.get("status").is_some())
+        .map(|v| v.get("status").and_then(Value::as_str) == Some("ok"))
         .unwrap_or(false)
 }
 
-/// Scan `/proc` for running `llama-server` processes and return the distinct
-/// ports from their `--port N` arguments, ascending.
-fn discover_llama_ports() -> Vec<u16> {
-    let mut ports = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return ports;
+/// Discover the local engine and legacy binary names using their launch arguments.
+fn discover_engines() -> Vec<(u32, u16)> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
     };
-    for entry in entries.flatten() {
-        let Ok(pid_text) = entry.file_name().into_string() else {
-            continue;
-        };
-        if pid_text.parse::<u32>().is_err() {
-            continue; // numeric-only dirs are processes
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse().ok()?;
+            let cmd = fs::read_to_string(entry.path().join("cmdline")).ok()?;
+            Some((pid, engine_port(&cmd)?))
+        })
+        .collect()
+}
+
+fn engine_port(cmd: &str) -> Option<u16> {
+    let mut args = cmd.split('\0');
+    let binary = std::path::Path::new(args.next()?).file_name()?.to_str()?;
+    if !matches!(binary, "vitriol-server" | "llama-server") {
+        return None;
+    }
+    while let Some(arg) = args.next() {
+        if matches!(arg, "--port" | "-port") {
+            return args.next()?.parse().ok();
         }
-        let Ok(cmd) = std::fs::read_to_string(format!("/proc/{pid_text}/cmdline")) else {
-            continue; // vanished or not ours
-        };
-        let args: Vec<&str> = cmd.split('\0').filter(|a| !a.is_empty()).collect();
-        let is_llama_server = args
-            .first()
-            .map(|bin| bin.ends_with("/llama-server") || *bin == "llama-server")
-            .unwrap_or(false);
-        if !is_llama_server {
-            continue;
-        }
-        if let Some(i) = args.iter().position(|a| *a == "--port") {
-            if let Some(p) = args.get(i + 1).and_then(|v| v.parse::<u16>().ok()) {
-                ports.push(p);
-            }
+        if let Some(port) = arg.strip_prefix("--port=") {
+            return port.parse().ok();
         }
     }
-    ports.sort_unstable();
-    ports.dedup();
-    ports
+    None
 }
 
 /// Poll `GET /slots` into per-slot snapshots; empty when disabled or down.
@@ -559,14 +371,10 @@ fn parse_slots(body: Value) -> Vec<SlotSnapshot> {
                     .unwrap_or(0),
                 // Slot window (2026-09-01): enables the filled-vs-window view.
                 n_ctx: s.get("n_ctx").and_then(|v| v.as_u64()),
+                filled: s.get("n_prompt_tokens").and_then(|v| v.as_u64()),
             }
         })
         .collect()
-}
-
-/// Poll `GET /props` for speculative-draft aggregates; `None` when absent.
-fn poll_draft(agent: &Agent, base: &str) -> Option<DraftSnapshot> {
-    get_json(agent, &format!("{base}/props")).and_then(parse_draft)
 }
 
 /// Parse the `/props` draft object.
@@ -632,64 +440,6 @@ fn parse_metric_f64(value: &str) -> f64 {
     value.trim().parse::<f64>().unwrap_or(0.0)
 }
 
-/// Poll the Hermetis server: `/health`, `/hermetis/stats?project_id=`, and
-/// `/hermetis/recent?project_id=` for the most recent stores.
-fn poll_hermetis(agent: &Agent, cfg: &Config) -> HermetisSnapshot {
-    let up = get_json(agent, &format!("{}/health", cfg.hermetis_base()))
-        .map(|v| v.get("status").is_some())
-        .unwrap_or(false);
-    let stats_url = format!(
-        "{}/hermetis/stats?project_id={}",
-        cfg.hermetis_base(),
-        cfg.project_id
-    );
-    let (episodes, nodes, sessions) = match get_json(agent, &stats_url) {
-        Some(stats) => (
-            stats.get("episodes").and_then(|v| v.as_u64()),
-            stats.get("nodes").and_then(|v| v.as_u64()),
-            stats.get("sessions").and_then(|v| v.as_u64()),
-        ),
-        None => (None, None, None),
-    };
-    let recent_url = format!(
-        "{}/hermetis/recent?project_id={}&limit=5",
-        cfg.hermetis_base(),
-        cfg.project_id
-    );
-    let recent = get_json(agent, &recent_url)
-        .and_then(|r| r.get("recent").cloned())
-        .and_then(|r| r.as_array().cloned())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|it| {
-                    Some(RecentStore {
-                        id: it.get("id")?.as_i64()?,
-                        role: it.get("role")?.as_str()?.to_string(),
-                        snippet: it.get("snippet")?.as_str()?.to_string(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    HermetisSnapshot {
-        up,
-        episodes,
-        nodes,
-        sessions,
-        recent,
-    }
-}
-
-/// Poll the embed server's `/health`.
-fn poll_embed(agent: &Agent, cfg: &Config) -> EmbedSnapshot {
-    let up = get_json(agent, &format!("{}/health", cfg.embed_base()))
-        .map(|v| v.get("status").is_some())
-        .unwrap_or(false);
-    EmbedSnapshot { up }
-}
-
-/// GET a JSON body, returning `None` on any transport or parse failure.
 fn get_json(agent: &Agent, url: &str) -> Option<Value> {
     let mut resp = agent.get(url).call().ok()?;
     let text = read_response_text(&mut resp).ok()?;
@@ -947,15 +697,23 @@ impl LogTail {
         let Ok(mut f) = fs::File::open(path) else {
             return;
         };
-        if f.seek(SeekFrom::Start(self.pos)).is_err() {
+        const MAX_READ: u64 = 256 * 1024;
+        let start = self.pos.max(len.saturating_sub(MAX_READ));
+        if f.seek(SeekFrom::Start(start)).is_err() {
             return;
         }
-        let mut buf = vec![0u8; (len - self.pos) as usize];
+        let mut buf = vec![0u8; (len - start) as usize];
         if f.read_exact(&mut buf).is_err() {
             return;
         }
+        let skipped = start > self.pos;
         self.pos = len;
-        for line in String::from_utf8_lossy(&buf).lines() {
+        let text = String::from_utf8_lossy(&buf);
+        let mut lines = text.lines();
+        if skipped {
+            lines.next();
+        }
+        for line in lines {
             if self.tail.len() == self.cap {
                 self.tail.pop_front();
             }
@@ -973,6 +731,26 @@ impl LogTail {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn live_schema_uses_model_path_filled_tokens_and_actual_server_binary() {
+        assert_eq!(
+            model_filename(&serde_json::json!({"model_alias": "Lapis Occultus", "model_path": "/models/Kintsugi-27B-12G.gguf"})).as_deref(),
+            Some("Kintsugi-27B-12G.gguf")
+        );
+        let slots = parse_slots(serde_json::json!([{
+            "id": 0, "n_ctx": 65536, "n_prompt_tokens": 4196,
+            "next_token": [{"n_decoded": 6, "n_remain": 16}]
+        }]));
+        assert_eq!(slots[0].filled, Some(4196));
+        assert_eq!(slots[0].total_tokens(), 22);
+        assert_eq!(
+            engine_port("/path/vitriol-server\0--port\08279\0"),
+            Some(8279)
+        );
+        assert_eq!(engine_port("/path/llama-server\0--port=8280\0"), Some(8280));
+        assert_eq!(engine_port("other-server\0--port\08279\0"), None);
+    }
 
     #[test]
     fn slots_body_parses_processing_and_idle() {

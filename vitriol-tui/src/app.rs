@@ -80,6 +80,7 @@ pub struct App {
     pub log_source: LogSource,
     pub log_sidebar: bool,
     pub log_slot: Option<u64>,
+    pub log_route: Option<String>,
     pub logs_verbose: bool,
     pub log_query: String,
     pub search_open: bool,
@@ -105,6 +106,7 @@ impl App {
             log_source: LogSource::Engine,
             log_sidebar: false,
             log_slot: None,
+            log_route: None,
             logs_verbose: false,
             log_query: String::new(),
             search_open: false,
@@ -177,15 +179,24 @@ impl App {
     }
 
     pub fn open_caduceus_logs(&mut self) {
-        let query = match &self.menu {
-            Some(Menu::Caduceus(model)) => model.clone().unwrap_or_default(),
+        let route = match &self.menu {
+            Some(Menu::Caduceus(model)) => model.clone(),
             _ => return,
         };
         self.set_tab(Tab::Logs);
         self.set_log_source(LogSource::Caduceus);
-        self.log_query = query;
+        self.log_route = route;
+        self.log_query.clear();
         self.paused_log = None;
         self.log_offset = 0;
+    }
+
+    pub fn clear_log_filter(&mut self) {
+        self.log_query.clear();
+        self.log_offset = 0;
+        if self.log_source == LogSource::Caduceus && self.log_route.take().is_some() {
+            self.paused_log = None;
+        }
     }
 
     pub fn unpark_selected(&mut self, tx: &Sender<Event>) {
@@ -270,7 +281,20 @@ impl App {
             ),
             LogSource::Service => Cow::Borrowed(&self.snapshot.logs.journal),
             LogSource::Autosave => Cow::Borrowed(&self.snapshot.logs.autosave),
-            LogSource::Caduceus => Cow::Borrowed(&self.snapshot.logs.caduceus),
+            LogSource::Caduceus => self.log_route.as_deref().map_or_else(
+                || Cow::Borrowed(self.snapshot.logs.caduceus.as_slice()),
+                |route| {
+                    Cow::Owned(
+                        self.snapshot
+                            .logs
+                            .caduceus
+                            .iter()
+                            .filter(|line| crate::caduceus::is_route_event(line, route))
+                            .cloned()
+                            .collect(),
+                    )
+                },
+            ),
             LogSource::Slots => Cow::Borrowed(self.log_slot.map_or_else(
                 || self.snapshot.logs.slot_entries.as_slice(),
                 |id| {

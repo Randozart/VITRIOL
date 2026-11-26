@@ -703,13 +703,17 @@ fn render_menu(frame: &mut Frame, area: Rect, menu: &Menu) {
 }
 
 fn render_logs(frame: &mut Frame, area: Rect, app: &mut App, compact: bool) {
-    let slot = if app.log_source.is_slot_scoped() {
+    let scope = if app.log_source.is_slot_scoped() {
         app.log_slot
             .map_or_else(|| " · All slots".into(), |id| format!(" · Slot {id}"))
+    } else if app.log_source == LogSource::Caduceus {
+        app.log_route
+            .as_ref()
+            .map_or_else(String::new, |id| format!(" · {id}"))
     } else {
         String::new()
     };
-    let title = format!(" Logs · {}{slot} ", app.log_source.label());
+    let title = format!(" Logs · {}{scope} ", app.log_source.label());
     let block = panel(&title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -800,19 +804,20 @@ fn empty_log_message(source: LogSource, query: &str) -> &'static str {
 
 fn log_status(app: &App) -> String {
     if app.search_open {
-        format!(" Search: {}▏   Enter filter · Esc clear", app.log_query)
-    } else if !app.log_query.is_empty() {
-        format!(" Filter: {}   Esc clear", app.log_query)
-    } else {
-        format!(
-            " {} · ↑↓ scroll · End latest",
-            if app.logs_verbose {
-                "Detail"
-            } else {
-                "Concise"
-            }
-        )
+        return format!(" Search: {}▏   Enter filter · Esc clear", app.log_query);
     }
+    if !app.log_query.is_empty() {
+        return format!(" Filter: {}   Esc clear", app.log_query);
+    }
+    if app.log_source == LogSource::Caduceus && app.log_route.is_some() {
+        return " Route events · Esc show all".into();
+    }
+    let level = if app.logs_verbose {
+        "Detail"
+    } else {
+        "Concise"
+    };
+    format!(" {level} · ↑↓ scroll · End latest")
 }
 
 fn filtered_lines(lines: &[String], query: &str, verbose: bool) -> Vec<String> {
@@ -876,6 +881,7 @@ mod tests {
         app.snapshot.logs.caduceus = vec![
             r#"{"model":"a/glm","status":429}"#.into(),
             r#"{"model":"b/glm","served":true}"#.into(),
+            r#"{"model":"b/glm-flash","status":429}"#.into(),
         ];
         assert!(render_caduceus_fixture(&mut app)
             .contains("a/glm · 1/2 eligible · next cooldown ends in 30s"));
@@ -891,10 +897,11 @@ mod tests {
         assert!(rx.try_recv().is_err());
         app.open_caduceus_logs();
         assert_eq!(app.tab, Tab::Logs);
-        assert_eq!(app.log_query, "b/glm");
+        assert_eq!(app.log_route.as_deref(), Some("b/glm"));
         let logs = render_caduceus_fixture(&mut app);
         assert!(logs.contains("b/glm · served after reroute"));
         assert!(!logs.contains("a/glm"));
+        assert!(!logs.contains("b/glm-flash"));
     }
 
     fn render_caduceus_fixture(app: &mut App) -> String {

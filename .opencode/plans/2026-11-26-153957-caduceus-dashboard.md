@@ -50,3 +50,7 @@ Record actual outcomes, affected contracts/docs, commits and evidence links as w
 - 2026-11-26T15:47:23+01:00 — Officina summarizes cooldown, exhausted lanes and exact-route policy failures inline without selecting a different model or invoking engine recovery. All 406 native tests passed after documenting the existing server.launcher config key and ratcheting the shorter dispatcher. Praetor baseline comparison prompted a final dashboard rendering review.
 
 - 2026-11-26T15:50:13+01:00 — Final dashboard rendering review preserved behavior and removed new Praetor warning signatures. Both release binaries passed terminal fixtures, including the installed Officina path. The idle Caduceus user service was reloaded and returned the new health schema without an inference request. Final changed-scope evidence under /tmp/vitriol-caduceus-dashboard/verification/.
+
+- 2026-11-26T15:51:17+01:00 — Final review found that the route-log shortcut used substring search, which can include a similarly named model. Scope the shortcut by exact event model while preserving the independent text filter, and pin with an overlapping model ID.
+
+- 2026-11-26T15:53:15+01:00 — Route logs now match exact JSON event IDs, including unpark events, and Esc clears the scope. The overlapping-name case, all 56 dashboard Rust tests, format gate and release terminal smoke passed. The full gate's previous Rust lint failures were in unchanged Officina files, and its Node failures reproduce known baseline and sandbox issues. Separate loopback router fixtures passed.

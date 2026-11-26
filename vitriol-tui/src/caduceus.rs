@@ -182,6 +182,12 @@ pub fn compact_event(line: &str) -> Option<String> {
     Some(format!("{time} · {model} · {details}"))
 }
 
+pub fn is_route_event(line: &str, model: &str) -> bool {
+    serde_json::from_str::<Value>(line).is_ok_and(|event| {
+        event["model"].as_str() == Some(model) || event["unparked"].as_str() == Some(model)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

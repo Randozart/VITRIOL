@@ -93,7 +93,7 @@ fn handle_key(
             KeyCode::Enter => app.search_open = false,
             KeyCode::Esc => {
                 app.search_open = false;
-                app.log_query.clear();
+                app.clear_log_filter();
             }
             KeyCode::Backspace => {
                 app.log_query.pop();
@@ -135,10 +135,7 @@ fn log_key(app: &mut App, key: KeyCode) {
         KeyCode::Char('v') => app.logs_verbose = !app.logs_verbose,
         KeyCode::Char(' ') => app.toggle_pause(),
         KeyCode::Char('/') => app.search_open = true,
-        KeyCode::Esc => {
-            app.log_query.clear();
-            app.log_offset = 0;
-        }
+        KeyCode::Esc => app.clear_log_filter(),
         KeyCode::Up => app.log_offset = app.log_offset.saturating_add(1),
         KeyCode::Down => app.log_offset = app.log_offset.saturating_sub(1),
         KeyCode::PageUp => app.log_offset = app.log_offset.saturating_add(12),

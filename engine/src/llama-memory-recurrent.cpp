@@ -35,6 +35,10 @@ llama_memory_recurrent::llama_memory_recurrent(const llama_model &     model,
 
     this->n_rs_seq = n_rs_seq;
     rs_idx.assign(n_seq_max, 0);
+    // pending-plane token layout (replay): k floats (S_k * H_k), v floats (S_v * H), g+beta (2*H)
+    pend_k = hparams.ssm_d_state * hparams.ssm_n_group;  // S_k * H_k per token (GDN k token vector)
+    pend_v = hparams.ssm_d_inner;  // PROVENANCE kintsugi-engine 8f12baacf: S_v*H_v == d_inner for GDN
+    pend_h = hparams.ssm_dt_rank;
 
     cells.clear();
     cells.resize(mem_size);
@@ -163,7 +167,8 @@ llama_memory_recurrent::llama_memory_recurrent(const llama_model &     model,
         r_l[i] = r;
         s_l[i] = s;
         if (replay) {
-            const int64_t pend_row = (int64_t) (hparams.n_embd_r() + hparams.n_embd_s() + 2 * hparams.n_embd_s() / 128) + 1;
+            const int64_t p_tok    = (int64_t) pend_tok();
+            const int64_t pend_row = (int64_t) n_rs_seq * p_tok + 1;   // P pending tokens per cell + the valid count
             ggml_tensor * pd = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, pend_row, mem_size);
             ggml_format_name(pd, "cache_pend_l%d", i);
             pend_l[i] = pd;
@@ -1467,6 +1472,41 @@ ggml_tensor * llama_memory_recurrent_context::get_s_l(int32_t il) const {
 
 ggml_tensor * llama_memory_recurrent_context::get_p_l(int32_t il) const {
     return mem->p_l[il];
+}
+
+// PROVENANCE kintsugi-engine 8f12baacf (MIT): replay-rollback accessors.
+bool llama_memory_recurrent_context::get_replay() const {
+    return mem->replay;
+}
+
+ggml_tensor * llama_memory_recurrent_context::get_pend_l(int32_t il) const {
+    return mem->pend_l[il];
+}
+
+uint32_t llama_memory_recurrent_context::get_n_pend() const {
+    return mem->replay ? mem->n_rs_seq : 0;
+}
+
+void llama_memory_recurrent_context::s_pend_info(int i, int32_t & row, int32_t & rejected, int32_t & fresh) const {
+    const uint32_t cell_idx = i + mem->head;
+    const auto & cell = mem->cells[cell_idx];
+    row      = cell.src0;
+    rejected = 0;
+    fresh    = cell.src0 < 0 || cell.src0 == mem->rs_z;   // a new (zeroed) state: its pending inputs are not its own
+    if (fresh) {
+        row = std::max<int32_t>(cell.src0, 0);
+        return;
+    }
+    if (!cell.seq_id.empty()) {
+        const llama_seq_id seq = *cell.seq_id.begin();
+        if (seq >= 0 && (size_t) seq < mem->rs_idx.size()) {
+            rejected = (int32_t) mem->rs_idx[seq];
+        }
+    }
+}
+
+int32_t llama_memory_recurrent_context::s_copy0(int i) const {
+    return mem->cells[i + mem->head].src0;
 }
 
 int32_t llama_memory_recurrent_context::s_copy(int i) const {

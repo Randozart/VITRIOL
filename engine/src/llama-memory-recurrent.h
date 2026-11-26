@@ -83,6 +83,13 @@ class llama_memory_recurrent : public llama_memory_i {
     // first zero-ed state
     int32_t rs_z = -1;
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): pending-token plane sizing (replay rollback).
+    // pend token layout: [k | v | g | beta] = pend_k + pend_v + 2*pend_h floats.
+    uint32_t pend_k = 0;
+    uint32_t pend_v = 0;
+    uint32_t pend_h = 0;
+    uint32_t pend_tok() const { return pend_k + pend_v + 2 * pend_h; }
+
     // TODO: optimize for recurrent state needs
     struct mem_cell {
         llama_pos pos  = -1;
@@ -175,7 +182,14 @@ class llama_memory_recurrent_context : public llama_memory_context_i {
     ggml_tensor * get_s_l(int32_t il) const;
     ggml_tensor * get_p_l(int32_t il) const;
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): DFlash2 replay-rollback accessors (stage 3b).
+    bool           get_replay() const;
+    ggml_tensor *  get_pend_l(int32_t il) const;
+    uint32_t       get_n_pend() const;
+    void           s_pend_info(int i, int32_t & row, int32_t & rejected, int32_t & fresh) const;
+
     int32_t s_copy(int i) const;
+    int32_t s_copy0(int i) const;  // PROVENANCE kintsugi-engine 8f12baacf: the cell's plain src0 (replay).
 
   private:
     const llama_memory_status status;

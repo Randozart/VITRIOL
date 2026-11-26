@@ -317,6 +317,13 @@ public:
     ggml_tensor * s_copy_main;   // I32 [n_seqs]
     ggml_tensor * s_copy_extra;  // I32 [n_rs - n_seqs]
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): replay-rollback inputs. s_copy0 is allocated only
+    // when a replay graph reads it; s_pinfo carries [row, rejected, fresh] per sequence.
+    ggml_tensor * s_copy0 = nullptr; // I32 [n_rs]
+    ggml_tensor * s_copy0_main  = nullptr; // I32 [n_seqs]
+    ggml_tensor * s_copy0_extra = nullptr; // I32 [n_rs - n_seqs]
+    ggml_tensor * s_pinfo       = nullptr; // I32 [3 * n_seqs]: pending row, rejected count, fresh
+
     const llama_memory_recurrent_context * mctx;
 
     // used in view offsets, need to match for valid graph reuse

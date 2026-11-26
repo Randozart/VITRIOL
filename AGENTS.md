@@ -1,5 +1,15 @@
 # VITRIOL AI Agent Guidelines
 
+## Inkling upstream setup — 2026-11-26 22:07
+
+Official llama.cpp b12774 ran the existing IQ4_NL at 32K on both 3060s
+with a 1:3 layer split. Native tool calls and post-tool replies worked.
+Inkling edited the Rust prototype in Officina and passed all 11 tests
+on the first compile. The harness rejected two undeclared shell calls.
+It recalled the exact marker at 24,055 filled tokens. Production was
+untouched and the test endpoint was stopped.
+[Plan](.opencode/plans/2026-11-26-215926-inkling-officina-parser-qualification.md).
+
 ## Officina Rust port comparison — 2026-11-26 21:53
 
 The installed Officina TUI drove Kintsugi and Inkling on a scratch port of

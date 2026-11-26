@@ -884,7 +884,7 @@ mod tests {
         // acceptance snapshot from the /metrics counters instead.
         let mut totals = MetricsTotals::default();
         let draft = poll_draft_legacy_none().or_else(|| {
-            (totals.spec_draft_total > 0).then(|| DraftSnapshot {
+            (totals.spec_draft_total > 0).then_some(DraftSnapshot {
                 n_total: totals.spec_draft_total,
                 n_accepted: totals.spec_accepted_total,
             })
@@ -893,7 +893,7 @@ mod tests {
         totals.spec_draft_total = 3000;
         totals.spec_accepted_total = 2010;
         let draft = None::<DraftSnapshot>.or_else(|| {
-            (totals.spec_draft_total > 0).then(|| DraftSnapshot {
+            (totals.spec_draft_total > 0).then_some(DraftSnapshot {
                 n_total: totals.spec_draft_total,
                 n_accepted: totals.spec_accepted_total,
             })

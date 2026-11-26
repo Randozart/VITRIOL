@@ -45,3 +45,7 @@ Record actual outcomes, affected contracts/docs, commits and evidence links as w
 - 2026-11-26T13:16:28+01:00 — Plan created before implementation.
 
 - 2026-11-26T13:30:44+01:00 — Built the release binary used by vitriol tui and the installed symlink. Fifty focused Rust tests passed and the pseudo-terminal run used isolated health, model, slots, GPU, journal and systemctl fixtures. Profile save and denied system restart were exercised separately. The terminal emitted only Aether ink and panel backgrounds for the dashboard, including both parts of the gauge. Dashboard, logs and picker captures are kept under /tmp/vitriol-two-tabs/. The native Praetor comparison recorded 44 blocking diagnostics with --warn versus 70 on the baseline. Remaining issues include complexity warnings in the touched and legacy code. Final scoped evidence goes under /tmp/vitriol-two-tabs/verification/.
+
+- 2026-11-26T13:31:42+01:00 — Final Clippy exposed an iterator warning in the TUI's Intel fallback and two eager-value suggestions in retained draft-counter tests. Apply the equivalent local fixes and rebuild and recheck all scoped inputs.
+
+- 2026-11-26T13:32:12+01:00 — The three retained source/test lint sites were corrected. Cargo Clippy completed without diagnostics. The scoped gates will verify the committed tree and retain the separate Praetor comparison.

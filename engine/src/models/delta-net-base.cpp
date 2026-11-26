@@ -399,7 +399,14 @@ std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_ne
     GGML_ASSERT(s->ne[0] == S_v && s->ne[1] == S_v && s->ne[2] == H_v      && s->ne[3] == n_seqs);
 
     // K=1: output carries the final state only. state s is 4D [S_v, S_v, H_v, n_seqs].
-    ggml_tensor * result = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, /*K=*/1);
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): with raw gates available the op gets the
+    // pre-activation gates and applies sigmoid/softplus itself; otherwise activated ones.
+    const bool raw = gdn_raw_beta && gdn_raw_alpha && gdn_raw_dt_bias && gdn_raw_a;
+    ggml_tensor * result = ggml_gated_delta_net(ctx0, q, k, v,
+            raw ? gdn_raw_alpha : g, raw ? gdn_raw_beta : b, s, /*K=*/1);
+    if (raw) {
+        ggml_gated_delta_net_set_raw_gates(result, gdn_raw_dt_bias, gdn_raw_a);
+    }
     if (n_tokens == 1) {
         res->add_fused_node({LLM_FUSED_OP_GDN_AR, result, il});
     } else {
@@ -564,7 +571,12 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     const int64_t K = cparams.n_rs_seq + 1;
 
     // state s is 4D [S_v, S_v, H_v, n_seqs]; K snapshot slots are written into the output.
-    ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q, k, v, g, b, s, K);
+    const bool raw = gdn_raw_beta && gdn_raw_alpha && gdn_raw_dt_bias && gdn_raw_a;
+    ggml_tensor * gdn_out = ggml_gated_delta_net(ctx0, q, k, v,
+            raw ? gdn_raw_alpha : g, raw ? gdn_raw_beta : b, s, K);
+    if (raw) {
+        ggml_gated_delta_net_set_raw_gates(gdn_out, gdn_raw_dt_bias, gdn_raw_a);
+    }
     if (n_seq_tokens > 1) {
         res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
     } else {

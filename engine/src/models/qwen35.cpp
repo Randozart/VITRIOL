@@ -448,12 +448,33 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     cb(beta, "beta", il);
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): keep the pre-activation beta for the raw path.
+    ggml_tensor * beta_raw = beta;
     beta = ggml_sigmoid(ctx0, beta);
     cb(beta, "beta_sigmoid", il);
 
     ggml_tensor * alpha = build_lora_mm(model.layers[il].ssm_alpha, cur, model.layers[il].ssm_alpha_s);
     alpha = ggml_reshape_3d(ctx0, alpha, num_v_heads, n_seq_tokens, n_seqs);
     cb(alpha, "alpha", il);
+
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT, qwen35.cpp:532-542): publish raw gates when the
+    // layer's dt/a are F32 and the layer sits on a GPU (the raw path is CUDA-only here).
+    {
+        static const bool raw_gates_disable = getenv("GGML_GDN_RAW_GATES_DISABLE") != nullptr;
+        const ggml_backend_dev_t gdn_dev = model.dev_layer(il);
+        const bool on_gpu = gdn_dev && ggml_backend_dev_type(gdn_dev) == GGML_BACKEND_DEVICE_TYPE_GPU;
+        const bool raw = !raw_gates_disable && on_gpu &&
+            model.layers[il].ssm_dt && model.layers[il].ssm_dt->type == GGML_TYPE_F32 &&
+            model.layers[il].ssm_a  && model.layers[il].ssm_a->type  == GGML_TYPE_F32;
+        if (raw) {
+            gdn_raw_beta    = beta_raw;
+            gdn_raw_alpha   = ggml_reshape_4d(ctx0, alpha, 1, num_v_heads, n_seq_tokens, n_seqs);
+            gdn_raw_dt_bias = model.layers[il].ssm_dt;
+            gdn_raw_a       = model.layers[il].ssm_a;
+        } else {
+            gdn_raw_beta = gdn_raw_alpha = gdn_raw_dt_bias = gdn_raw_a = nullptr;
+        }
+    }
 
     ggml_tensor * alpha_biased   = ggml_add(ctx0, alpha, model.layers[il].ssm_dt);
     ggml_tensor * alpha_softplus = ggml_softplus(ctx0, alpha_biased);

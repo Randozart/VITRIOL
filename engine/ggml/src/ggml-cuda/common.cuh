@@ -184,6 +184,43 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
 
 // ---------------------------------------------------------------------------------------------------------
 
+// PROVENANCE kintsugi-engine 8f12baacf (MIT): batch-invariant kernel selection and the GDN
+// gather registry used by their gated_delta_net generation path.
+// GGML_CUDA_BATCH_INVARIANT=1: prefer kernels whose per-column arithmetic does not depend on the
+// number of columns in the batch (1 to 8), so a token decoded alone and a token verified inside a
+// speculative batch see the same logits bit for bit.
+static inline bool ggml_cuda_batch_invariant() {
+    static const bool enabled = getenv("GGML_CUDA_BATCH_INVARIANT") != nullptr;
+    return enabled;
+}
+
+#define GGML_CUDA_BATCH_INVARIANT_MAX_ROWS 48
+
+// Gathered GDN state: fused state-gather registration (stage 3c; the graph evaluator registers it
+// when it skips a GET_ROWS). Keyed by node pointer, reset per graph evaluation.
+struct ggml_cuda_gated_delta_net_gather {
+    const float *   base       = nullptr;
+    const int32_t * ids        = nullptr;
+    int64_t         row_stride = 0;
+};
+
+struct ggml_cuda_gdn_gather_context {
+    std::unordered_map<const ggml_tensor *, ggml_cuda_gated_delta_net_gather> gathers;
+
+    void reset() {
+        gathers.clear();
+    }
+
+    void set(const ggml_tensor * gdn, const ggml_cuda_gated_delta_net_gather & gather) {
+        gathers[gdn] = gather;
+    }
+
+    const ggml_cuda_gated_delta_net_gather * find(const ggml_tensor * gdn) const {
+        const auto it = gathers.find(gdn);
+        return it == gathers.end() ? nullptr : &it->second;
+    }
+};
+
 #define MATRIX_ROW_PADDING 512 // last row of quant. matrices is a multiple of this to avoid out-of-bounds memory accesses
 
 #define GGML_CUDA_MAX_STREAMS 8
@@ -1593,6 +1630,8 @@ struct ggml_backend_cuda_context {
     }
 
     // pool
+    ggml_cuda_gdn_gather_context gdn_gather_context;
+
     std::unique_ptr<ggml_cuda_pool> pools[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS];
 
     static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(int device, int stream_no);
@@ -1601,6 +1640,8 @@ struct ggml_backend_cuda_context {
     // device+stream for the whole process, so the target and the speculative draft context share a
     // high-water mark instead of adding one. Valid because llama-server computes one context at a
     // time. The pools are intentionally leaked (static destruction may outlive the CUDA driver).
+    ggml_cuda_gdn_gather_context & gdn_gathers() { return gdn_gather_context; }
+
     ggml_cuda_pool & pool(int device) {
         static const bool shared_pool = [] {
             const char * e = getenv("GGML_CUDA_SHARED_POOL");

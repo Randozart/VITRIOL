@@ -1056,6 +1056,13 @@ struct llm_graph_qkv {
 };
 
 struct llm_graph_context {
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT, models.h:90-93): raw pre-activation gate tensors of
+    // the layer being built. All four non-null means the fused GDN op can precompute the gates.
+    ggml_tensor * gdn_raw_beta    = nullptr;
+    ggml_tensor * gdn_raw_alpha   = nullptr;
+    ggml_tensor * gdn_raw_dt_bias = nullptr;
+    ggml_tensor * gdn_raw_a       = nullptr;
+
     const llm_arch arch;
 
     const llama_hparams & hparams;

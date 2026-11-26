@@ -2619,6 +2619,15 @@ extern "C" {
             struct ggml_tensor  * state,
             int64_t               K);
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT, ggml.c:6592): mark a gated_delta_net op as taking
+    // PRE-ACTIVATION gates. src[3] must then be the raw scalar gate and src[4] the raw beta; the
+    // kernel applies sigmoid(beta) and a[h] * softplus(g + dt_bias[h]) itself. dt_bias and a are
+    // [H] F32. Nodes without this call keep the activated-gate behaviour.
+    GGML_API void ggml_gated_delta_net_set_raw_gates(
+            struct ggml_tensor  * gdn,
+            struct ggml_tensor  * dt_bias,
+            struct ggml_tensor  * a);
+
     // DSA lightning indexer
     //
     // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]

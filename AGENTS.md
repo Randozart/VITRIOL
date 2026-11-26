@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Inkling context ceiling — 2026-11-26 22:53
+
+The stock b12774 IQ4_NL setup opened 229,376 tokens with GPU Q4_0 KV
+and 401,408 with host Q4_0 KV. Both larger arms passed 4K recall and
+then crossed the GPU reserve. The 212,992 GPU profile completed 65,605
+filled-token recall at 12.35 tok/s and reused 65,601 tokens on the follow-up.
+[Plan](.opencode/plans/2026-11-26-223028-inkling-context-ceiling-z440.md).
+
 ## Inkling upstream setup — 2026-11-26 22:07
 
 Official llama.cpp b12774 ran the existing IQ4_NL at 32K on both 3060s

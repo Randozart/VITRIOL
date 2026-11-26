@@ -79,3 +79,10 @@ The launcher and these overrides are verified independently of administrator aut
 The isolated launcher reported the `Lapis Occultus` alias, answered `Paris`, and exposed slots and metrics. The test saved slot 0, erased it, and restored the saved token count from the dedicated temporary directory. Nvidia's process listing matched the launched PID to physical GPU1 only. The previous user configuration digest verified. The unit pair passed `systemd-analyze verify` with the existing base units and drop-ins in a private test directory. Full fixtures and output are under `/tmp/vitriol-kintsugi-daily`.
 
 - 2026-11-26T11:08:50+01:00 — GPU1 runtime and checkpoint smoke passed. The installation and live-unit check await sudo authentication.
+
+## 2026-11-26T12:40:00+01:00 config selection
+
+The [selectable profile](2026-11-26-123509-selectable-kintsugi-gpu1.md)
+now uses the existing service entry point. Use that route to switch
+profiles on this workstation. The direct-launch overrides above document
+the earlier approach and would bypass config selection.

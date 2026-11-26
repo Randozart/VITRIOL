@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Selectable Kintsugi daily driver — 2026-11-26 12:40
+
+`kintsugi-gpu1` loads through `vitriol config` and uses the existing
+systemd entry point. The local config selects it and preserves a rollback
+profile. The detached profile passed GPU1 chat and isolated autosave.
+Systemd denied the production restart without administrator authentication.
+[Plan and evidence](.opencode/plans/2026-11-26-123509-selectable-kintsugi-gpu1.md).
+
 ## Provenance inventory — 2026-11-26 11:32
 
 The README credits the main upstreams and links to the technique inventory.

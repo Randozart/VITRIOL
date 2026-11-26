@@ -115,6 +115,28 @@ Accessed via `vitriol config` at the terminal. All settings are persisted to `~/
 
 ---
 
+## Kintsugi on GPU1
+
+`vitriol config load kintsugi-gpu1` selects the bundled Kintsugi-27B
+server profile. Review the resolved model, device, and flags with
+`vitriol serve --dry-run`, then run `vitriol service restart` to apply
+the profile on a systemd installation. The config menu also lists this
+profile under Load Config Profile.
+
+The profile uses `[server] launcher = kintsugi` to select
+[`serve-kintsugi.sh`](../scripts/serve-kintsugi.sh). It serves **Lapis Occultus**
+on loopback, uses GPU1 for both models, and sets a 65,536-token window
+with DFlash n7. The default model directory is `~/kintsugi/models`.
+Set `VITRIOL_KINTSUGI_MODELS` in the launcher environment to use a
+different directory. Review the two required filenames in the launcher.
+
+The existing systemd service reads the selected profile on each start.
+Kintsugi checkpoints are kept in `~/.vitriol/checkpoints-kintsugi`.
+The autosave sidecar uses that directory for the live Kintsugi process.
+Load another profile and restart both units with `vitriol service restart`
+to switch back. A custom service override that calls the standalone
+Kintsugi launcher directly must be removed to make config selection effective.
+
 ## `[gpu] rpc_servers` (config key, no CLI flag / env)
 
 Row-split layer offload to a remote machine over the llama.cpp RPC backend.

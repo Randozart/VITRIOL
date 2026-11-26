@@ -19,6 +19,7 @@ Env:
   VITRIOL_PORT           server port            (default 8279)
   VITRIOL_AUTOSAVE_SECS  save interval seconds  (default 300)
   VITRIOL_SLOT_SAVE_DIR  checkpoint dir         (default ~/.vitriol/checkpoints)
+                        The live Kintsugi profile uses ~/.vitriol/checkpoints-kintsugi.
   VITRIOL_OOM_SHIELD_ADJ raise non-essential big consumers' oom_score_adj
                          to this value each tick (0 disables; default 300)
   VITRIOL_OOM_SHIELD_MB  min RSS MiB for shielding (default 300)
@@ -49,8 +50,10 @@ import urllib.error
 
 PORT = int(os.environ.get("VITRIOL_PORT", "8279"))
 INTERVAL = int(os.environ.get("VITRIOL_AUTOSAVE_SECS", "300"))
-SAVE_DIR = os.environ.get("VITRIOL_SLOT_SAVE_DIR",
-                          os.path.expanduser("~/.vitriol/checkpoints"))
+DEFAULT_SAVE_DIR = os.environ.get("VITRIOL_SLOT_SAVE_DIR",
+                                 os.path.expanduser("~/.vitriol/checkpoints"))
+KINTSUGI_SAVE_DIR = os.path.expanduser("~/.vitriol/checkpoints-kintsugi")
+SAVE_DIR = DEFAULT_SAVE_DIR
 BASE = f"http://127.0.0.1:{PORT}"
 HANG_STRIKES_MAX = int(os.environ.get("VITRIOL_HANG_STRIKES", "12"))
 # engine unit is SYSTEM scope since 2026-09-04 (user units retired)
@@ -128,12 +131,9 @@ def server_identity():
         return (None, pid)
 
 
-IDENTITY_PATH = os.path.join(SAVE_DIR, ".sidecar-identity.json")
-
-
 def load_identity():
     try:
-        with open(IDENTITY_PATH) as f:
+        with open(os.path.join(SAVE_DIR, ".sidecar-identity.json")) as f:
             v = json.load(f)
         return (v.get("boot_id"), v.get("pid"))
     except Exception:
@@ -145,7 +145,7 @@ def store_identity(ident):
         return
     try:
         os.makedirs(SAVE_DIR, exist_ok=True)
-        with open(IDENTITY_PATH, "w") as f:
+        with open(os.path.join(SAVE_DIR, ".sidecar-identity.json"), "w") as f:
             json.dump({"boot_id": ident[0], "pid": ident[1]}, f)
     except Exception:
         pass
@@ -301,6 +301,25 @@ def server_pid():
     return None
 
 
+def select_save_dir(pid):
+    """Follow the live launch, even if another profile is already selected."""
+    global SAVE_DIR, PERSIST_OK
+    directory = DEFAULT_SAVE_DIR
+    if pid is not None:
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                args = f.read().split(b"\0")
+            slot_path = args[args.index(b"--slot-save-path") + 1]
+            if slot_path == os.fsencode(KINTSUGI_SAVE_DIR):
+                directory = KINTSUGI_SAVE_DIR
+        except (OSError, ValueError, IndexError):
+            pass
+    if directory != SAVE_DIR:
+        SAVE_DIR = directory
+        PERSIST_OK = None
+        log(f"slot directory changed to {SAVE_DIR}")
+
+
 def mem_available_mb():
     try:
         with open("/proc/meminfo") as f:
@@ -315,14 +334,16 @@ def mem_available_mb():
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "loop"
     if mode == "save":
+        select_save_dir(server_pid())
         save_idle({})
         return
     if not wait_health():
         log("server never became healthy — exiting")
         sys.exit(1)
+    last_pid = server_pid()
+    select_save_dir(last_pid)
     log(f"server healthy at {BASE}; save dir={SAVE_DIR} interval={INTERVAL}s")
     restore_all()
-    last_pid = server_pid()
     log(f"baseline server pid {last_pid}")
     last_save = 0.0
     last_sig = {}
@@ -342,6 +363,7 @@ def main():
             hang_strikes = 0
             low_streak = 0
             if pid is not None and wait_health(600):
+                select_save_dir(pid)
                 log("new instance healthy — replaying disk checkpoints")
                 restore_all()
                 last_sig.clear()

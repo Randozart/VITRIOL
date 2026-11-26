@@ -1,0 +1,3 @@
+[server]
+launcher = kintsugi
+port = 8279

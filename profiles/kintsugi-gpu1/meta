@@ -1,0 +1,3 @@
+name=kintsugi-gpu1
+description=Kintsugi-27B with DFlash on GPU1, 64K context
+created=1795690800

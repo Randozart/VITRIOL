@@ -97,6 +97,15 @@ FP_BLESSED="${FP_BLESSED:-$HOME/.vitriol/fingerprint.blessed}"
 _fp_delta() {
     # Per-field diff of two fingerprint lines: 'key: old -> new'.
     local oldfp="$1" newfp="$2"
+    local old_argv="" new_argv=""
+    if [[ "$oldfp" == *" argv="* ]]; then
+        old_argv="${oldfp#* argv=}"
+        oldfp="${oldfp%% argv=*}"
+    fi
+    if [[ "$newfp" == *" argv="* ]]; then
+        new_argv="${newfp#* argv=}"
+        newfp="${newfp%% argv=*}"
+    fi
     local -A oldf newf
     local kv k
     for kv in $oldfp; do oldf[${kv%%=*}]=${kv#*=}; done
@@ -116,6 +125,9 @@ _fp_delta() {
     for k in "${!oldf[@]}"; do
         if [[ -z "${newf[$k]:-}" ]]; then echo "  $k: ${oldf[$k]} -> <dropped>"; fi
     done
+    if [[ "$old_argv" != "$new_argv" ]]; then
+        printf '  argv: %s -> %s\n' "${old_argv:-<absent>}" "${new_argv:-<absent>}"
+    fi
 }
 
 compute_fingerprint() {
@@ -150,6 +162,10 @@ config_fingerprint() {
     # 'config bless'. Launches with CLI/env overrides will legitimately
     # differ — the blessed-delta makes that visible, not an error.
     parse_config
+    if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+        kintsugi_launch --dry-run
+        return
+    fi
     local fp
     fp=$(compute_fingerprint \
         "$(basename "${CFG_MODEL:-?}")" "${CFG_TENSOR_SPLIT:-none}" "${CFG_CTX:-?}" \
@@ -353,6 +369,7 @@ CFG_MAX_LOCKED_MB="${DEFAULT_MAX_LOCKED_MB:-0}"
 CFG_LRU_MB_GPU="${DEFAULT_LRU_MB_GPU:-}"
 CFG_VERBOSE="$DEFAULT_VERBOSE"
 CFG_PORT="$DEFAULT_PORT"
+CFG_SERVER_LAUNCHER=""
 CFG_HOST="$DEFAULT_HOST"
 CFG_PARALLEL="$DEFAULT_PARALLEL"
 CFG_SLOT_CONTEXT=""
@@ -464,6 +481,7 @@ parse_config() {
                 server.cache_reuse)     CFG_CACHE_REUSE="$val" ;;
                 server.ctx_resize)      CFG_CTX_RESIZE="$val" ;;
                 server.port)           CFG_PORT="$val" ;;
+                server.launcher)       CFG_SERVER_LAUNCHER="$val" ;;
                 memory.mode)           CFG_MEMORY_MODE="$val" ;;
                 memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
                 kv.mode)               CFG_KV_MODE="$val" ;;
@@ -587,6 +605,7 @@ reasoning_budget = $CFG_REASONING_BUDGET
 preserve_reasoning = $CFG_PRESERVE_REASONING
 
 [server]
+launcher = $CFG_SERVER_LAUNCHER
 # API host address
 host = $CFG_HOST
 # API port
@@ -688,6 +707,11 @@ config_init() {
 }
 
 config_show() {
+    if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+        echo "Server launcher: Kintsugi GPU1"
+        kintsugi_launch --dry-run
+        return
+    fi
     local box_w=44
     local inner=$((box_w - 4))
     local line
@@ -758,6 +782,7 @@ config_show() {
 }
 
 config_reset() {
+    CFG_SERVER_LAUNCHER=""
     CFG_DEVICE="$DEFAULT_DEVICE"
     CFG_EXCLUDE_SECONDARY="$DEFAULT_EXCLUDE_SECONDARY"
     CFG_PIN_FIRST_N_LAYERS="$DEFAULT_PIN_FIRST_N_LAYERS"
@@ -836,6 +861,12 @@ config_set() {
                 server.cache_reuse)     CFG_CACHE_REUSE="$val" ;;
                 server.ctx_resize)      CFG_CTX_RESIZE="$val" ;;
         server.port)           CFG_PORT="$val" ;;
+        server.launcher)
+            case "$val" in
+                ""|kintsugi) CFG_SERVER_LAUNCHER="$val" ;;
+                *) echo "Unsupported server.launcher: $val" >&2; return 2 ;;
+            esac
+            ;;
         server.chat_template)  CFG_CHAT_TEMPLATE="$val" ;;
         memory.mode)           CFG_MEMORY_MODE="$val" ;;
         memory.semantic_mode)  CFG_SEMANTIC_MODE="$val" ;;
@@ -929,11 +960,16 @@ profiles_load() {
     # Copy profile to main config
     cp "${profile_dir}/config" "$CONFIG_FILE"
     # Reload config into CFG_ vars
+    CFG_SERVER_LAUNCHER=""
     parse_config
     config_journal "load-profile $name"
     echo ""
     echo "✓ Profile '${name}' loaded"
-    echo "  Restart the server to apply: vitriol stop && vitriol serve"
+    if [[ "$(unit_scope)" == "none" ]]; then
+        echo "  Restart the server to apply: vitriol stop && vitriol serve"
+    else
+        echo "  Restart the server to apply: vitriol service restart"
+    fi
 }
 
 profiles_list() {
@@ -2127,12 +2163,49 @@ print(f'pin{o[\"pin_first_n_layers\"]} ctx{o[\"context\"]} ubatch{o[\"ubatch_siz
 # MAIN
 # ═════════════════════════════════════════════════════════════════
 
+kintsugi_launch() {
+    VITRIOL_KINTSUGI_GPU=1 VITRIOL_KINTSUGI_PORT="$CFG_PORT" \
+        VITRIOL_KINTSUGI_SLOT_DIR="$CONFIG_DIR/checkpoints-kintsugi" \
+        "$SCRIPT_DIR/serve-kintsugi.sh" "$@"
+}
+
+serve_kintsugi_profile() {
+    DRY_RUN=false
+    local detach=false arg
+    for arg in "$@"; do
+        case "$arg" in
+            --dry-run) DRY_RUN=true ;;
+            --detach) detach=true ;;
+            -h|--help) echo "Usage: vitriol serve [--dry-run | --detach] (Kintsugi profile)"; return ;;
+            *) echo "Kintsugi profile does not accept serve override: $arg" >&2; return 2 ;;
+        esac
+    done
+    serve_unit_guard
+    FINGERPRINT=$(kintsugi_launch --dry-run)
+    fingerprint_journal
+    if $DRY_RUN; then
+        printf '%s\n' "$FINGERPRINT"
+        return
+    fi
+    mkdir -m 0700 -p "$CONFIG_DIR/checkpoints-kintsugi"
+    if $detach; then
+        mkdir -p "$TELEMETRY_LOG_DIR"
+        kintsugi_launch --detach "$GEN_LOG" "$CONFIG_DIR/server.pid"
+    else
+        kintsugi_launch
+    fi
+}
+
 # Parse config before command dispatch so env vars override
 parse_config
 
 CMD="${1:-tui}"
 case "$CMD" in
     run)
+        if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+            echo "The Kintsugi profile uses vitriol serve." >&2
+            exit 2
+        fi
         shift
         # CLI flags override config
         CLI_MODEL=""
@@ -2440,6 +2513,11 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
 
     serve)
         shift
+        case "$CFG_SERVER_LAUNCHER" in
+            kintsugi) serve_kintsugi_profile "$@"; exit ;;
+            "") ;;
+            *) echo "Unsupported server.launcher: $CFG_SERVER_LAUNCHER" >&2; exit 2 ;;
+        esac
         CLI_MODEL=""
         CLI_CTX=""
         CLI_THREADS=""
@@ -3304,6 +3382,10 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         ;;
 
     bench)
+        if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+            echo "The Kintsugi profile uses vitriol serve." >&2
+            exit 2
+        fi
         shift
         # Run a quick benchmark using llama-bench
         CLI_MODEL=""

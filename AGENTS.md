@@ -1,5 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
+## Officina model discovery — 2026-11-26 15:09
+
+`/models` and `/providers` use the live Pi catalog and local recent IDs.
+Named Caduceus choices use the direct gateway, and Auto-route keeps the
+advertised model ID fixed across eligible providers. Pi RPC fixture passed.
+[Plan](.opencode/plans/2026-11-26-145644-officina-model-catalog.md).
+
 ## Slot log viewer — 2026-11-26 13:47
 
 Dashboard can open the same log viewer as the Logs tab. Slots indexes

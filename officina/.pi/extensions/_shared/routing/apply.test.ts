@@ -46,6 +46,13 @@ describe("modelLabel", () => {
 });
 
 describe("applyModel", () => {
+  it("keeps an operator menu action manual even after a programmatic switch", async () => {
+    const pi = { setModel: async () => true };
+    await applyModel(pi, cloud, { owner: "adaptive-router", reason: "overflow" });
+    await applyModel(pi, cloud, { owner: "model-catalog", reason: "operator selection", operator: true });
+    expect(wasProgrammaticSwitch()).toBe(false);
+  });
+
   it("announces the intent so a router is not fooled by its own switch", async () => {
     // pi reports the operator and an extension identically (source "set"), so a
     // router's model_select handler leans on this marker to stay out of the way.

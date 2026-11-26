@@ -113,6 +113,21 @@ export function extractCatalogModels(body: unknown): unknown[] {
   return [];
 }
 
+export const EXACT_PROVIDER = "caduceus-exact";
+
+/** Require the gateway to identify a physical model and its owner explicitly. */
+export function exactModelIds(rawModels: unknown[]): Set<string> {
+  const ids = new Set<string>();
+  for (const raw of rawModels) {
+    const row = asRecord(raw);
+    const owner = asString(row.owned_by);
+    const root = asString(row.root);
+    const id = asString(row.id);
+    if (owner && root && id === `${owner}/${root}` && !row.parent && isChatModel(row)) ids.add(id);
+  }
+  return ids;
+}
+
 export function mapCatalogModels(rawModels: unknown[]): PiModelEntry[] {
   const byId = new Map<string, PiModelEntry>();
 

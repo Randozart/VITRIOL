@@ -166,6 +166,27 @@
 - **Command recall**: Up/Down recall command
   history; Enter runs a command.
 
+## Models and providers
+
+- `/models` lists recent choices first. Pick a model, then choose a provider
+  or **Auto-route** when more than one provider advertises that model ID.
+- `/providers` lists connected providers first. Their model lists put recent
+  choices at the top. A recent choice in `/models` reopens that exact route.
+- Add a filter after either command or choose **Search catalog** in the picker.
+  The original `/model [provider/id]` command is still available.
+
+Officina shows the cached registry immediately and refreshes supported
+listings from connected providers when stale. Reopening the picker shows
+the refreshed catalog. Recent selections are stored as model and provider
+IDs under `~/.vitriol/officina/`.
+
+A named Caduceus provider selection uses the exact provider-owned ID on
+the local gateway. Auto-route keeps the advertised model ID fixed and
+applies provider, budget, and cooldown policy on each request. A retry
+can choose another eligible provider for the same ID. The picker offers
+strict Caduceus routes for catalogs served by the standard local gateway.
+Custom endpoints remain selectable through `/model`.
+
 ## Subscriptions via Caduceus
 
 Caduceus is Officina’s name for its local gateway integration; the upstream

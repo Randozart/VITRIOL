@@ -23,13 +23,15 @@
 // tier engine have genuinely different inputs); the ACTUATION is single-owner.
 
 import { emitHarnessEvent, harnessEvent } from "../events.ts";
-import { markProgrammaticSwitch } from "../model-switch-intent.ts";
+import { clearProgrammaticSwitch, markProgrammaticSwitch } from "../model-switch-intent.ts";
 
 export interface SwitchRequest {
   /** Who wanted the switch: "adaptive-router", "coupling", "phase-model", … */
   owner: string;
   /** Why, in the operator's words: "manual pin", "overflow demotion", … */
   reason: string;
+  /** A menu action initiated by the operator, equivalent to /model. */
+  operator?: boolean;
 }
 
 /** Minimal shape of the model we actually need to name in events. */
@@ -67,7 +69,8 @@ export async function applyModel(
   request: SwitchRequest,
 ): Promise<boolean> {
   if (!pi.setModel) return false;
-  markProgrammaticSwitch();
+  if (request.operator) clearProgrammaticSwitch();
+  else markProgrammaticSwitch();
   let ok = false;
   try {
     ok = !!(await pi.setModel(model));

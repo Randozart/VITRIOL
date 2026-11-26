@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
 import { streamCloudWithRecovery } from "./capacity.ts";
-import { resolveBaseUrl as resolveProviderBaseUrl } from "./base-url.ts";
+import { exactGatewayBaseUrl, resolveBaseUrl as resolveProviderBaseUrl } from "./base-url.ts";
 import { budgetStatus } from "../_shared/budget.ts";
 import { allowPaidOwners, readPrefs } from "../_shared/caduceus-prefs.ts";
 import { readGatewayMarks } from "../_shared/gateway-health.ts";
@@ -21,6 +21,8 @@ import {
   type ProviderHealthFact,
 } from "../_shared/lane-health.ts";
 import {
+  EXACT_PROVIDER,
+  exactModelIds,
   extractCatalogModels,
   filterCatalogByProviders,
   clampModelsToLimits,
@@ -590,57 +592,61 @@ export default async function (pi: ExtensionAPI) {
     return;
   }
 
-  const activeProviders = await fetchActiveProviders(baseUrl);
-  const cached = readCache(baseUrl);
-  let models = cached
-    ? mapCatalogModels(filterCatalogByProviders(cached.data, activeProviders))
-    : [];
-  let needsNetwork = models.length === 0;
-
-  if (needsNetwork) {
-    try {
-      const fresh = await fetchCatalog(baseUrl, apiKey, activeProviders);
-      writeCache(baseUrl, fresh.data);
-      models = mapCatalogModels(fresh.data);
-    } catch (error) {
-      console.warn(
-        `[caduceus] catalog unavailable at ${baseUrl}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+  // A named route goes straight to the known gateway. The broad Caduceus
+  // provider can still use the reroute proxy and its cross-model fallbacks.
+  const exactBase = exactGatewayBaseUrl(baseUrl);
+  const registerExact = (raw: unknown[], models: PiModelEntry[]) => {
+    if (!exactBase) return;
+    const ids = exactModelIds(raw);
+    const exact = models.filter((model) => ids.has(model.id));
+    if (!exact.length) {
+      pi.unregisterProvider(EXACT_PROVIDER);
+      return;
     }
-  }
-
-  if (models.length === 0) {
-    console.warn("[caduceus] no models available; local engine remains the default");
-    return;
-  }
-
-  const refreshModels: ProviderConfig["refreshModels"] = async (context) => {
-    if (!context.allowNetwork || context.signal?.aborted) return models;
-    const fresh = await fetchCatalog(baseUrl, apiKey);
-    const mapped = mapCatalogModels(fresh.data);
-    if (mapped.length === 0) return models;
-    models = mapped;
-    writeCache(baseUrl, fresh.data);
-    return mapped;
+    pi.registerProvider(EXACT_PROVIDER, {
+      name: "Caduceus exact route",
+      baseUrl: exactBase,
+      apiKey,
+      api: "openai-completions",
+      headers: { ...PASSTHROUGH_HEADERS },
+      models: exact,
+    });
   };
 
-  // Learned windows (2026-11-14): a provider 400 taught us the real limit;
-  // clamp the registered window so pi's compaction budget matches reality.
-  const clampedModels = clampModelsToLimits(models, readGatewayMarks().limits);
-  pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, clampedModels, refreshModels));
-
-  if (!needsNetwork) {
-    void fetchCatalog(baseUrl, apiKey)
-      .then((fresh) => {
-        const mapped = mapCatalogModels(fresh.data);
-        if (mapped.length === 0) return;
+  const cached = readCache(baseUrl);
+  let raw = cached?.data ?? [];
+  let models = clampModelsToLimits(mapCatalogModels(raw), readGatewayMarks().limits);
+  let lastFetch = cached ? Date.parse(cached.fetchedAt) || 0 : 0;
+  let inFlight: Promise<PiModelEntry[]> | undefined;
+  const refresh = () => {
+    if (!inFlight) {
+      inFlight = fetchCatalog(baseUrl, apiKey).then((fresh) => {
+        const mapped = clampModelsToLimits(mapCatalogModels(fresh.data), readGatewayMarks().limits);
+        if (!mapped.length) return models;
+        raw = fresh.data;
         models = mapped;
-        writeCache(baseUrl, fresh.data);
-        pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, models, refreshModels));
-      })
-      .catch(() => {
-        // Keep the cached catalog.
-      });
+        lastFetch = Date.now();
+        writeCache(baseUrl, raw);
+        registerExact(raw, models);
+        return models;
+      }).finally(() => { inFlight = undefined; });
+    }
+    return inFlight;
+  };
+  const refreshModels: ProviderConfig["refreshModels"] = async (context) => {
+    if (!context.allowNetwork || context.signal?.aborted || Date.now() - lastFetch < 5 * 60_000) {
+      return models;
+    }
+    return refresh();
+  };
+  // Register even with an empty cache so discovery recovers after a failed
+  // startup fetch. A last good catalog stays usable during a refresh.
+  registerExact(raw, models);
+  pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, models, refreshModels));
+  if (Date.now() - lastFetch >= 5 * 60_000) {
+    void refresh().then((fresh) => {
+      pi.registerProvider(PROVIDER_ID, providerConfig(baseUrl, apiKey, fresh, refreshModels));
+    }).catch(() => {});
   }
 
   pi.registerCommand("provider-keys", {

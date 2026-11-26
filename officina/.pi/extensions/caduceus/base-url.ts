@@ -22,6 +22,12 @@ export const GATEWAY_BASE_URL = "http://127.0.0.1:20128/v1";
 export const ROUTER_PORT = 20129;
 export const ROUTER_BASE_URL = `http://127.0.0.1:${ROUTER_PORT}/v1`;
 
+/** Exact selections use the known direct gateway, bypassing cross-model routing. */
+export function exactGatewayBaseUrl(baseUrl: string): string | undefined {
+  const value = baseUrl.replace(/\/$/, "");
+  return value === GATEWAY_BASE_URL || value === ROUTER_BASE_URL ? GATEWAY_BASE_URL : undefined;
+}
+
 /** The router unit path, resolved against the *current* HOME (testable). */
 export function routerUnitPath(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.HOME || homedir();

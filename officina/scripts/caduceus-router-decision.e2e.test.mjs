@@ -19,6 +19,10 @@ let dir = "";
 let stub;
 let decisions;
 let proxy;
+let localProxy;
+let localPort;
+let localPayload;
+let localReply = "lane_1";
 let decisionCalls = 0;
 let decisionMode = "prefer-second"; // or "down"
 
@@ -55,7 +59,7 @@ function startGateway() {
         );
         return;
       }
-      if (model === "good/one" || model === "good/two") {
+      if (["good/one", "good/two", "live/requested"].includes(model)) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.end(`data: {"served":"${model}"}\n\n`);
         return;
@@ -75,6 +79,13 @@ function startDecisions() {
     const server = createServer(async (req, res) => {
       const chunks = [];
       for await (const c of req) chunks.push(c);
+      if (req.url === "/v1/chat/completions") {
+        expect(req.headers["x-goog-api-key"]).toBeUndefined();
+        localPayload = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: JSON.stringify({ choice: localReply }) } }] }));
+        return;
+      }
       decisionCalls += 1;
       if (decisionMode === "down") {
         res.writeHead(500);
@@ -104,14 +115,14 @@ function startDecisions() {
   });
 }
 
-const startProxy = () =>
+const startProxy = (port = ROUTER_PORT, backend = "gemini") =>
   new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
       [
         join(HERE, "caduceus-router.mjs"),
         "--port",
-        String(ROUTER_PORT),
+        String(port),
         "--gateway",
         `http://127.0.0.1:${GATEWAY_PORT}`,
         "--decision",
@@ -125,7 +136,9 @@ const startProxy = () =>
         env: {
           ...process.env,
           CADUCEUS_ROUTER_FALLBACKS: "good/one,good/two",
-          CADUCEUS_ROUTER_STATE: join(dir, "state.json"),
+          CADUCEUS_ROUTER_STATE: join(dir, `${backend}-state.json`),
+          CADUCEUS_ROUTER_DECISION_BACKEND: backend,
+          CADUCEUS_ROUTER_DECISION_LOCAL_PORT: String(DECISION_PORT),
           GEMINI_API_KEY: "AI" + "za" + "T".repeat(35),
         },
         stdio: "ignore",
@@ -135,7 +148,7 @@ const startProxy = () =>
     const deadline = Date.now() + 10_000;
     const poll = async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:${ROUTER_PORT}/health`);
+        const res = await fetch(`http://127.0.0.1:${port}/health`);
         if (res.ok) return resolve(child);
       } catch {
         /* not up yet */
@@ -155,22 +168,25 @@ beforeAll(async () => {
   stub = await startGateway();
   decisions = await startDecisions();
   proxy = await startProxy();
+  localPort = await freePort();
+  localProxy = await startProxy(localPort, "local");
 }, 30_000);
 
 afterAll(() => {
   proxy?.kill("SIGTERM");
+  localProxy?.kill("SIGTERM");
   stub?.close();
   decisions?.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
-const chat = (model) =>
-  fetch(`http://127.0.0.1:${ROUTER_PORT}/v1/chat/completions`, {
+const chat = (model, port = ROUTER_PORT) =>
+  fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       model,
-      messages: [{ role: "user", content: "hi" }],
+      messages: [{ role: "user", content: "private fixture text" }],
     }),
   });
 
@@ -213,4 +229,41 @@ describe("decision-model lane choice (end to end)", () => {
     await res.text();
     decisionMode = "prefer-second";
   });
+
+  it("uses only the loopback chat transport and reports what actually served", async () => {
+    const response = await chat("live/requested", localPort);
+    expect(response.headers.get("x-caduceus-router")).toBe("model=live/requested;attempt=1");
+    await response.text();
+    expect(JSON.stringify(localPayload)).not.toContain("private fixture text");
+    expect(localPayload.response_format.json_schema.schema.properties.choice.enum)
+      .toEqual(["lane_0", "lane_1", "abstain"]);
+    const health = async () => (await (await fetch(`http://127.0.0.1:${localPort}/health`)).json()).decision;
+    const decision = await health();
+    expect(decision).toMatchObject({ backend: "local", model: "qwen2.5-0.5b-decision", last: {
+      requested: "live/requested", proposed: "good/two", applied: true,
+      source: "model", servedModel: "live/requested", routeOutcome: "served",
+    } });
+    expect(decision.last.probability).toBeUndefined();
+    expect(decision.floor).toBeUndefined();
+
+    await (await chat("live/requested", localPort)).text();
+    expect((await health()).last.source).toBe("memo");
+
+    localReply = "unlisted";
+    const rejected = await chat("bad/local", localPort);
+    expect(rejected.headers.get("x-caduceus-router")).toBe("model=good/one;attempt=2");
+    await rejected.text();
+    expect((await health()).last).toMatchObject({
+      outcome: "failed", applied: false, servedModel: "good/one",
+    });
+
+    const previousPayload = localPayload;
+    await (await chat("good/one", localPort)).text();
+    expect(localPayload).toBe(previousPayload);
+    expect((await health()).last).toMatchObject({
+      outcome: "skipped", reason: "fewer than two candidates",
+      applied: false, servedModel: "good/one",
+    });
+  });
+
 });

@@ -123,6 +123,28 @@ Lines without an engine slot ID are available in Engine. Use Space to pause,
 Use [the configuration reference](CONFIG_REFERENCE.md) for profile editing.
 Placement sweeps remain available through [the sweep CLI](../libvitriol/sweep_controller.py).
 
+### Local Caduceus decision model
+
+`scripts/serve-caduceus-decision.sh` starts a small local chat endpoint on
+GPU0 at `127.0.0.1:18435`. It defaults to the Qwen2.5-0.5B GGUF in
+`~/Models`. The launcher accepts `VITRIOL_DECISION_GGUF`,
+`VITRIOL_DECISION_GPU`, `VITRIOL_DECISION_PORT`, and
+`VITRIOL_DECISION_MODEL` overrides.
+
+An isolated Caduceus router can opt in with
+`CADUCEUS_ROUTER_DECISION=1` and `CADUCEUS_ROUTER_DECISION_BACKEND=local`.
+The local port and model alias can be set with
+`CADUCEUS_ROUTER_DECISION_LOCAL_PORT` and `CADUCEUS_ROUTER_DECISION_MODEL`.
+A local decision sees only the request size estimate and fallback metadata.
+It can reorder two or more fallback candidates. The requested lane retains
+its priority. An invalid or unavailable decision leaves the order intact.
+
+`vitriol caduceus router --status` and the router's `/health` report the
+running backend and the latest completed decision. Caduceus logs show the
+proposal, whether it changed the fallback order, and the lane that served
+the request. Local choices carry no probability score. Use the
+deterministic order for the two small models tested on this workstation.
+
 ## Pymander semantic recall stack (2026-08-26)
 
 Cross-domain semantic lookup over the curated doctrine, built as

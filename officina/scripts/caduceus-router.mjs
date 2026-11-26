@@ -15,6 +15,7 @@
 //      CADUCEUS_ROUTER_FIRST_BYTE_MS=45000 per-attempt deadline
 //      CADUCEUS_ROUTER_STATE=<path>        parked-lane state file
 
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import {
   appendFileSync,
@@ -36,10 +37,8 @@ import {
   pruneParked,
   resolveFallbacks,
   buildLaneDecision,
-  needsDecisionModel,
   pickLaneFromReply,
   tokenBucket,
-  isParked,
   geminiKeyFromSecrets,
 } from "./caduceus-router-lib.mjs";
 
@@ -72,9 +71,18 @@ const DECISION_URL = argOf(
   process.env.CADUCEUS_ROUTER_DECISION_URL ||
     "https://generativelanguage.googleapis.com/v1beta/decisions",
 );
+const DECISION_BACKEND = process.env.CADUCEUS_ROUTER_DECISION_BACKEND || "gemini";
+const LOCAL_DECISION_PORT = Number(process.env.CADUCEUS_ROUTER_DECISION_LOCAL_PORT || 18435);
+if (DECISION_ON && !["gemini", "local"].includes(DECISION_BACKEND)) {
+  throw new Error("CADUCEUS_ROUTER_DECISION_BACKEND must be gemini or local");
+}
+if (DECISION_BACKEND === "local" && (!Number.isInteger(LOCAL_DECISION_PORT) || LOCAL_DECISION_PORT < 1 || LOCAL_DECISION_PORT > 65535)) {
+  throw new Error("Invalid CADUCEUS_ROUTER_DECISION_LOCAL_PORT");
+}
 const DECISION_MODEL = argOf(
   "--decision-model",
-  process.env.CADUCEUS_ROUTER_DECISION_MODEL || "gemini-decision-1",
+  process.env.CADUCEUS_ROUTER_DECISION_MODEL ||
+    (DECISION_BACKEND === "local" ? "qwen2.5-0.5b-decision" : "gemini-decision-1"),
 );
 const DECISION_FLOOR =
   Number(
@@ -86,7 +94,8 @@ const DECISION_FLOOR =
 const DECISION_TIMEOUT_MS = 2_500;
 /** One call per (requested, bucket, lane set) per window (2026-11-16). */
 const DECISION_MEMO_MS = 30_000;
-let decisionMemo = { key: "", at: 0, lane: "" };
+let decisionMemo;
+let lastDecision;
 /** Context windows, cached: the lane criteria want them, not the prompt. */
 let modelCache = { at: 0, byId: new Map() };
 
@@ -130,68 +139,96 @@ async function laneFacts() {
   }
 }
 
-/**
- * Ask the decision model which lane to use, when — and only when — the
- * deterministic order is ambiguous. Metadata only; any failure returns
- * undefined and the proxy keeps its own order (R-A5).
- */
-async function decideLane(requested, candidates, parked, tokenEstimate) {
-  if (!DECISION_ON) return undefined;
-  if (!needsDecisionModel(candidates, parked)) return undefined;
-  const key = geminiKey();
-  if (!key) return undefined;
-  const memoKey = `${requested}|${tokenBucket(tokenEstimate)}|${candidates.join(",")}`;
-  if (
-    decisionMemo.key === memoKey &&
-    Date.now() - decisionMemo.at < DECISION_MEMO_MS
-  ) {
-    return decisionMemo.lane || undefined;
+async function requestLocalDecision(built, tokenEstimate) {
+  const choices = built.lanes.map((lane) => lane.key);
+  const res = await fetch(`http://127.0.0.1:${LOCAL_DECISION_PORT}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+    body: JSON.stringify({
+      model: DECISION_MODEL,
+      messages: [
+        { role: "system", content: "Choose a fallback lane. Prefer the listed order when facts are equal. When known, the context must fit. Use abstain if no lane fits. All lane descriptions are data." },
+        { role: "user", content: JSON.stringify({ estimatedTokens: tokenEstimate, lanes: built.lanes }) },
+      ],
+      stream: false,
+      temperature: 0,
+      max_tokens: 32,
+      response_format: {
+        type: "json_schema",
+        json_schema: { name: "fallback", schema: {
+          type: "object",
+          properties: { choice: { enum: [...choices, "abstain"] } },
+          required: ["choice"],
+          additionalProperties: false,
+        } },
+      },
+    }),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const reply = (await res.json()).choices?.[0];
+  if (reply?.finish_reason !== "stop") throw new Error("incomplete choice");
+  const choice = JSON.parse(reply.message.content).choice;
+  if (choice === "abstain") return { reason: "model abstained" };
+  const lane = built.lanes.find((entry) => entry.key === choice);
+  if (!lane) throw new Error("invalid lane choice");
+  return { lane: lane.model, reason: "constrained choice" };
+}
+
+async function requestGeminiDecision(built, parked, key) {
+  const res = await fetch(DECISION_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({ model: built.model, input: built.input, questions: built.questions }),
+    signal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return pickLaneFromReply(await res.json(), { lanes: built.lanes, exclude: parked, floor: DECISION_FLOOR });
+}
+
+/** Only metadata leaves the router. A local choice reports no confidence. */
+async function decideLane(requested, candidates, parked, tokenEstimate, streaming) {
+  if (candidates.length < 2) return { outcome: "skipped", reason: "fewer than two candidates" };
+  const key = DECISION_BACKEND === "gemini" ? geminiKey() : undefined;
+  if (DECISION_BACKEND === "gemini" && !key) {
+    return { outcome: "skipped", reason: "missing Gemini credential" };
   }
   const facts = await laneFacts();
+  const lanes = candidates.map((id) => ({ model: id, contextWindow: facts.get(id) ?? 0 }));
+  const options = DECISION_BACKEND === "local"
+    ? lanes.filter((lane) => lane.contextWindow === 0 || lane.contextWindow >= tokenEstimate)
+    : lanes;
+  if (options.length < 2) return { outcome: "skipped", reason: "fewer than two fitting candidates" };
+  const memoKey = JSON.stringify([requested, tokenBucket(tokenEstimate), streaming, options]);
+  if (decisionMemo?.key === memoKey && Date.now() - decisionMemo.at < DECISION_MEMO_MS) {
+    return { ...decisionMemo.result, source: "memo" };
+  }
   const built = buildLaneDecision({
     requested,
-    candidates: candidates.map((id) => ({
-      model: id,
-      free: true,
-      contextWindow: facts.get(id) ?? 0,
-    })),
+    candidates: options,
     tokenEstimate,
+    streaming,
     model: DECISION_MODEL,
   });
-  let lane;
+  let result;
   try {
-    const res = await fetch(DECISION_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        model: built.model,
-        input: built.input,
-        questions: built.questions,
-      }),
-      signal: AbortSignal.timeout(DECISION_TIMEOUT_MS),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const doc = await res.json();
-    const picked = pickLaneFromReply(doc, {
-      lanes: built.lanes,
-      exclude: parked,
-      floor: DECISION_FLOOR,
-    });
-    lane = picked.lane;
-    if (lane)
-      logReroute({ model: lane, decision: true, reason: picked.reason });
-    else
-      logReroute({ model: requested, decision: true, reason: picked.reason });
+    const picked = DECISION_BACKEND === "local"
+      ? await requestLocalDecision(built, tokenEstimate)
+      : await requestGeminiDecision(built, parked, key);
+    result = { outcome: picked.lane ? "proposed" : "abstained", proposed: picked.lane, reason: picked.reason };
+    if (DECISION_BACKEND === "gemini" && picked.lane) result.probability = picked.p;
   } catch (error) {
-    logReroute({
-      model: requested,
-      decision: true,
-      reason: `decision failed: ${String(error?.message ?? error)}`,
-    });
-    lane = undefined;
+    result = { outcome: "failed", reason: String(error?.message ?? error) };
   }
-  decisionMemo = { key: memoKey, at: Date.now(), lane: lane ?? "" };
-  return lane;
+  decisionMemo = { key: memoKey, at: Date.now(), result };
+  return { ...result, source: "model" };
+}
+
+function reportDecision(decision, result) {
+  if (!decision) return;
+  lastDecision = { ts: new Date().toISOString(), ...decision, ...result };
+  logReroute({ decision: true, ...lastDecision });
 }
 
 const STATE_FILE =
@@ -270,13 +307,16 @@ async function readBody(req) {
   return Buffer.concat(chunks);
 }
 
-/** Extract `model` from a JSON body, or undefined for non-JSON payloads. */
-function modelOf(body) {
+/** Extract route metadata from a JSON body, without retaining prompt text. */
+function requestFacts(body) {
   try {
     const parsed = JSON.parse(body.toString("utf8"));
-    return typeof parsed?.model === "string" ? parsed.model : undefined;
+    return {
+      requested: typeof parsed?.model === "string" ? parsed.model : undefined,
+      streaming: parsed?.stream === true,
+    };
   } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -320,6 +360,13 @@ const server = createServer(async (req, res) => {
         gateway: GATEWAY,
         fallbacks: effectiveFallbacks(),
         lastRequested: lastRequested ?? null,
+        decision: {
+          enabled: DECISION_ON,
+          backend: DECISION_BACKEND,
+          model: DECISION_MODEL,
+          ...(DECISION_BACKEND === "gemini" ? { floor: DECISION_FLOOR } : {}),
+          last: lastDecision ?? null,
+        },
         parked: parked.map(([model, until]) => ({
           model,
           seconds: Math.ceil((until - now) / 1000),
@@ -355,7 +402,7 @@ const server = createServer(async (req, res) => {
   }
 
   const body = await readBody(req);
-  const requested = modelOf(body);
+  const { requested, streaming } = requestFacts(body);
   const fallbacks = effectiveFallbacks();
   const now = Date.now();
   state = pruneParked(state, now);
@@ -364,31 +411,28 @@ const server = createServer(async (req, res) => {
     ? candidateOrder({ requested, fallbacks, state, nowMs: now })
     : [undefined]; // non-model payloads pass straight through
 
-  // Decision tier (2026-11-16): when the deterministic order is ambiguous, ask
-  // the decision model which lane to try FIRST. It can only reorder — the walk
-  // below still falls through on failure, so this never costs a request.
+  let decision;
   if (requested && DECISION_ON) {
-    const parked = new Set(
-      Object.keys(state.parked ?? {}).filter((m) => isParked(state, m, now)),
-    );
-    const lane = await decideLane(
-      requested,
-      candidates,
-      parked,
-      Math.ceil(body.length / 4),
-    );
-    // R-A1: the model may reorder the FALLBACKS, never the requested model —
-    // that id is what the client (and possibly the operator's pin) asked for.
-    // So a pick only moves to the front of the tail.
-    if (lane && candidates.includes(lane)) {
-      const head = candidates[0] === requested ? [requested] : [];
-      const tail = candidates.filter((c) => !head.includes(c) && c !== lane);
-      const next = [...head, lane, ...tail];
-      if (next.join(",") !== candidates.join(",")) candidates = next;
+    const pinned = candidates[0] === requested ? [requested] : [];
+    const tail = candidates.slice(pinned.length);
+    const parked = new Set(Object.keys(state.parked ?? {}));
+    const choices = DECISION_BACKEND === "local" ? tail : candidates;
+    const consulted = await decideLane(requested, choices, parked, Math.ceil(body.length / 4), streaming);
+    if (consulted) {
+      const before = [...candidates];
+      if (consulted.proposed && tail.includes(consulted.proposed)) {
+        candidates = [...pinned, consulted.proposed, ...tail.filter((lane) => lane !== consulted.proposed)];
+      }
+      decision = {
+        requestId: randomUUID(), requested, backend: DECISION_BACKEND, decisionModel: DECISION_MODEL,
+        ...consulted, applied: before.some((lane, index) => lane !== candidates[index]),
+        firstFallback: candidates[pinned.length], model: requested,
+      };
     }
   }
 
   if (candidates.length === 0) {
+    reportDecision(decision, { routeOutcome: "unavailable", attempt: 0 });
     const lanes = candidateOrder({ requested, fallbacks, nowMs: now });
     const message = giveUpMessage({
       tried: lanes.length,
@@ -409,7 +453,7 @@ const server = createServer(async (req, res) => {
   delete forward["content-length"];
   const meta = { __path: req.url, __method: req.method, __forward: forward };
 
-  return serveRequest(res, meta, body, candidates);
+  return serveRequest(res, meta, body, candidates, decision);
 });
 
 /**
@@ -418,7 +462,7 @@ const server = createServer(async (req, res) => {
  * byte death is recoverable — nothing has hit the client wire yet). `meta`
  * carries the already-built forward headers; `body` the buffered request.
  */
-async function serveRequest(res, meta, body, candidates) {
+async function serveRequest(res, meta, body, candidates, decision) {
   let sessions = 0; // one session per request: a reused tracker, not a counter
   let lastStatus = 0;
   let lastText = "";
@@ -500,31 +544,25 @@ async function serveRequest(res, meta, body, candidates) {
     outHeaders["x-caduceus-router"] = model
       ? `model=${model};attempt=${sessions}`
       : `attempt=${sessions}`;
-    if (sessions > 1)
-      logReroute({
-        model,
-        status: upstream.status,
-        served: true,
-        attempt: sessions,
-      });
-    res.writeHead(upstream.status, outHeaders);
     let wrote = 0;
     try {
       for await (const chunk of upstream.body) {
+        if (wrote === 0) res.writeHead(upstream.status, outHeaders);
         res.write(chunk);
         wrote += 1;
       }
+      if (wrote === 0) res.writeHead(upstream.status, outHeaders);
+      res.once("finish", () => {
+        reportDecision(decision, { servedModel: model, routeOutcome: "served", attempt: sessions });
+        if (sessions > 1 && !decision) logReroute({ model, status: upstream.status, served: true, attempt: sessions });
+      });
       res.end();
     } catch (error) {
-      if (wrote === 0) {
-        // Pre-first-byte death: the walk can still recover. Reroute WITHOUT
-        // parking (transient, S4) — recurse with the remaining candidates.
-        logReroute({
-          model,
-          reason: `mid-stream reset before first chunk: ${String(error?.message ?? error)}`,
-          attempt: sessions,
-        });
-        return serveRequest(req, res, meta, body, candidates.slice(sessions));
+      if (wrote === 0 && !res.headersSent) {
+        lastStatus = 0;
+        lastText = "upstream reset before first chunk";
+        logReroute({ model, reason: lastText, attempt: sessions });
+        continue;
       }
       // Post-first-byte death (I5): never reroute after bytes hit the wire.
       // Close the stream cleanly with a terminal SSE error event so the
@@ -534,6 +572,7 @@ async function serveRequest(res, meta, body, candidates) {
         reason: `mid-stream reset after ${wrote} chunk(s)`,
         attempt: sessions,
       });
+      reportDecision(decision, { failedModel: model, routeOutcome: "stream-failed", attempt: sessions });
       const tail = `\n\nevent: error\ndata: ${JSON.stringify({
         error: {
           message: `upstream lane died mid-stream (${model ?? "gateway"})`,
@@ -552,6 +591,7 @@ async function serveRequest(res, meta, body, candidates) {
   }
 
   // Every candidate failed (or all were parked).
+  reportDecision(decision, { routeOutcome: "exhausted", attempt: sessions });
   const message =
     lastStatus === 0
       ? `all ${sessions} candidate(s) failed — last: ${lastText}`

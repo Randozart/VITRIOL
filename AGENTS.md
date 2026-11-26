@@ -1,5 +1,14 @@
 # VITRIOL AI Agent Guidelines
 
+## GPU0 decision serving and Kintsugi slots — 2026-11-26 17:47
+
+The local 0.5B decision endpoint runs on GPU0. The 0.5B and 1B candidates
+scored 2/8 and 4/8 on synthetic routing cases, so live Caduceus stays
+deterministic. Router reports distinguish proposed, reordered and served
+lanes. Two no-draft Kintsugi slots on GPU0 decoded 128 tokens each at 13.05
+tok/s per slot. The all-GPU DFlash2 variant failed draft allocation.
+[Plan and experiment notes](.opencode/plans/2026-11-26-173848-gpu0-decision-kintsugi-slots.md).
+
 ## README theme screenshots — 2026-11-26 16:39
 
 The README shows the VITRIOL dashboard in Aethership, the Caduceus pane

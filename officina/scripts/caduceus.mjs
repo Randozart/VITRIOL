@@ -1676,15 +1676,18 @@ WantedBy=default.target
       }
     }
   }
-  const unitText = existsSync(ROUTER_UNIT)
-    ? readFileSync(ROUTER_UNIT, "utf8")
-    : "";
-  const decisionOn = /CADUCEUS_ROUTER_DECISION=1/.test(unitText);
-  const decisionFloor =
-    /CADUCEUS_ROUTER_DECISION_FLOOR=([0-9.]+)/.exec(unitText)?.[1] ?? "0.6";
-  log(
-    `  decision:  ${decisionOn ? `on (floor ${decisionFloor}, gemini-decision-1)` : "off — deterministic order"}`,
-  );
+  if (health?.decision?.enabled) {
+    const { backend, model, floor, last } = health.decision;
+    log(`  decision:  ${backend} · ${model}${typeof floor === "number" ? ` · floor ${floor}` : ""}`);
+    if (last) {
+      const source = last.source ? ` · ${last.source}` : "";
+      log(`  latest:    ${last.requested} · ${last.outcome}${source} · ${last.reason}`);
+      if (last.proposed) log(`  proposed:  ${last.proposed} · ${last.applied ? "fallback order changed" : "order kept"}`);
+      log(`  result:    ${last.servedModel ?? last.routeOutcome}`);
+    }
+  } else {
+    log(`  decision:  ${health?.decision ? "off · deterministic order" : "runtime status unavailable"}`);
+  }
   log(`  state:     ${ROUTER_STATE_FILE}`);
 }
 

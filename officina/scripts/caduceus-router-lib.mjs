@@ -185,22 +185,21 @@ export function buildLaneDecision({
   const lanes = candidates.slice(0, 24).map((c, i) => ({
     key: `lane_${i}`,
     model: String(c.model ?? c.id ?? ""),
-    free: c.free !== false,
+    free: typeof c.free === "boolean" ? c.free : null,
     context: Number(c.contextWindow ?? c.context ?? 0),
   }));
   const criteria = {};
   for (const lane of lanes) {
-    criteria[lane.key] =
-      `${lane.model} (${lane.free ? "free" : "paid"}, ${Math.round(
-        lane.context / 1000,
-      )}k ctx)`;
+    const cost = lane.free === null ? "cost unknown" : lane.free ? "free" : "paid";
+    const context = lane.context > 0 ? `${Math.round(lane.context / 1000)}k ctx` : "context unknown";
+    criteria[lane.key] = `${lane.model} (${cost}, ${context})`;
   }
   return {
     model,
     input:
       `Choose the lane for this request. Requested model: ${requested || "none"}. ` +
       `Prompt size: ${tokenBucket(tokenEstimate)}. Streaming: ${streaming ? "yes" : "no"}. ` +
-      `Prefer a free lane that fits the prompt; prefer the requested model when it is offered.`,
+      `Prefer a free lane if cost is known, and prefer a lane that fits the prompt; prefer the requested model when it is offered.`,
     questions: {
       lane: {
         type: "choice",

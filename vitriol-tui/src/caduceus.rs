@@ -236,6 +236,12 @@ pub fn compact_event(line: &str) -> Option<String> {
         return Some(format!("{time} · {model} · unparked"));
     }
     let model = event["model"].as_str().unwrap_or("router");
+    if let Some(outcome) = event["routeOutcome"].as_str() {
+        return Some(format!(
+            "{time} · {model} · {}",
+            decision_event(&event, outcome)
+        ));
+    }
     let details = if event["served"].as_bool() == Some(true) {
         "served after reroute".to_owned()
     } else if let Some(reason) = event["reason"].as_str() {
@@ -246,9 +252,40 @@ pub fn compact_event(line: &str) -> Option<String> {
     Some(format!("{time} · {model} · {details}"))
 }
 
+fn decision_event(event: &Value, route_outcome: &str) -> String {
+    let backend = event["backend"].as_str().unwrap_or("decision");
+    let vote = event["proposed"]
+        .as_str()
+        .or_else(|| event["outcome"].as_str())
+        .unwrap_or("unknown");
+    let order = if event["applied"].as_bool() == Some(true) {
+        "reordered"
+    } else {
+        "order kept"
+    };
+    let source = if event["source"].as_str() == Some("memo") {
+        " cached"
+    } else {
+        ""
+    };
+    let result = event["servedModel"].as_str().map_or_else(
+        || route_outcome.to_owned(),
+        |model| format!("served {model}"),
+    );
+    format!("{backend}{source} · {vote} · {order} · {result}")
+}
+
 pub fn is_route_event(line: &str, model: &str) -> bool {
     serde_json::from_str::<Value>(line).is_ok_and(|event| {
-        event["model"].as_str() == Some(model) || event["unparked"].as_str() == Some(model)
+        [
+            "model",
+            "unparked",
+            "proposed",
+            "servedModel",
+            "failedModel",
+        ]
+        .iter()
+        .any(|key| event[*key].as_str() == Some(model))
     })
 }
 
@@ -256,6 +293,15 @@ pub fn is_route_event(line: &str, model: &str) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn decision_log_distinguishes_memo_proposal_and_served_route() {
+        let raw = r#"{"ts":"12:00","model":"pinned/model","backend":"local","source":"memo","proposed":"other/model","applied":true,"routeOutcome":"served","servedModel":"pinned/model"}"#;
+        assert_eq!(compact_event(raw).as_deref(),
+            Some("12:00 · pinned/model · local cached · other/model · reordered · served pinned/model"));
+        assert!(is_route_event(raw, "other/model"));
+        assert!(!is_route_event(raw, "other/model-pro"));
+    }
 
     #[test]
     fn catalog_merges_all_ids_and_keeps_live_status_separate() {

@@ -1,5 +1,11 @@
 # VITRIOL AI Agent Guidelines
 
+## README cleanup — 2026-11-26 11:25
+
+The author confirmed the opening and “Why VITRIOL?” as their own wording.
+The README keeps that text verbatim and links to the detailed docs. The CUDA
+example passed a launcher dry run. [Plan](.opencode/plans/2026-11-26-112416-readme-cleanup.md).
+
 ## Kintsugi system launch — 2026-11-26 11:08
 
 GPU1 daily-driver overrides are prepared for `vitriol-server.service` and

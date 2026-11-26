@@ -1597,7 +1597,26 @@ struct ggml_backend_cuda_context {
 
     static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(int device, int stream_no);
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): GGML_CUDA_SHARED_POOL=1 -- one transient pool per
+    // device+stream for the whole process, so the target and the speculative draft context share a
+    // high-water mark instead of adding one. Valid because llama-server computes one context at a
+    // time. The pools are intentionally leaked (static destruction may outlive the CUDA driver).
     ggml_cuda_pool & pool(int device) {
+        static const bool shared_pool = [] {
+            const char * e = getenv("GGML_CUDA_SHARED_POOL");
+            return e != nullptr && atoi(e) != 0;
+        }();
+        if (shared_pool) {
+            static std::mutex shared_mutex;
+            static ggml_cuda_pool * shared[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = {};
+            if (shared[device][curr_stream_no] == nullptr) {
+                std::lock_guard<std::mutex> lock(shared_mutex);
+                if (shared[device][curr_stream_no] == nullptr) {
+                    shared[device][curr_stream_no] = new_pool_for_device(device, curr_stream_no).release();
+                }
+            }
+            return *shared[device][curr_stream_no];
+        }
         if (pools[device][curr_stream_no] == nullptr) {
             pools[device][curr_stream_no] = new_pool_for_device(device, curr_stream_no);
         }

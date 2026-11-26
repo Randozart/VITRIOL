@@ -110,6 +110,10 @@ class llama_memory_recurrent : public llama_memory_i {
     std::vector<ggml_tensor *> s_l;
     // a second conv history that must stay replicated across devices, so it cannot share the r row
     std::vector<ggml_tensor *> p_l;
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): DFlash2 replay-rollback plane — pending-token
+    // inputs of the last n_rs_seq tokens per sequence. Sizing-only for now; the replay op is 3b.
+    std::vector<ggml_tensor *> pend_l;
+    bool                       replay = false;
 
   private:
     //const llama_model & model;

@@ -54,7 +54,9 @@ llama_memory_recurrent::llama_memory_recurrent(const llama_model &     model,
         if (it == ctx_map.end()) {
             ggml_init_params params = {
                 // r and s per layer, plus the separate PLE conv row where the model has one
-                /*.mem_size   =*/size_t((hparams.ple_conv_state() > 0 ? 3u : 2u) * n_layer * ggml_tensor_overhead()),
+                // +1 per layer when the replay pending plane is reserved (3b layout)
+                /*.mem_size   =*/size_t((hparams.ple_conv_state() > 0 ? 3u : 2u) * n_layer * ggml_tensor_overhead()
+                                        + size_t(n_layer) * ggml_tensor_overhead() * (replay ? 1u : 0u)),
                 /*.mem_buffer =*/NULL,
                 /*.no_alloc   =*/true,
             };
@@ -73,8 +75,28 @@ llama_memory_recurrent::llama_memory_recurrent(const llama_model &     model,
     };
 
     r_l.resize(n_layer);
+    pend_l.resize(n_layer);
     s_l.resize(n_layer);
     p_l.resize(n_layer);
+
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT): LLAMA_RS_REPLAY — decide once, before the contexts
+    // are sized, whether the pending-plane layout is used.
+    static const bool rs_replay_want = [] {
+        const char * e = getenv("LLAMA_RS_REPLAY");
+        return e != nullptr && atoi(e) != 0;
+    }();
+    // STAGE GATE: the collapsed-S layout is only valid once the replay op consumes the pending
+    // plane (stage 3b). Until then the env alone must not change the graph-visible sizes.
+    static const bool rs_replay_op_ready = [] {
+        const char * e = getenv("VITRIOL_RS_REPLAY_OP");
+        return e != nullptr && atoi(e) != 0;
+    }();
+    const bool replay_decided = rs_replay_op_ready && rs_replay_want && n_rs_seq > 0 && n_seq_max == 1 &&
+                                hparams.ssm_d_state > 0 && hparams.ssm_dt_rank > 0;
+    if (rs_replay_want && !replay_decided) {
+        LLAMA_LOG_WARN("%s: LLAMA_RS_REPLAY ignored (needs n_rs_seq > 0, one sequence, hybrid GDN hparams)\n", __func__);
+    }
+    replay = replay_decided;
 
     for (int i = 0; i < n_layer; i++) {
         if (filter && !filter(i)) {
@@ -90,6 +112,33 @@ llama_memory_recurrent::llama_memory_recurrent(const llama_model &     model,
             auto * dev = model.dev_layer(i);
             buft       = ggml_backend_dev_buffer_type(dev);
 
+            // VITRIOL_RS_VRAM_FRACTION=F (0 < F < 1): tier this layer's recurrent state between
+            // VRAM (first F of each part) and pinned host RAM, mirroring the KV tier hook in
+            // llama-kv-cache.cpp. RS snapshots for speculative decoding on hybrid models are
+            // multiple GiB and otherwise evict everything else off the card.
+            // PROVENANCE: kintsugi-engine 8f12baacf (MIT) tiers the same plane for its DFlash2
+            // replay path; kernels are unchanged and the host tail is read over PCIe on demand.
+            static const double rs_frac = [] {
+                const char * e = getenv("VITRIOL_RS_VRAM_FRACTION");
+                return e != nullptr ? std::max(0.0, std::min(1.0, atof(e))) : 1.0;
+            }();
+            if (rs_frac < 1.0) {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+                using tier_fn_t = ggml_backend_buffer_type_t (*)(int, double, int, const char *);
+                auto * fn = reg ? (tier_fn_t) ggml_backend_reg_get_proc_address(
+                        reg, "ggml_backend_cuda_tier_buffer_type") : nullptr;
+                const char * dn = ggml_backend_dev_name(dev);
+                const int dev_idx = (dn && strncmp(dn, "CUDA", 4) == 0) ? atoi(dn + 4) : -1;
+                if (fn != nullptr && dev_idx >= 0) {
+                    char tag[32];
+                    snprintf(tag, sizeof(tag), "_rs_l%u", i);
+                    ggml_backend_buffer_type_t tb = fn(dev_idx, rs_frac, 1, tag);
+                    if (tb != nullptr) {
+                        buft = tb;
+                    }
+                }
+            }
+
             dev_name = ggml_backend_dev_name(dev);
         }
 
@@ -101,12 +150,24 @@ llama_memory_recurrent::llama_memory_recurrent(const llama_model &     model,
         }
 
         const uint32_t n_rows = mem_size * (1 + n_rs_seq);
-        ggml_tensor *  r      = ggml_new_tensor_2d(ctx, type_r, hparams.n_embd_r(), n_rows);
-        ggml_tensor *  s      = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), n_rows);
+        // PROVENANCE kintsugi-engine 8f12baacf (MIT): LLAMA_RS_REPLAY sizing — under replay the S
+        // cache keeps only the live row (the rollback snapshots move into the pending plane), and a
+        // pending-inputs plane of pend_tok()*n_rs_seq + 1 rows is reserved per layer. The replay OP
+        // itself is stage 3b; until it lands the graph never reads the pending plane, so this only
+        // changes memory layout, never results.
+        replay = replay_decided;
+        ggml_tensor *  r = ggml_new_tensor_2d(ctx, type_r, hparams.n_embd_r(), n_rows);
+        ggml_tensor *  s = ggml_new_tensor_2d(ctx, type_s, hparams.n_embd_s(), replay ? mem_size : n_rows);
         ggml_format_name(r, "cache_r_l%d", i);
         ggml_format_name(s, "cache_s_l%d", i);
         r_l[i] = r;
         s_l[i] = s;
+        if (replay) {
+            const int64_t pend_row = (int64_t) (hparams.n_embd_r() + hparams.n_embd_s() + 2 * hparams.n_embd_s() / 128) + 1;
+            ggml_tensor * pd = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, pend_row, mem_size);
+            ggml_format_name(pd, "cache_pend_l%d", i);
+            pend_l[i] = pd;
+        }
 
         // the PLE history needs its own row: Meta must mirror it while the delta-net conv state next door stays split
         if (hparams.ple_conv_state() > 0 && hparams.is_ple(i)) {

@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Kintsugi 224K startup — 2026-11-26 19:36
+
+A standalone VITRIOL Kintsugi process advertised 229,376 tokens on GPU0
+with the drafter disabled. The desktop VRAM reserve stopped the test at
+416 filled tokens. GPU1 stayed on the existing 65,536-token profile.
+Quiet-card qualification needs operator sudo.
+[Plan](.opencode/plans/2026-11-26-192713-kintsugi-200k-daily.md).
+
 ## Lapis local admission — 2026-11-26 19:20
 
 New Lapis turns use a freshly idle local slot when the estimated context

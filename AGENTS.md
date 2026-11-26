@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Kintsugi system launch — 2026-11-26 11:08
+
+GPU1 daily-driver overrides are prepared for `vitriol-server.service` and
+its autosave sidecar, with isolated state under `/var/lib/vitriol-kintsugi`.
+The launcher passed GPU1 placement, chat, metrics and slot save/restore
+on a temporary port. Administrator authentication controls activation.
+[Install, verification and rollback](.opencode/plans/2026-11-26-110624-kintsugi-gpu1-daily-driver.md).
+
 ## Z440 Kintsugi and Inkling experiments — 2026-11-26 11:02
 
 Fixed n7 led the local Kintsugi coding sweep at 39.45 tok/s median. Private

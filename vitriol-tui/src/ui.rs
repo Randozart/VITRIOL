@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::app::{App, LogSource, Menu, Tab};
+use crate::app::{App, CaduceusMenu, LogSource, Menu, Tab};
 use crate::logs::strip_ansi;
 use crate::{braille, theme};
 
@@ -26,8 +26,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     render_footer(frame, rows[2], app);
     if let Some(menu) = &app.menu {
-        if let Menu::Caduceus(selected) = menu {
-            render_caduceus(frame, rows[1], app, selected.as_deref());
+        if let Menu::Caduceus(caduceus) = menu {
+            render_caduceus(frame, rows[1], app, caduceus);
         } else {
             render_menu(frame, area, menu);
         }
@@ -102,7 +102,7 @@ fn render_dashboard_view(frame: &mut Frame, area: Rect, app: &mut App) {
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let keys = match app.tab {
         Tab::Dashboard if matches!(app.menu, Some(Menu::Caduceus(_))) => {
-            "[↑↓] route  [u] unpark selected  [l] route logs  [Esc] close"
+            "[/] search  [↑↓/PgUp/PgDn] browse  [r] sync  [l] logs  [u] unpark  [Esc] close"
         }
         Tab::Dashboard if app.log_sidebar => {
             "[l] close logs  [1–6] source  [ ] slot  [/] search  [Space] pause"
@@ -535,10 +535,12 @@ fn render_metric_row(frame: &mut Frame, area: Rect, metric: MetricRow) {
     );
 }
 
-fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, selected: Option<&str>) {
-    let lanes = app.snapshot.caduceus.lanes();
+fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, menu: &CaduceusMenu) {
+    let lanes = menu.matching(&app.snapshot.caduceus.lanes);
     let width = area.width.min(88);
-    let height = area.height.min((lanes.len() + 5).clamp(7, 20) as u16);
+    let height = area
+        .height
+        .min((app.snapshot.caduceus.lanes.len() + 5).clamp(8, 29) as u16);
     let rect = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,
@@ -547,6 +549,7 @@ fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, selected: Option<&s
     );
     let block = panel(" Caduceus · Router ");
     let rows = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(0),
         Constraint::Length(1),
@@ -561,14 +564,38 @@ fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, selected: Option<&s
         )),
         rows[0],
     );
-    render_caduceus_lanes(frame, rows[1], lanes, selected);
-    render_caduceus_action(frame, rows[2], app);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            caduceus_catalog_label(app, menu, lanes.len()),
+            theme::muted(),
+        )),
+        rows[1],
+    );
+    render_caduceus_lanes(frame, rows[2], &lanes, menu.selected.as_deref());
+    render_caduceus_action(frame, rows[3], app);
+}
+
+fn caduceus_catalog_label(app: &App, menu: &CaduceusMenu, visible: usize) -> String {
+    let matches = if visible == 1 { "match" } else { "matches" };
+    if menu.editing {
+        return format!(
+            "Search: {}▏ · {visible} {matches} · Enter apply · Esc clear",
+            menu.query
+        );
+    }
+    if !menu.query.is_empty() {
+        return format!("Search: {} · {visible} {matches}", menu.query);
+    }
+    app.snapshot.caduceus.catalog_count.map_or_else(
+        || "Catalog unavailable · r to sync".into(),
+        |count| format!("{count} catalog models"),
+    )
 }
 
 fn render_caduceus_lanes(
     frame: &mut Frame,
     area: Rect,
-    lanes: &[crate::caduceus::Lane],
+    lanes: &[&crate::caduceus::Lane],
     selected: Option<&str>,
 ) {
     let capacity = area.height as usize;
@@ -588,9 +615,8 @@ fn render_caduceus_lanes(
 
 fn caduceus_lane(lane: &crate::caduceus::Lane, highlighted: bool) -> Line<'static> {
     let prefix = if highlighted { " › " } else { "   " };
-    let scope = if lane.in_route { "" } else { " · other route" };
     let state = lane.remaining.map_or_else(
-        || "Eligible".into(),
+        || if lane.in_route { "Eligible" } else { "Catalog" }.into(),
         |seconds| {
             let reason = lane.reason.as_deref().unwrap_or("reason unavailable");
             format!("Parked {seconds}s · {reason}")
@@ -608,7 +634,7 @@ fn caduceus_lane(lane: &crate::caduceus::Lane, highlighted: bool) -> Line<'stati
     };
     Line::from(vec![
         Span::styled(format!("{prefix}{}", lane.model), model_style),
-        Span::styled(format!("  {state}{scope}"), state_style),
+        Span::styled(format!("  {state}"), state_style),
     ])
 }
 
@@ -858,26 +884,16 @@ mod tests {
 
     #[test]
     fn caduceus_dashboard_row_opens_route_details_and_filtered_logs() {
-        use crate::caduceus::{Lane, Status};
+        use serde_json::json;
 
         let mut app = App::new(Config::from_env());
-        app.snapshot.caduceus = Status::Online {
-            requested: Some("a/glm".into()),
-            lanes: vec![
-                Lane {
-                    model: "a/glm".into(),
-                    in_route: true,
-                    remaining: Some(30),
-                    reason: Some("HTTP 429".into()),
-                },
-                Lane {
-                    model: "b/glm".into(),
-                    in_route: true,
-                    remaining: None,
-                    reason: None,
-                },
-            ],
-        };
+        app.snapshot.caduceus = crate::caduceus::status(&json!({
+            "ok": true,
+            "lastRequested": "a/glm",
+            "fallbacks": ["b/glm"],
+            "parked": [{"model":"a/glm","seconds":30,"reason":"HTTP 429"}]
+        }))
+        .unwrap();
         app.snapshot.logs.caduceus = vec![
             r#"{"model":"a/glm","status":429}"#.into(),
             r#"{"model":"b/glm","served":true}"#.into(),
@@ -915,6 +931,43 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn caduceus_catalog_search_finds_models_outside_the_visible_rows() {
+        use crate::caduceus::Lane;
+        use crossterm::event::KeyCode;
+
+        let mut app = App::new(Config::from_env());
+        app.snapshot.caduceus.catalog_count = Some(40);
+        app.snapshot.caduceus.lanes = (0..40)
+            .map(|number| Lane {
+                model: format!("provider/model-{number:02}"),
+                in_route: false,
+                remaining: None,
+                reason: None,
+            })
+            .collect();
+        app.open_caduceus();
+        let pane = render_caduceus_fixture(&mut app);
+        assert!(pane.contains("40 catalog models"));
+        assert!(!pane.contains("model-39"));
+        let Some(Menu::Caduceus(menu)) = app.menu.as_mut() else {
+            panic!("Caduceus pane")
+        };
+        menu.editing = true;
+        for key in "MODEL-39".chars() {
+            assert!(app.update_caduceus_search(KeyCode::Char(key)));
+        }
+        assert!(app.update_caduceus_search(KeyCode::Enter));
+        let pane = render_caduceus_fixture(&mut app);
+        assert!(pane.contains("1 match"));
+        assert!(pane.contains("provider/model-39  Catalog"));
+        let (tx, _rx) = std::sync::mpsc::channel();
+        app.unpark_selected(&tx);
+        assert!(!app.action_running);
+        app.open_caduceus_logs();
+        assert_eq!(app.log_route.as_deref(), Some("provider/model-39"));
     }
 
     #[test]

@@ -34,6 +34,7 @@ struct Poller {
     cfg: Config,
     gen_tail: LogTail,
     caduceus_tail: LogTail,
+    catalog: caduceus::CatalogCache,
     decode_beat_offset: Option<u64>,
     last_live_t_s: f64,
 }
@@ -49,6 +50,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
             let mut poller = Poller {
                 gen_tail: LogTail::new(LOG_TAIL_CAP),
                 caduceus_tail: LogTail::new(LOG_TAIL_CAP),
+                catalog: caduceus::CatalogCache::default(),
                 decode_beat_offset: None,
                 last_live_t_s: 0.0,
                 cfg,
@@ -114,9 +116,14 @@ impl Poller {
             gpus,
             gpu_processes,
             logs: self.log_snapshot(),
-            caduceus: caduceus::poll(router),
+            caduceus: self.poll_caduceus(router),
         })
         .is_ok()
+    }
+
+    fn poll_caduceus(&mut self, agent: &Agent) -> caduceus::Status {
+        self.catalog
+            .merge(&self.cfg.home_dir, caduceus::poll(agent))
     }
 
     fn log_snapshot(&self) -> LogsSnapshot {

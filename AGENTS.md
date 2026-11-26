@@ -1,5 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
+## Caduceus catalog — 2026-11-26 16:03
+
+The Dashboard pane merges the shared Caduceus catalog with live router
+status. `/` searches model IDs and `r` runs the canonical catalog sync.
+The release displayed all 416 cached IDs and found a model beyond the
+initial viewport. [Plan](.opencode/plans/2026-11-26-155827-caduceus-full-catalog.md).
+
 ## Caduceus dashboard — 2026-11-26 15:49
 
 `vitriol tui` shows the last Caduceus router request and cooldowns on Dashboard.

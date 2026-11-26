@@ -88,6 +88,9 @@ fn handle_key(
     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return false;
     }
+    if app.update_caduceus_search(key.code) {
+        return true;
+    }
     if app.search_open {
         match key.code {
             KeyCode::Enter => app.search_open = false,
@@ -110,6 +113,7 @@ fn handle_key(
         KeyCode::Char('T') => {
             let _ = theme::cycle();
         }
+        _ if matches!(app.menu, Some(Menu::Caduceus(_))) => caduceus_key(app, key.code, tx),
         KeyCode::Char('r') => refresh.store(true, Ordering::Relaxed),
         _ if app.menu.is_some() => menu_key(app, key.code, tx),
         KeyCode::Char('c') if app.tab == Tab::Dashboard => app.open_caduceus(),
@@ -145,6 +149,25 @@ fn log_key(app: &mut App, key: KeyCode) {
     }
 }
 
+fn caduceus_key(app: &mut App, key: KeyCode, tx: &mpsc::Sender<control::Event>) {
+    match key {
+        KeyCode::Char('/') => {
+            if let Some(Menu::Caduceus(menu)) = app.menu.as_mut() {
+                menu.editing = true;
+            }
+        }
+        KeyCode::Esc | KeyCode::Char('c') => app.menu = None,
+        KeyCode::Up => app.cycle_caduceus(-1),
+        KeyCode::Down => app.cycle_caduceus(1),
+        KeyCode::PageUp => app.cycle_caduceus(-10),
+        KeyCode::PageDown => app.cycle_caduceus(10),
+        KeyCode::Char('r') => app.run_action(Action::SyncCaduceus, tx),
+        KeyCode::Char('l') => app.open_caduceus_logs(),
+        KeyCode::Char('u') => app.unpark_selected(tx),
+        _ => {}
+    }
+}
+
 fn menu_key(app: &mut App, key: KeyCode, tx: &mpsc::Sender<control::Event>) {
     let Some(menu) = app.menu.as_mut() else {
         return;
@@ -152,17 +175,7 @@ fn menu_key(app: &mut App, key: KeyCode, tx: &mpsc::Sender<control::Event>) {
     let (index, len) = match menu {
         Menu::Actions(index) => (index, 4),
         Menu::Profiles(index, profiles) => (index, profiles.len()),
-        Menu::Caduceus(_) => {
-            match key {
-                KeyCode::Esc | KeyCode::Char('c') => app.menu = None,
-                KeyCode::Up => app.cycle_caduceus(-1),
-                KeyCode::Down => app.cycle_caduceus(1),
-                KeyCode::Char('l') => app.open_caduceus_logs(),
-                KeyCode::Char('u') => app.unpark_selected(tx),
-                _ => {}
-            }
-            return;
-        }
+        Menu::Caduceus(_) => return,
     };
     match key {
         KeyCode::Esc => app.menu = None,

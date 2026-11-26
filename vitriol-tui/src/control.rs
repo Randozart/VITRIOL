@@ -30,6 +30,7 @@ pub enum Action {
     Load(String),
     Service(ServiceAction),
     Unpark(String),
+    SyncCaduceus,
 }
 
 impl Action {
@@ -37,6 +38,7 @@ impl Action {
         match self {
             Self::Load(name) => vec!["config", "load", name],
             Self::Service(action) => vec!["service", action.verb()],
+            Self::SyncCaduceus => vec!["caduceus", "sync"],
             Self::Unpark(_) => unreachable!("router actions use the router API"),
         }
     }

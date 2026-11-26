@@ -104,12 +104,13 @@ wide terminals and overlays the right side on narrow ones. The full Logs tab
 shares its selection, filter, and pause state.
 
 Press `c` or click **Caduceus** on Dashboard to see the router’s latest
-requested model, fallback routes, and active cooldowns. **Eligible** means
-the router can try the route. Select a route with Up or Down, then press
-`l` for its router events or `u` to clear its active cooldown. Unpark only
-clears the local cooldown and sends no inference request. The router is
-checked separately from the engine on loopback port 20129, or the port
-set in `CADUCEUS_ROUTER_PORT`.
+requested model, fallback routes, active cooldowns, and the full cached
+Caduceus catalog. Use `/` to search model IDs and `r` in the pane to refresh
+the catalog from the gateway. **Eligible** marks routes the router can
+try for the latest request. **Catalog** marks other advertised models.
+Select a route with Up or Down, then press `l` for its router events or
+`u` to clear its active cooldown. The router is checked separately from
+the engine on loopback port 20129, or the port set in `CADUCEUS_ROUTER_PORT`.
 
 Use `1` for Engine, `2` for Service, `3` for Autosave, `4` for slot-tagged
 engine output, `5` for slot transitions observed by the TUI, and `6` for

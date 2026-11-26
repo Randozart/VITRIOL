@@ -67,7 +67,27 @@ impl LogSource {
 pub enum Menu {
     Actions(usize),
     Profiles(usize, Vec<Profile>),
-    Caduceus(Option<String>),
+    Caduceus(CaduceusMenu),
+}
+
+#[derive(Default)]
+pub struct CaduceusMenu {
+    pub selected: Option<String>,
+    pub query: String,
+    pub editing: bool,
+}
+
+impl CaduceusMenu {
+    pub fn matching<'a>(
+        &self,
+        lanes: &'a [crate::caduceus::Lane],
+    ) -> Vec<&'a crate::caduceus::Lane> {
+        let query = self.query.to_ascii_lowercase();
+        lanes
+            .iter()
+            .filter(|lane| query.is_empty() || lane.model.to_ascii_lowercase().contains(&query))
+            .collect()
+    }
 }
 
 pub struct App {
@@ -155,32 +175,65 @@ impl App {
     }
 
     pub fn open_caduceus(&mut self) {
-        let lanes = self.snapshot.caduceus.lanes();
+        let lanes = &self.snapshot.caduceus.lanes;
         let selected = lanes
             .iter()
             .find(|lane| lane.remaining.is_some())
             .or(lanes.first());
-        self.menu = Some(Menu::Caduceus(selected.map(|lane| lane.model.clone())));
+        self.menu = Some(Menu::Caduceus(CaduceusMenu {
+            selected: selected.map(|lane| lane.model.clone()),
+            ..Default::default()
+        }));
     }
 
     pub fn cycle_caduceus(&mut self, step: isize) {
-        let Some(Menu::Caduceus(selected)) = self.menu.as_mut() else {
+        let Some(Menu::Caduceus(menu)) = self.menu.as_mut() else {
             return;
         };
-        let lanes = self.snapshot.caduceus.lanes();
+        let lanes = menu.matching(&self.snapshot.caduceus.lanes);
         let Some(first) = lanes.first() else { return };
         let next = lanes
             .iter()
-            .position(|lane| Some(&lane.model) == selected.as_ref())
+            .position(|lane| Some(&lane.model) == menu.selected.as_ref())
             .map_or(first, |index| {
                 &lanes[(index as isize + step).rem_euclid(lanes.len() as isize) as usize]
             });
-        *selected = Some(next.model.clone());
+        menu.selected = Some(next.model.clone());
+    }
+
+    pub fn update_caduceus_search(&mut self, key: crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode;
+        let Some(Menu::Caduceus(menu)) = self.menu.as_mut() else {
+            return false;
+        };
+        if !menu.editing {
+            return false;
+        }
+        match key {
+            KeyCode::Enter => menu.editing = false,
+            KeyCode::Esc => {
+                menu.editing = false;
+                menu.query.clear();
+            }
+            KeyCode::Backspace => {
+                menu.query.pop();
+            }
+            KeyCode::Char(c) => menu.query.push(c),
+            _ => {}
+        }
+        let lanes = menu.matching(&self.snapshot.caduceus.lanes);
+        if !lanes
+            .iter()
+            .any(|lane| Some(&lane.model) == menu.selected.as_ref())
+        {
+            menu.selected = lanes.first().map(|lane| lane.model.clone());
+        }
+        true
     }
 
     pub fn open_caduceus_logs(&mut self) {
         let route = match &self.menu {
-            Some(Menu::Caduceus(model)) => model.clone(),
+            Some(Menu::Caduceus(menu)) => menu.selected.clone(),
             _ => return,
         };
         self.set_tab(Tab::Logs);
@@ -200,13 +253,17 @@ impl App {
     }
 
     pub fn unpark_selected(&mut self, tx: &Sender<Event>) {
-        let Some(Menu::Caduceus(Some(selected))) = &self.menu else {
+        let Some(Menu::Caduceus(CaduceusMenu {
+            selected: Some(selected),
+            ..
+        })) = &self.menu
+        else {
             return;
         };
         if self
             .snapshot
             .caduceus
-            .lanes()
+            .lanes
             .iter()
             .any(|lane| &lane.model == selected && lane.remaining.is_some())
         {
@@ -325,12 +382,13 @@ impl App {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: Snapshot) {
-        if let Some(Menu::Caduceus(selected @ None)) = self.menu.as_mut() {
-            *selected = snapshot
-                .caduceus
-                .lanes()
-                .first()
-                .map(|lane| lane.model.clone());
+        if let Some(Menu::Caduceus(menu)) = self.menu.as_mut() {
+            if menu.selected.is_none() {
+                menu.selected = menu
+                    .matching(&snapshot.caduceus.lanes)
+                    .first()
+                    .map(|lane| lane.model.clone());
+            }
         }
         if !snapshot.gen.up || snapshot.gen.model_pid != self.snapshot.gen.model_pid {
             self.decode_history.clear();
@@ -370,7 +428,7 @@ impl App {
 
     pub fn run_action(&mut self, action: Action, tx: &Sender<Event>) {
         if !self.action_running {
-            if !matches!(action, Action::Unpark(_)) {
+            if !matches!(action, Action::Unpark(_) | Action::SyncCaduceus) {
                 self.menu = None;
             }
             self.action_running = true;

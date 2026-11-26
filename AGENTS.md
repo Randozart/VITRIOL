@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Officina Rust port comparison — 2026-11-26 21:53
+
+The installed Officina TUI drove Kintsugi and Inkling on a scratch port of
+Caduceus lane ordering and retry policy. Kintsugi repaired a compiler
+error in a second turn and passed 11 Rust tests. Inkling returned native
+tool syntax as text. Its assisted code-only result passed the same tests.
+[Plan](.opencode/plans/2026-11-26-214613-officina-rust-port-model-comparison.md).
+
 ## Kintsugi 200K Rust coding session — 2026-11-26 21:23
 
 The reference engine made a structured tool call above 200K, wrote a Rust

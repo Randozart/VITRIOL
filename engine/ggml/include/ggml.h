@@ -2628,6 +2628,20 @@ extern "C" {
             struct ggml_tensor  * dt_bias,
             struct ggml_tensor  * a);
 
+    // PROVENANCE kintsugi-engine 8f12baacf (MIT):
+    // then the new pending rows [pend->ne[0], n_seqs] (padded to whole output rows). CUDA only.
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_replay(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * state,
+            struct ggml_tensor  * pend,
+            struct ggml_tensor  * info,
+            int                   n_pend);
+
     // DSA lightning indexer
     //
     // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]

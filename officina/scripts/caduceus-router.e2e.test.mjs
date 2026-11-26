@@ -13,6 +13,7 @@ const STATE = join(tmpdir(), `caduceus-router-e2e-${process.pid}.json`);
 // Ephemeral ports: fixed ones collide with a parallel run or a leftover child.
 let ROUTER_PORT = 0;
 let GATEWAY_PORT = 0;
+let serveGoodLane = true;
 
 /** Bind an ephemeral port and hand the number back. */
 function freePort() {
@@ -43,7 +44,7 @@ function startStub() {
         res.end("ok");
         return;
       }
-      if (model === "good/lane") {
+      if (model === "good/lane" && serveGoodLane) {
         res.writeHead(200, { "content-type": "text/event-stream" });
         res.write('data: {"choices":[{"delta":{"content":"pong"}}]}\n\n');
         res.end("data: [DONE]\n\n");
@@ -194,6 +195,18 @@ describe("caduceus-router (end to end)", () => {
     await chat("bad/unpark-target");
     let state = JSON.parse(readFileSync(STATE, "utf8"));
     expect(Object.keys(state.parked)).toContain("bad/unpark-target");
+    const healthUrl = `http://127.0.0.1:${ROUTER_PORT}/health`;
+    const health = await (await fetch(healthUrl)).json();
+    expect(health).toMatchObject({
+      ok: true,
+      lastRequested: "bad/unpark-target",
+      fallbacks: ["good/lane", "other/lane"],
+    });
+    expect(health.parked).toContainEqual({
+      model: "bad/unpark-target",
+      seconds: expect.any(Number),
+      reason: "HTTP 429",
+    });
 
     const missing = await fetch(
       `http://127.0.0.1:${ROUTER_PORT}/park?model=never/parked`,
@@ -216,10 +229,25 @@ describe("caduceus-router (end to end)", () => {
     await ok.text();
     state = JSON.parse(readFileSync(STATE, "utf8"));
     expect(Object.keys(state.parked ?? {})).not.toContain("bad/unpark-target");
+    expect((await (await fetch(healthUrl)).json()).parked).not.toContainEqual(
+      expect.objectContaining({ model: "bad/unpark-target" }),
+    );
     // After unparking, the lane is walked again (it fails → 200 via fallback
     // or 429 surfaced; never a stale-park shortcut).
     const res = await chat("bad/unpark-target");
     expect([200, 429]).toContain(res.status);
     await res.text();
+  });
+
+  it("counts only distinct lanes for a request whose model is also a fallback", async () => {
+    serveGoodLane = false;
+    const first = await chat("good/lane");
+    expect(first.status).toBe(429);
+    await first.text();
+    const parked = await chat("good/lane");
+    expect(parked.status).toBe(503);
+    expect((await parked.json()).error.message).toMatch(
+      /^all 2 candidate\(s\) unavailable — earliest lane returns in \d+s$/,
+    );
   });
 });

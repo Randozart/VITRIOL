@@ -261,6 +261,7 @@ function logReroute(entry) {
 }
 
 let state = loadState();
+let lastRequested;
 
 /** Read the whole request body (the proxy needs the model id). */
 async function readBody(req) {
@@ -318,9 +319,11 @@ const server = createServer(async (req, res) => {
         ok: true,
         gateway: GATEWAY,
         fallbacks: effectiveFallbacks(),
+        lastRequested,
         parked: parked.map(([model, until]) => ({
           model,
-          seconds: Math.round((until - now) / 1000),
+          seconds: Math.ceil((until - now) / 1000),
+          reason: state.reasons?.[model],
         })),
       }),
     );
@@ -356,6 +359,7 @@ const server = createServer(async (req, res) => {
   const fallbacks = effectiveFallbacks();
   const now = Date.now();
   state = pruneParked(state, now);
+  if (requested) lastRequested = requested;
   let candidates = requested
     ? candidateOrder({ requested, fallbacks, state, nowMs: now })
     : [undefined]; // non-model payloads pass straight through
@@ -385,9 +389,10 @@ const server = createServer(async (req, res) => {
   }
 
   if (candidates.length === 0) {
+    const lanes = candidateOrder({ requested, fallbacks, nowMs: now });
     const message = giveUpMessage({
-      tried: fallbacks.length + 1,
-      parked: state.parked,
+      tried: lanes.length,
+      parked: Object.fromEntries(lanes.map((model) => [model, state.parked[model]])),
       nowMs: now,
     });
     res.writeHead(503, { "content-type": "application/json" });

@@ -99,11 +99,16 @@ switch profiles or manage the system service. Switching profiles saves the
 selection. Use Restart to apply it to a running engine. Service actions use
 the same permissions as `vitriol service`.
 
-Logs has four sources. Engine tails the generation file, Service and
-Autosave read the corresponding systemd journals, and Slots records observed
-transitions. Use `1`–`4` to switch, Space to pause, `/` to filter, and `v` to
-toggle detail. The saved theme can be cycled with `T`. To preview Aether,
-run `VITRIOL_TUI_THEME=aether vitriol tui`.
+Press `l` on Dashboard to toggle its log sidebar. It docks to the right on
+wide terminals and overlays the right side on narrow ones. The full Logs tab
+shares its selection, filter, and pause state.
+
+Use `1` for Engine, `2` for Service, `3` for Autosave, `4` for slot-tagged
+engine output, and `5` for slot transitions observed by the TUI. In Slots or
+Events, use `[` and `]` to cycle between all slots and a particular slot.
+Lines without an engine slot ID are available in Engine. Use Space to pause,
+`/` to filter, and `v` to toggle detail. The saved theme can be cycled with
+`T`. To preview Aether, run `VITRIOL_TUI_THEME=aether vitriol tui`.
 
 Use [the configuration reference](CONFIG_REFERENCE.md) for profile editing.
 Placement sweeps remain available through [the sweep CLI](../libvitriol/sweep_controller.py).

@@ -1,7 +1,7 @@
 //! UI state for the Dashboard and Logs.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::mpsc::Sender;
 
 use ratatui::layout::{Position, Rect};
@@ -34,10 +34,21 @@ pub enum LogSource {
     Service,
     Autosave,
     Slots,
+    Events,
 }
 
 impl LogSource {
-    pub const ALL: [Self; 4] = [Self::Engine, Self::Service, Self::Autosave, Self::Slots];
+    pub const ALL: [Self; 5] = [
+        Self::Engine,
+        Self::Service,
+        Self::Autosave,
+        Self::Slots,
+        Self::Events,
+    ];
+
+    pub fn is_slot_scoped(self) -> bool {
+        matches!(self, Self::Slots | Self::Events)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -45,6 +56,7 @@ impl LogSource {
             Self::Service => "Service",
             Self::Autosave => "Autosave",
             Self::Slots => "Slots",
+            Self::Events => "Events",
         }
     }
 }
@@ -61,6 +73,8 @@ pub struct App {
     pub tab_hits: Vec<(Rect, Tab)>,
     pub decode_history: VecDeque<f64>,
     pub log_source: LogSource,
+    pub log_sidebar: bool,
+    pub log_slot: Option<u64>,
     pub logs_verbose: bool,
     pub log_query: String,
     pub search_open: bool,
@@ -70,7 +84,7 @@ pub struct App {
     pub action_running: bool,
     pub action_status: Option<(bool, String)>,
     pub action_log: VecDeque<String>,
-    slot_history: Vec<String>,
+    slot_history: Vec<(u64, String)>,
     prev_slots: HashMap<u64, (bool, Option<u64>)>,
 }
 
@@ -83,6 +97,8 @@ impl App {
             tab_hits: Vec::new(),
             decode_history: VecDeque::new(),
             log_source: LogSource::Engine,
+            log_sidebar: false,
+            log_slot: None,
             logs_verbose: false,
             log_query: String::new(),
             search_open: false,
@@ -115,6 +131,41 @@ impl App {
             .iter()
             .find(|(area, _)| area.contains(Position::new(x, y)))
             .map(|(_, tab)| *tab)
+    }
+
+    pub fn logs_visible(&self) -> bool {
+        self.tab == Tab::Logs || self.log_sidebar
+    }
+
+    pub fn toggle_log_sidebar(&mut self) {
+        self.log_sidebar = !self.log_sidebar;
+        if !self.log_sidebar {
+            self.search_open = false;
+        }
+    }
+
+    pub fn cycle_log_slot(&mut self, step: isize) {
+        if !self.log_source.is_slot_scoped() {
+            self.set_log_source(LogSource::Slots);
+        }
+        let mut ids: BTreeSet<u64> = self.snapshot.gen.slots.iter().map(|slot| slot.id).collect();
+        if self.log_source == LogSource::Slots {
+            ids.extend(self.snapshot.logs.slot_tails.keys().copied());
+        } else {
+            ids.extend(self.slot_history.iter().map(|(slot, _)| *slot));
+        }
+        ids.extend(self.log_slot);
+        let options: Vec<Option<u64>> = std::iter::once(None)
+            .chain(ids.into_iter().map(Some))
+            .collect();
+        let current = options
+            .iter()
+            .position(|slot| *slot == self.log_slot)
+            .unwrap_or(0);
+        self.log_slot =
+            options[(current as isize + step).rem_euclid(options.len() as isize) as usize];
+        self.paused_log = None;
+        self.log_offset = 0;
     }
 
     pub fn set_log_source(&mut self, source: LogSource) {
@@ -153,7 +204,23 @@ impl App {
             ),
             LogSource::Service => Cow::Borrowed(&self.snapshot.logs.journal),
             LogSource::Autosave => Cow::Borrowed(&self.snapshot.logs.autosave),
-            LogSource::Slots => Cow::Borrowed(&self.slot_history),
+            LogSource::Slots => Cow::Borrowed(self.log_slot.map_or_else(
+                || self.snapshot.logs.slot_entries.as_slice(),
+                |id| {
+                    self.snapshot
+                        .logs
+                        .slot_tails
+                        .get(&id)
+                        .map_or(&[], Vec::as_slice)
+                },
+            )),
+            LogSource::Events => Cow::Owned(
+                self.slot_history
+                    .iter()
+                    .filter(|(id, _)| self.log_slot.is_none_or(|scope| scope == *id))
+                    .map(|(_, line)| line.clone())
+                    .collect(),
+            ),
         }
     }
 
@@ -193,10 +260,9 @@ impl App {
             let filled = slot
                 .filled
                 .map_or_else(String::new, |value| format!(" · {value} filled"));
-            self.slot_history.push(format!(
-                "{} · slot {} {transition}{filled}",
-                time_hm(),
-                slot.id
+            self.slot_history.push((
+                slot.id,
+                format!("{} · slot {} {transition}{filled}", time_hm(), slot.id),
             ));
             if self.slot_history.len() > 120 {
                 self.slot_history.remove(0);
@@ -240,6 +306,25 @@ fn time_hm() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slot_filter_is_shared_by_both_views_and_keeps_slot_logs_separate() {
+        let mut app = App::new(Config::from_env());
+        app.snapshot.logs.slot_entries = vec!["zero".into(), "one".into()];
+        app.snapshot.logs.slot_tails.insert(0, vec!["zero".into()]);
+        app.snapshot.logs.slot_tails.insert(1, vec!["one".into()]);
+        app.toggle_log_sidebar();
+        app.cycle_log_slot(1);
+        assert_eq!(app.log_lines().as_ref(), ["zero"]);
+        app.cycle_log_slot(1);
+        assert_eq!(app.log_lines().as_ref(), ["one"]);
+        app.toggle_pause();
+        app.next_tab();
+        assert_eq!(app.log_slot, Some(1));
+        assert_eq!(app.log_lines().as_ref(), ["one"]);
+        app.set_log_source(LogSource::Events);
+        assert!(app.log_lines().is_empty());
+    }
 
     #[test]
     fn pause_freezes_one_source_while_latest_data_keeps_arriving() {

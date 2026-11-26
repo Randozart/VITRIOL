@@ -1,5 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
+## Slot log viewer — 2026-11-26 13:47
+
+Dashboard can open the same log viewer as the Logs tab. Slots indexes
+engine-tagged output and Events retains polling-derived transitions.
+The release passed narrow and wide Aether terminal checks.
+[Plan](.opencode/plans/2026-11-26-134128-tui-slot-log-sidebar.md).
+
 ## Operations TUI — 2026-11-26 13:30
 
 `vitriol tui` now has Dashboard and Logs. Service actions go through the

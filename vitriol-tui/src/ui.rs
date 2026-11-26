@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, LogSource, Menu, Tab};
+use crate::logs::strip_ansi;
 use crate::{braille, theme};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -20,8 +21,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     .split(area);
     render_header(frame, rows[0], app);
     match app.tab {
-        Tab::Dashboard => render_dashboard(frame, rows[1], app),
-        Tab::Logs => render_logs_tab(frame, rows[1], app),
+        Tab::Dashboard => render_dashboard_view(frame, rows[1], app),
+        Tab::Logs => render_logs(frame, rows[1], app, false),
     }
     render_footer(frame, rows[2], app);
     if let Some(menu) = &app.menu {
@@ -61,10 +62,36 @@ fn render_header(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
+fn render_dashboard_view(frame: &mut Frame, area: Rect, app: &mut App) {
+    if !app.log_sidebar {
+        render_dashboard(frame, area, app);
+        return;
+    }
+    let width = (area.width * 2 / 5).clamp(44, 66).min(area.width);
+    let sidebar = Rect::new(area.right() - width, area.y, width, area.height);
+    if area.width.saturating_sub(width) >= 73 {
+        render_dashboard(
+            frame,
+            Rect {
+                width: area.width - width - 1,
+                ..area
+            },
+            app,
+        );
+    } else {
+        render_dashboard(frame, area, app);
+        frame.render_widget(Clear, sidebar);
+    }
+    render_logs(frame, sidebar, app, true);
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let keys = match app.tab {
-        Tab::Dashboard => "[a] actions  [Tab] logs  [r] refresh  [q] quit",
-        Tab::Logs => "[1–4] source  [Space] pause  [/] search  [v] detail  [Tab] dashboard",
+        Tab::Dashboard if app.log_sidebar => {
+            "[l] close logs  [1–5] source  [ ] slot  [/] search  [Space] pause"
+        }
+        Tab::Dashboard => "[a] actions  [l] log sidebar  [Tab] logs  [r] refresh  [q] quit",
+        Tab::Logs => "[1–5] source  [ ] slot  [Space] pause  [/] search  [v] detail",
     };
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -561,8 +588,15 @@ fn render_menu(frame: &mut Frame, area: Rect, menu: &Menu) {
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-fn render_logs_tab(frame: &mut Frame, area: Rect, app: &mut App) {
-    let block = panel(" Logs ");
+fn render_logs(frame: &mut Frame, area: Rect, app: &mut App, compact: bool) {
+    let slot = if app.log_source.is_slot_scoped() {
+        app.log_slot
+            .map_or_else(|| " · All slots".into(), |id| format!(" · Slot {id}"))
+    } else {
+        String::new()
+    };
+    let title = format!(" Logs · {}{slot} ", app.log_source.label());
+    let block = panel(&title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows = Layout::vertical([
@@ -571,6 +605,18 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &mut App) {
         Constraint::Length(1),
     ])
     .split(inner);
+    frame.render_widget(
+        Paragraph::new(log_source_chips(app, compact && inner.width < 56)),
+        rows[0],
+    );
+    render_log_entries(frame, rows[1], app, compact);
+    frame.render_widget(
+        Paragraph::new(Span::styled(log_status(app), theme::muted())),
+        rows[2],
+    );
+}
+
+fn log_source_chips(app: &App, compact: bool) -> Line<'static> {
     let mut chips = LogSource::ALL
         .iter()
         .enumerate()
@@ -583,22 +629,35 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &mut App) {
             Span::styled(format!(" {} {} ", i + 1, source.label()), style)
         })
         .collect::<Vec<_>>();
+    if compact {
+        chips = vec![Span::styled(" 1–5 source   [ ] slot", theme::muted())];
+    }
     if app.paused_log.is_some() {
         chips.push(Span::styled("   Paused", theme::warn()));
     }
-    frame.render_widget(Paragraph::new(Line::from(chips)), rows[0]);
+    Line::from(chips)
+}
 
+fn render_log_entries(frame: &mut Frame, area: Rect, app: &mut App, compact: bool) {
     let query = app.log_query.to_lowercase();
     let lines = filtered_lines(&app.log_lines(), &query, app.logs_verbose);
-    let capacity = rows[1].height as usize;
+    let capacity = area.height as usize;
     app.log_offset = app.log_offset.min(lines.len().saturating_sub(capacity));
     let end = lines.len() - app.log_offset;
     let start = end.saturating_sub(capacity);
     let mut visible = lines[start..end]
         .iter()
         .map(|line| {
+            let short = if compact && !app.logs_verbose && app.log_source == LogSource::Slots {
+                crate::logs::compact_slot(line)
+            } else {
+                None
+            };
             Line::from(Span::styled(
-                line.as_str(),
+                short.map_or_else(
+                    || std::borrow::Cow::Borrowed(line.as_str()),
+                    std::borrow::Cow::Owned,
+                ),
                 if line.contains("error") || line.starts_with("Journal unavailable") {
                     theme::warn()
                 } else {
@@ -609,18 +668,23 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &mut App) {
         .collect::<Vec<_>>();
     if visible.is_empty() {
         visible.push(Line::from(Span::styled(
-            if query.is_empty() {
-                "No entries yet"
-            } else {
+            if !query.is_empty() {
                 "No matching entries"
+            } else if app.log_source == LogSource::Slots {
+                "No slot-tagged engine output yet"
+            } else {
+                "No entries yet"
             },
             theme::muted(),
         )));
     }
-    frame.render_widget(Paragraph::new(visible), rows[1]);
-    let search = if app.search_open {
+    frame.render_widget(Paragraph::new(visible), area);
+}
+
+fn log_status(app: &App) -> String {
+    if app.search_open {
         format!(" Search: {}▏   Enter filter · Esc clear", app.log_query)
-    } else if !query.is_empty() {
+    } else if !app.log_query.is_empty() {
         format!(" Filter: {}   Esc clear", app.log_query)
     } else {
         format!(
@@ -631,11 +695,7 @@ fn render_logs_tab(frame: &mut Frame, area: Rect, app: &mut App) {
                 "Concise"
             }
         )
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(search, theme::muted())),
-        rows[2],
-    );
+    }
 }
 
 fn filtered_lines(lines: &[String], query: &str, verbose: bool) -> Vec<String> {
@@ -656,28 +716,6 @@ fn filtered_lines(lines: &[String], query: &str, verbose: bool) -> Vec<String> {
             }
         })
         .collect()
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            skip_escape(&mut chars);
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// Consume the remainder of a CSI/OSC escape sequence from the iterator.
-fn skip_escape(chars: &mut std::str::Chars<'_>) {
-    for n in chars {
-        if n == '\u{7}' || n == '~' || n.is_ascii_alphabetic() {
-            break;
-        }
-    }
 }
 
 /// A ratio safe against a zero denominator.
@@ -761,6 +799,29 @@ mod tests {
             .content
             .iter()
             .any(|cell| cell.symbol() == "⠿" && cell.bg == theme::AETHERSHIP.panel));
+        app.toggle_log_sidebar();
+        app.set_log_source(LogSource::Slots);
+        app.snapshot.logs.slot_tails.insert(
+            0,
+            vec!["I slot release: id  0 | task 1 | stop processing".into()],
+        );
+        app.cycle_log_slot(1);
+        for width in [80, 132] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 25)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = buffer
+                .content
+                .chunks(width as usize)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Logs · Slots · Slot 0"));
+            assert!(text.contains("#0 stop processing"));
+            assert!(buffer.content.iter().all(|cell| {
+                cell.bg == theme::AETHERSHIP.bg || cell.bg == theme::AETHERSHIP.panel
+            }));
+        }
         theme::set(previous).unwrap();
     }
 

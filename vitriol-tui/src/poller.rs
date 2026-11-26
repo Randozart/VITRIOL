@@ -7,9 +7,10 @@
 //! throughput is parsed from the gen server log because the server's `/health`
 //! endpoint only returns `{"status":"ok"}`.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -107,13 +108,24 @@ impl Poller {
             mismatch,
             gpus,
             gpu_processes,
-            logs: LogsSnapshot {
-                gen: self.gen_tail.snapshot(),
-                journal: journal(ENGINE_UNIT),
-                autosave: journal(AUTOSAVE_UNIT),
-            },
+            logs: self.log_snapshot(),
         })
         .is_ok()
+    }
+
+    fn log_snapshot(&self) -> LogsSnapshot {
+        LogsSnapshot {
+            gen: self.gen_tail.snapshot(),
+            slot_entries: self.gen_tail.slot_entries.iter().cloned().collect(),
+            slot_tails: self
+                .gen_tail
+                .slots
+                .iter()
+                .map(|(id, tail)| (*id, tail.iter().cloned().collect()))
+                .collect(),
+            journal: journal(ENGINE_UNIT),
+            autosave: journal(AUTOSAVE_UNIT),
+        }
     }
 
     fn poll_gen(&mut self, agent: &Agent, port: u16, service_pid: Option<u32>) -> GenSnapshot {
@@ -666,8 +678,11 @@ fn parse_perf_line(line: &str) -> Option<PerfSnapshot> {
 struct LogTail {
     /// Byte offset of the next unread byte.
     pos: u64,
+    file_id: Option<(u64, u64)>,
     /// Trailing lines, oldest first, capped at [`LOG_TAIL_CAP`].
     tail: VecDeque<String>,
+    slot_entries: VecDeque<String>,
+    slots: BTreeMap<u64, VecDeque<String>>,
     /// Maximum number of retained lines.
     cap: usize,
 }
@@ -677,26 +692,33 @@ impl LogTail {
     fn new(cap: usize) -> Self {
         Self {
             pos: 0,
+            file_id: None,
             tail: VecDeque::with_capacity(cap),
+            slot_entries: VecDeque::new(),
+            slots: BTreeMap::new(),
             cap,
         }
     }
 
     /// Pull any new bytes from `path` into the trailing-line ring.
     fn poll(&mut self, path: &std::path::Path) {
-        let Ok(meta) = fs::metadata(path) else {
+        let Ok(mut f) = fs::File::open(path) else {
+            return;
+        };
+        let Ok(meta) = f.metadata() else {
             return;
         };
         let len = meta.len();
-        if len < self.pos {
+        let file_id = Some((meta.dev(), meta.ino()));
+        if self.file_id != file_id || len < self.pos {
             self.pos = 0;
+            self.slot_entries.clear();
+            self.slots.clear();
+            self.file_id = file_id;
         }
         if len == self.pos {
             return;
         }
-        let Ok(mut f) = fs::File::open(path) else {
-            return;
-        };
         const MAX_READ: u64 = 256 * 1024;
         let start = self.pos.max(len.saturating_sub(MAX_READ));
         if f.seek(SeekFrom::Start(start)).is_err() {
@@ -706,18 +728,22 @@ impl LogTail {
         if f.read_exact(&mut buf).is_err() {
             return;
         }
+        let Some(end) = buf.iter().rposition(|byte| *byte == b'\n') else {
+            return;
+        };
         let skipped = start > self.pos;
-        self.pos = len;
-        let text = String::from_utf8_lossy(&buf);
-        let mut lines = text.lines();
-        if skipped {
-            lines.next();
+        self.pos = start + end as u64 + 1;
+        let text = String::from_utf8_lossy(&buf[..=end]);
+        for line in text.lines().skip(usize::from(skipped)) {
+            self.record(line);
         }
-        for line in lines {
-            if self.tail.len() == self.cap {
-                self.tail.pop_front();
-            }
-            self.tail.push_back(line.to_string());
+    }
+
+    fn record(&mut self, line: &str) {
+        push_line(&mut self.tail, self.cap, line);
+        if let Some(slot) = crate::logs::slot_id(line) {
+            push_line(&mut self.slot_entries, self.cap, line);
+            push_line(self.slots.entry(slot).or_default(), self.cap, line);
         }
     }
 
@@ -725,6 +751,13 @@ impl LogTail {
     fn snapshot(&self) -> Vec<String> {
         self.tail.iter().cloned().collect()
     }
+}
+
+fn push_line(tail: &mut VecDeque<String>, cap: usize, line: &str) {
+    if tail.len() >= cap {
+        tail.pop_front();
+    }
+    tail.push_back(line.to_owned());
 }
 
 #[cfg(test)]
@@ -1093,6 +1126,31 @@ mod tests {
         tail.poll(&path);
         assert_eq!(tail.snapshot(), vec!["c", "d"]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn slot_tails_hold_independent_entries_and_reset_on_rotation() {
+        let path = temp_log("slot-tail", "I slot release: id  0 | task 1 | A\n");
+        let mut tail = LogTail::new(2);
+        tail.poll(&path);
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        write!(file, "I slot release: id  1 | task").unwrap();
+        tail.poll(&path);
+        assert!(!tail.slots.contains_key(&1));
+        writeln!(file, " 2 | B\nI slot release: id  1 | task 3 | C").unwrap();
+        tail.poll(&path);
+        assert!(tail.slots[&0][0].ends_with(" | A"));
+        assert_eq!(tail.slots[&1].len(), 2);
+        assert_eq!(tail.slot_entries.len(), 2);
+        let rotated = path.with_extension("next");
+        fs::write(&rotated, "I slot release: id  2 | task 4 | D\n").unwrap();
+        fs::rename(rotated, &path).unwrap();
+        tail.poll(&path);
+        assert_eq!(tail.slots.keys().copied().collect::<Vec<_>>(), [2]);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

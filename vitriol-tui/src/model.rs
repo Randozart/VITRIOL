@@ -210,6 +210,8 @@ pub struct GpuSnapshot {
 #[derive(Debug, Clone, Default)]
 pub struct LogsSnapshot {
     pub gen: Vec<String>,
+    pub slot_entries: Vec<String>,
+    pub slot_tails: std::collections::BTreeMap<u64, Vec<String>>,
     pub journal: Vec<String>,
     pub autosave: Vec<String>,
 }

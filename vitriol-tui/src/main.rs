@@ -5,6 +5,7 @@ mod braille;
 mod config;
 mod control;
 mod intel;
+mod logs;
 mod model;
 mod nvidia;
 mod poller;
@@ -61,10 +62,10 @@ fn main() -> io::Result<()> {
                             app.set_tab(tab);
                         }
                     }
-                    MouseEventKind::ScrollUp if app.tab == Tab::Logs => {
+                    MouseEventKind::ScrollUp if app.logs_visible() => {
                         app.log_offset = app.log_offset.saturating_add(3);
                     }
-                    MouseEventKind::ScrollDown if app.tab == Tab::Logs => {
+                    MouseEventKind::ScrollDown if app.logs_visible() => {
                         app.log_offset = app.log_offset.saturating_sub(3);
                     }
                     _ => {}
@@ -112,8 +113,11 @@ fn handle_key(
         }
         KeyCode::Char('r') => refresh.store(true, Ordering::Relaxed),
         _ if app.menu.is_some() => menu_key(app, key.code, tx),
-        _ if app.tab == Tab::Logs => log_key(app, key.code),
-        KeyCode::Char('a') if !app.action_running => app.menu = Some(Menu::Actions(0)),
+        KeyCode::Char('l') if app.tab == Tab::Dashboard => app.toggle_log_sidebar(),
+        KeyCode::Char('a') if app.tab == Tab::Dashboard && !app.action_running => {
+            app.menu = Some(Menu::Actions(0));
+        }
+        _ if app.logs_visible() => log_key(app, key.code),
         _ => {}
     }
     true
@@ -121,9 +125,11 @@ fn handle_key(
 
 fn log_key(app: &mut App, key: KeyCode) {
     match key {
-        KeyCode::Char(c @ '1'..='4') => {
+        KeyCode::Char(c @ '1'..='5') => {
             app.set_log_source(LogSource::ALL[c as usize - '1' as usize])
         }
+        KeyCode::Char('[') => app.cycle_log_slot(-1),
+        KeyCode::Char(']') => app.cycle_log_slot(1),
         KeyCode::Left => app.cycle_log_source(-1),
         KeyCode::Right => app.cycle_log_source(1),
         KeyCode::Char('v') => app.logs_verbose = !app.logs_verbose,

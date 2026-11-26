@@ -1,5 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
+## Provenance inventory — 2026-11-26 11:32
+
+The README credits the main upstreams and links to the technique inventory.
+The registry records Kintsugi and EXL3 reuse and the verified Pi example
+origin. The little-coder intermediary attribution remains open.
+[Plan](.opencode/plans/2026-11-26-112738-provenance-inventory.md).
+
 ## README cleanup — 2026-11-26 11:25
 
 The author confirmed the opening and “Why VITRIOL?” as their own wording.

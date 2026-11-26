@@ -1,78 +1,76 @@
-# PROVENANCE — every borrowed thing, cited — 2026-08-31
+# Provenance
 
-Law of this tree (First-Party Mandate, AGENTS.md 2026-08-31; owner
-directive): upstream projects are mined, never depended on as runtimes.
-Every file that carries borrowed code or a ported design cites its origin
-in a header comment. This registry is the index of those citations.
+This inventory records techniques used or tested in VITRIOL and where they came from. A source link can point to incorporated code, a design reference, or an experiment. The entries identify which kind of evidence is available. Features and experiments have different hardware and build requirements.
 
-## License of this tree
+VITRIOL's own code is offered under [Apache 2.0](../LICENSE) or [MIT](../LICENSE-MIT). The [in-tree llama.cpp fork](ENGINE_PROVENANCE.md) retains its [upstream MIT license](../engine/LICENSE). Third-party code carries its own notices. See the [root NOTICE](../NOTICE), [Officina notices](../officina/THIRD_PARTY_NOTICES.md), and [extension NOTICE](../officina/.pi/extensions/NOTICE).
 
-VITRIOL is dual-licensed **`Apache-2.0 OR MIT`** (SPDX expression; see
-`LICENSE`, `LICENSE-MIT`, and AGENTS.md "Licensing and Provenance",
-2026-08-31). "our MIT" / "ours" in the tables below means: offered under
-that same dual license. The intake rules are unchanged — the table in
-AGENTS.md governs INCOMING third-party code only.
+## Engine and memory placement
 
-Layering note for the llama.cpp fork (`llama.cpp/` submodule): upstream
-ggml/llama.cpp code remains under its original **MIT** license (copyright
-The ggml authors, `llama.cpp/LICENSE`); VITRIOL's modifications and
-additions to the fork are offered under this repo's `Apache-2.0 OR MIT`
-dual license. Neither license term is withdrawn, so the combined work is
-distributable under either.
-
-## Libraries (declared dependencies — permitted, pinned)
-
-| Dependency | License | Version | Use | Notes |
-|---|---|---|---|---|
-| `@earendil-works/pi-coding-agent` | MIT | 0.83.0 (pinned; corrected 2026-08-31 — earlier entries wrongly said Apache-2.0) | agent runtime: loop, tools, extension host, TUI, session manager | Library ONLY — never a shipped frontend. Upgrades are deliberate, tested bumps |
-| `@sinclair/typebox` | MIT | latest compatible | tool parameter schemas (pi requirement) | — |
-| typescript / vitest / @types/node | Apache-2.0 / MIT | dev | quality gates | — |
-
-## Extension provenance
-
-| Extension | Origin | License | Citation |
-|---|---|---|---|
-| llama-cpp-provider | itayinbarr/little-coder `.pi/extensions/llama-cpp-provider` @ 1a6ee8b (2026-08-31) | Apache-2.0 | header in `index.ts`; divergence: pkgRoot = officina root; `loadProviders`/`parseModelsFile` refactored to house flat-flow style |
-| subagent, plan-mode, phase-model, deep-research, skill-inject, knowledge-inject | itayinbarr/little-coder `.pi/extensions/*` @ 1a6ee8b | Apache-2.0 | ported verbatim (P2 "load-bearing three" + injectors); layout divergence documented in `config.test.ts` |
-| context-relay, small-lane, rewind, vitriol-checkpoint, permissions-guard, tool-result-clearer, rtk-output, task-state, snapshot, repo-map ext, diagnostics-loop, _shared | **Owner-authored** — written for trismegistus 2026-08-29..31 (commits 09fdac4..1a6ee8b era) | our MIT | no external provenance; ports of ourselves |
-| memory | new (SS2a), successor to hermes-bridge contract (REPORT-02 step 16) + hermes memory-extractor concept | ours | header in `index.ts` |
-| injection-guard | port of trismegistus/hermes-plugins/injection-guard/guards.py @ 237e424 (owner-authored, MIT) | MIT | header in `index.ts`; patterns + mode discipline identical |
-| caveman | port of trismegistus/hermes-plugins/caveman-rules/compress.py @ 237e424 | MIT | header in `compress.ts`; ruleset identical, code-span protection identical |
-| memory-extractor | port of trismegistus/hermes-plugins/memory-extractor/extractor.py @ 237e424 | MIT | header in `index.ts`; same rules/confidences, queue not auto-trust |
-| ask | @earendil-works/pi-coding-agent `examples/extensions/question.ts` @ 0.83.0 | MIT | header in `index.ts`; verbatim except header + explicit param types + `@sinclair/typebox` import path |
-| notify-done, inline-bash, session-name | @earendil-works/pi-coding-agent `examples/extensions/{notify,inline-bash,session-name}` variants @ 0.83.0 | MIT | headers in each `index.ts`; notify-done rebranded + require→ESM; all kill-switched. Audit: `.opencode/plans/pipeline-mining-audit-2026-08-31.md` |
-| coupling, session-panel, officina-header, vitriol-decode, agent-mode | new, this repo | ours | — |
-
-## NOTICE propagation (Apache-2.0 §4(d))
-
-little-coder carries a NOTICE attributing its own upstream
-(SafeRL-Lab/clawspring, Apache-2.0). The attribution is reproduced in
-`.pi/extensions/NOTICE` and flows to all redistributions of the vendored
-extensions. The runtime `@earendil-works/pi-coding-agent` and
-`@earendil-works/pi-tui` are **MIT**; their patched vendor copies
-(`runtime/patched/*.officina.js`) carry derivation headers stating source
-and modifications (MIT §2-4: notices retained, changes stated).
-
-## Designs and assets
-
-| Asset | Origin | Cited at |
+| Technique | Use and origin | Evidence |
 |---|---|---|
-| Braille gradient bars (6-dot cells, fill order, ramps) | VITRIOL `vitriol-tui/src/braille.rs` (own, Apache-2.0) | `vitriol-decode/braille.ts` header |
-| Vitriolum palette + ramps | VITRIOL `vitriol-tui/src/theme.rs`, roots in owner's Officina-dark VS Code theme | `theme/officina.json` vars |
-| Extension palette module (single source; honey retargeted to antidote `#ff5f1f`) | VITRIOL `vitriol-tui/src/theme.rs` (own, Apache-2.0); parity-tested by `_shared/vitriolum.test.ts` | `_shared/vitriolum.ts` header |
-| Shared engine telemetry poller | own work; parsers from `vitriol-decode/decode.ts` (own, Apache-2.0) | `_shared/engine.ts` header |
-| Caveman ruleset (−65% measured) | owner's caveman skill; hermes plugin port | `caveman/compress.ts` |
-| Small-model split, skills-lazy-loading, hook deny/halt, LSP-edit ideas | Crush v0.91.2 (FSL-1.1-MIT) — PATTERNS only, no code | `docs/CRUSH-MINING-PLAN-2026-08-31.md` |
-| Legacy names | `refs/trismegistus/turns/*` git refs and `~/.local/state/trismegistus` retained deliberately for data continuity (SS4 decision) | docs/OFFICINA.md |
+| GGUF loading, tensor placement, CUDA inference | Inherited from llama.cpp. Its per-tensor override and grouped expert tensors provided the basis for VITRIOL's expert placement. | [Engine import](ENGINE_PROVENANCE.md), [override tensor PR](https://github.com/ggml-org/llama.cpp/pull/11397), [expert layout PR](https://github.com/ggml-org/llama.cpp/pull/6387) |
+| Resident layer splits and per-device KV quantization | Uses llama.cpp multi-GPU placement with VITRIOL's per-device cache type overrides. Experiments put resident execution first when weights fit. | [KV placement source](../engine/src/llama-kv-cache.cpp), [RAM Shot verdict](VERDICTS.md) |
+| RAM Shot, or host-resident expert weights | VITRIOL's page-locked CUDA host buffer lets the GPU read MoE experts across PCIe. Earlier notes cite *LLM in a Flash* as related work on memory-limited inference. | [Host buffer](../engine/ggml/src/ggml-cuda/vitriol-buffer.cpp), [35B experiments](archive/FINDINGS_2026-05-19.md) |
+| Expert caching, pinning and asynchronous prefetch | VITRIOL caches hot experts in VRAM with LRU eviction, pins selected expert weights, and overlaps transfers with compute. Its predictor combines cross-layer and recent routing information. The source names Fate as a design reference. Earlier notes also cite HOBBIT, PreScope, KTransformers and PowerInfer. | [CUDA integration](../engine/ggml/src/ggml-cuda/vitriol-cuda-integration.cpp), [predictor header](../engine/ggml/src/ggml-cuda/vitriol-cuda-integration.h) |
+| Expert output reuse, top-K pruning and graph split reduction | Historical VITRIOL work on approximate expert-output reuse, dropping low-ranked routed experts, and aligning buffer types to reduce scheduler splits. The experiments cover different trade-offs. MoQE, cited in the old README, concerns expert quantization and does not establish the origin of the pruning rule. | [CUDA integration](../engine/ggml/src/ggml-cuda/vitriol-cuda-integration.cpp), [experiment log](../EXPERIMENT_LOG.md) |
+| Direct copy engines and NVMe-to-GPU DMA | VITRIOL explored GPU copy queues, BAR1 mapping, and an NVMe/GPU kernel module. The C6B5 code credits NVIDIA's open GPU kernel modules for register and packet definitions. The old bibliography records GPUDirect Storage and NVDLA as related reading. | [Copy-engine header](../engine/ggml/src/ggml-cuda/vitriol_copy_engine_c6b5.h), [DMA module](../vitriol-daemon/README.md), [verdict](VERDICTS.md) |
+| Chimera CUDA/Vulkan | Historical mixed-backend placement, host memory import through Vulkan, Mamba-1 SSM shader work, and automatic backend selection. The session notes record the VITRIOL work on top of llama.cpp's Vulkan backend. | [Chimera session report](../.opencode/plans/CHIMERA_SESSION_REPORT.md), [backend and shader plan](../.opencode/plans/VULKAN_CHIMERA_M3_DETAILED.md) |
+| SYCL expert streaming and caching | Separate VITRIOL backend work on host buffer import, expert LRU, and prefetch for SYCL. | [SYCL buffer](../engine/ggml/src/ggml-sycl/vitriol-sycl-buffer.cpp), [SYCL integration](../engine/ggml/src/ggml-sycl/vitriol-sycl-integration.cpp) |
+| Managed expert storage and CPU-backed experts | Managed storage adds metadata and a memory/IO budget for expert data. CPU-backed expert placement is a separate path. The CUDA integration also records inspiration from the Apache-2.0 kimi-k3-in-c project for a re-derived change. | [Managed store](../engine/ggml/src/ggml-cuda/vitriol-store.cpp), [kimi-k3-in-c record](provenance/kimi-k3-in-c.md) |
 
-## Retired dependencies (fold-in record)
+## Decode, quantization, and context
 
-- little-coder: fallback removed (SS1); models.json parity → officina
-- hermes-agent: memory (SS2a), chat (retired), guards (SS2a); caveman +
-  extractor ports close SS2b; nothing references its runtime
-- trismegistus repo: private archive; docs copied to
-  `docs/officina-archive/`
+| Technique | Use and origin | Evidence |
+|---|---|---|
+| MTP, external draft models, EAGLE3, n-gram lookup | The fork carries several speculative decoding paths. VITRIOL repaired embedded Qwen MTP support and measured draft-depth and verification trade-offs. Prompt lookup reuses matching token sequences from context. | [Speculative code](../engine/common/speculative.cpp), [engine provenance](ENGINE_PROVENANCE.md) |
+| DFlash and DFlash 2 block drafting | DFlash is by Chen, Liang, and Liu. Inco AI published DFlash 2. The repository has a native draft graph and separate measurements of the Kintsugi reference executable. | [DFlash](https://github.com/z-lab/dflash), [DFlash 2](https://inco.ai/blog/dflash2/), [native graph](../engine/src/models/dflash.cpp), [comparison](../.opencode/plans/2026-11-26-104921-z440-kintsugi-inkling-experiments.md) |
+| Escha and EXL3 | Kintsugi's Escha representation uses an EXL3 trellis. VITRIOL integrated it as a GGML operation. The CUDA GEMV path uses vendored MIT headers from Turboderp's ExLlamaV3 v1.6.7 and adapts the launch to CUDA graph capture. | [Escha port record](../.opencode/plans/kintsugi-vitriol-port-2026-11-24.md), [vendored revision](../engine/ggml/src/ggml-cuda/exl3/README.md), [license](../engine/ggml/src/ggml-cuda/exl3/LICENSE), [CUDA GEMV](../engine/ggml/src/ggml-cuda/escha-gemv.cu) |
+| HEAD2 and Gated Delta Net raw gates | The HEAD2 output kernel and raw-gate generation changes are ports from MIT-licensed kintsugi-engine at `8f12baacf`. The port also fixed VITRIOL's output-layer placement. Recurrent replay remains experimental in the native port. The chunked MMA kernel is disabled in the normal build. | [HEAD2 source](../engine/ggml/src/ggml-cuda/head2.cu), [MMA stub](../engine/ggml/src/ggml-cuda/gated-delta-net-mma-stub.cu), [port handoff](../.opencode/plans/kintsugi-handoff-2026-11-26.md), [replay and snapshot tests](../.opencode/plans/2026-11-26-101857-kintsugi-replay-z440.md) |
+| Chunked GDN prefill and recurrence tiling | Earlier experiments evaluated chunkwise GDN prefill and register-resident recurrence tiling using SwarmLLM as a reference. These trials are distinct from the Kintsugi port. | [Evaluation and references](../.opencode/plans/swarmllm-mining-assessment-2026-09-08.md) |
+| Early exit and layer skipping | VITRIOL tested exit based on residual changes. The experiment found that the tested model did not benefit. DeeBERT and PABEE appear as related work in the earlier bibliography. | [Early exit experiment](../.opencode/plans/EARLY_EXIT.md) |
+| Low-bit model weights and lookup-table matmul | VITRIOL tested low-bit GGUF weights and studied lookup-table matmul for Pascal. T-MAC, 3LTERN and BitNet are related references in the old bibliography. The T-MAC plan describes a prospective CUDA path. | [Quantization measurements](BENCHMARKS.md), [lookup-table plan](../.opencode/plans/T-MAC_LUT_MATMUL.md) |
+| Inkling 2 Mini and DSpark | The fork includes Inkling model graphs, per-head Flash Attention bias work, and a DSpark draft experiment. The latest Z440 record documents what served and which optimizations still need validation. | [Inkling graph](../engine/src/models/inkling2.cpp), [attention mask](../.opencode/plans/inkling2-per-head-fa-mask-2026-11-24.md), [Z440 trials](../.opencode/plans/2026-11-26-104921-z440-kintsugi-inkling-experiments.md) |
+| TurboQuant-family KV formats | VITRIOL has `tq3_0`, `tq3_1s`, and `tq3_4s` paths and Walsh–Hadamard rotation code. Zandieh et al.'s TurboQuant paper is the algorithm reference. The source and depth measurements describe the local formats. | [TurboQuant paper](https://arxiv.org/abs/2504.19874), [rotation kernel](../engine/ggml/src/ggml-cuda/turbo-wht.cu), [LULL certification](../.opencode/plans/lull-certification-report-2026-08-24.md) |
+| Sparse KV eviction and attention probes | VITRIOL's LULL scoring probes attention and protects early and recent positions while evicting low-scoring cells. Earlier design references include StreamingLLM's attention sinks, H2O and SnapKV. | [Probe source](../engine/src/vitriol-kv-probe.cpp), [LULL design](../.opencode/plans/lull-plan-2026-08-24.md) |
+| Cell-level VRAM and pinned-RAM KV | VITRIOL adapted the cell-tiering idea from kintsugi-engine at `8f12baacf`. CUDA virtual memory places the VRAM head and pinned host tail in the same address range. This is separate from saving whole prompt states. | [Source attribution](../engine/src/llama-kv-cache.cpp), [placement and parity evidence](../.opencode/plans/kv-tier-vram-cells-2026-11-25.md) |
+| Prefix reuse, RAM prompt cache, slot checkpoints and disk mirror | VITRIOL extends llama.cpp's RAM prompt cache with persistent state, prefix matching on reload, and an Optane-tested disk tier. Mooncake and LMCache were related designs in the earlier bibliography. | [Upstream prompt-cache PR](https://github.com/ggml-org/llama.cpp/pull/16391), [disk-tier report](../.opencode/plans/optane-kv-tier-2026-09-27.md), [persistence sidecar](../scripts/lull_slot_persist.py) |
+| Owned snapshots and client-prefix priming | The Rust cache store and server adapter manage snapshot ownership. The optional primer supplies a reusable prefix ahead of the first interactive request. | [Cache store](../vitriol-cache-store/README.md), [server adapter](../engine/tools/server/vitriol-owned-cache.cpp), [primer protocol](client-prefix-primer.md) |
 
-Enforcement: `scripts/selfcheck.sh` fails the tree if any live file in the
-table's first column loses its provenance header, or if external project
-paths reappear in live code.
+## Scheduling and operations
+
+| Technique | Use and origin | Evidence |
+|---|---|---|
+| Fair-share chunked prefill and slot affinity | VITRIOL's server caps prefill chunks under contention and routes requests with session affinity. Chunked prefill in other serving engines was a design comparison. | [Slot fairness](../.opencode/plans/slot-fairness-2026-09-27.md), [server implementation](../engine/tools/server/server-context.cpp) |
+| Distributed layer placement | VITRIOL uses llama.cpp RPC to place part of a model on another host. The setup report records memory gain and network cost. | [Distributed inference](DISTRIBUTED_INFERENCE.md) |
+| Calibration and launch fingerprints | The Rust calibrator reads GGUF tensor metadata to estimate placement capacity. The launcher records resolved configuration for comparisons. | [Calibrator](../libvitriol/), [launcher](../scripts/vitriol), [configuration reference](CONFIG_REFERENCE.md) |
+| Autosave, warm restore, hang detection and OOM handling | VITRIOL's sidecar and service setup manage recovery and memory pressure. The operations guide and verdicts record the policy changes. | [Sidecar](../scripts/lull_slot_persist.py), [operations](OPERATIONS.md), [verdicts](VERDICTS.md) |
+| Cooperative VRAM governor | VITRIOL's governor monitors foreign VRAM tenants and can request cache relief, context resize, or a lower-memory profile. | [Governor source and provenance](../vitriol-governor/) |
+| Demiurge lane routing and privacy gate | VITRIOL implements pressure- and affinity-based lane placement. The privacy recognizers and Dutch test set were reused from the same author's knooppunt project. The routing plan records comparisons and rejected detectors. | [Demiurge plan](../.opencode/plans/demiurge-2026-09-27.md), [privacy source](../demiurge/crates/privacy/src/lib.rs) |
+| Cloud escalation and answer reuse | Ascensus accounts for paid escalation. Hermetis stores reusable results. The earlier bibliography cites semantic caching systems such as GPTCache as related work. | [Ascensus daemon](../scripts/ascensusd.py), [Hermetis](hermetis.md) |
+
+## Officina
+
+The Rust TUI drives pi in RPC mode. Current dependency versions live in the [manifest](../officina/package.json) and [lockfile](../officina/package-lock.json). Caduceus integrates the separately installed OmniRoute gateway. See the [TUI](../officina/tui/src/main.rs) and [OmniRoute notice](../officina/THIRD_PARTY_NOTICES.md).
+
+| Technique or component | Use and origin | Evidence |
+|---|---|---|
+| Provider adapters, subagents, plan/phase modes and knowledge or skill injection | The extension NOTICE credits little-coder at `1a6ee8b` and retains its ClawSpring attribution. The extensions evolved after import. | [Extension NOTICE](../officina/.pi/extensions/NOTICE), [provider header](../officina/.pi/extensions/llama-cpp-provider/index.ts) |
+| Interactive questions, terminal notifications, inline shell expansion and session naming | The original VITRIOL imports match the MIT-licensed pi 0.83.0 examples with local edits. `ask` later changed to the Rust TUI dialog API. Its header still says Apache-2.0, and the extension NOTICE groups all four examples with little-coder. Pi is the verified upstream source. Whether the imports passed through little-coder remains unverified, so retain its existing NOTICE attribution. | [Question header](../officina/.pi/extensions/ask/index.ts), [notification header](../officina/.pi/extensions/notify-done/index.ts), [inline shell header](../officina/.pi/extensions/inline-bash/index.ts), [extension NOTICE](../officina/.pi/extensions/NOTICE), [pi 0.83.0 repository license](https://github.com/earendil-works/pi/blob/845d6ff1f6643aba440341cce877ce1c43ebbc39/LICENSE) |
+| Prompt-injection guard, prose compression and memory extraction | TypeScript ports of the author's trismegistus/hermes-plugins guard, caveman rules and memory extractor at `237e424`. The memory gateway also folded in work from the earlier hermes bridge. | [Guard](../officina/.pi/extensions/injection-guard/index.ts), [compressor](../officina/.pi/extensions/caveman/compress.ts), [extractor](../officina/.pi/extensions/memory-extractor/index.ts), [memory gateway](../officina/.pi/extensions/memory/index.ts) |
+| Repo maps, diagnostics, turn snapshots and compact tool output | Officina implements these techniques in its extensions. The earlier README records design references to Aider for repository mapping, OpenCode for the per-edit loop and turn snapshots, RTK for compact command output, and Claude Code for context editing and external task state. | [Repo maps](../officina/.pi/extensions/repo-map/), [diagnostics](../officina/.pi/extensions/diagnostics-loop/), [snapshots](../officina/.pi/extensions/snapshot/), [command output](../officina/.pi/extensions/rtk-output/) |
+| Small-model lane, lazy skill loading and hook UX | The Crush evaluation records patterns considered for Officina. | [Crush evaluation](officina-archive/CRUSH-MINING-PLAN-2026-08-31.md), [small lane](../officina/.pi/extensions/small-lane/) |
+| Context relay, checkpoint and rewind, task state, permissions and protected prompt prefixes | The first-party parts fold in trismegistus work and VITRIOL checkpoint APIs. Tail injection preserves the system-prompt prefix so the model's cached state remains reusable. | [Context relay](../officina/.pi/extensions/context-relay/), [rewind](../officina/.pi/extensions/rewind/), [task state](../officina/.pi/extensions/task-state/), [permissions](../officina/.pi/extensions/permissions-guard/), [injection source](../officina/.pi/extensions/_shared/inject.ts) |
+| Telemetry, Braille meters and palette | VITRIOL's engine telemetry and UI primitives informed Officina's gauges. The palette derives from the author's Officina-dark theme. | [Telemetry extension](../officina/.pi/extensions/vitriol-decode/), [Braille attribution](../officina/.pi/extensions/vitriol-decode/braille.ts), [palette attribution](../officina/.pi/extensions/_shared/vitriolum.ts) |
+| Legacy JS frontend patches | The earlier Pi-based frontend used vendored, patched components. The build script records how the patched files are generated. | [Patch builder](../officina/runtime/build-patch.mjs) |
+
+The [Officina self-check](../officina/scripts/selfcheck.sh) checks specific attribution markers in six extension files. The extension NOTICE and per-file headers carry the attribution details.
+
+## Earlier research
+
+The previous README's bibliography includes kernel and MoE studies, speculative decoding papers, KV compression and serving designs, ternary matmul and lookup tables, and context retrieval systems. It also records experimental ideas such as layer skipping, draft-time expert selection, CPU execution of selected experts, and direct NVMe placement. Those entries document the research trail. The [experiment log](../EXPERIMENT_LOG.md), [compute notes](plans/COMPUTE_OPTIMIZATIONS.md), [verdicts](VERDICTS.md), and [per-project provenance records](provenance/) provide more detail.
+
+The full bibliography is available from the repository history.
+
+```bash
+git show 17b04bd67486297678dc840afa72f33ac1e9288e:README.md
+```

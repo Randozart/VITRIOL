@@ -39,6 +39,14 @@ Officina is the terminal coding agent developed in this repo. It works with upst
 - [Benchmarks](docs/BENCHMARKS.md) report throughput at measured context depths. [Experiment verdicts](docs/VERDICTS.md) record what was tried and why some approaches were dropped.
 - [Documentation index](docs/README.md) covers the rest of the repository, including [distributed inference](docs/DISTRIBUTED_INFERENCE.md).
 
+## Provenance
+
+- The engine comes from llama.cpp and ggml. VITRIOL's work on top includes host-RAM expert streaming, expert caching and prefetch, sparse KV eviction, prompt-state persistence, and GPU placement. [Engine import and changes](docs/ENGINE_PROVENANCE.md).
+- VITRIOL uses TurboQuant-style KV compression and several forms of speculative decoding, including MTP and DFlash. Kintsugi contributed the reference for HEAD2, raw-gate Gated Delta Net and cell-level KV tiering. The Escha port uses ExLlamaV3's CUDA headers. [Decode and context credits](docs/PROVENANCE.md#decode-quantization-and-context).
+- Officina uses pi and includes extensions from little-coder. Its Caduceus integration uses OmniRoute. [Officina credits](docs/PROVENANCE.md#officina).
+
+The [technique inventory](docs/PROVENANCE.md) links to source files, papers, experiment reports, and third-party notices.
+
 ## License
 
-VITRIOL is available under [Apache 2.0](LICENSE) or [MIT](LICENSE-MIT). The bundled llama.cpp fork lives in [engine/](engine/) and retains its [upstream MIT license](engine/LICENSE). See [NOTICE](NOTICE), the [engine import record](docs/ENGINE_PROVENANCE.md), and the [attribution index](docs/PROVENANCE.md).
+VITRIOL is available under [Apache 2.0](LICENSE) or [MIT](LICENSE-MIT). See [NOTICE](NOTICE) and the bundled engine's [upstream MIT license](engine/LICENSE).

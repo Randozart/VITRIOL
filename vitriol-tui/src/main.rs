@@ -59,16 +59,7 @@ fn main() -> io::Result<()> {
                 }
                 Event::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::Down(MouseButton::Left) => {
-                        if let Some(tab) = app.tab_click(mouse.column, mouse.row) {
-                            app.set_tab(tab);
-                        } else if app.tab == Tab::Dashboard
-                            && app.menu.is_none()
-                            && app
-                                .caduceus_hit
-                                .contains(ratatui::layout::Position::new(mouse.column, mouse.row))
-                        {
-                            app.open_caduceus();
-                        }
+                        app.click(mouse.column, mouse.row);
                     }
                     MouseEventKind::ScrollUp if app.logs_visible() => {
                         app.log_offset = app.log_offset.saturating_add(3);

@@ -319,7 +319,7 @@ const server = createServer(async (req, res) => {
         ok: true,
         gateway: GATEWAY,
         fallbacks: effectiveFallbacks(),
-        lastRequested,
+        lastRequested: lastRequested ?? null,
         parked: parked.map(([model, until]) => ({
           model,
           seconds: Math.ceil((until - now) / 1000),

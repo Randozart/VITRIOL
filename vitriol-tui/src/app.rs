@@ -132,11 +132,20 @@ impl App {
         });
     }
 
-    pub fn tab_click(&self, x: u16, y: u16) -> Option<Tab> {
-        self.tab_hits
+    pub fn click(&mut self, x: u16, y: u16) {
+        let position = Position::new(x, y);
+        if let Some((_, tab)) = self
+            .tab_hits
             .iter()
-            .find(|(area, _)| area.contains(Position::new(x, y)))
-            .map(|(_, tab)| *tab)
+            .find(|(area, _)| area.contains(position))
+        {
+            self.set_tab(*tab);
+        } else if self.tab == Tab::Dashboard
+            && self.menu.is_none()
+            && self.caduceus_hit.contains(position)
+        {
+            self.open_caduceus();
+        }
     }
 
     pub fn logs_visible(&self) -> bool {

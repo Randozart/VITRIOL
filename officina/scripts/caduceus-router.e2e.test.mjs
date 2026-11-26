@@ -125,6 +125,8 @@ const chat = (model) =>
 
 describe("caduceus-router (end to end)", () => {
   it("reroutes a quota-failed lane to a fallback and parks the failed one", async () => {
+    const idleHealth = await (await fetch(`http://127.0.0.1:${ROUTER_PORT}/health`)).json();
+    expect(idleHealth.lastRequested).toBeNull();
     const res = await chat("bad/lane");
     expect(res.status).toBe(200);
     expect(res.headers.get("x-caduceus-router")).toBe(

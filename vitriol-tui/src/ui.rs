@@ -561,44 +561,58 @@ fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, selected: Option<&s
         )),
         rows[0],
     );
-    let capacity = rows[1].height as usize;
+    render_caduceus_lanes(frame, rows[1], lanes, selected);
+    render_caduceus_action(frame, rows[2], app);
+}
+
+fn render_caduceus_lanes(
+    frame: &mut Frame,
+    area: Rect,
+    lanes: &[crate::caduceus::Lane],
+    selected: Option<&str>,
+) {
+    let capacity = area.height as usize;
     let index = lanes
         .iter()
-        .position(|lane| Some(lane.model.as_str()) == selected)
+        .position(|lane| lane.model.as_str() == selected.unwrap_or_default())
         .unwrap_or(0);
     let start = index.saturating_add(1).saturating_sub(capacity);
     let entries: Vec<Line<'_>> = lanes
         .iter()
         .skip(start)
         .take(capacity)
-        .map(|lane| {
-            let highlighted = Some(lane.model.as_str()) == selected;
-            let prefix = if highlighted { " › " } else { "   " };
-            let scope = if lane.in_route { "" } else { " · other route" };
-            let state = lane.remaining.map_or_else(
-                || "Eligible".into(),
-                |seconds| {
-                    let reason = lane.reason.as_deref().unwrap_or("reason unavailable");
-                    format!("Parked {seconds}s · {reason}")
-                },
-            );
-            let model_style = if highlighted {
-                theme::title().bg(theme::current().user_bg)
-            } else {
-                theme::text()
-            };
-            let state_style = if lane.remaining.is_some() {
-                theme::warn()
-            } else {
-                theme::muted()
-            };
-            Line::from(vec![
-                Span::styled(format!("{prefix}{}", lane.model), model_style),
-                Span::styled(format!("  {state}{scope}"), state_style),
-            ])
-        })
+        .map(|lane| caduceus_lane(lane, lane.model.as_str() == selected.unwrap_or_default()))
         .collect();
-    frame.render_widget(Paragraph::new(entries), rows[1]);
+    frame.render_widget(Paragraph::new(entries), area);
+}
+
+fn caduceus_lane(lane: &crate::caduceus::Lane, highlighted: bool) -> Line<'static> {
+    let prefix = if highlighted { " › " } else { "   " };
+    let scope = if lane.in_route { "" } else { " · other route" };
+    let state = lane.remaining.map_or_else(
+        || "Eligible".into(),
+        |seconds| {
+            let reason = lane.reason.as_deref().unwrap_or("reason unavailable");
+            format!("Parked {seconds}s · {reason}")
+        },
+    );
+    let model_style = if highlighted {
+        theme::title().bg(theme::current().user_bg)
+    } else {
+        theme::text()
+    };
+    let state_style = if lane.remaining.is_some() {
+        theme::warn()
+    } else {
+        theme::muted()
+    };
+    Line::from(vec![
+        Span::styled(format!("{prefix}{}", lane.model), model_style),
+        Span::styled(format!("  {state}{scope}"), state_style),
+    ])
+}
+
+fn render_caduceus_action(frame: &mut Frame, area: Rect, app: &App) {
     let action = if app.action_running {
         Some((true, "Working…"))
     } else {
@@ -612,7 +626,7 @@ fn render_caduceus(frame: &mut Frame, area: Rect, app: &App, selected: Option<&s
                 message,
                 if ok { theme::info() } else { theme::warn() },
             )),
-            rows[2],
+            area,
         );
     }
 }
@@ -747,42 +761,41 @@ fn render_log_entries(frame: &mut Frame, area: Rect, app: &mut App, compact: boo
     let start = end.saturating_sub(capacity);
     let mut visible = lines[start..end]
         .iter()
-        .map(|line| {
-            let short = if compact && !app.logs_verbose && app.log_source == LogSource::Slots {
-                crate::logs::compact_slot(line)
-            } else if !app.logs_verbose && app.log_source == LogSource::Caduceus {
-                crate::caduceus::compact_event(line)
-            } else {
-                None
-            };
-            Line::from(Span::styled(
-                short.map_or_else(
-                    || std::borrow::Cow::Borrowed(line.as_str()),
-                    std::borrow::Cow::Owned,
-                ),
-                if line.contains("error") || line.starts_with("Journal unavailable") {
-                    theme::warn()
-                } else {
-                    theme::text()
-                },
-            ))
-        })
+        .map(|line| log_entry(line, app.log_source, app.logs_verbose, compact))
         .collect::<Vec<_>>();
     if visible.is_empty() {
         visible.push(Line::from(Span::styled(
-            if !query.is_empty() {
-                "No matching entries"
-            } else if app.log_source == LogSource::Slots {
-                "No slot-tagged engine output yet"
-            } else if app.log_source == LogSource::Caduceus {
-                "No Caduceus router events yet"
-            } else {
-                "No entries yet"
-            },
+            empty_log_message(app.log_source, &query),
             theme::muted(),
         )));
     }
     frame.render_widget(Paragraph::new(visible), area);
+}
+
+fn log_entry(line: &str, source: LogSource, verbose: bool, sidebar: bool) -> Line<'_> {
+    let short = match (source, verbose) {
+        (LogSource::Slots, false) if sidebar => crate::logs::compact_slot(line),
+        (LogSource::Caduceus, false) => crate::caduceus::compact_event(line),
+        _ => None,
+    };
+    let text = short.map_or(std::borrow::Cow::Borrowed(line), std::borrow::Cow::Owned);
+    let style = if line.contains("error") || line.starts_with("Journal unavailable") {
+        theme::warn()
+    } else {
+        theme::text()
+    };
+    Line::from(Span::styled(text, style))
+}
+
+fn empty_log_message(source: LogSource, query: &str) -> &'static str {
+    if !query.is_empty() {
+        return "No matching entries";
+    }
+    match source {
+        LogSource::Slots => "No slot-tagged engine output yet",
+        LogSource::Caduceus => "No Caduceus router events yet",
+        _ => "No entries yet",
+    }
 }
 
 fn log_status(app: &App) -> String {
@@ -864,22 +877,11 @@ mod tests {
             r#"{"model":"a/glm","status":429}"#.into(),
             r#"{"model":"b/glm","served":true}"#.into(),
         ];
-        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
-        let mut rendered = |app: &mut App| {
-            terminal.draw(|frame| draw(frame, app)).unwrap();
-            terminal
-                .backend()
-                .buffer()
-                .content
-                .chunks(90)
-                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        assert!(rendered(&mut app).contains("a/glm · 1/2 eligible · next cooldown ends in 30s"));
+        assert!(render_caduceus_fixture(&mut app)
+            .contains("a/glm · 1/2 eligible · next cooldown ends in 30s"));
         assert!(!app.caduceus_hit.is_empty());
-        app.open_caduceus();
-        let pane = rendered(&mut app);
+        app.click(app.caduceus_hit.x, app.caduceus_hit.y);
+        let pane = render_caduceus_fixture(&mut app);
         assert!(pane.contains("a/glm  Parked 30s · HTTP 429"));
         assert!(pane.contains("b/glm  Eligible"));
         app.cycle_caduceus(1);
@@ -890,9 +892,22 @@ mod tests {
         app.open_caduceus_logs();
         assert_eq!(app.tab, Tab::Logs);
         assert_eq!(app.log_query, "b/glm");
-        let logs = rendered(&mut app);
+        let logs = render_caduceus_fixture(&mut app);
         assert!(logs.contains("b/glm · served after reroute"));
         assert!(!logs.contains("a/glm"));
+    }
+
+    fn render_caduceus_fixture(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(90)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]

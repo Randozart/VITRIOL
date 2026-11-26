@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Caduceus dashboard — 2026-11-26 15:49
+
+`vitriol tui` shows the last Caduceus router request and cooldowns on Dashboard.
+Open with `c`, select a route, use `l` for its router events or `u` to unpark.
+Officina shows model-specific routing failures inline. Both release frontends
+passed terminal fixtures, and the reloaded loopback router serves the new
+health response. [Plan](.opencode/plans/2026-11-26-153957-caduceus-dashboard.md).
+
 ## Officina model discovery — 2026-11-26 15:09
 
 `/models` and `/providers` use the live Pi catalog and local recent IDs.

@@ -1,12 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
-## Kintsugi 224K GPU1 qualification — 2026-11-26 20:15
+## Kintsugi 224K GPU1 qualification — 2026-11-26 20:59
 
-VITRIOL advertised 229,376 tokens on GPU1 and recalled the marker at
-96,000 filled tokens, decoding at 0.57 tok/s without a drafter. The
-reference MTP binary reached 31.77 tok/s at 4,096 filled tokens. Its terminal
-session ended during the 96K prefill. No 200K filled result or profile
-promotion. Restoring the 65,536-token system service requires operator sudo.
+The reference MTP build on GPU1 recalled the marker at 202,000 filled
+tokens and decoded a 256-token Rust sample at 20.66 tok/s. A warm edit
+reused 201,562 tokens and decoded at 20.45 tok/s. Both generated functions
+passed independent Rust tests. Dual-GPU DFlash2 failed to become ready at
+this window. The 65,536-token production profile remains selected, with
+its system services still stopped.
 [Plan](.opencode/plans/2026-11-26-192713-kintsugi-200k-daily.md).
 
 ## Lapis local admission — 2026-11-26 19:20

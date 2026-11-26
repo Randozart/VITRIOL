@@ -33,7 +33,16 @@ The launcher reads `~/.vitriol/config`. See the [configuration reference](docs/C
 
 Run `vitriol tui` to see model throughput, slot usage, and GPU placement. The screenshots use demo telemetry and a sample coding session.
 
-![VITRIOL dashboard in Aethership showing Kintsugi decode speed, context fill, and VRAM usage across two GPUs](assets/screenshots/vitriol-aethership.png)
+**Vitriolum** is the default theme.
+
+![VITRIOL dashboard in the default Vitriolum theme showing Kintsugi decode speed, context fill, and VRAM usage across two GPUs](assets/screenshots/vitriol-default.png)
+
+<details>
+<summary>Dashboard in Aethership</summary>
+
+![VITRIOL dashboard in Aethership showing the engine, decode, and GPU panels](assets/screenshots/vitriol-aethership.png)
+
+</details>
 
 <details>
 <summary>Caduceus catalog in Vitriolum</summary>

@@ -8,6 +8,9 @@ rendered fixture telemetry and a demo workspace. Officina's images also
 resolve from its standalone README source.
 [Plan](.opencode/plans/2026-11-26-163533-readme-theme-screenshots.md).
 
+The README now leads with the normal Vitriolum dashboard from a fresh
+release launch. [Plan](.opencode/plans/2026-11-26-164642-readme-default-vitriolum.md).
+
 ## Caduceus catalog — 2026-11-26 16:03
 
 The Dashboard pane merges the shared Caduceus catalog with live router

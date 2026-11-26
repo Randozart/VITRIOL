@@ -168,6 +168,12 @@
 
 ## Models and providers
 
+**Lapis Occultus** tries the local engine first on a new turn when a slot
+is idle and the request fits its context window. An oversized session can
+use a cloud fallback under the session's routing policy. Use `/route-why`
+to see the selection reason. Compact the session or start a new one to
+get back within the local window.
+
 - `/models` lists recent choices first. Pick a model, then choose a provider
   or **Auto-route** when more than one provider advertises that model ID.
 - `/providers` lists connected providers first. Their model lists put recent
@@ -559,8 +565,9 @@ No flags, no per-launch env — the router adapts per session, per turn
   shard every 10 seconds through the existing engine poller, including
   during long prefill; settled sessions expire normally and shutdown
   removes the shard. Reload extensions in both TUIs to adopt the fix.
-- `/route-why` describes this session's requested physical backend while
-  a request is in flight, or its last completed route. It does not borrow
+- `/route-why` describes this session's requested physical backend and
+  selection reason while a request is in flight, or its last completed
+  route. It does not borrow
   another session's latest ledger entry. A local request may still be
   queued; this is not proof of slot ownership. The route badge is refreshed
   on continuations too, and new ledger rows carry session and process IDs.
@@ -578,9 +585,10 @@ No flags, no per-launch env — the router adapts per session, per turn
 - Free-lane auto router (2026-11-11): every cloud lane is a verified
   free model (zero-priced or costless owner — opencode-go, dahl,
   freeinference, agentrouter, …; `OFFICINA_OVERFLOW_FREE_ONLY=1`
-  default). A hard turn on an idle local promotes itself to the best
-  free lane (`OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE=0.65` in the env
-  file; 0 disables). Paid ascensus escalation stands down while
+  default). Adaptive routing for non-virtual selections can promote a
+  complex turn under `OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE`. Lapis starts
+  fitting new turns on a confirmed idle local slot. Paid ascensus
+  escalation stands down while
   free-only is on — classification stays live as a status line.
 - Sub-agent visibility (2026-11-11): children run without the router,
   so the parent publishes a `role: subagent` registry entry for the

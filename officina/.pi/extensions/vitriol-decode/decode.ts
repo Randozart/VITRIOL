@@ -147,6 +147,7 @@ export function fmtTokens(n: number): string {
 export interface SlotInfo {
   id: number;
   busy: boolean;
+  contextWindow?: number;
 }
 
 // Live engine truth (verified 2026-08-31): the llama-server slot schema's
@@ -157,14 +158,24 @@ export function parseSlots(text: string): SlotInfo[] {
     const arr = Array.isArray(json) ? json : ((json as { slots?: unknown }).slots ?? []);
     const out: SlotInfo[] = [];
     for (const s of arr as Array<Record<string, unknown>>) {
-      if (typeof s === "object" && s !== null) {
-        out.push({ id: Number(s.id ?? -1), busy: Boolean(s.is_processing) || Boolean(s.busy) });
-      }
+      if (typeof s !== "object" || s === null) continue;
+      out.push(slotInfo(s));
     }
     return out;
   } catch {
     return [];
   }
+}
+
+function slotInfo(slot: Record<string, unknown>): SlotInfo {
+  const context = slot.n_ctx;
+  return {
+    id: Number(slot.id ?? -1),
+    busy: Boolean(slot.is_processing) || Boolean(slot.busy),
+    ...(typeof context === "number" && Number.isInteger(context) && context > 0
+      ? { contextWindow: context }
+      : {}),
+  };
 }
 
 // Busy truth is TWO-source: slot flags AND token movement. If tokens are

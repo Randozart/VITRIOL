@@ -129,6 +129,7 @@ interface NimbusState {
 interface LastDecision {
   sessionId: string;
   reason: string;
+  selectionReason?: string;
   tier: Tier;
   provider: string;
   model: string;
@@ -594,7 +595,6 @@ export default function (pi: ExtensionAPI) {
     request: ModelRouteRequest<LapisState>,
     ctx: ExtensionContext,
   ): Promise<ModelRoute<LapisState>> => {
-    await loadCandidates(ctx);
     const now = Date.now();
     const profile = readProfile();
     // Local resolution (2026-11-14): the engine ignores the request's model
@@ -602,7 +602,7 @@ export default function (pi: ExtensionAPI) {
     // llamacpp model is routable. Alias first, then the first available
     // llamacpp model — stale sessions stay usable after an engine restart
     // even when the startup alias probe failed.
-    const local =
+    const registeredLocal =
       findEngineModel(ctx.modelRegistry, "Lapis Occultus") ??
       ctx.modelRegistry
         .getAvailable()
@@ -614,7 +614,9 @@ export default function (pi: ExtensionAPI) {
     // falls back to the stale snapshot exactly as before.
     const probe = await probeAdmission(250);
     const probeBusy = probe.ok && probe.anyBusy;
-    const localDown = cfg.failover && snap.polled && !snap.up;
+    const freshIdle = probe.ok && !probeBusy;
+    const contended = probeBusy || (!probe.ok && localContended(now));
+    const localDown = cfg.failover && !probe.ok && snap.polled && !snap.up;
     const load = {
       processing: snap.polled ? (snap.up ? snap.processing : 1) : 0,
       deferred: snap.polled ? (snap.up ? snap.deferred : 0) : 0,
@@ -637,25 +639,23 @@ export default function (pi: ExtensionAPI) {
       estimated,
       overflowTokens ?? 0,
     );
-    // Phase-2 sidecar (2026-11-14): one batched admission call per decision.
-    // Fail-open — a missing/broken sidecar yields undefined and the TS
-    // implementation below decides (gate I1).
-    const coreOverride = coreEnabled()
-      ? await coreAdmissions(
-          tokens,
-          CLOUD_RESERVE_TOKENS,
-          admissionLanesForCore(now),
-        )
+    const localWindow = probe.contextWindow ??
+      (Math.max(0, ...(snap.slots ?? []).map((slot) => slot.contextWindow ?? 0)) ||
+        registeredLocal?.contextWindow);
+    const localTooSmall = !!registeredLocal && localWindow !== undefined &&
+      localWindow > 0 && tokens >= localWindow;
+    const local = localTooSmall ? undefined : registeredLocal;
+    const localSizeReason = localTooSmall
+      ? `estimated ${tokens.toLocaleString("en-US")} input tokens leave no generation room in the ${localWindow.toLocaleString("en-US")}-token local window`
       : undefined;
-    let candidate =
-      profileAllowsCloud(profile) && canSpendCloud()
-        ? pickCloud(tokens, now, coreOverride)
-        : undefined;
+    let selectionReason = localSizeReason;
+
     const previous = request.previous?.model;
     const failed = request.failed?.model;
-    const cls = latestUserText(request.messages)
+    const userText = latestUserText(request.messages);
+    const cls = userText
       ? classifyTurn({
-          promptText: latestUserText(request.messages),
+          promptText: userText,
           recentErrorCount: 0,
           churnLoops: 0,
           scratchpadContextLines: [],
@@ -671,10 +671,11 @@ export default function (pi: ExtensionAPI) {
     const remember = (chosen: Model, chosenTier: Tier): void => {
       const stateKind: LastDecision["localState"] = localDown
         ? "down"
+        : freshIdle ? "up"
         : // "contended" only when the probe/mark OBSERVED the busy slot (I5):
           // a stale snapshot's "busy" and a fresh contention signal are not
           // the same fact, and the ledger must not blur them.
-          probeBusy || localContended(now)
+          contended
           ? "contended"
           : load.processing > 0 ||
               load.deferred > 0 ||
@@ -686,6 +687,7 @@ export default function (pi: ExtensionAPI) {
           ctx.sessionManager?.getSessionFile?.()?.split("/").pop() ??
           `tui-${tuiPid}`,
         reason: request.reason,
+        selectionReason,
         tier: chosenTier,
         provider: chosen.provider,
         model: chosen.id,
@@ -697,6 +699,38 @@ export default function (pi: ExtensionAPI) {
       publishPeerDecision(chosenTier, chosen, tokens, ctx, now);
     };
 
+    const localOnly = cfg.sensitiveLocal && privacy !== "safe";
+    if (local && ((request.reason === "user" && freshIdle) || localOnly)) {
+      lastSkipReasons = [];
+      selectionReason = localOnly ? `${privacy} — local only` : "fresh local slot available";
+      activeCloud = undefined;
+      remember(local, "local");
+      setRouteWidget(ctx, "local", undefined, profile);
+      return {
+        model: local,
+        thinkingLevel: request.thinkingLevel,
+        state: { ...initial(), turnsOnTier: 1 },
+      };
+    }
+    if (localOnly) {
+      throw new Error(`Lapis Occultus: protected turn needs local — ${localSizeReason ? `${localSizeReason}; compact the session` : "no local model is routable"}`);
+    }
+
+    await loadCandidates(ctx);
+    // Phase-2 sidecar (2026-11-14): one batched admission call per decision.
+    // Fail-open — a missing/broken sidecar yields undefined and the TS
+    // implementation below decides (gate I1).
+    const coreOverride = coreEnabled()
+      ? await coreAdmissions(
+          tokens,
+          CLOUD_RESERVE_TOKENS,
+          admissionLanesForCore(now),
+        )
+      : undefined;
+    let candidate =
+      profileAllowsCloud(profile) && canSpendCloud()
+        ? pickCloud(tokens, now, coreOverride)
+        : undefined;
     if (
       request.reason === "continuation" &&
       previous &&
@@ -711,11 +745,13 @@ export default function (pi: ExtensionAPI) {
       const stick = stickDecision({
         lane: "lapis",
         previousIsLocal,
-        contended: probeBusy || localContended(now),
+        contended,
         // Capacity is only meaningful when we would leave local.
         cloudFits: previousIsLocal ? pickCloud(tokens, now) !== undefined : true,
       });
-      if (stick.stick) {
+      if (stick.stick && !(previousIsLocal && localTooSmall)) {
+        selectionReason = "continuation keeps the current physical model";
+        activeCloud = previousIsLocal ? undefined : previous;
         const physicalTier = previousIsLocal ? "local" : "cloud";
         remember(previous, physicalTier);
         setRouteWidget(ctx, physicalTier, previous, profile);
@@ -726,7 +762,7 @@ export default function (pi: ExtensionAPI) {
         };
       }
       // Re-decide below with the lane's reason on the record (I4).
-      ctx.ui?.notify?.(`route: ${stick.reason}`, "info");
+      if (stick.reason) ctx.ui?.notify?.(`route: ${stick.reason}`, "info");
     }
 
     if (learnedLimit && failed) markModelLimit(failed.id, learnedLimit);
@@ -746,7 +782,7 @@ export default function (pi: ExtensionAPI) {
           };
         }
         throw new Error(
-          `Lapis Occultus: cloud retry budget exhausted (${maxCloudRetries()}) and no local model is routable`,
+          `Lapis Occultus: cloud retry budget exhausted (${maxCloudRetries()}) and ${localSizeReason ?? "no local model is routable"}`,
         );
       }
       // Context overflow (2026-11-14): another cloud lane that fits is a
@@ -881,15 +917,15 @@ export default function (pi: ExtensionAPI) {
           localIdleForMs: localIdleSince != null ? now - localIdleSince : null,
           localDown,
           failoverActive: state.failoverActive,
-          complexity: cls ? cls.complexity : undefined,
           // Fresh contention observation (2026-11-20): true when the last
           // attempt found the single slot busy, or the pre-send probe sees
           // it busy right now. Absent-equivalent when false (I1 parity).
-          localContended: localContended(now) || probeBusy,
+          localContended: contended,
           ...peerContext,
         },
         cfg,
       );
+      selectionReason ??= decision.reason;
       tier = decision.tier;
       const emergency = localDown && tier === "cloud";
       // Arbitration demotions (peer seniority, slot contention) are not
@@ -926,6 +962,9 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    if (candidate && localSizeReason && request.reason === "user") {
+      ctx.ui?.notify?.(`route: cloud fallback · ${localSizeReason} · compact to return to local`, "warning");
+    }
     if (tier === "cloud" && candidate) {
       activeCloud = candidate;
       remember(candidate, "cloud");
@@ -953,6 +992,7 @@ export default function (pi: ExtensionAPI) {
       };
     }
     if (candidate) {
+      selectionReason = localSizeReason ?? "no usable local model";
       activeCloud = candidate;
       remember(candidate, "cloud");
       setRouteWidget(ctx, "cloud", candidate, profile);
@@ -984,10 +1024,10 @@ export default function (pi: ExtensionAPI) {
       .getAll()
       .filter((m) => isEngineProvider(m.provider))
       .map((m) => m.id);
-    const localWhy =
+    const localWhy = localSizeReason ?? (
       registered.length > 0
         ? `local model not registered in this session (engine alias not probed; registered: ${registered.slice(0, 3).join(", ")})`
-        : "no local model configured (models.json has no llamacpp entries)";
+        : "no local model configured (models.json has no llamacpp entries)");
     throw new Error(
       `Lapis Occultus: no physical model available — ${local ? "local ready" : localWhy}; engine ${snap.up ? "up" : "down"}; ${cloudWhy}`,
     );
@@ -1046,6 +1086,7 @@ export default function (pi: ExtensionAPI) {
       sessionId: decision.sessionId,
       tuiPid,
       reason: decision.reason,
+      selectionReason: decision.selectionReason,
       tier: decision.tier,
       provider: decision.provider,
       model: decision.model,
@@ -1096,7 +1137,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       await ctx.ui.notify?.(
-        `why: ${last.tier} via ${last.provider}/${last.model} · ${last.reason} · profile ${last.profile} · ${last.outcome}`,
+        `why: ${last.tier} via ${last.provider}/${last.model} · ${last.selectionReason ?? last.reason} · profile ${last.profile} · ${last.outcome}`,
         "info",
       );
     },

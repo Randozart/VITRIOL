@@ -394,6 +394,8 @@ export interface AdmissionProbe {
   anyBusy: boolean;
   /** Slots reported by this probe (0 when it failed). */
   slotCount: number;
+  /** Largest reported per-slot window, in tokens. */
+  contextWindow?: number;
   /** Did the probe get a usable answer? False = fail-open decision path. */
   ok: boolean;
 }
@@ -414,8 +416,10 @@ export async function probeAdmission(timeoutMs = 250): Promise<AdmissionProbe> {
   if (out.kind !== "ok") return { anyBusy: false, slotCount: 0, ok: false };
   const slots = parseSlots(out.text);
   if (slots.length === 0) return { anyBusy: false, slotCount: 0, ok: false };
+  const contextWindow = Math.max(...slots.map((slot) => slot.contextWindow ?? 0));
   return {
     anyBusy: slots.some((s) => s.busy),
+    ...(contextWindow > 0 ? { contextWindow } : {}),
     slotCount: slots.length,
     ok: true,
   };

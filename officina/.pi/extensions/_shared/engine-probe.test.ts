@@ -58,10 +58,11 @@ describe("probeAdmission", () => {
   it("reports a free slot", async () => {
     await serve((res) => {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify([{ id: 0, is_processing: false }]));
+      res.end(JSON.stringify([{ id: 0, is_processing: false, n_ctx: 65_536 }]));
     });
     expect(await probeAdmission(250)).toEqual({
       anyBusy: false,
+      contextWindow: 65_536,
       slotCount: 1,
       ok: true,
     });

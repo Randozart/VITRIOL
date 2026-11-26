@@ -25,6 +25,7 @@ export interface RouteLedgerEntry {
   sessionId?: string;
   tuiPid?: number;
   reason: string;
+  selectionReason?: string;
   tier: "local" | "cloud";
   provider?: string;
   model?: string;

@@ -1,5 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
+## Lapis local admission — 2026-11-26 19:20
+
+New Lapis turns use a freshly idle local slot when the estimated context
+fits. The router records the actual slot window and fallback reason in
+`/route-why`. The live 65,536-token Kintsugi slot served a short Pi RPC
+smoke. [Plan](.opencode/plans/2026-11-26-191539-lapis-local-first.md).
+
 ## GPU0 decision serving and Kintsugi slots — 2026-11-26 17:47
 
 The local 0.5B decision endpoint runs on GPU0. The 0.5B and 1B candidates

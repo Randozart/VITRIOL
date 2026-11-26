@@ -25,6 +25,8 @@ const engine = {
   slots: [] as Array<{ id: number }>,
   /** Fresh admission probe answer (2026-11-20 slot contention). */
   probeBusy: false,
+  forceFreshIdle: false,
+  probeWindow: undefined as number | undefined,
   /** Contention mark observed by the router. */
   contended: false,
 };
@@ -35,9 +37,10 @@ vi.mock("../_shared/engine.ts", () => ({
   // and the contention mark is a plain flag so tests can assert BOTH inputs
   // (fresh probe vs recorded contention) independently.
   probeAdmission: async () => ({
-    anyBusy: engine.probeBusy,
+    anyBusy: engine.probeBusy || (engine.busy && !engine.forceFreshIdle),
     slotCount: 1,
-    ok: true,
+    contextWindow: engine.probeWindow,
+    ok: engine.up || engine.forceFreshIdle,
   }),
   markLocalContended: () => {
     engine.contended = true;
@@ -149,6 +152,8 @@ describe("resilient-default", () => {
     engine.busy = false;
     engine.slots = [];
     engine.probeBusy = false;
+    engine.forceFreshIdle = false;
+    engine.probeWindow = undefined;
     engine.contended = false;
     process.env.OFFICINA_RESILIENT_DEFAULT = "1";
     process.env.OFFICINA_OVERFLOW_CLOUD_FALLBACK = "caduceus/test-model";
@@ -191,6 +196,61 @@ describe("resilient-default", () => {
     const h = harness();
     const route = await h.run("user");
     expect(route.model).toMatchObject({ provider: "llamacpp", id: "Lapis Occultus" });
+  });
+
+  it("tries a freshly idle slot despite stale load and cloud affinity", async () => {
+    vi.stubEnv("OFFICINA_OVERFLOW_COMPLEXITY_PROMOTE", "0.01");
+    try {
+      engine.forceFreshIdle = true;
+      engine.up = false;
+      engine.busy = true;
+      engine.contended = true;
+      engine.probeWindow = 65_536;
+      const h = harness({ tokens: 16_000 });
+      const route = await h.run("user", "Implement and debug the distributed cache migration.", {
+        previous: { model: cloud },
+        state: { tier: "cloud", switches: 2, turnsOnTier: 1, failoverActive: true },
+      });
+      expect(route.model).toBe(local);
+      await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } });
+      expect(lastRouteEntry()).toMatchObject({
+        tier: "local", reason: "user", selectionReason: "fresh local slot available", localState: "up",
+      });
+    } finally {
+      engine.forceFreshIdle = false;
+      engine.probeWindow = undefined;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("explains cloud fallback when the live slot is smaller than the session", async () => {
+    engine.probeWindow = 65_536;
+    try {
+      const h = harness({ tokens: 92_233 });
+      expect((await h.run("user")).model).toBe(cloud);
+      expect(h.ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("65,536"), "warning");
+      await h.fire("message_end", { message: { role: "assistant", stopReason: "stop" } });
+      expect(lastRouteEntry()).toMatchObject({
+        tier: "cloud", localState: "up",
+        selectionReason: expect.stringContaining("92,233 input tokens"),
+      });
+      await h.command("route-why");
+      expect(h.ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("65,536"), "info");
+    } finally {
+      engine.probeWindow = undefined;
+    }
+  });
+
+  it("keeps an oversized protected prompt off cloud", async () => {
+    engine.probeWindow = 65_536;
+    try {
+      const h = harness({ tokens: 92_233 });
+      await expect(h.run("user", "Look at the local .env file."))
+        .rejects.toThrow(/protected turn needs local.*compact the session/);
+      expect(lastRouteEntry()).toBeNull();
+    } finally {
+      engine.probeWindow = undefined;
+    }
   });
 
   it("yields a busy single slot to the older session despite its newer heartbeat", async () => {
@@ -549,14 +609,19 @@ describe("nimbus lane health (gateway-marked endpoints)", () => {
 // Synthetic routes must never publish into the operator's live registry.
 let testRegistry = "";
 let originalRegistry: string | undefined;
+let originalLedger: string | undefined;
 beforeEach(() => {
   originalRegistry = process.env.OFFICINA_ROUTING_REGISTRY_DIR;
+  originalLedger = process.env.OFFICINA_ROUTE_LEDGER_DIR;
   testRegistry = mkdtempSync(join(tmpdir(), "officina-router-registry-"));
   process.env.OFFICINA_ROUTING_REGISTRY_DIR = testRegistry;
+  process.env.OFFICINA_ROUTE_LEDGER_DIR = join(testRegistry, "ledger");
 });
 afterEach(() => {
   if (originalRegistry === undefined) delete process.env.OFFICINA_ROUTING_REGISTRY_DIR;
   else process.env.OFFICINA_ROUTING_REGISTRY_DIR = originalRegistry;
+  if (originalLedger === undefined) delete process.env.OFFICINA_ROUTE_LEDGER_DIR;
+  else process.env.OFFICINA_ROUTE_LEDGER_DIR = originalLedger;
   rmSync(testRegistry, { recursive: true, force: true });
 });
 

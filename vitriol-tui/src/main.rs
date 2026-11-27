@@ -11,6 +11,7 @@ mod model;
 mod nvidia;
 mod poller;
 mod profile;
+mod request_metrics;
 mod theme;
 mod ui;
 

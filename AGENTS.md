@@ -1,5 +1,16 @@
 # VITRIOL AI Agent Guidelines
 
+## Completed request telemetry — 2026-11-27 10:45
+
+Dashboard retains the latest observed task's prefill/decode durations,
+sampled cached tokens and draft acceptance after release. Records are
+slot/task/PID scoped and cleared across log gaps or rotation. Sidecar
+restore timing requires a matching baseline engine PID. Unknown cache,
+first-token and transfer timings remain explicit. The installed release
+passed 69 tests and Vitriolum/Aether terminal fixtures. Production stayed
+on the same PID. Throughput overhead remains unmeasured.
+[Plan](.opencode/plans/2026-11-27-092725-inference-dashboard-telemetry.md).
+
 ## Dashboard prefill telemetry — 2026-11-27
 
 Active slot rows expose processed and exact cached prompt counts. Idle

@@ -7,6 +7,9 @@
 /// Live gen-server state.
 #[derive(Debug, Clone, Default)]
 pub struct GenSnapshot {
+    /// Completed timing groups for this engine generation, latest per slot.
+    pub completed_requests: Vec<crate::request_metrics::CompletedRequest>,
+    pub restores: Vec<crate::request_metrics::SlotRestore>,
     /// Whether `/health` answered within the poll timeout.
     pub up: bool,
     /// Model id reported by `/v1/models`.

@@ -37,6 +37,7 @@ struct Poller {
     catalog: caduceus::CatalogCache,
     decode_beat_offset: Option<u64>,
     last_live_t_s: f64,
+    engine_identity: Option<(u16, Option<u32>)>,
 }
 
 /// Spawn the poller thread. `refresh_flag` is raised by the UI to force an
@@ -53,6 +54,7 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
                 catalog: caduceus::CatalogCache::default(),
                 decode_beat_offset: None,
                 last_live_t_s: 0.0,
+                engine_identity: None,
                 cfg,
             };
             loop {
@@ -71,7 +73,6 @@ pub fn spawn(cfg: Config, tx: Sender<Snapshot>, refresh_flag: Arc<AtomicBool>) {
 impl Poller {
     /// Run one full poll cycle and publish the snapshot.
     fn poll_once(&mut self, agent: &Agent, router: &Agent, tx: &Sender<Snapshot>) -> bool {
-        self.gen_tail.poll(&self.cfg.gen_log());
         self.caduceus_tail
             .poll(&caduceus::log_path(&self.cfg.home_dir));
         let mut gpus = nvidia::query_gpus();
@@ -91,7 +92,9 @@ impl Poller {
             .or_else(|| settings.get("server.port")?.parse().ok())
             .unwrap_or(8279);
         let (service_state, service_pid) = poll_service();
-        let gen = self.poll_gen(agent, configured_port, service_pid);
+        let mut gen = self.poll_gen(agent, configured_port, service_pid);
+        let logs = self.log_snapshot();
+        gen.restores = crate::request_metrics::restores_for_pid(&logs.autosave, gen.model_pid);
         let selected_model = if settings
             .get("server.launcher")
             .is_some_and(|v| v == "kintsugi")
@@ -115,7 +118,7 @@ impl Poller {
             mismatch,
             gpus,
             gpu_processes,
-            logs: self.log_snapshot(),
+            logs,
             caduceus: self.poll_caduceus(router),
         })
         .is_ok()
@@ -144,6 +147,16 @@ impl Poller {
 
     fn poll_gen(&mut self, agent: &Agent, port: u16, service_pid: Option<u32>) -> GenSnapshot {
         let (port, pid, up) = endpoint(agent, port, service_pid, self.cfg.gen_port.is_some());
+        let identity = Some((port, pid));
+        self.gen_tail.poll(&self.cfg.gen_log());
+        if self.engine_identity != identity {
+            // Historical log entries cannot establish which PID produced them.
+            // Retain the log viewer's history while discarding measurements.
+            self.gen_tail.requests = Default::default();
+            self.decode_beat_offset = None;
+            self.last_live_t_s = 0.0;
+            self.engine_identity = identity;
+        }
         if !up {
             self.last_live_t_s = 0.0;
             return GenSnapshot {
@@ -159,6 +172,7 @@ impl Poller {
         let props = get_json(agent, &format!("{base}/props"));
         let model_path = props.as_ref().and_then(model_filename);
         let slots = poll_slots(agent, &base);
+        self.gen_tail.requests.observe_slots(&slots);
         let totals = poll_metrics_totals(agent, &base);
         let draft = props.and_then(parse_draft).or_else(|| {
             (totals.spec_draft_total > 0).then_some(DraftSnapshot {
@@ -167,7 +181,21 @@ impl Poller {
             })
         });
         let log_path = self.cfg.gen_log();
+        // A configured port can refer to a different process from the default
+        // log. Publish request records only when that process owns this file.
+        let owns_log = pid.is_some_and(|pid| {
+            fs::read_link(format!("/proc/{pid}/fd/1"))
+                .ok()
+                .zip(fs::canonicalize(&log_path).ok())
+                .is_some_and(|(output, log)| output == log)
+        });
         GenSnapshot {
+            completed_requests: if owns_log {
+                self.gen_tail.requests.completed()
+            } else {
+                Vec::new()
+            },
+            restores: Vec::new(),
             up,
             model: model_entry
                 .and_then(|entry| entry["id"].as_str())
@@ -176,7 +204,11 @@ impl Poller {
             model_pid: pid,
             n_ctx: model_entry.and_then(first_model_size),
             n_parallel: (!slots.is_empty()).then_some(slots.len() as u64),
-            decode_t_s: parse_decode_t_s(&log_path),
+            decode_t_s: if !owns_log || self.gen_tail.requests.completed().is_empty() {
+                0.0
+            } else {
+                parse_decode_t_s(&log_path)
+            },
             decode_speed: self.live_decode(&log_path, slots.iter().any(|slot| slot.is_processing)),
             perf: parse_perf(&log_path),
             slots,
@@ -702,6 +734,7 @@ fn parse_perf_line(line: &str) -> Option<PerfSnapshot> {
 /// re-read from the top. A file shrink (truncation/rotation) resets the read
 /// position so the new content is picked up cleanly.
 struct LogTail {
+    requests: crate::request_metrics::RequestMetrics,
     /// Byte offset of the next unread byte.
     pos: u64,
     file_id: Option<(u64, u64)>,
@@ -717,6 +750,7 @@ impl LogTail {
     /// Create an empty tail with the given line cap.
     fn new(cap: usize) -> Self {
         Self {
+            requests: Default::default(),
             pos: 0,
             file_id: None,
             tail: VecDeque::with_capacity(cap),
@@ -741,6 +775,7 @@ impl LogTail {
             self.slot_entries.clear();
             self.slots.clear();
             self.file_id = file_id;
+            self.requests = Default::default();
         }
         if len == self.pos {
             return;
@@ -758,6 +793,10 @@ impl LogTail {
             return;
         };
         let skipped = start > self.pos;
+        if skipped {
+            // A missing interval may contain task replacement or cancellation.
+            self.requests = Default::default();
+        }
         self.pos = start + end as u64 + 1;
         let text = String::from_utf8_lossy(&buf[..=end]);
         for line in text.lines().skip(usize::from(skipped)) {
@@ -766,6 +805,7 @@ impl LogTail {
     }
 
     fn record(&mut self, line: &str) {
+        self.requests.record(line);
         push_line(&mut self.tail, self.cap, line);
         if let Some(slot) = crate::logs::slot_id(line) {
             push_line(&mut self.slot_entries, self.cap, line);
@@ -1210,6 +1250,34 @@ mod tests {
         tail.poll(&path);
         assert_eq!(tail.slots.keys().copied().collect::<Vec<_>>(), [2]);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn request_records_reset_after_rotation_or_unread_log_gap() {
+        let prefix = "I slot print_timing: id 0 | task 1 | ";
+        let start = format!("{prefix}processing task, is_child = 0\n");
+        let end = format!(
+            "{prefix}prompt eval time = 100 ms / 32 tokens\n\
+             {prefix}eval time = 250 ms / 8 tokens\n\
+             {prefix}stop processing: n_tokens = 40\n"
+        );
+        for rotate in [true, false] {
+            let path = temp_log(&format!("request-reset-{rotate}"), &start);
+            let mut tail = LogTail::new(10);
+            tail.poll(&path);
+            if rotate {
+                let replacement = path.with_extension("next");
+                fs::write(&replacement, &end).unwrap();
+                fs::rename(replacement, &path).unwrap();
+            } else {
+                let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+                file.write_all(&vec![b'\n'; 256 * 1024]).unwrap();
+                file.write_all(end.as_bytes()).unwrap();
+            }
+            tail.poll(&path);
+            assert!(tail.requests.completed().is_empty());
+            fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

@@ -132,7 +132,13 @@ fn panel(title: &str) -> Block<'_> {
 }
 
 fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
-    let height = 9 + app.snapshot.gen.slots.len().min(4) as u16;
+    let height = 9
+        + app.snapshot.gen.slots.len().min(4) as u16
+        + if app.snapshot.gen.completed_requests.is_empty() {
+            0
+        } else {
+            6
+        };
     let rows = Layout::vertical([
         Constraint::Length(height),
         Constraint::Min(0),
@@ -395,6 +401,49 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
             .map_or_else(|| "—".into(), |n| format!("{}/{n} active", active.len())),
     )];
     let engine = &app.snapshot.gen;
+    if let Some(restore) = engine.restores.last() {
+        summary.push(datum(
+            "Restore",
+            format!(
+                "slot {} · {} tok · {:.2}s",
+                restore.slot,
+                restore.tokens,
+                restore.milliseconds / 1000.0
+            ),
+        ));
+    } else {
+        summary.push(datum("Restore", "—"));
+    }
+    for request in engine.completed_requests.iter().take(1) {
+        summary.push(datum(
+            "Last task",
+            format!("slot {} · {}", request.slot, request.task),
+        ));
+        summary.push(datum(
+            "Prompt",
+            format!(
+                "{} new · {} cached",
+                request
+                    .prompt_tokens
+                    .map_or_else(|| "—".into(), |n| n.to_string()),
+                request
+                    .cached_tokens
+                    .map_or_else(|| "—".into(), |n| n.to_string())
+            ),
+        ));
+        summary.push(datum(
+            "Time",
+            format!(
+                "{:.2}s prefill · {:.2}s decode",
+                request.prompt_ms.unwrap_or_default() / 1000.0,
+                request.decode_ms.unwrap_or_default() / 1000.0
+            ),
+        ));
+        if let Some((accepted, proposed)) = request.draft_accepted.zip(request.draft_proposed) {
+            summary.push(datum("Draft", format!("{accepted}/{proposed} accepted")));
+        }
+        summary.push(datum("TTFT / I/O", "unavailable"));
+    }
     if engine.decode_t_s > 0.0 {
         summary.push(datum(
             "Last decode",
@@ -433,7 +482,8 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     // One row per active slot, then the velocity line + gauge.
-    let mut constraints = Vec::with_capacity(active.len() + 2);
+    let mut constraints = Vec::with_capacity(active.len() + 3);
+    constraints.push(Constraint::Length(summary.len() as u16));
     constraints.extend(
         active
             .iter()
@@ -442,13 +492,14 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
     constraints.push(Constraint::Length(1));
     constraints.push(Constraint::Min(1));
     let rows = Layout::vertical(constraints).split(inner);
+    frame.render_widget(Paragraph::new(summary), rows[0]);
 
     for (i, slot) in active.iter().enumerate() {
-        render_slot_progress_row(frame, rows[i], slot);
+        render_slot_progress_row(frame, rows[i + 1], slot);
     }
 
-    let vel_line = rows[active.len()];
-    let bar_area = rows[active.len() + 1];
+    let vel_line = rows[active.len() + 1];
+    let bar_area = rows[active.len() + 2];
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -897,6 +948,46 @@ mod tests {
     use crate::config::Config;
     use crate::model::{DraftSnapshot, GpuProcess, GpuSnapshot, SlotSnapshot};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn completed_request_card_keeps_unknown_cache_distinct_from_zero() {
+        for cached in [None, Some(0), Some(200000)] {
+            let mut app = App::new(Config::from_env());
+            app.snapshot.gen.up = true;
+            app.snapshot
+                .gen
+                .completed_requests
+                .push(crate::request_metrics::CompletedRequest {
+                    slot: 2,
+                    task: 17,
+                    prompt_tokens: Some(32),
+                    cached_tokens: cached,
+                    prompt_ms: Some(1200.0),
+                    decode_ms: Some(250.0),
+                    draft_accepted: Some(6),
+                    draft_proposed: Some(8),
+                    ..Default::default()
+                });
+            let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+            terminal
+                .draw(|frame| render_decode_card(frame, frame.area(), &app))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("slot 2 · 17"));
+            assert!(text.contains("1.20s prefill · 0.25s decode"));
+            assert!(text.contains("6/8 accepted"));
+            let expected = cached.map_or_else(|| "—".into(), |value| value.to_string());
+            assert!(text.contains(&format!("32 new · {expected} cached")));
+            assert!(text.contains("TTFT / I/O"));
+            assert!(text.contains("unavailable"));
+        }
+    }
 
     #[test]
     fn prefill_row_exposes_slot_task_and_exact_prefix_counts() {

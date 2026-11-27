@@ -10,6 +10,7 @@
 //! `officina/.pi/extensions/_shared/gateway-health.ts`, 2026-11-14).
 
 pub mod cache_lifetime;
+pub mod caduceus;
 pub mod scheduler;
 
 /// Facts extracted from one provider error body.

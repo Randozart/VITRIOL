@@ -1,5 +1,17 @@
 # VITRIOL AI Agent Guidelines
 
+## Inference research plans — 2026-11-27 09:27
+
+Five planned experiments cover dashboard telemetry, cache continuity,
+full-attention KV streaming, adaptive speculation and selective historical
+KV. Start with telemetry definitions, then cache continuity and streaming.
+Each plan records invariants, baseline, acceptance criteria and rollback.
+[Telemetry](.opencode/plans/2026-11-27-092725-inference-dashboard-telemetry.md) ·
+[Cache](.opencode/plans/2026-11-27-092725-cache-continuity.md) ·
+[Streaming](.opencode/plans/2026-11-27-092725-streamed-kv-attention.md) ·
+[Speculation](.opencode/plans/2026-11-27-092725-adaptive-speculation.md) ·
+[Selective KV](.opencode/plans/2026-11-27-092725-selective-historical-kv.md).
+
 ## Kintsugi 224K daily driver — 2026-11-27 08:27
 
 The selected `kintsugi-reference-gpu1` profile serves Lapis on GPU1 with

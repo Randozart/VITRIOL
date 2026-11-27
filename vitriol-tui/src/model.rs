@@ -10,6 +10,7 @@ pub struct GenSnapshot {
     /// Completed timing groups for this engine generation, latest per slot.
     pub completed_requests: Vec<crate::request_metrics::CompletedRequest>,
     pub restores: Vec<crate::request_metrics::SlotRestore>,
+    pub checkpoint_io: Option<crate::request_metrics::CheckpointIo>,
     /// Whether `/health` answered within the poll timeout.
     pub up: bool,
     /// Model id reported by `/v1/models`.
@@ -127,6 +128,8 @@ impl DraftSnapshot {
 /// Server-wide counters parsed from the `/metrics` prometheus text.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MetricsTotals {
+    pub ttft_seconds_sum: Option<f64>,
+    pub ttft_count: Option<u64>,
     /// Total prompt tokens processed since start.
     pub prompt_tokens_total: u64,
     /// Total predicted tokens since start.
@@ -147,6 +150,14 @@ pub struct MetricsTotals {
     pub spec_draft_steps_total: u64,
     /// Sparse-KV tokens ejected by probe-scored eviction + eager sweeps.
     pub kv_ejected_total: u64,
+}
+
+impl MetricsTotals {
+    /// Engine-wide task-post to first-token mean since process start.
+    pub fn ttft_mean_seconds(&self) -> Option<f64> {
+        let count = self.ttft_count.filter(|count| *count > 0)?;
+        Some(self.ttft_seconds_sum? / count as f64)
+    }
 }
 
 /// One decoded `[PERF]` line emitted by the VITRIOL server (`GGML_CUDA_GDN_PROFILE=1`).

@@ -95,6 +95,11 @@ impl Poller {
         let mut gen = self.poll_gen(agent, configured_port, service_pid);
         let logs = self.log_snapshot();
         gen.restores = crate::request_metrics::restores_for_pid(&logs.autosave, gen.model_pid);
+        gen.checkpoint_io = crate::request_metrics::checkpoint_io_for_engine(
+            &logs.autosave,
+            gen.model_pid,
+            gen.effective_port,
+        );
         let selected_model = if settings
             .get("server.launcher")
             .is_some_and(|v| v == "kintsugi")
@@ -196,6 +201,7 @@ impl Poller {
                 Vec::new()
             },
             restores: Vec::new(),
+            checkpoint_io: None,
             up,
             model: model_entry
                 .and_then(|entry| entry["id"].as_str())
@@ -297,7 +303,6 @@ fn poll_service() -> (String, Option<u32>) {
 fn journal(unit: &str) -> Vec<String> {
     match std::process::Command::new("journalctl")
         .args([
-            "--system",
             "--no-pager",
             "-b",
             "-n",
@@ -478,6 +483,13 @@ fn parse_metrics_text(text: &str) -> MetricsTotals {
         };
         let name = name.trim_start_matches("llamacpp:");
         match name {
+            "ttft_seconds_sum" => {
+                t.ttft_seconds_sum = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite() && *v >= 0.0);
+            }
+            "ttft_seconds_count" => t.ttft_count = value.parse().ok(),
             "prompt_tokens_total" => t.prompt_tokens_total = parse_metric_u64(value),
             "tokens_predicted_total" => t.tokens_predicted_total = parse_metric_u64(value),
             "predicted_tokens_seconds" => t.predicted_tokens_seconds = parse_metric_f64(value),
@@ -934,6 +946,33 @@ mod tests {
         assert!(parse_draft(serde_json::json!({})).is_none());
         let d = parse_draft(serde_json::json!({"draft": {"n_total": 0, "n_accepted": 0}})).unwrap();
         assert!(d.acceptance_rate().is_none());
+    }
+
+    #[test]
+    fn ttft_native_mean_requires_valid_sum_and_nonzero_count() {
+        let parse = |values: &str| parse_metrics_text(values).ttft_mean_seconds();
+        assert_eq!(parse(""), None);
+        assert_eq!(
+            parse("llamacpp:ttft_seconds_sum 0\nllamacpp:ttft_seconds_count 1"),
+            Some(0.0)
+        );
+        assert_eq!(
+            parse("llamacpp:ttft_seconds_sum 2.5\nllamacpp:ttft_seconds_count 2"),
+            Some(1.25)
+        );
+        for sum in ["NaN", "inf", "-1"] {
+            assert_eq!(
+                parse(&format!(
+                    "llamacpp:ttft_seconds_sum {sum}\nllamacpp:ttft_seconds_count 2"
+                )),
+                None
+            );
+        }
+        assert_eq!(
+            parse("llamacpp:ttft_seconds_sum 0\nllamacpp:ttft_seconds_count 0"),
+            None
+        );
+        assert_eq!(parse("llamacpp:ttft_seconds_sum 1"), None);
     }
 
     #[test]

@@ -117,6 +117,48 @@ fn parse_timing(text: &str) -> Option<(f64, u64)> {
 }
 
 #[derive(Clone, Debug)]
+pub struct CheckpointIo {
+    pub operation: String,
+    pub slot: u64,
+    pub bytes: u64,
+    pub milliseconds: f64,
+}
+
+/// Full checkpoint operation duration, including serialization and file I/O.
+/// This is not a GPU DMA timer and is independent of completion task timings.
+pub fn checkpoint_io_for_engine(
+    lines: &[String],
+    pid: Option<u32>,
+    port: Option<u16>,
+) -> Option<CheckpointIo> {
+    let (pid, port) = (pid?, port?);
+    lines.iter().rev().find_map(|line| {
+        let (_, json) = line.split_once("VITRIOL-CHECKPOINT: ")?;
+        let value: serde_json::Value = serde_json::from_str(json).ok()?;
+        if value["schema"].as_u64()? != 1
+            || value["pid"].as_u64()? != u64::from(pid)
+            || value["port"].as_u64()? != u64::from(port)
+        {
+            return None;
+        }
+        let operation = value["operation"].as_str()?;
+        if !matches!(operation, "save" | "restore") {
+            return None;
+        }
+        let milliseconds = value["duration_ms"].as_f64()?;
+        if !milliseconds.is_finite() || milliseconds < 0.0 {
+            return None;
+        }
+        Some(CheckpointIo {
+            operation: operation.into(),
+            slot: value["slot"].as_u64()?,
+            bytes: value["bytes"].as_u64()?,
+            milliseconds,
+        })
+    })
+}
+
+#[derive(Clone, Debug)]
 pub struct SlotRestore {
     pub slot: u64,
     pub tokens: u64,
@@ -270,6 +312,32 @@ mod tests {
         metrics.record(&line(0, 2, "eval time = -5 ms / 1 tokens"));
         metrics.record(&line(0, 2, "stop processing: n_tokens = 40"));
         assert!(metrics.completed().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_requires_matching_engine_and_valid_operation_measurements() {
+        let event = serde_json::json!({
+            "schema": 1, "pid": 81, "port": 8279, "operation": "save",
+            "slot": 0, "bytes": 1048576, "duration_ms": 0.0,
+        });
+        let lines =
+            |event: &serde_json::Value| vec![format!("[slot-persist] VITRIOL-CHECKPOINT: {event}")];
+        let parsed = checkpoint_io_for_engine(&lines(&event), Some(81), Some(8279)).unwrap();
+        assert_eq!(parsed.bytes, 1048576);
+        assert_eq!(parsed.milliseconds, 0.0);
+        assert!(checkpoint_io_for_engine(&lines(&event), Some(82), Some(8279)).is_none());
+        assert!(checkpoint_io_for_engine(&lines(&event), Some(81), Some(8280)).is_none());
+        assert!(checkpoint_io_for_engine(&lines(&event), None, Some(8279)).is_none());
+        for (key, value) in [
+            ("duration_ms", serde_json::json!(-1)),
+            ("bytes", serde_json::json!(-1)),
+            ("operation", serde_json::json!("dma")),
+            ("schema", serde_json::json!(2)),
+        ] {
+            let mut invalid = event.clone();
+            invalid[key] = value;
+            assert!(checkpoint_io_for_engine(&lines(&invalid), Some(81), Some(8279)).is_none());
+        }
     }
 
     #[test]

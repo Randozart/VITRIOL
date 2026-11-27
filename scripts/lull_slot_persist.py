@@ -41,12 +41,13 @@ urllib-only by design (runs in a bare systemd user unit); the one subprocess
 call is the hang-watchdog systemctl restart.
 """
 import json
+import math
 import os
 import subprocess
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
 PORT = int(os.environ.get("VITRIOL_PORT", "8279"))
 INTERVAL = int(os.environ.get("VITRIOL_AUTOSAVE_SECS", "300"))
@@ -182,7 +183,9 @@ def restore_all(force=False):
         if not os.path.exists(fpath):
             continue
         try:
+            operation_pid = server_pid()
             res = post(f"/slots/{sid}?action=restore", {"filename": fname})
+            log_checkpoint_io("restore", sid, res, operation_pid)
             log(f"restored {fname}: {res.get('n_restored', '?')} tokens "
                 f"({res.get('timings', {}).get('restore_ms', '?')} ms)")
         except urllib.error.HTTPError as e:
@@ -253,7 +256,9 @@ def save_idle(last_sig):
         fpath = os.path.join(SAVE_DIR, fname)
         tmp_path = os.path.join(SAVE_DIR, f"slot{sid}.tmp.bin")
         try:
+            operation_pid = server_pid()
             res = post(f"/slots/{sid}?action=save", {"filename": f"slot{sid}.tmp.bin"})
+            log_checkpoint_io("save", sid, res, operation_pid)
             n_saved = res.get("n_saved", 0) or 0
             written = res.get("n_written", 0) or 0
             prev_size = os.path.getsize(fpath) if os.path.exists(fpath) else 0
@@ -283,6 +288,26 @@ def save_idle(last_sig):
         last_sig["sig"] = sig
 
 
+def log_checkpoint_io(operation, slot, result, pid):
+    """Report existing API measurements, without issuing extra state operations."""
+    if pid is None or server_pid() != pid or result.get("pending"):
+        return
+    timings = result.get("timings")
+    if not isinstance(timings, dict):
+        return
+    duration = timings.get(f"{operation}_ms")
+    byte_count = result.get("n_written" if operation == "save" else "n_read")
+    if (not isinstance(duration, (int, float)) or isinstance(duration, bool)
+            or not math.isfinite(duration) or duration < 0
+            or not isinstance(byte_count, int) or isinstance(byte_count, bool)
+            or byte_count < 0):
+        return
+    log("VITRIOL-CHECKPOINT: " + json.dumps({
+        "schema": 1, "pid": pid, "port": PORT, "operation": operation,
+        "slot": slot, "bytes": byte_count, "duration_ms": duration,
+    }, separators=(",", ":"), allow_nan=False))
+
+
 def server_pid():
     """Current engine PID or None. Used as a generation signal: a new
     PID means the server restarted (e.g. systemd resurrected it post-OOM)
@@ -295,8 +320,17 @@ def server_pid():
             continue
         try:
             with open(f"/proc/{p}/comm") as f:
-                if f.read().strip() in names:
-                    return int(p)
+                if f.read().strip() not in names:
+                    continue
+            with open(f"/proc/{p}/cmdline", "rb") as f:
+                args = os.fsdecode(f.read()).split("\0")
+            # Match this sidecar's endpoint, including isolated engines.
+            engine_port = 8080
+            for i, arg in enumerate(args[:-1]):
+                if arg == "--port" and i + 1 < len(args):
+                    engine_port = int(args[i + 1])
+            if engine_port == PORT:
+                return int(p)
         except Exception:
             continue
     return None

@@ -1,5 +1,17 @@
 # VITRIOL AI Agent Guidelines
 
+## Latency and checkpoint I/O — 2026-11-27 12:27
+
+Dashboard shows native since-boot TTFT means when supported and PID/port-scoped
+checkpoint operation bytes/time. Autosave alone was reloaded and skipped restore;
+the engine stayed PID 816552. Reference TTFT is measured by the new streaming
+benchmark. Sixteen isolated small-model pairs had a +0.892% upper overhead bound;
+display noise and model/depth differences prevent a Kintsugi-wide claim. Release
+fixtures, 72 Rust tests and seven Python tests pass. Autosave retains 20 existing
+lint findings. GPU DMA-only timing and 200K reconciliation remain open.
+[Metric definitions and benchmark](docs/inference-telemetry.md) ·
+[Plan](.opencode/plans/2026-11-27-092725-inference-dashboard-telemetry.md).
+
 ## Completed request telemetry — 2026-11-27 10:45
 
 Dashboard retains the latest observed task's prefill/decode durations,

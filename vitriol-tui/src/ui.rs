@@ -132,7 +132,7 @@ fn panel(title: &str) -> Block<'_> {
 }
 
 fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
-    let height = 9
+    let height = 11
         + app.snapshot.gen.slots.len().min(4) as u16
         + if app.snapshot.gen.completed_requests.is_empty() {
             0
@@ -401,6 +401,28 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
             .map_or_else(|| "—".into(), |n| format!("{}/{n} active", active.len())),
     )];
     let engine = &app.snapshot.gen;
+    summary.push(datum(
+        "TTFT mean",
+        engine.totals.ttft_mean_seconds().map_or_else(
+            || "unavailable".into(),
+            |seconds| format!("{seconds:.3}s · since boot"),
+        ),
+    ));
+    summary.push(datum(
+        "KV I/O",
+        engine.checkpoint_io.as_ref().map_or_else(
+            || "unavailable".into(),
+            |io| {
+                format!(
+                    "{} s{} · {:.1}MiB · {:.2}s",
+                    io.operation,
+                    io.slot,
+                    io.bytes as f64 / (1024.0 * 1024.0),
+                    io.milliseconds / 1000.0
+                )
+            },
+        ),
+    ));
     if let Some(restore) = engine.restores.last() {
         summary.push(datum(
             "Restore",
@@ -442,7 +464,6 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
         if let Some((accepted, proposed)) = request.draft_accepted.zip(request.draft_proposed) {
             summary.push(datum("Draft", format!("{accepted}/{proposed} accepted")));
         }
-        summary.push(datum("TTFT / I/O", "unavailable"));
     }
     if engine.decode_t_s > 0.0 {
         summary.push(datum(
@@ -950,6 +971,34 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn decode_card_labels_native_mean_and_checkpoint_operation() {
+        let mut app = App::new(Config::from_env());
+        app.snapshot.gen.up = true;
+        app.snapshot.gen.totals.ttft_seconds_sum = Some(0.5);
+        app.snapshot.gen.totals.ttft_count = Some(2);
+        app.snapshot.gen.checkpoint_io = Some(crate::request_metrics::CheckpointIo {
+            operation: "restore".into(),
+            slot: 0,
+            bytes: 1048576,
+            milliseconds: 120.0,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+        terminal
+            .draw(|frame| render_decode_card(frame, frame.area(), &app))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("TTFT mean"));
+        assert!(text.contains("0.250s · since boot"));
+        assert!(text.contains("restore s0 · 1.0MiB · 0.12s"));
+    }
+
+    #[test]
     fn completed_request_card_keeps_unknown_cache_distinct_from_zero() {
         for cached in [None, Some(0), Some(200000)] {
             let mut app = App::new(Config::from_env());
@@ -984,7 +1033,8 @@ mod tests {
             assert!(text.contains("6/8 accepted"));
             let expected = cached.map_or_else(|| "—".into(), |value| value.to_string());
             assert!(text.contains(&format!("32 new · {expected} cached")));
-            assert!(text.contains("TTFT / I/O"));
+            assert!(text.contains("TTFT mean"));
+            assert!(text.contains("KV I/O"));
             assert!(text.contains("unavailable"));
         }
     }

@@ -117,25 +117,26 @@ Accessed via `vitriol config` at the terminal. All settings are persisted to `~/
 
 ## Kintsugi on GPU1
 
-`vitriol config load kintsugi-gpu1` selects the bundled Kintsugi-27B
-server profile. Review the resolved model, device, and flags with
-`vitriol serve --dry-run`, then run `vitriol service restart` to apply
-the profile on a systemd installation. The config menu also lists this
-profile under Load Config Profile.
+`vitriol config load kintsugi-reference-gpu1` selects the 229,376-token
+Kintsugi-27B reference profile. It serves **Lapis Occultus** on GPU1
+with MTP and lookup drafting and 112,640 GPU-resident KV cells. The
+launcher uses the local runtime and chat template under
+`~/kintsugi/Kintsugi-27B`. Set `VITRIOL_KINTSUGI_REFERENCE_DIR` to point
+to another copy of this runtime.
 
-The profile uses `[server] launcher = kintsugi` to select
-[`serve-kintsugi.sh`](../scripts/serve-kintsugi.sh). It serves **Lapis Occultus**
-on loopback, uses GPU1 for both models, and sets a 65,536-token window
-with DFlash n7. The default model directory is `~/kintsugi/models`.
-Set `VITRIOL_KINTSUGI_MODELS` in the launcher environment to use a
-different directory. Review the two required filenames in the launcher.
+`vitriol config load kintsugi-gpu1` selects the 65,536-token DFlash n7
+profile. Both profiles use [`serve-kintsugi.sh`](../scripts/serve-kintsugi.sh)
+and read the model from `~/kintsugi/models` by default. Set
+`VITRIOL_KINTSUGI_MODELS` to change the model directory. The DFlash
+profile also reads its separate drafter from that directory.
 
-The existing systemd service reads the selected profile on each start.
-Kintsugi checkpoints are kept in `~/.vitriol/checkpoints-kintsugi`.
-The autosave sidecar uses that directory for the live Kintsugi process.
-Load another profile and restart both units with `vitriol service restart`
-to switch back. A custom service override that calls the standalone
-Kintsugi launcher directly must be removed to make config selection effective.
+The config menu lists both profiles under Load Config Profile. Review
+the flags with `vitriol serve --dry-run`, then use
+`vitriol service restart` to apply the selection. The existing systemd
+entry point reads the profile on each start. The sidecar follows the
+running server, using `~/.vitriol/checkpoints-kintsugi-reference` for
+224K and `~/.vitriol/checkpoints-kintsugi` for 65K. A direct-launch
+systemd override bypasses profile selection.
 
 ## `[gpu] rpc_servers` (config key, no CLI flag / env)
 

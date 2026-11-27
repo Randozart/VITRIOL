@@ -157,12 +157,16 @@ reasoning_guard() {
     exit 2
 }
 
+is_kintsugi_profile() {
+    [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" || "$CFG_SERVER_LAUNCHER" == "kintsugi-reference" ]]
+}
+
 config_fingerprint() {
     # Fingerprint from the CONFIG FILE ALONE (no CLI, no env). Used by
     # 'config bless'. Launches with CLI/env overrides will legitimately
     # differ — the blessed-delta makes that visible, not an error.
     parse_config
-    if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+    if is_kintsugi_profile; then
         kintsugi_launch --dry-run
         return
     fi
@@ -707,8 +711,8 @@ config_init() {
 }
 
 config_show() {
-    if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
-        echo "Server launcher: Kintsugi GPU1"
+    if is_kintsugi_profile; then
+        echo "Server launcher: $CFG_SERVER_LAUNCHER on GPU1"
         kintsugi_launch --dry-run
         return
     fi
@@ -863,7 +867,7 @@ config_set() {
         server.port)           CFG_PORT="$val" ;;
         server.launcher)
             case "$val" in
-                ""|kintsugi) CFG_SERVER_LAUNCHER="$val" ;;
+                ""|kintsugi|kintsugi-reference) CFG_SERVER_LAUNCHER="$val" ;;
                 *) echo "Unsupported server.launcher: $val" >&2; return 2 ;;
             esac
             ;;
@@ -2163,8 +2167,8 @@ print(f'pin{o[\"pin_first_n_layers\"]} ctx{o[\"context\"]} ubatch{o[\"ubatch_siz
 # ═════════════════════════════════════════════════════════════════
 
 kintsugi_launch() {
-    VITRIOL_KINTSUGI_GPU=1 VITRIOL_KINTSUGI_PORT="$CFG_PORT" \
-        VITRIOL_KINTSUGI_SLOT_DIR="$CONFIG_DIR/checkpoints-kintsugi" \
+    VITRIOL_KINTSUGI_PROFILE="$CFG_SERVER_LAUNCHER" VITRIOL_KINTSUGI_GPU=1 VITRIOL_KINTSUGI_PORT="$CFG_PORT" \
+        VITRIOL_KINTSUGI_SLOT_DIR="$CONFIG_DIR/checkpoints-$CFG_SERVER_LAUNCHER" \
         "$SCRIPT_DIR/serve-kintsugi.sh" "$@"
 }
 
@@ -2186,7 +2190,7 @@ serve_kintsugi_profile() {
         printf '%s\n' "$FINGERPRINT"
         return
     fi
-    mkdir -m 0700 -p "$CONFIG_DIR/checkpoints-kintsugi"
+    mkdir -m 0700 -p "$CONFIG_DIR/checkpoints-$CFG_SERVER_LAUNCHER"
     if $detach; then
         mkdir -p "$TELEMETRY_LOG_DIR"
         kintsugi_launch --detach "$GEN_LOG" "$CONFIG_DIR/server.pid"
@@ -2201,7 +2205,7 @@ parse_config
 CMD="${1:-tui}"
 case "$CMD" in
     run)
-        if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+        if is_kintsugi_profile; then
             echo "The Kintsugi profile uses vitriol serve." >&2
             exit 2
         fi
@@ -2513,7 +2517,7 @@ LRU_MB_GPU1="${LRU_MB_GPU##*,}"
     serve)
         shift
         case "$CFG_SERVER_LAUNCHER" in
-            kintsugi) serve_kintsugi_profile "$@"; exit ;;
+            kintsugi|kintsugi-reference) serve_kintsugi_profile "$@"; exit ;;
             "") ;;
             *) echo "Unsupported server.launcher: $CFG_SERVER_LAUNCHER" >&2; exit 2 ;;
         esac
@@ -3381,7 +3385,7 @@ $KV_CACHE_ARGS $FA_ARGS $SPEC_ARGS $TS_ARGS $RPC_ARGS "${ALIAS_ARGS[@]}" $REASON
         ;;
 
     bench)
-        if [[ "$CFG_SERVER_LAUNCHER" == "kintsugi" ]]; then
+        if is_kintsugi_profile; then
             echo "The Kintsugi profile uses vitriol serve." >&2
             exit 2
         fi

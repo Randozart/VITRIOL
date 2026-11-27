@@ -1,5 +1,14 @@
 # VITRIOL AI Agent Guidelines
 
+## Kintsugi 224K daily driver — 2026-11-27 08:27
+
+The selected `kintsugi-reference-gpu1` profile serves Lapis on GPU1 with
+229,376 tokens, MTP and separate autosave state. Production Lapis routed a
+request locally, and new Officina sessions default to it. An isolated
+forking-unit restart restored and reused 4,767 tokens. The 65K DFlash2
+profile is available as `kintsugi-gpu1`.
+[Plan](.opencode/plans/2026-11-27-081932-kintsugi-224k-daily-driver.md).
+
 ## Inkling context ceiling — 2026-11-26 22:53
 
 The stock b12774 IQ4_NL setup opened 229,376 tokens with GPU Q4_0 KV

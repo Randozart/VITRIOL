@@ -55,6 +55,11 @@ pub struct SlotSnapshot {
     pub n_ctx: Option<u64>,
     /// Current filled positions from the server's prompt state.
     pub filled: Option<u64>,
+    /// Newly evaluated prompt tokens for the active request. Idle counters
+    /// may be reset by the server and are therefore unavailable here.
+    pub prompt_processed: Option<u64>,
+    /// Exact prefix tokens reused by the active request.
+    pub prompt_cached: Option<u64>,
 }
 
 impl SlotSnapshot {

@@ -398,6 +398,14 @@ fn parse_slots(body: Value) -> Vec<SlotSnapshot> {
                 // Slot window (2026-09-01): enables the filled-vs-window view.
                 n_ctx: s.get("n_ctx").and_then(|v| v.as_u64()),
                 filled: s.get("n_prompt_tokens").and_then(|v| v.as_u64()),
+                prompt_processed: s["is_processing"]
+                    .as_bool()
+                    .filter(|active| *active)
+                    .and_then(|_| s["n_prompt_tokens_processed"].as_u64()),
+                prompt_cached: s["is_processing"]
+                    .as_bool()
+                    .filter(|active| *active)
+                    .and_then(|_| s["n_prompt_tokens_cache"].as_u64()),
             }
         })
         .collect()
@@ -563,7 +571,11 @@ fn parse_decode_t_s(log_path: &std::path::Path) -> f64 {
         .filter_map(|line| {
             // The decode timing is the line beginning `eval time =`; the prompt
             // line begins `prompt eval time =` and must not be counted.
-            if !line.trim_start().starts_with("eval time =") {
+            let timing = line
+                .rsplit_once('|')
+                .map_or(line, |(_, timing)| timing)
+                .trim_start();
+            if !timing.starts_with("eval time =") {
                 return None;
             }
             let marker = " tokens per second)";
@@ -836,6 +848,28 @@ mod tests {
     }
 
     #[test]
+    fn prompt_counters_distinguish_unknown_zero_and_idle_resets() {
+        let slots = parse_slots(serde_json::json!([
+            {"id": 0, "is_processing": true, "id_task": 12,
+             "n_prompt_tokens_processed": 32, "n_prompt_tokens_cache": 200000},
+            {"id": 1, "is_processing": true,
+             "n_prompt_tokens_processed": 0, "n_prompt_tokens_cache": 0},
+            {"id": 2, "is_processing": true},
+            {"id": 3, "is_processing": false,
+             "n_prompt_tokens_processed": 0, "n_prompt_tokens_cache": 0}
+        ]));
+        assert_eq!(slots[0].prompt_processed, Some(32));
+        assert_eq!(slots[0].prompt_cached, Some(200000));
+        assert_eq!(slots[0].id_task, Some(12));
+        assert_eq!(slots[1].prompt_processed, Some(0));
+        assert_eq!(slots[1].prompt_cached, Some(0));
+        for slot in &slots[2..] {
+            assert_eq!(slot.prompt_processed, None);
+            assert_eq!(slot.prompt_cached, None);
+        }
+    }
+
+    #[test]
     fn slots_wrapped_object_parses() {
         let body = serde_json::json!({"slots": [
             {"id": 2, "is_processing": false}
@@ -975,6 +1009,17 @@ mod tests {
         let p = temp_log("single", "       eval time = 1234.56 ms / 42 tokens (29.39 ms per token, 34.02 tokens per second)\n");
         assert_eq!(parse_decode_t_s(&p), 34.02);
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn parse_decode_accepts_reference_slot_prefix_without_using_prefill_rate() {
+        let p = temp_log(
+            "reference",
+            "1.20 I slot print_timing: id 0 | task 19 | eval time = 1234 ms / 42 tokens (29 ms per token, 34.02 tokens per second)\n\
+             1.21 I slot print_timing: id 0 | task 20 | prompt eval time = 5 ms / 10 tokens (0.5 ms per token, 2000 tokens per second)\n",
+        );
+        assert_eq!(parse_decode_t_s(&p), 34.02);
+        std::fs::remove_file(p).unwrap();
     }
 
     #[test]

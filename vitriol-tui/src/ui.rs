@@ -434,7 +434,11 @@ fn render_decode_card(frame: &mut Frame, area: Rect, app: &App) {
 
     // One row per active slot, then the velocity line + gauge.
     let mut constraints = Vec::with_capacity(active.len() + 2);
-    constraints.extend(vec![Constraint::Length(1); active.len()]);
+    constraints.extend(
+        active
+            .iter()
+            .map(|slot| Constraint::Length(if slot.is_prompt_eval() { 2 } else { 1 })),
+    );
     constraints.push(Constraint::Length(1));
     constraints.push(Constraint::Min(1));
     let rows = Layout::vertical(constraints).split(inner);
@@ -481,13 +485,25 @@ fn render_slot_progress_row(frame: &mut Frame, area: Rect, slot: &crate::model::
         cols[0],
     );
     if slot.is_prompt_eval() {
+        let progress = match (slot.prompt_processed, slot.prompt_cached) {
+            (Some(processed), Some(cached)) => {
+                format!("prefill {processed} new · {cached} cached")
+            }
+            _ => "prefill · cache unknown".into(),
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled("prompt-eval …", theme::info()))),
-            cols[1],
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled("— tok", theme::muted()))),
-            cols[2],
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    format!(
+                        "slot {} · task {}",
+                        slot.id,
+                        slot.id_task.map_or_else(|| "—".into(), |id| id.to_string())
+                    ),
+                    theme::muted(),
+                )),
+                Line::from(Span::styled(progress, theme::info())),
+            ]),
+            area,
         );
         return;
     }
@@ -881,6 +897,33 @@ mod tests {
     use crate::config::Config;
     use crate::model::{DraftSnapshot, GpuProcess, GpuSnapshot, SlotSnapshot};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn prefill_row_exposes_slot_task_and_exact_prefix_counts() {
+        for width in [80, 125] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+            let slot = SlotSnapshot {
+                id: 2,
+                id_task: Some(17),
+                is_processing: true,
+                prompt_processed: Some(64),
+                prompt_cached: Some(201000),
+                ..Default::default()
+            };
+            terminal
+                .draw(|frame| render_slot_progress_row(frame, frame.area(), &slot))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("slot 2 · task 17"));
+            assert!(text.contains("64 new · 201000 cached"));
+        }
+    }
 
     #[test]
     fn caduceus_dashboard_row_opens_route_details_and_filtered_logs() {

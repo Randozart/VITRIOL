@@ -1,5 +1,13 @@
 # VITRIOL AI Agent Guidelines
 
+## Dashboard prefill telemetry — 2026-11-27
+
+Active slot rows expose processed and exact cached prompt counts. Idle
+and unsupported counters stay unavailable. Last-decode parsing accepts
+timestamped reference slot logs. The release passed Vitriolum 125-column
+and Aether 100-column fixture checks and 62 tests.
+[Plan](.opencode/plans/2026-11-27-092725-inference-dashboard-telemetry.md).
+
 ## Inference research plans — 2026-11-27 09:27
 
 Five planned experiments cover dashboard telemetry, cache continuity,

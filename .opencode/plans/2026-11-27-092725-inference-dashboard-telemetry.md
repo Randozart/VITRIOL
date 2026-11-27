@@ -2,7 +2,7 @@
 schema: "codex-work-plan/v1"
 created_at: "2026-11-27T09:27:25+01:00"
 timezone: "Europe/Amsterdam"
-status: "planned"
+status: "active"
 baseline_commit: "169aa16b72a992eae86f66ad0d63c69630353203"
 supersedes: []
 superseded_by: []
@@ -110,3 +110,7 @@ Status is planned. Implementation and performance are unverified. Record per-sta
 - [streamed-kv-attention](2026-11-27-092725-streamed-kv-attention.md)
 - [adaptive-speculation](2026-11-27-092725-adaptive-speculation.md)
 - [selective-historical-kv](2026-11-27-092725-selective-historical-kv.md)
+
+- 2026-11-27T10:15:12+01:00 — Begin implementation with existing read-only slots and request timing logs. Reference slots expose processed/cache counters but reset them when idle. Display these as active-request values only, with explicit unknowns for unsupported fields. Keep completed request timing separate from live throughput. Measure instrumentation scope before adding backend-dependent transfer or first-token fields.
+
+- 2026-11-27T10:18:33+01:00 — Stage 1 implemented active per-slot prompt counters with explicit unavailable values for legacy and idle responses. Corrected last-decode parsing for timestamped reference slot logs. All 62 Rust tests passed. The rebuilt installed release displayed exact new/cache counts in Vitriolum at 125 columns and Aether at 100 columns using an isolated HTTP fixture. Praetor reported no blocking findings. Remaining telemetry stages include request-completion timing identity, restore and unsupported-backend status, first-token and KV-transfer instrumentation, plus overhead measurement. Research-dependent engine stages remain planned.

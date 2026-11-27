@@ -219,3 +219,18 @@ source and hash-matching Python copies, including a previous-script baseline.
 No full-repository or universally correct behavior claim is made. Checkpoints
 and evidence stay private under `/tmp/vitriol-telemetry-stage3/` and
 `/tmp/vitriol-resumption/`.
+
+### Final gate findings — 2026-11-27 12:36 +01:00 Europe/Amsterdam
+
+The generic run has eight passing gates and two failing gates. Ruff reports the
+20 unchanged autosave findings. Bandit reports three B310 URL-scheme audit
+warnings: two in the prior autosave source, plus the benchmark's HTTP helper.
+Source review verifies that autosave constructs a literal loopback HTTP base
+with an integer port, and benchmark CLI `validate_target` accepts only loopback
+HTTP with an explicit non-production port before making requests. Negative
+endpoint tests pass. These are audited URL-scheme warnings in trusted local
+engine clients; this does not claim an exhaustive HTTP/security audit. The
+static security gate remains failed and was not weakened or waived. Exact
+baseline/current diagnostics and the assessment are in `bandit-review.json`
+and the final verification directory. No runtime source changed following the
+final benchmark, and its source/binary hashes still match.

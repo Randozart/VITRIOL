@@ -76,12 +76,13 @@ The existing engine service is enabled at boot and starts its autosave
 dependency. See `production-autosave.log`.
 
 The scratch evidence directory is `/tmp/vitriol-kintsugi-daily-224k/`.
-Shell parsing, ShellCheck, Ruff, and a scoped Praetor invocation passed.
-Bandit reports two pre-existing B310 findings at the sidecar's
-constant-loopback URL operations. An identical base-versus-candidate
-check found zero added signatures. See `bandit-existing.diff`.
-The changed-scope verification uses base `93add2a` and retains the two
-existing security findings.
+Shell parsing and ShellCheck passed. Scoped Praetor reported zero
+diagnostics. The managed verification includes stricter Ruff than the
+interactive preflight and retains 21 existing Ruff and two existing
+Bandit findings. Exact managed base-versus-candidate comparisons found
+zero added signatures. Both Bandit reports concern the sidecar's
+constant-loopback URL operations. See `ruff-existing.diff` and
+`bandit-managed-existing.diff`. The final scope is the diff from `93add2a`.
 
 ## Change history
 

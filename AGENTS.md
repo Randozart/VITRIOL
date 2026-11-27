@@ -1,5 +1,16 @@
 # VITRIOL AI Agent Guidelines
 
+## Model-assisted Rust policy port — 2026-11-27 13:14
+
+Kintsugi wrote five Caduceus policy helpers through the installed Officina TUI.
+Reviewed code now lives in `vitriol-core::caduceus`; the live JS router and RPC
+contract are unchanged. Independent JS vectors, all 36 Cargo tests, clippy and
+the 30-test JS suite pass after recorded model repairs. The session reached
+24,840 filled tokens at 35.02 tok/s median across 20 local model requests.
+The original 1,512-token slot was restored on the unchanged engine PID.
+[API and compatibility](vitriol-core/README.md#caduceus-policy) ·
+[Trial and evidence](.opencode/plans/2026-11-27-125306-model-assisted-rust-caduceus-port.md).
+
 ## Latency and checkpoint I/O — 2026-11-27 12:27
 
 Dashboard shows native since-boot TTFT means when supported and PID/port-scoped

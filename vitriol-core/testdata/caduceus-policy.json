@@ -4930,6 +4930,14 @@
       },
       "nowMs": 1000,
       "expected": "all 2 candidate(s) unavailable — earliest lane returns in 9s"
+    },
+    {
+      "tried": 2,
+      "parked": {
+        "a": 0
+      },
+      "nowMs": -1,
+      "expected": "all 2 candidate(s) unavailable — no lane is parked"
     }
   ]
 }

@@ -25,16 +25,7 @@ fn is_es_whitespace(c: char) -> bool {
 
 /// Trim per ECMAScript semantics.
 fn trim(s: &str) -> &str {
-    let bytes = s.as_bytes();
-    let mut start = 0;
-    while start < bytes.len() && is_es_whitespace(s[start..].chars().next().unwrap()) {
-        start += s[start..].chars().next().unwrap().len_utf8();
-    }
-    let mut end = bytes.len();
-    while end > start && is_es_whitespace(s[..end].chars().next_back().unwrap()) {
-        end -= s[..end].chars().next_back().unwrap().len_utf8();
-    }
-    &s[start..end]
+    s.trim_matches(is_es_whitespace)
 }
 
 /// Is `id` parked right now? Park keys are never trimmed.
@@ -82,6 +73,110 @@ pub fn should_retry(status: Option<u16>, forwarded: bool, timed_out: bool) -> bo
         return true;
     }
     status.is_some_and(|s| RETRYABLE_STATUSES.contains(&s))
+}
+
+/// Upper bound on hint-driven parks: one flaky 429 must not bench a lane for
+/// hours (`DEFAULT_MAX_PARK_S * 1000` in the JS original). Milliseconds.
+pub const DEFAULT_MAX_PARK_MS: f64 = 900_000.0;
+
+/// Parked-lane state: `parked` maps model → until-timestamp (ms), `reasons`
+/// maps model → operator-facing reason.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParkState {
+    pub parked: std::collections::BTreeMap<String, f64>,
+    pub reasons: std::collections::BTreeMap<String, String>,
+}
+
+/// Park duration for a hint-driven failure: the hint floored to an integer and
+/// at least 1000 ms, clamped to the operator's ceiling
+/// (`cappedParkMs` in the JS original).
+///
+/// `None` hint (JS non-number) yields `None`. Non-finite hints are rejected.
+/// `None` max (JS non-number) or `max <= 0` disables the cap; otherwise
+/// `min(floor, max)`, matching JS `Math.min` — including `Some(NaN)` for a NaN
+/// max. A `+Infinity` max leaves the finite floor unchanged.
+pub fn capped_park_ms(hint_ms: Option<f64>, max_park_ms: Option<f64>) -> Option<f64> {
+    let hint = hint_ms?;
+    if !hint.is_finite() {
+        return None;
+    }
+    let floor = 1_000_f64.max(hint.floor());
+    match max_park_ms {
+        // JS Math.min propagates NaN: a NaN max must yield Some(NaN).
+        Some(max) if max.is_nan() => Some(max),
+        Some(max) if max > 0.0 => Some(floor.min(max)),
+        _ => Some(floor),
+    }
+}
+
+/// Drop entries whose time has passed (`pruneParked` in the JS original).
+///
+/// Copies only future numeric timestamps (`until > now_ms`; `+Infinity` is a
+/// future timestamp, `NaN` is not), drops the exact phantom key `"?"`, carries
+/// the matching reason (empty string when absent), and does not mutate the
+/// input.
+pub fn prune_parked(state: &ParkState, now_ms: f64) -> ParkState {
+    let mut next = ParkState::default();
+    for (model, until) in &state.parked {
+        if model == "?" {
+            continue;
+        }
+        // The `> now_ms` test already excludes NaN and admits +Infinity.
+        if *until > now_ms {
+            next.parked.insert(model.clone(), *until);
+            next.reasons.insert(
+                model.clone(),
+                state.reasons.get(model).cloned().unwrap_or_default(),
+            );
+        }
+    }
+    next
+}
+
+/// One line for the operator when every candidate is parked or failed
+/// (`giveUpMessage` in the JS original).
+///
+/// Ignores the phantom key `"?"`, picks the earliest future timestamp, rounds
+/// the remaining seconds with `Math.round` semantics and a 1-second minimum,
+/// and formats exactly `all N candidate(s) unavailable — earliest lane returns
+/// in Ss` or `all N candidate(s) unavailable — no lane is parked`. A sole
+/// infinite future timestamp renders as `Infinitys`.
+///
+/// Compatibility quirk of the JS original: a selected zero timestamp is
+/// falsy, so `giveUpMessage({parked: {a: 0}, nowMs: -1})` reports
+/// "no lane is parked". Preserved here.
+pub fn give_up_message(
+    tried: u64,
+    parked: &std::collections::BTreeMap<String, f64>,
+    now_ms: f64,
+) -> String {
+    let soonest = parked
+        .iter()
+        .filter_map(|(model, until)| {
+            // Numeric future timestamp only: `NaN` is not numeric; the
+            // phantom key "?" is never a lane.
+            if model.as_str() != "?" && *until > now_ms {
+                Some(*until)
+            } else {
+                None
+            }
+        })
+        .min_by(|a, b| a.total_cmp(b));
+    let when = match soonest {
+        // JS `soonest ? ... : "no lane is parked"`: a zero timestamp is
+        // falsy and takes the "no lane" branch.
+        Some(t) if t != 0.0 => {
+            let seconds = ((t - now_ms) / 1000.0).round().max(1.0);
+            let text = if t.is_infinite() {
+                "Infinity".to_string()
+            } else {
+                seconds.to_string()
+            };
+            format!("earliest lane returns in {text}s")
+        }
+        _ => "no lane is parked".to_string(),
+    };
+    format!("all {tried} candidate(s) unavailable — {when}")
 }
 
 #[cfg(test)]

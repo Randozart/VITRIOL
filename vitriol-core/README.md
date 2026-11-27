@@ -3,6 +3,37 @@
 Rust policy shared with Officina through the `vitriol-core-rpc` stdio sidecar.
 Existing admission/probe decisions retain their TypeScript parity vectors.
 
+## Caduceus policy
+
+The `caduceus` library module ports five pure helpers from
+[the JavaScript router policy](../officina/scripts/caduceus-router-lib.mjs):
+`candidate_order`, `should_retry`, `capped_park_ms`, `prune_parked` and
+`give_up_message`. It uses caller-supplied timestamps and has no network or
+filesystem access. The live router still uses JavaScript; these functions are
+available to Rust callers and are not yet exposed through the RPC sidecar.
+
+Candidate IDs use ECMAScript trimming, including the BOM and line separators.
+Forwarded output always suppresses retries. Park pruning drops the phantom
+`?` lane and retains only future timestamps and their reasons. For park caps,
+`None` represents a nonnumeric JavaScript value: a missing hint is rejected,
+while a missing cap disables the cap. Pass `Some(DEFAULT_MAX_PARK_MS)` for the
+normal 900-second ceiling. A cap below one second retains the source behavior.
+
+The typed interface accepts strings, numeric timestamp maps and string reasons.
+Parity covers operational finite times/counts within JavaScript's safe integer
+range, plus explicit NaN/infinity cases. The source helper's zero-timestamp
+reporting quirk is preserved: at `now_ms = -1`, a selected park at zero reports
+no parked lane. Changing this behavior should update both implementations.
+
+Kintsugi wrote the module through Officina and repaired it using independent
+compiler and parity-test feedback. Regenerate the JavaScript oracle vectors
+before running the Rust suite when the source policy changes:
+
+```sh
+node vitriol-core/tests/generate_caduceus_vectors.mjs
+cargo test --locked --offline --manifest-path vitriol-core/Cargo.toml
+```
+
 ## Cache lifetime
 
 `cache_lifetime::plan` consumes a versioned inventory with an epoch, immutable

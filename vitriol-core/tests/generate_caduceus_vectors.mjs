@@ -50,6 +50,8 @@ const reports = [];
 for (const parked of [{}, { '?': 99999 }, { a: 1000 }, { a: 1001 }, { a: 2499 }, { a: 2500 }, { a: 4000, b: 2300 }, { '?': 1500, a: 10000 }]) {
   reports.push({ tried: 2, parked, nowMs: 1000, expected: giveUpMessage({ tried: 2, parked, nowMs: 1000 }) });
 }
+// Preserve the source helper's zero-timestamp truthiness boundary.
+reports.push({ tried: 2, parked: { a: 0 }, nowMs: -1, expected: giveUpMessage({ tried: 2, parked: { a: 0 }, nowMs: -1 }) });
 const output = fileURLToPath(new URL('../testdata/caduceus-policy.json', import.meta.url));
 writeFileSync(output, `${JSON.stringify({ schema: 1, orders, retries, caps, prunes, reports }, null, 2)}\n`);
 console.log(JSON.stringify({ orders: orders.length, retries: retries.length, caps: caps.length, prunes: prunes.length, reports: reports.length }));

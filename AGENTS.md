@@ -1,5 +1,12 @@
 # VITRIOL AI Agent Guidelines
 
+## New-agent handoff — 2026-11-28 12:36
+
+[Latest handoff](.opencode/plans/2026-11-28-123604-new-agent-handoff.md) records
+the completed Rust port, historical verification limits, current warm-slot
+cautions and a separate preserved untracked gateway proposal. Read it before
+resuming old experiments or using their saved checkpoints.
+
 ## Model-assisted Rust policy port — 2026-11-27 13:14
 
 Kintsugi wrote five Caduceus policy helpers through the installed Officina TUI.

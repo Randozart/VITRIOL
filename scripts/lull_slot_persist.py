@@ -55,6 +55,7 @@ DEFAULT_SAVE_DIR = os.environ.get("VITRIOL_SLOT_SAVE_DIR",
                                  os.path.expanduser("~/.vitriol/checkpoints"))
 KINTSUGI_SAVE_DIR = os.path.expanduser("~/.vitriol/checkpoints-kintsugi")
 KINTSUGI_REFERENCE_SAVE_DIR = os.path.expanduser("~/.vitriol/checkpoints-kintsugi-reference")
+INKLING_SAVE_DIR = os.path.expanduser("~/.vitriol/checkpoints-inkling")
 SAVE_DIR = DEFAULT_SAVE_DIR
 BASE = f"http://127.0.0.1:{PORT}"
 HANG_STRIKES_MAX = int(os.environ.get("VITRIOL_HANG_STRIKES", "12"))
@@ -346,7 +347,7 @@ def select_save_dir(pid):
                 args = f.read().split(b"\0")
             slot_path = args[args.index(b"--slot-save-path") + 1]
             path = os.fsdecode(slot_path)
-            if path in (KINTSUGI_SAVE_DIR, KINTSUGI_REFERENCE_SAVE_DIR):
+            if path in (KINTSUGI_SAVE_DIR, KINTSUGI_REFERENCE_SAVE_DIR, INKLING_SAVE_DIR):
                 directory = path
         except (OSError, ValueError, IndexError):
             pass

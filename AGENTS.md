@@ -7,6 +7,17 @@ the completed Rust port, historical verification limits, current warm-slot
 cautions and a separate preserved untracked gateway proposal. Read it before
 resuming old experiments or using their saved checkpoints.
 
+## Inkling 2 200K upstream launcher — 2026-11-28 12:58
+
+`vitriol config load inkling2-mini-200k-upstream` selects the Inkling 2
+Mini profile served by upstream build b12774 on both 3060s: 212,992-token
+window, 1,3 layer split, ub16, Q4_0 K/V KV, alias Lapis Occultus. The
+launcher is additive; Kintsugi profiles are unchanged. Autosave follows
+`~/.vitriol/checkpoints-inkling`. A load-and-short-reply check is still
+required on the host; the 212,992 bracket is historical measurement, not
+fresh verification.
+[Plan](.opencode/plans/2026-11-28-125558-inkling2-upstream-200k-launcher.md).
+
 ## Model-assisted Rust policy port — 2026-11-27 13:14
 
 Kintsugi wrote five Caduceus policy helpers through the installed Officina TUI.

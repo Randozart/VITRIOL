@@ -1,0 +1,6 @@
+# Inkling 2 Mini via the upstream b12774 launcher (~208K window).
+# Real argv lives in scripts/serve-inkling.sh; keep the alias constant.
+
+[server]
+launcher = inkling
+port = 8279

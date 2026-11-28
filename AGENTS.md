@@ -16,9 +16,9 @@ launcher is additive; Kintsugi profiles are unchanged. Autosave follows
 `~/.vitriol/checkpoints-inkling`. A load-and-short-reply check is still
 required on the host; the 212,992 bracket is historical measurement, not
 fresh verification.
-`vitriol inkling2-mini-200k-upstream` is the shorthand (load + restart;
-`--no-restart` to stage only). The launch is pinned as the blessed operating
-point.
+`vitriol inkling` (alias `ink`) and `vitriol kintsugi` (alias `kt`) switch
+profiles and restart; unique prefixes also resolve. `--no-restart` stages
+only. The Inkling launch is pinned as the blessed operating point.
 [Plan](.opencode/plans/2026-11-28-125558-inkling2-upstream-200k-launcher.md).
 
 ## Model-assisted Rust policy port — 2026-11-27 13:14

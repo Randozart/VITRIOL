@@ -946,12 +946,48 @@ METAEOF
     [[ -n "$desc" ]] && echo "  Description: ${desc}"
 }
 
+profile_alias() {
+    case "$1" in
+        inkling|ink) echo "inkling2-mini-200k-upstream" ;;
+        kintsugi|kt) echo "kintsugi-reference-gpu1" ;;
+        *) echo "$1" ;;
+    esac
+}
+
+resolve_profile_name() {
+    local name; name="$(profile_alias "$1")"
+    if [[ -f "${PROFILES_DIR}/${name}/config" || -f "${BUNDLED_PROFILES_DIR}/${name}/config" ]]; then
+        printf '%s\n' "$name"
+        return 0
+    fi
+    local -A seen=()
+    local d n
+    for d in "${PROFILES_DIR}"/*/ "${BUNDLED_PROFILES_DIR}"/*/; do
+        [[ -d "$d" ]] || continue
+        n="$(basename "$d")"
+        [[ "$n" == "$name"* ]] && seen["$n"]=1
+    done
+    if (( ${#seen[@]} == 1 )); then
+        printf '%s\n' "${!seen[@]}"
+        return 0
+    fi
+    if (( ${#seen[@]} > 1 )); then
+        echo "Ambiguous profile '${1}': ${!seen[*]}" >&2
+        return 2
+    fi
+    return 1
+}
+
 profiles_load() {
     local name="$1"
     if [[ -z "$name" ]]; then
         echo "Usage: vitriol config load <name>"
         return 1
     fi
+    local resolved rc
+    resolved="$(resolve_profile_name "$name")"; rc=$?
+    if (( rc == 2 )); then return 2; fi
+    (( rc == 0 )) && name="$resolved"
     local profile_dir="${PROFILES_DIR}/${name}"
 
     # Auto-install from bundled profiles if not already installed
@@ -1038,6 +1074,8 @@ profiles_list() {
         echo "No profiles available."
         echo "Create one with: vitriol config save <name>"
     fi
+    echo ""
+    echo "Aliases: inkling/ink -> inkling2-mini-200k-upstream, kintsugi/kt -> kintsugi-reference-gpu1"
 }
 
 _print_profile_entry() {
@@ -1835,6 +1873,7 @@ usage() {
     cat <<'HEREDOC'
   vitriol run [options]      interactive inference session
   vitriol serve [options]    persistent HTTP API server
+  vitriol <profile>          load a saved profile and restart (inkling, kintsugi)
   vitriol stop               stop running server
   vitriol bench [options]    quick throughput benchmark (uses llama-bench)
   vitriol config             interactive configuration TUI
@@ -3963,11 +4002,14 @@ POLKITEOF
         ;;
 
     *)
-        if [[ -f "${PROFILES_DIR}/${CMD}/config" || -f "${BUNDLED_PROFILES_DIR}/${CMD}/config" ]]; then
+        profile_resolved="$(resolve_profile_name "$CMD")"
+        profile_rc=$?
+        if (( profile_rc == 0 )); then
             shift
-            vitriol_profile_switch "$CMD" "$@"
+            vitriol_profile_switch "$profile_resolved" "$@"
             exit $?
         fi
+        if (( profile_rc == 2 )); then exit 2; fi
         usage
         exit 1
         ;;

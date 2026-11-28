@@ -66,4 +66,5 @@ so Officina's local lane resolves it.
 ## Change history
 
 - 2026-11-28T12:55:58+01:00 — Plan created before implementation.
+- 2026-11-28T14:12:00+01:00 — Added short aliases (`inkling`/`ink`, `kintsugi`/`kt`), unique-prefix profile resolution with explicit ambiguity errors, and alias handling in `config load`.
 - 2026-11-28T14:02:31+01:00 — Added `vitriol <profile>` shorthand (load + restart, with `--no-restart`/`--dry-run`) and pinned the Inkling launch as the blessed operating point. Host load and short-reply verification remain.

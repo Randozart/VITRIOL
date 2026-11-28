@@ -989,6 +989,28 @@ profiles_load() {
     fi
 }
 
+vitriol_profile_switch() {
+    local name="$1"; shift
+    local restart=true
+    case "${1:-}" in
+        --no-restart|--load-only) restart=false ;;
+        --dry-run)
+            echo "Would load profile '${name}' and restart vitriol-server.service"
+            return 0 ;;
+        "") ;;
+        *) echo "usage: vitriol <profile> [--no-restart|--dry-run]" >&2; return 2 ;;
+    esac
+    profiles_load "$name" || return $?
+    $restart || return 0
+    local scope; scope=$(unit_scope)
+    if [[ "$scope" == "none" ]]; then
+        echo "→ No service unit; apply with: vitriol stop && vitriol serve --detach"
+        return 0
+    fi
+    echo "→ Restarting vitriol-server.service ($scope scope); the warm slot will be replaced."
+    systemctl restart vitriol-server.service vitriol-autosave.service
+}
+
 profiles_list() {
     local count=0
 
@@ -3941,6 +3963,11 @@ POLKITEOF
         ;;
 
     *)
+        if [[ -f "${PROFILES_DIR}/${CMD}/config" || -f "${BUNDLED_PROFILES_DIR}/${CMD}/config" ]]; then
+            shift
+            vitriol_profile_switch "$CMD" "$@"
+            exit $?
+        fi
         usage
         exit 1
         ;;
